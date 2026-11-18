@@ -511,6 +511,29 @@ describe("ProjectRegistry", () => {
     expect(spawnSyncMock).not.toHaveBeenCalled();
   });
 
+  it("sends a repository key to this machine's one checkout of it, and never guesses between two", () => {
+    const root = makeTempRoot();
+    const registryDir = path.join(root, "machine");
+    const layout = { adeDir: registryDir, projectsPath: path.join(registryDir, "projects.json") } as any;
+    const registry = new ProjectRegistry(layout);
+    const checkout = (name: string, origin: string) => {
+      const projectRoot = path.join(root, name);
+      fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
+      fs.writeFileSync(path.join(projectRoot, ".git", "config"), `[remote "origin"]\n\turl = ${origin}\n`);
+      return registry.add(projectRoot).projectId;
+    };
+    const only = checkout("only", "git@github.com:Owner/Only.git");
+    const first = checkout("twice-a", "https://github.com/owner/twice.git");
+    checkout("twice-b", "https://github.com/owner/twice");
+
+    expect([
+      registry.resolveRepositoryProjectId("github.com/owner/only"),
+      registry.resolveRepositoryProjectId("github.com/owner/twice"),
+      registry.resolveRepositoryProjectId("github.com/owner/missing"),
+      registry.resolveRepositoryProjectId(first),
+    ]).toEqual([only, null, null, null]);
+  });
+
   describe("writers in other processes", () => {
     function makeRegistry(prefix: string) {
       const root = makeTempRoot(prefix);

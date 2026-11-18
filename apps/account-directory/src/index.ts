@@ -5,6 +5,7 @@ import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
 import { expireCloudLaunches, failUnjoinedLaunches } from "./cloud/launches";
 import { runProjectComputerDeletes } from "./cloud/projectComputers";
+import { sweepStaleBackupUploads } from "./cloud/laneBackups";
 import { runPlanCleanupPicks } from "./cloud/planCleanup";
 import { runIdleCleanup } from "./cloud/idleCleanup";
 import { createCloudProvider } from "./cloud/provider";
@@ -242,7 +243,10 @@ export default Sentry.withSentry(sentryOptions, {
           const key = env.AGENT37_API_KEY?.trim();
           if (key) await runProjectComputerDeletes(env, createCloudProvider(key));
         }),
-        // The computers a person picked to free for a cheaper plan: pushed,
+        // Lane backup uploads nobody committed (`laneBackups.ts`): their parts
+        // go. One indexed read when none is stale.
+        settle("cloud_backup_uploads", () => sweepStaleBackupUploads(env, Date.now())),
+        // The computers a person picked to free for a cheaper plan: saved,
         // then freed, a few a tick. One indexed read when no pick waits.
         settle("cloud_plan_cleanups", async () => {
           const key = env.AGENT37_API_KEY?.trim();

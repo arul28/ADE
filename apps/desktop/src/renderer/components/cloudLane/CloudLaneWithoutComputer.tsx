@@ -15,12 +15,14 @@ import { confirmDialog } from "../ui/dialog";
 import { cn } from "../ui/cn";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneLifeAvailable, forgetCloudLaneWithoutComputer } from "./cloudLaneActions";
 import { refreshCloudLanesWithoutComputer } from "./cloudLaneStores";
+import { CloudLaneSavedWork } from "./CloudLaneSavedWork";
 import "./cloudLane.css";
 
 /**
  * A lane kept without a computer: its computer was freed to save space,
- * removed by the idle cleanup after its work was pushed (or by the old 30-day
- * rule), or freed to fit a cheaper plan. It says so in plain words and offers one
+ * removed by the idle cleanup after its work was saved (or by the old 30-day
+ * rule), or freed to fit a cheaper plan. Work that wasn't on GitHub shows
+ * under it (`CloudLaneSavedWork`), and a new computer for the lane gets it back. It says so in plain words and offers one
  * next step, "New computer on the same branch": a new ADE Cloud launch for
  * the same lane id on `origin/<branch>`, the same launch a new lane uses, so
  * its card shows the same steps. "Forget lane" removes the record; the
@@ -32,10 +34,10 @@ function cloudLaneWithoutComputerSentence(lane: CloudLaneWithoutComputer): strin
   const when = since ? ` on ${since}` : "";
   if (lane.reason === "freed") return `${lane.laneName} has no computer now. You freed it${when} to save space; its work is on GitHub.`;
   if (lane.reason === "idle_cleanup") {
-    return `${lane.laneName} has no computer now. ADE Cloud removed it${when} because it wasn't used, after committing its work and pushing it to ${lane.branchRef ? lane.branchRef : "the lane's branch"}. Your next message makes a new computer from the branch.`;
+    return `${lane.laneName} has no computer now. ADE Cloud removed it${when} because it wasn't used, after saving its work that wasn't on GitHub. Your next message makes a new computer from ${lane.branchRef ? lane.branchRef : "the lane's branch"} with that work.`;
   }
   if (lane.reason === "plan_limit") {
-    return `${lane.laneName} has no computer now. ADE Cloud removed it${when} to fit your plan, after pushing its work to GitHub. A new computer starts from the branch on GitHub.`;
+    return `${lane.laneName} has no computer now. ADE Cloud removed it${when} to fit your plan, after saving its work that wasn't on GitHub. A new computer for the lane gets that work back.`;
   }
   return `${lane.laneName} has no computer now. ADE Cloud removed it${when} after 30 days without use. Work you pushed to GitHub is safe, and a new computer starts from the branch on GitHub.`;
 }
@@ -131,7 +133,7 @@ export function CloudLaneWithoutComputerNotice({
   const onForget = async () => {
     const ok = await confirmDialog({
       title: `Forget ${lane.laneName}?`,
-      message: "ADE stops listing this lane. Its branch stays on GitHub and its chats stay readable.",
+      message: "ADE stops listing this lane and deletes its saved work that isn't on GitHub. Download that work first if you need it. Its branch on GitHub and its chats stay.",
       confirmLabel: "Forget lane",
     });
     if (!ok) return;
@@ -152,6 +154,7 @@ export function CloudLaneWithoutComputerNotice({
       <div className="adecl-nocomp-text">
         <span>{cloudLaneWithoutComputerSentence(lane)}</span>
         {problem ? <span id={problemId} className="adecl-muted">{problem}</span> : null}
+        <CloudLaneSavedWork laneId={lane.laneId} laneName={lane.laneName} />
       </div>
       <div className="adecl-nocomp-actions">
         <button type="button" className="kit-btn adecl-btn-sky" data-size="xs" disabled={Boolean(problem) || busy} aria-describedby={problem ? problemId : undefined} onClick={() => void start()}>

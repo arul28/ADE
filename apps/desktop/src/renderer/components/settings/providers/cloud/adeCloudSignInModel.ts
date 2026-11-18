@@ -20,6 +20,8 @@ import {
   cloudSignInKeyFor,
 } from "../../../../../shared/cloudSignIns";
 import type { AiSettingsStatus } from "../../../../../shared/types";
+import { ADE_CLOUD_NAME } from "../../../../../shared/adeCloudMachine";
+import { isAdeCloudComputer } from "../../../../state/adeCloudLaneIndex";
 import { cloudChoiceKey } from "../../../../../shared/providerLoginsCloudSetting";
 import {
   accountIdentityOf,
@@ -404,7 +406,10 @@ export function signInCardBucket(signIn: Pick<ProviderLoginSignIn, "key" | "prov
 function originLine(signIn: ProviderLoginSignIn, all: readonly ProviderLoginSignIn[]): string {
   const bucket = signInCardBucket(signIn);
   const copies = all.filter((other) => signInCardBucket(other) === bucket).length;
-  return copies > 1 ? `From ${copies} computers` : `From ${signIn.origin.label}`;
+  if (copies > 1) return `From ${copies} computers`;
+  // A cloud computer named itself by its instance id before it said "ADE Cloud".
+  const cloud = isAdeCloudComputer({ hostname: signIn.origin.label, machineKey: signIn.origin.machineKey });
+  return `From ${cloud ? ADE_CLOUD_NAME : signIn.origin.label}`;
 }
 
 /**

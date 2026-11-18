@@ -2026,13 +2026,18 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [foreignManageKey, foreignManageRow, laneActionBusy]);
 
   const openForeignManage = useCallback((row: MachineLane, initialTab: ManageLaneTab | null = null) => {
-    if (machineBlockedReason(row) || row.lane.laneType === "primary") return;
-    setManageInitialTab(initialTab);
+    if (row.lane.laneType === "primary") return;
+    // A sleeping ADE Cloud lane is managed from the account: its size, free
+    // and delete need no wake. It opens on its Computer tab.
+    const restingCloudLane = !row.online && restingMachineIds.has(row.machineId)
+      && row.pin != null && cloud.isCloudLane(row.pin, row.lane.id);
+    if (machineBlockedReason(row) && !restingCloudLane) return;
+    setManageInitialTab(restingCloudLane ? "computer" : initialTab);
     setLaneActionError(null);
     setDeleteForce(false);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setForeignManageKey(row.key);
-  }, []);
+  }, [cloud, restingMachineIds]);
   openForeignManageRef.current = openForeignManage;
 
   /**
@@ -2086,7 +2091,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const key = foreignManageKey;
     const row = key ? foreignRowByKeyRef.current.get(key) ?? null : null;
     if (!row || row.lane.laneType === "primary") return;
-    const reason = machineBlockedReason(row);
+    // A sleeping ADE Cloud lane is deleted from the account, with no wake.
+    const restingCloudLane = !row.online && restingMachineIds.has(row.machineId)
+      && row.pin != null && cloud.isCloudLane(row.pin, row.lane.id);
+    const reason = restingCloudLane ? null : machineBlockedReason(row);
     if (reason || !row.pin) {
       setLaneActionError({ message: reason ?? `${row.machineName} is unavailable`, kind: "status" });
       return;
@@ -2163,6 +2171,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     foreignManageKey,
     foreignRowByKeyRef,
     requestCrossMachineLanesForMachine,
+    restingMachineIds,
     setDeleteProgressByLaneId,
   ]);
 
@@ -2324,7 +2333,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
             ) : null}
             {detailForeignRow ? (
               restingMachineIds.has(detailForeignRow.machineId) && !detailForeignRow.online ? (
-                <RestingCloudLaneDetail laneName={detailForeignRow.lane.name} machine={detailForeignRow} />
+                <RestingCloudLaneDetail
+                  laneName={detailForeignRow.lane.name}
+                  machine={detailForeignRow}
+                  onManage={() => openForeignManage(detailForeignRow)}
+                />
               ) : machineBlockedReason(detailForeignRow) ? (
                 <div
                   className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
@@ -2542,6 +2555,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           initialTab={manageInitialTab}
           runtimePin={foreignManageRow.pin}
           cloudLaneIds={cloud.isCloudLane(foreignManageRow.pin, foreignManageRow.lane.id) ? new Set([foreignManageRow.lane.id]) : null}
+          resting={!foreignManageRow.online && restingMachineIds.has(foreignManageRow.machineId) && cloud.isCloudLane(foreignManageRow.pin, foreignManageRow.lane.id)}
         />
       ) : null}
 

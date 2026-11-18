@@ -249,8 +249,8 @@ export function captureCloudFreePlan(env: CloudEnv, waitUntil: CloudWaitUntil, u
 /**
  * - `warned`: the first warning went out (email and in-app).
  * - `emailed`: a follow-up email (free: about 6 hours before; paid: one a day).
- * - `saved`: the computer committed and pushed its work before the delete.
- * - `push_refused`: the save didn't go through, so the computer was kept.
+ * - `saved`: every lane's work was saved (a lane backup) before the delete.
+ * - `push_refused`: a lane's work wasn't saved, so the computer was kept (the old name stays for the dashboards).
  * - `deleted`: the computer was deleted; its lane stays.
  * - `kept`: the person kept it after a warning (`how`: `button`, `used`,
  *   `hours_back`, or `scheduled`: it has a timed wake-up booked).

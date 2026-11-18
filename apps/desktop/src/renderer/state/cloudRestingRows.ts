@@ -62,7 +62,7 @@ export function machineIsCloudResting(
   if (isCloudConnectionTarget(entry.machineId)) return true;
   if (entry.sessions.some((session) => session.cloudSavedCopy === true)) return true;
   const hostname = entry.binding?.kind === "remote" ? entry.binding.hostname ?? null : null;
-  return adeCloudLaneComputerForMachine({ hostname }, cloudLaneComputers) != null;
+  return adeCloudLaneComputerForMachine({ hostname, targetId: entry.machineId }, cloudLaneComputers) != null;
 }
 
 /**

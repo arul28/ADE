@@ -103,7 +103,7 @@ export async function confirmCloudSleep(name: string, runningChats: number): Pro
   if (runningChats <= 0) return true;
   return await confirmDialog({
     title: `Sleep ${name}?`,
-    message: `${chatsLine(runningChats, name)} Sleep freezes everything on it, so a turn in progress may fail and need a retry after it wakes. It uses no hours while asleep.`,
+    message: `${chatsLine(runningChats, name)} Sleep stops the turns in progress first, and they show as Stopped. Send again after it wakes. It uses no hours while asleep.`,
     confirmLabel: "Sleep",
   });
 }

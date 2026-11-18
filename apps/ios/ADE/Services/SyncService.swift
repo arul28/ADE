@@ -21071,12 +21071,18 @@ final class SyncService: ObservableObject {
     // out as the first frame for hosts that ignore the header (a newer host
     // drops that copy by its request id). Never over the relay, and never in
     // the URL: the hello carries the paired secret.
+    let upgradeDeviceId: String? = !isRelay && !awaitsRelayReadyV2 && profile.authKind == "paired"
+      ? profile.pairedDeviceId
+      : nil
+    // The device key signs off the main thread (`buildProofOffMain`).
+    var upgradeProof: [String: Any]?
+    if let upgradeDeviceId {
+      upgradeProof = await DpopKeyService.shared.buildProofOffMain(deviceId: upgradeDeviceId, secret: pairedSecret)
+    }
     let upgradeHello: (requestId: String, payload: [String: Any])? = {
-      guard !isRelay, !awaitsRelayReadyV2,
-            profile.authKind == "paired", let pairedDeviceId = profile.pairedDeviceId
-      else { return nil }
+      guard let pairedDeviceId = upgradeDeviceId else { return nil }
       var auth: [String: Any] = ["kind": "paired", "deviceId": pairedDeviceId, "secret": pairedSecret]
-      if let proof = DpopKeyService.shared.buildProof(deviceId: pairedDeviceId, secret: pairedSecret) {
+      if let proof = upgradeProof {
         auth["dpop"] = proof
       }
       return (makeRequestId(), candidateHelloPayload(
@@ -21145,7 +21151,7 @@ final class SyncService: ObservableObject {
         if let upgradeHello {
           auth = upgradeHello.payload["auth"] as? [String: Any] ?? [:]
         } else if profile.authKind == "paired", let pairedDeviceId = profile.pairedDeviceId {
-          let proof = DpopKeyService.shared.buildProof(deviceId: pairedDeviceId, secret: pairedSecret)
+          let proof = await DpopKeyService.shared.buildProofOffMain(deviceId: pairedDeviceId, secret: pairedSecret)
           if isRelay, proof == nil {
             throw NSError(
               domain: "ADE",

@@ -203,6 +203,20 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /^ADE Cloud sets up GitHub repositories only, and this project has no GitHub origin\.$/,
   /^Refusing to clean up protected branch "/,
   /^A move to .+ may have landed\. Retry it, or open .+ to check, or dismiss it\.$/,
+  // Added from Sentry traffic, 2026-11-17. Marked where thrown now; the text
+  // stays for older brains. A lane deleted while a view still asks about it,
+  // a branch switch with uncommitted files, a pasted pairing code that is not one.
+  /^Lane \S+ was not found\.$/,
+  /^This lane has uncommitted changes\. Commit or stash them before switching branches\.$/,
+  /^Invalid ADE pairing link or code\.$/,
+  // A project folder that stopped answering (StorageNotAnsweringError), when
+  // only its text arrives, as in a provider's turn failure.
+  /\bon this computer right now: it is not answering\./,
+  // A clone over SSH with no key GitHub accepts: the person sets up a key or uses HTTPS.
+  /\bPermission denied \(publickey\)/,
+  // Added from PostHog traffic, 2026-11-17. Kimi on a Windows computer with no
+  // Git for Windows: the answer tells the person what to install.
+  /^Kimi needs Git for Windows: /,
 ];
 
 /**
@@ -304,6 +318,8 @@ const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set([
   "target_exists",
   // Another ADE brain on this computer runs the chat; the message names it.
   "chat_runtime_owned_elsewhere",
+  // A machine with no ADE account signed in (lane sharing, account reads).
+  "signed_out",
 ]);
 
 /**

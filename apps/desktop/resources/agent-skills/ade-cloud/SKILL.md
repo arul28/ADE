@@ -103,7 +103,10 @@ the disk grew. Never ask the person to grow it instead.
 On a lane's cloud computer with a full disk, `ade actions run cloud.clear_caches`
 deletes package and build caches there (never a repository or dependencies). It
 asks the person with a card first; with nobody watching the answer is no. A computer sleeps 3 minutes after its last
-activity and wakes on use, so you rarely need `sleep` or `wake`.
+activity and wakes on use, so you rarely need `sleep` or `wake`. The one
+exception: `ade chat send` or `ade chat message` to a chat on a sleeping cloud
+computer does not wake it. The "not found" answer names the computer and the
+`ade cloud wake <id>` to run; run it (a wake uses hours), then send again.
 `ade cloud work-state` lists the lanes with work not pushed yet. Freeing a computer (keeping its lane) is refused while the agent works: stop it or wait.
 With nobody there you cannot change a size: ask with `ade cloud resize --request`, as in Never.
 `ade cloud invite --text` shows the person's invite link, friends joined and hours earned. Only the person enters a friend's invite, in Settings › Account.

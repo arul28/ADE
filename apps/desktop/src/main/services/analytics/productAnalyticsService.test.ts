@@ -973,6 +973,23 @@ describe("productAnalyticsService", () => {
       expect(capture({ action_domain: "file", error_code: leaked }, `leak-${index}`))
         .not.toHaveProperty("error_code");
     }
+
+    // `brain_frame` is the brain's own `function:line`, kept as written (case
+    // and all); a frame that carries a path, a file name or a sentence is dropped.
+    expect(capture({ action_domain: "diff", error_code: "rpc_tool_failed", brain_frame: "Object.getChanges:470" }, "f1"))
+      .toMatchObject({ brain_frame: "Object.getChanges:470" });
+    expect(capture({ action_domain: "diff", error_code: "rpc_tool_failed", brain_frame: "<anonymous>:88" }, "f2"))
+      .toMatchObject({ brain_frame: "<anonymous>:88" });
+    for (const [index, leaked] of [
+      "/Users/alice/secret-project/src/index.ts:12",
+      "getChanges (/Users/alice/secret-project/app.js:12:3)",
+      "C:\\Users\\alice\\app.js:12",
+      "could not read the file:12",
+      "getChanges",
+    ].entries()) {
+      expect(capture({ action_domain: "diff", error_code: "rpc_tool_failed", brain_frame: leaked }, `frame-${index}`))
+        .not.toHaveProperty("brain_frame");
+    }
     expect(JSON.stringify(harness.messages)).not.toContain("alice");
     expect(JSON.stringify(harness.messages)).not.toContain("example.com");
     fs.rmSync(harness.root, { recursive: true, force: true });

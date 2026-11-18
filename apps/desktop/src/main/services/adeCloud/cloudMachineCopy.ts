@@ -11,9 +11,10 @@
  *   fork keeps it. So moving a box to a VM (or back) makes a new machine of
  *   the other type, streams the old one's home folder into it (every repo,
  *   lane worktree with its uncommitted work, project chat and provider
- *   sign-in; never
- *   ADE's own identity or Docker's data), registers the projects there, gives
- *   it the old name, and deletes the old box.
+ *   sign-in, and the agents' own conversations from ADE's provider homes so
+ *   each chat resumes its agent's session; never ADE's own identity or
+ *   Docker's data), registers the projects there, gives it the old name, and
+ *   deletes the old box.
  *
  * Moving a lane between this Mac and a cloud machine is the cross-machine
  * handoff (`ade chat move`), which already carries a lane's commits and
@@ -209,23 +210,152 @@ export async function copyCloudMachine(
   return { ...result, copiedFrom: source.id, forkMs };
 }
 
-/** Serves the home folder once, gzipped, to whoever has the signed URL; then exits. */
+/**
+ * The most agent history a move carries from ADE's own provider homes. Past
+ * it, the oldest conversations stay behind, and those chats go on from ADE's
+ * transcript (as every chat did before).
+ */
+const MOVE_AGENT_HISTORY_MAX_BYTES = 1024 * 1024 * 1024;
+
+/**
+ * Serves the home folder once, gzipped, to whoever has the signed URL; then
+ * exits.
+ *
+ * `~/.ade` stays behind: it holds ADE's identity and every sign-in. But a chat
+ * on one of ADE's own accounts (a Claude pass, an added account, a preset or
+ * route) keeps its agent's conversation in that account's home under
+ * `~/.ade/provider-homes`, and without it the agent can't resume its own
+ * session on the new machine. So a second archive follows the first inside
+ * the same gzip stream, with only those conversation files: Claude's
+ * `projects/<cwd slug>/<session id>.jsonl` and the folder of the same name
+ * beside it, and Codex's `rollout-*.jsonl` files under `sessions` and
+ * `archived_sessions`. Nothing else in those homes (logins, settings) goes.
+ * The home path is the same on both machines, so the cwd in each file and in
+ * Claude's folder name stays correct. The second archive is made in full
+ * before the stream starts, so a failure there leaves only the first.
+ */
 function serveHomeCommand(port: number): string {
   const script = `
-import http.server, subprocess, threading
+import glob, gzip, http.server, os, subprocess, tempfile, threading, zlib
+HOME = "/home/node"
 EXCLUDE = ["./.ade", "./.docker-data", "./.cache/ms-playwright", "*/.ade/secrets/sync-site-id", "*/.ade/sock"]
+HISTORY_MAX_BYTES = ${MOVE_AGENT_HISTORY_MAX_BYTES}
+
+def real_dir(path):
+    return os.path.isdir(path) and not os.path.islink(path)
+
+def real_file(path):
+    return os.path.isfile(path) and not os.path.islink(path)
+
+def tree(root):
+    """Every folder and file under root (root too), with the bytes of the files."""
+    entries, size = [root], 0
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = [name for name in dirs if real_dir(os.path.join(dirpath, name))]
+        entries.extend(os.path.join(dirpath, name) for name in dirs)
+        for name in files:
+            path = os.path.join(dirpath, name)
+            if real_file(path):
+                entries.append(path)
+                size += os.path.getsize(path)
+    return entries, size
+
+def conversations():
+    """Each agent conversation in ADE's provider homes: (time, bytes, home, paths)."""
+    found = []
+    root = os.path.join(HOME, ".ade", "provider-homes")
+    homes = glob.glob(os.path.join(root, "*", "*")) + glob.glob(os.path.join(root, "credential", "*", "*"))
+    for home in homes:
+        if not real_dir(home):
+            continue
+        for transcript in glob.glob(os.path.join(home, "projects", "*", "*.jsonl")):
+            if not real_file(transcript):
+                continue
+            paths, size = [transcript], os.path.getsize(transcript)
+            beside = transcript[:-len(".jsonl")]
+            if real_dir(beside):
+                more, more_size = tree(beside)
+                paths += more
+                size += more_size
+            found.append((os.path.getmtime(transcript), size, home, paths))
+        for folder in ("sessions", "archived_sessions"):
+            for dirpath, dirs, files in os.walk(os.path.join(home, folder)):
+                dirs[:] = [name for name in dirs if real_dir(os.path.join(dirpath, name))]
+                for name in files:
+                    path = os.path.join(dirpath, name)
+                    if name.startswith("rollout-") and (name.endswith(".jsonl") or name.endswith(".jsonl.zst")) and real_file(path):
+                        found.append((os.path.getmtime(path), os.path.getsize(path), home, [path]))
+    return found
+
+def pack_history():
+    """A gzipped archive of the newest conversations that fit, or None."""
+    archive = None
+    try:
+        kept, total = [], 0
+        for _time, size, home, paths in sorted(conversations(), key=lambda item: item[0], reverse=True):
+            if total + size > HISTORY_MAX_BYTES:
+                continue
+            total += size
+            # Each folder from the home down, so a new folder gets the mode it had here.
+            for path in paths:
+                parent = os.path.dirname(path)
+                chain = []
+                while len(parent) >= len(home):
+                    chain.append(parent)
+                    parent = os.path.dirname(parent)
+                kept.extend(reversed(chain))
+                kept.append(path)
+        if not kept:
+            return None
+        seen, ordered = set(), []
+        for path in kept:
+            if path not in seen:
+                seen.add(path)
+                ordered.append("./" + os.path.relpath(path, HOME))
+        fd, archive = tempfile.mkstemp(prefix="ade-move-history-", suffix=".tar.gz")
+        os.close(fd)
+        listing = ("\\0".join(ordered) + "\\0").encode("utf-8", "surrogateescape")
+        done = subprocess.run(["tar", "-C", HOME, "--no-recursion", "-czf", archive, "--null", "-T", "-"], input=listing)
+        # 1 is "a file changed while it was read": the archive is still whole.
+        if done.returncode in (0, 1):
+            return archive
+    except Exception:
+        pass
+    if archive:
+        try:
+            os.unlink(archive)
+        except OSError:
+            pass
+    return None
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.split("?")[0] != "/home.tar.gz":
             self.send_response(404); self.end_headers(); return
+        history = pack_history()
         self.send_response(200)
         self.send_header("content-type", "application/gzip")
         self.end_headers()
-        args = ["tar", "-C", "/home/node", "-czf", "-"] + ["--exclude=" + e for e in EXCLUDE] + ["."]
+        # One gzip stream around both archives, one after the other: the
+        # receiver's tar reads past the first one's end into the second.
+        packer = zlib.compressobj(6, zlib.DEFLATED, 31)
+        def send(chunk):
+            out = packer.compress(chunk)
+            if out:
+                self.wfile.write(out)
+        args = ["tar", "-C", HOME, "-cf", "-"] + ["--exclude=" + e for e in EXCLUDE] + ["."]
         proc = subprocess.Popen(args, stdout=subprocess.PIPE)
         for chunk in iter(lambda: proc.stdout.read(1 << 20), b""):
-            self.wfile.write(chunk)
+            send(chunk)
         proc.wait()
+        if history:
+            try:
+                with gzip.open(history, "rb") as handle:
+                    for chunk in iter(lambda: handle.read(1 << 20), b""):
+                        send(chunk)
+            finally:
+                os.unlink(history)
+        self.wfile.write(packer.flush())
         threading.Thread(target=self.server.shutdown, daemon=True).start()
     def log_message(self, *args):
         pass
@@ -246,14 +376,16 @@ http.server.ThreadingHTTPServer(("0.0.0.0", ${port}), Handler).serve_forever()
 /**
  * Pulls the old machine's home folder into this one, in the background (a big
  * home outlasts one exec call); the exit code lands in a file. The signed URL
- * goes through a file so no shell ever re-quotes it.
+ * goes through a file so no shell ever re-quotes it. `--ignore-zeros` reads
+ * on past the end of the first archive into the agent history after it
+ * (`serveHomeCommand`).
  */
 function receiveHomeCommand(url: string): string {
   const encoded = Buffer.from(url, "utf8").toString("base64");
   return [
     "rm -f /tmp/ade-move.exit /tmp/ade-move.log",
     `printf %s '${encoded}' | base64 -d > /tmp/ade-move.url`,
-    `nohup sh -c 'curl -fsS --retry 3 "$(cat /tmp/ade-move.url)" | tar -xzf - -C /home/node; echo $? > /tmp/ade-move.exit; rm -f /tmp/ade-move.url' > /tmp/ade-move.log 2>&1 < /dev/null &`,
+    `nohup sh -c 'curl -fsS --retry 3 "$(cat /tmp/ade-move.url)" | tar --ignore-zeros -xzf - -C /home/node; echo $? > /tmp/ade-move.exit; rm -f /tmp/ade-move.url' > /tmp/ade-move.log 2>&1 < /dev/null &`,
     "echo started",
   ].join("\n");
 }

@@ -228,7 +228,7 @@ import {
   trustGitSafeDirectory,
 } from "./services/git/git";
 import { ACTION_NOT_CALLABLE_CODE, codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError, isUnsupportedAdeActionError, PROJECT_FOLDER_TOO_SLOW_CODE } from "../shared/codedError";
-import { AdeExpectedError, markExpected } from "../shared/expectedError";
+import { AdeExpectedError, expectedErrorKind, markExpected } from "../shared/expectedError";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { installEditableContextMenu } from "./editorContextMenu";
@@ -297,6 +297,7 @@ import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBu
 import { activeCompileCacheDir, scheduleStaleCompileCachePrune } from "../../../ade-cli/src/services/runtime/compileCachePrune";
 import {
   detectDefaultBaseRef,
+  hasGitEntryAbove,
   resolveRepoRoot,
   toProjectInfo,
   upsertProjectRow,
@@ -1401,7 +1402,7 @@ async function createWindow(args: {
       windowId: win.id,
       reason: details.reason,
       exitCode: details.exitCode,
-      url: win.webContents.getURL(),
+      url: windowUrl(),
       ...(memory
         ? {
             lastHeapUsedMb: memory.heapUsedMb,
@@ -1543,21 +1544,21 @@ async function createWindow(args: {
   win.webContents.on("did-finish-load", () => {
     args.logger?.info("window.did_finish_load", {
       windowId: win.id,
-      url: win.webContents.getURL(),
+      url: windowUrl(),
     });
   });
 
   win.webContents.on("did-stop-loading", () => {
     args.logger?.info("window.did_stop_loading", {
       windowId: win.id,
-      url: win.webContents.getURL(),
+      url: windowUrl(),
     });
   });
 
   win.webContents.on("dom-ready", () => {
     args.logger?.info("window.dom_ready", {
       windowId: win.id,
-      url: win.webContents.getURL(),
+      url: windowUrl(),
     });
   });
 
@@ -4187,6 +4188,7 @@ app.whenReady().then(async () => {
     logger: localRuntimeLogger,
     connectionPool: localRuntimePool,
     openProjectDataProblem: (projectRoot) => openProjectDataWatch.problem(normalizeProjectRoot(projectRoot)),
+    isGitRepository: hasGitEntryAbove,
     closeProject: async (projectRoot) => {
       await closeProjectByPath(projectRoot);
       // After the close, so a tick that was already running cannot put the
@@ -8772,6 +8774,37 @@ app.whenReady().then(async () => {
     }
   };
 
+  /**
+   * A project folder that is gone, or that is no longer a Git repository, is
+   * a typed failure, so the window shows the recovery screen and not git's
+   * own words ("not a git repository"). Asked before git reads the folder.
+   * ADE never creates the folder again here.
+   */
+  const assertProjectFolderOpenable = (root: string): void => {
+    if (!fs.existsSync(root)) {
+      throw markExpected(
+        codedError(`The project folder ${root} isn't there. Plug its drive in or move it back; ADE has not created a replacement.`, "project_data_missing"),
+        "user",
+      );
+    }
+    // A registered project whose `.ade` data is gone.
+    assertLocalProjectDataAvailable(root);
+  };
+
+  /**
+   * git's "not a repository" for a folder that holds ADE's data: a project
+   * whose `.git` folder was moved or deleted, not a plain folder the person
+   * just picked.
+   */
+  const projectNotGitRepositoryError = (root: string, error: unknown): unknown => {
+    if (expectedErrorKind(error) !== "user") return error;
+    if (!fs.existsSync(path.join(root, ".ade")) || hasGitEntryAbove(root)) return error;
+    return markExpected(
+      codedError(`The project folder ${root} is no longer a Git repository. Its .git folder isn't there.`, "project_not_git_repository"),
+      "user",
+    );
+  };
+
   const switchProjectFromDialog = async (
     selectedPath: string,
     options: { trustGitOwnership?: boolean; webContentsId?: number | null } = {},
@@ -8856,12 +8889,15 @@ app.whenReady().then(async () => {
         }
       }
       const reusesOpenRoot = knownOpenRoot && isLikelyRepoRoot(openRoot);
+      if (!reusesOpenRoot) assertProjectFolderOpenable(openRoot);
       repoRoot = reusesOpenRoot ? openRoot : normalizeProjectRoot(
         await resolveRepoRootForUserOpen(
           selectedPath,
           options.trustGitOwnership === true,
           options.webContentsId ?? null,
-        ),
+        ).catch((error: unknown) => {
+          throw projectNotGitRepositoryError(openRoot, error);
+        }),
       ); // require a real git repo for onboarding.
       // INVARIANT: a root is recorded as "attempted" only once it has been
       // proven to be a real git repository on disk — `resolveRepoRoot` throws
@@ -11310,6 +11346,9 @@ app.whenReady().then(async () => {
         const normalizedRoot = normalizeProjectRoot(projectRoot);
         if (projectContexts.has(normalizedRoot)) continue;
         const adeDir = resolveAdeLayout(normalizedRoot).adeDir;
+        // Nothing to purge in a project with no secrets folder, and building a
+        // store there would make the folder again for a deleted project.
+        if (!fs.existsSync(path.join(adeDir, "secrets"))) continue;
         try {
           createLinearCredentialService({
             adeDir,

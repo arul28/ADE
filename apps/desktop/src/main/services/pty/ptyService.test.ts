@@ -471,6 +471,7 @@ function createHarness(overrides: {
   diskPressureMonitor?: {
     canPerform: ReturnType<typeof vi.fn>;
   } | null;
+  launchRefusal?: () => string | null;
   getAdeCliAgentEnv?: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
   runtimeSocketPath?: string | null;
   sessionActivityReportingEnabled?: boolean;
@@ -643,6 +644,7 @@ function createHarness(overrides: {
     ...(overrides.processRegistry !== undefined ? { processRegistry: overrides.processRegistry as any } : {}),
     ...(overrides.aiIntegrationService ? { aiIntegrationService: overrides.aiIntegrationService as any } : {}),
     ...(overrides.diskPressureMonitor !== undefined ? { diskPressureMonitor: overrides.diskPressureMonitor as any } : {}),
+    ...(overrides.launchRefusal ? { launchRefusal: overrides.launchRefusal } : {}),
     ...(overrides.getAdeCliAgentEnv ? { getAdeCliAgentEnv: overrides.getAdeCliAgentEnv } : {}),
     ...(overrides.runtimeSocketPath !== undefined ? { runtimeSocketPath: overrides.runtimeSocketPath } : {}),
     ...(overrides.sessionActivityReportingEnabled !== undefined
@@ -2032,6 +2034,20 @@ describe("ptyService", () => {
         })).rejects.toMatchObject({ code: "disk_full" });
       },
     );
+
+    // An ADE Cloud computer the server deletes next: a terminal opened now is lost with it.
+    it("refuses every new terminal while the host refuses launches, and a live one still attaches", async () => {
+      const sentence = "This ADE Cloud computer is being removed.";
+      let refusal: string | null = null;
+      const { service } = createHarness({ launchRefusal: () => refusal });
+      const existing = await service.create({ laneId: "lane-1", title: "Shell", cols: 80, rows: 24, toolType: "shell" });
+      refusal = sentence;
+
+      await expect(service.create({ laneId: "lane-1", title: "Shell", cols: 80, rows: 24, toolType: "shell" })).rejects.toThrow(sentence);
+      await expect(service.create({ laneId: "lane-1", title: "Codex CLI", cols: 80, rows: 24, toolType: "codex", command: "codex" })).rejects.toThrow(sentence);
+      await expect(service.create({ laneId: "lane-1", sessionId: existing.sessionId, title: "Shell", cols: 80, rows: 24, toolType: "shell" }))
+        .resolves.toMatchObject({ sessionId: existing.sessionId });
+    });
 
     it("does not leak an inherited ADE chat session into unlinked terminals", async () => {
       const previous = process.env.ADE_CHAT_SESSION_ID;

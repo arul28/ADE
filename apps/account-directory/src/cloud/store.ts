@@ -183,6 +183,13 @@ export type ComputerRow = {
   ade_version_at?: number | null;
   /** Comma list of `CLOUD_COMPUTER_FEATURES` from the last boot report; null: an older image. */
   ade_features?: string | null;
+  /** The computer's last lane backup report (migration 0044, `laneBackups.ts`). */
+  backup_report_id?: string | null;
+  backup_report_state?: string | null;
+  backup_report_at?: number | null;
+  backup_problems_json?: string | null;
+  /** It went to rest right after a report that saved every lane; any wake clears it. */
+  backup_rest_at?: number | null;
 };
 
 export type AccountRow = {
@@ -449,7 +456,7 @@ export function restartStretchStatements(env: CloudEnv, computer: ComputerRow, n
   return statements;
 }
 
-/** The free push-work time of a closing stretch, so the daily reconcile doesn't charge it. */
+/** The free time of a closing stretch (an automatic update's window), so the daily reconcile doesn't charge it. */
 export function freeWakeStatements(env: CloudEnv, computer: ComputerRow, closedAt: number, guard: StatusGuard): D1PreparedStatement[] {
   if (computer.free_wake_started_at == null || computer.free_wake_until == null) return [];
   const freeEnd = Math.min(closedAt, computer.free_wake_until);
@@ -509,6 +516,8 @@ export function statusChangeStatements(env: CloudEnv, computer: ComputerRow, sta
     computer.last_awake_at = now;
     computer.delete_warned_7d_at = null;
     computer.delete_warned_1d_at = null;
+    // Awake, its lanes can change: the backups it rested with are not current any more.
+    statements.push(clearBackupRestStatement(env, computer.instance_id));
   }
   computer.status = status;
   computer.status_changed_at = now;
@@ -531,6 +540,15 @@ export function statusChangeStatements(env: CloudEnv, computer: ComputerRow, sta
   return statements;
 }
 
+/**
+ * A computer that wakes may change its lanes, so the backup report it rested
+ * with is no longer current (`laneBackups.ts`). Every path that starts a
+ * computer runs this with its status write.
+ */
+export function clearBackupRestStatement(env: CloudDb, instanceId: string): D1PreparedStatement {
+  return env.DB.prepare("update cloud_computers set backup_rest_at = null, backup_report_state = null, backup_report_id = null where instance_id = ?").bind(instanceId);
+}
+
 export function deleteLogStatement(
   env: CloudDb,
   computer: Pick<ComputerRow, "instance_id" | "user_id">,
@@ -551,10 +569,13 @@ export function markDeletedStatements(env: CloudDb, computer: ComputerRow, now: 
   const statements = settleStatements(env, computer, now, statusGuard(computer));
   computer.awake_since = null;
   computer.deleted_at = now;
-  // The disk breakdown, the lane's work (branch names, pull request state) and the lane's facts go with the computer.
+  // The disk breakdown, the lane's work (branch names, pull request state), the lane's facts, the
+  // ignored file names and the backup report (lane names) go with the computer.
   statements.push(env.DB.prepare(`
     update cloud_computers set deleted_at = ?, awake_since = null, status = 'deleted', status_changed_at = ?, disk_usage_json = null, lane_work_json = null,
-      lane_id = null, lane_name = null, lane_project_origin = null, lane_branch = null, lane_keep_reason = null
+      lane_id = null, lane_name = null, lane_project_origin = null, lane_branch = null, lane_keep_reason = null,
+      idle_held_reason = null, ignored_files_json = null,
+      backup_report_id = null, backup_report_state = null, backup_report_at = null, backup_problems_json = null, backup_rest_at = null
     where instance_id = ?
   `).bind(now, now, computer.instance_id));
   // Its unfinished launch ends too, or the web and phone list it as running for good.
@@ -737,7 +758,7 @@ export function cloudOffers(env: Pick<CloudEnv, "STRIPE_PLAN_PRICE_ID" | "STRIPE
 /**
  * On the free plan (a cancelled plan rolls to it) with more disk than the
  * free plan has: nothing pays for that disk, so its computers stay stopped
- * (only the short push-work wake) until a computer is deleted or a plan is
+ * until a computer is deleted or a plan is
  * bought. A `past_due` account is not in this state: Stripe is still trying
  * the card, and its computers and timed wakes keep working.
  */
@@ -1020,7 +1041,7 @@ async function startFreshPeriod(
   const computers = await listComputers(env, account.user_id);
   const statements: D1PreparedStatement[] = [];
   for (const computer of computers) statements.push(...settleStatements(env, computer, now));
-  // Open stretches restart at the boundary (a free push-work wake keeps its future start).
+  // Open stretches restart at the boundary (a free update window keeps its future start).
   statements.push(env.DB.prepare(`
     update cloud_computers set awake_since = ? where user_id = ? and awake_since is not null and awake_since <= ?
   `).bind(now, account.user_id, now));

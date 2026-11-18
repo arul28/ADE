@@ -70,6 +70,7 @@ export function createHeadlessLinearCredentialService(args: {
   const secretsDir = path.join(args.adeDir, "secrets");
   const credentialStore = new EncryptedFileCredentialStore({
     secretsDir,
+    projectRoot: path.dirname(args.adeDir),
   });
   const tokenKey = "linear.token.v1";
   const authModeKey = "linear.authMode.v1";

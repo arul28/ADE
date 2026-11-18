@@ -11,7 +11,7 @@ import { CloudMark } from "../remoteTargets/cloudBrand";
 import { refreshCloudMachines } from "../remoteTargets/useCloudMachines";
 import { CloudTierChangeDialog } from "./CloudTierChangeDialog";
 import { keepLaneComputer, sleepLaneComputer } from "./CloudLaneHeaderButton";
-import { cloudLaneComputerOfLane, cloudLaneLifeAvailable } from "./cloudLaneActions";
+import { cloudLaneChangesAvailable, cloudLaneComputerOfLane } from "./cloudLaneActions";
 import { CLOUD_MACHINE_STATE_TEXT } from "./CloudLaneConnectionRow";
 import { freeCloudLaneWithConfirm } from "./deleteCloudLane";
 import "./cloudLane.css";
@@ -52,7 +52,7 @@ export function CloudLaneComputerPanel({
   if (!computer) {
     return <p className="adecl-muted">ADE can&apos;t find this lane&apos;s computer right now. Open the ADE Cloud page to see it.</p>;
   }
-  const life = cloudLaneLifeAvailable();
+  const life = cloudLaneChangesAvailable();
   const awake = computer.state === "running";
   const idle = account?.dueForDeletion?.find((entry) => entry.instanceId === computer.instanceId) ?? null;
 

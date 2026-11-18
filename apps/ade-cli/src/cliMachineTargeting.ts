@@ -18,6 +18,7 @@ import {
 } from "./cliRemoteWork";
 import { JsonRpcError } from "./jsonrpc";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
+import { ADE_CLOUD_NAME } from "../../desktop/src/shared/adeCloudMachine";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
@@ -1222,6 +1223,54 @@ function failureCause(error: unknown): string {
 }
 
 /** One short-lived connection to this machine's brain, for machine-level calls. */
+/** How long a list waits for the account's ADE Cloud computers before it shows plain names. */
+export const CLOUD_COMPUTER_LIST_BUDGET_MS = 5_000;
+
+/** The `cloud.call` request that lists the account's ADE Cloud computers (a read: it wakes nothing). */
+export const CLOUD_COMPUTER_LIST_REQUEST = { action: "list", args: {} } as const;
+
+/**
+ * The machine keys of the account's ADE Cloud computers, from the answer of
+ * a `cloud.call` list. Empty for no answer, or an account with no ADE Cloud.
+ */
+export function cloudComputerKeysOf(answer: unknown): ReadonlySet<string> {
+  const body = isRecord(answer) && isRecord(answer.result) ? answer.result : answer;
+  const machines = isRecord(body) && Array.isArray(body.machines) ? body.machines.filter(isRecord) : [];
+  return new Set(machines.map((machine) => asString(machine.machineKey)).filter((key): key is string => key != null));
+}
+
+/** `cloudComputerKeysOf` read from this machine's brain, inside a budget. Empty on any failure. */
+async function readCloudComputerKeys(client: SocketJsonRpcClient): Promise<ReadonlySet<string>> {
+  const answer = await Promise.race([
+    client.request("cloud.call", CLOUD_COMPUTER_LIST_REQUEST).catch(() => null),
+    new Promise<null>((resolve) => { setTimeout(() => resolve(null), CLOUD_COMPUTER_LIST_BUDGET_MS).unref?.(); }),
+  ]);
+  return cloudComputerKeysOf(answer);
+}
+
+/**
+ * The machine rows of a list, each ADE Cloud computer marked `cloud: true`
+ * (the `--json` output carries the mark too). Rows are not changed otherwise.
+ */
+export function markCloudComputers(machines: unknown, cloudKeys: ReadonlySet<string>): unknown {
+  if (!Array.isArray(machines) || !cloudKeys.size) return machines;
+  return machines.map((machine) => {
+    const key = isRecord(machine) ? asString(machine.machineKey) : null;
+    return key && cloudKeys.has(key) ? { ...(machine as JsonObject), cloud: true } : machine;
+  });
+}
+
+/**
+ * The name a list shows for a machine. The app shows each ADE Cloud computer
+ * as "ADE Cloud" (`adeCloudMachineLabel`), and the computer's own name is its
+ * lane's name, so a list here reads "ADE Cloud · <lane>". Any other machine
+ * keeps its name. A label only: `--machine` still takes the key or the name.
+ */
+export function machineListLabel(name: string, cloud: boolean): string {
+  if (!cloud) return name;
+  return name.startsWith(ADE_CLOUD_NAME) ? name : `${ADE_CLOUD_NAME} · ${name}`;
+}
+
 async function withMachineBrain<T>(
   options: GlobalOptions,
   run: (client: SocketJsonRpcClient) => Promise<T>,
@@ -1253,10 +1302,11 @@ async function executePlanOnAllMachines(
   }
   const single: GlobalOptions = { ...options, allMachines: false, machine: null };
   const perProject = kind === "chats" || kind === "inbox" || kind === "lanes";
-  const [roster, localProjects] = await withMachineBrain(options, async (client) => [
-    await client.request("machines.list", { includeProjects: perProject }),
-    perProject ? await client.request("projects.list", {}).catch(() => []) : [],
-  ] as const);
+  const [roster, localProjects, cloudKeys] = await withMachineBrain(options, async (client) => await Promise.all([
+    client.request("machines.list", { includeProjects: perProject }),
+    perProject ? client.request("projects.list", {}).catch(() => []) : Promise.resolve([]),
+    readCloudComputerKeys(client),
+  ]));
   const machines = isRecord(roster) && Array.isArray(roster.machines) ? roster.machines.filter(isRecord) : [];
   if (isRecord(roster) && roster.state !== "ok") {
     process.stderr.write(`ade: ${String(roster.message ?? "Other machines are unavailable.")} Showing this machine only.\n`);
@@ -1313,7 +1363,9 @@ async function executePlanOnAllMachines(
       if (typeof note === "string" && note.trim()) notes.push(`${machineName}: ${note.trim()}`);
     }
   };
-  const localName = asString(machines.find((machine) => machine.isThisMachine === true)?.name) ?? THIS_MACHINE_NAME;
+  const localMachine = machines.find((machine) => machine.isThisMachine === true);
+  const localKey = asString(localMachine?.machineKey);
+  const localName = machineListLabel(asString(localMachine?.name) ?? THIS_MACHINE_NAME, localKey != null && cloudKeys.has(localKey));
   const results = await Promise.all([
     executePlan(plan, single).then(
       (value) => {
@@ -1325,7 +1377,8 @@ async function executePlanOnAllMachines(
     ...machines
       .filter((machine) => machine.isThisMachine !== true)
       .map(async (machine): Promise<JsonObject[]> => {
-        const name = asString(machine.name) ?? asString(machine.machineKey) ?? "machine";
+        const key = asString(machine.machineKey);
+        const name = machineListLabel(asString(machine.name) ?? key ?? "machine", key != null && cloudKeys.has(key));
         if (machine.online !== true) {
           const lastSeen = asString(machine.lastSeenAt);
           return [{
@@ -1711,16 +1764,19 @@ export function formatMachinesRoster(value: unknown): string {
   const machines = firstArray(record, ["machines"]);
   return renderTable(
     ["machine", "key", "status", "platform", "last seen", "projects"],
-    machines.map((machine) => [
-      machine.isThisMachine === true ? `${String(machine.name ?? "")} (this machine)` : machine.name,
-      machine.machineKey,
-      asString(machine.presence) ?? (machine.online === true ? "online" : "offline"),
-      machine.platform,
-      asString(machine.lastSeenAt) ? new Date(String(machine.lastSeenAt)).toLocaleString() : "never",
-      Array.isArray(machine.projects)
-        ? machine.projects.filter(isRecord).map((project) => project.name ?? project.rootPath).join(", ")
-        : asString(machine.note) ?? "",
-    ]),
+    machines.map((machine) => {
+      const label = machineListLabel(String(machine.name ?? ""), machine.cloud === true);
+      return [
+        machine.isThisMachine === true ? `${label} (this machine)` : label,
+        machine.machineKey,
+        asString(machine.presence) ?? (machine.online === true ? "online" : "offline"),
+        machine.platform,
+        asString(machine.lastSeenAt) ? new Date(String(machine.lastSeenAt)).toLocaleString() : "never",
+        Array.isArray(machine.projects)
+          ? machine.projects.filter(isRecord).map((project) => project.name ?? project.rootPath).join(", ")
+          : asString(machine.note) ?? "",
+      ];
+    }),
     "ADE machines\n(no machines on this account)",
     { fullColumns: ["key"] },
   );

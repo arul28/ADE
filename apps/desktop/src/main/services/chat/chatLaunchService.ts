@@ -50,6 +50,7 @@ import type { LaneCreateRuntimeOptions } from "../lanes/laneService";
 import type { ChatLaunchEnvironmentPlan } from "../lanes/laneEnvironmentSetup";
 import { createChatLaunchRecordStore, type ChatLaunchRecord as LaunchRecord } from "./chatLaunchRecords";
 import { createQueuedMessageDelivery, type QueuedDeliveryState } from "./chatLaunchDelivery";
+import { cloudLaneRestoreInstalled, prepareCloudLaneBranch, restoreCloudLaneWork } from "../lanes/cloudLaneRestoreHook";
 import { createLaneSetupTranscriptCard, type LaneSetupCardState } from "./chatLaunchTranscriptCard";
 import { isDiskFullText, isLaneSetupOutOfMemoryText, LANE_SETUP_NO_ROOM_TO_SAVE_ERROR } from "../../../shared/types/storage";
 import { cloudAutoSizeSentence } from "../../../../../account-directory/src/cloud/contract";
@@ -86,7 +87,7 @@ type LaneServiceLike = {
   getNewLaneDefaults?: () => NewLaneDefaultsSnapshot;
   /** existing-branch launches work on that branch instead of cutting a new one. */
   importBranch?: (
-    args: { branchRef: string; name: string },
+    args: { branchRef: string; name: string; publishUpstream?: boolean },
     options?: { laneId?: string },
   ) => Promise<LaneSummary>;
   /** Accent color applied once the lane row exists. */
@@ -193,6 +194,8 @@ export type ChatLaunchServiceDeps = {
   launchesDir: string;
   logger: Logger;
   laneService: LaneServiceLike;
+  /** The project checkout: on an ADE Cloud computer a lane gets its saved work there (`cloudLaneRestoreHook.ts`). */
+  projectRoot?: string;
   agentChatService: AgentChatServiceLike;
   /**
    * Links a lane to its pull request (`prService.linkToLane`), for an
@@ -679,12 +682,28 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     record.snapshot.baseRef ??= lane.baseRef ?? null;
   };
 
+  /** ADE Cloud: the lane's work that wasn't on GitHub comes back before its chat starts. Never fails the launch. */
+  const restoreSavedWork = async (record: LaunchRecord, laneId: string, worktreePath: string): Promise<string | null> => {
+    if (!deps.projectRoot || !cloudLaneRestoreInstalled()) return null;
+    return await restoreCloudLaneWork({ laneId, worktreePath, projectRoot: deps.projectRoot }).catch((error: unknown) => {
+      logger.warn("chat_launch.cloud_restore_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+      return `ADE couldn't put back this lane's saved work (${getErrorMessage(error).replace(/[.\s]+$/, "")}). It stays on ADE Cloud: download it from the lane.`;
+    });
+  };
+
   const runCheckoutStage = async (record: LaunchRecord, startFetched: boolean): Promise<void> => {
     const runtime = runtimeFor(record.snapshot.launchId);
     const interrupted = findInterruptedLane(record);
     if (interrupted) {
       adoptLane(record, interrupted);
-      setStage(record, "checkout", "done", { percent: 100, detail: "Recovered after restart" });
+      // A restart can come after the lane was made and before its saved work came back.
+      // The restore is a no-op when the work is here already.
+      const restoreNote = interrupted.worktreePath ? await restoreSavedWork(record, interrupted.id, interrupted.worktreePath) : null;
+      setStage(record, "checkout", restoreNote ? "warning" : "done", {
+        percent: 100,
+        detail: "Recovered after restart",
+        ...(restoreNote ? { error: restoreNote } : {}),
+      });
       publish(record);
       assertActive(record);
       // A user-configured lane keeps the name they chose; only a prompt-derived
@@ -720,10 +739,18 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     if (config?.mode === "existing") {
       if (!config.branchRef) throw new Error("Importing a branch needs a branch ref.");
       if (!deps.laneService.importBranch) throw new Error("This runtime cannot import an existing branch.");
+      // ADE Cloud: a branch never pushed comes from the lane's backup, and is then not published.
+      const madeFromBackup = deps.projectRoot && cloudLaneRestoreInstalled()
+        ? await prepareCloudLaneBranch({ laneId: record.snapshot.laneId, branchRef: config.branchRef, projectRoot: deps.projectRoot }).catch((error: unknown) => {
+            logger.warn("chat_launch.cloud_branch_prepare_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+            return null;
+          })
+        : null;
       lane = await deps.laneService.importBranch(
         {
-          branchRef: config.branchRef,
+          branchRef: madeFromBackup ?? config.branchRef,
           name: record.snapshot.laneName,
+          ...(madeFromBackup ? { publishUpstream: false } : {}),
         },
         // Keep the launch's reserved lane id so the chat the client already
         // opened, restart recovery, and cleanup all address the same lane.
@@ -752,6 +779,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     }
     adoptLane(record, lane);
     if (lane.createdFrom?.startRef) record.snapshot.baseRef = lane.createdFrom.startRef;
+    const restoreNote = await restoreSavedWork(record, lane.id, lane.worktreePath);
     // Appearance is a nicety; a color collision must never fail the launch.
     if (config?.color && deps.laneService.updateAppearance) {
       try {
@@ -777,7 +805,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     }
     // The start's fallbacks (no local branch, nothing to copy, a copy that
     // failed) finished the checkout another way than asked: say so.
-    const notes = [...(lane.createdFrom?.notes ?? []), ...linkNotes];
+    const notes = [...(lane.createdFrom?.notes ?? []), ...linkNotes, ...(restoreNote ? [restoreNote] : [])];
     setStage(record, "checkout", notes.length ? "warning" : "done", {
       percent: 100,
       detail: totalFiles > 0 ? `${totalFiles.toLocaleString("en-US")} files` : null,

@@ -16,6 +16,7 @@ import { rootAppStoreApi } from "../../state/appStore";
 import { adeCloudLaneComputerForMachine, forgetCloudLaneComputer, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { resolveAdeCloudLaneBinding } from "../chat/adeCloudLaneBinding";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { isWebClientMode } from "../../lib/webClientMode";
 
 /**
  * What ADE does to a cloud lane's computer, from every place that shows one
@@ -47,6 +48,16 @@ async function call<M extends CloudLaneLifeMethod>(method: M, args?: unknown): P
 
 export function cloudLaneLifeAvailable(): boolean {
   return laneLife() != null;
+}
+
+/**
+ * Whether this window can change a cloud lane's computer: delete it, free it,
+ * change its size. ADE Web's `laneLife` answers only the account reads (the
+ * lanes kept without a computer, forget one); the rest runs in the desktop
+ * app, so a web page offers none of them.
+ */
+export function cloudLaneChangesAvailable(): boolean {
+  return cloudLaneLifeAvailable() && !isWebClientMode();
 }
 
 /** Whether the computer holds work that isn't on GitHub (null: the check couldn't run). */
@@ -167,7 +178,7 @@ export function cloudLaneComputerOfLane(
   computers: readonly AdeCloudLaneComputer[],
 ): { instanceId: string; laneName: string } | null {
   if (!pin || pin.kind !== "remote") return null;
-  const computer = adeCloudLaneComputerForMachine({ hostname: pin.hostname ?? null }, computers);
+  const computer = adeCloudLaneComputerForMachine({ hostname: pin.hostname ?? null, targetId: pin.targetId }, computers);
   if (!computer || computer.laneId !== laneId) return null;
   return { instanceId: computer.instanceId, laneName: computer.laneName };
 }

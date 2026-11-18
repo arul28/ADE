@@ -1314,6 +1314,21 @@ function shellSpecForInstalledShell(file: string, mode: WindowsShellLaunchMode):
 }
 
 /**
+ * The environment of a command that another machine runs here once. The
+ * command runs in a terminal that nobody types in, so a program that waits
+ * for a key waits forever, and `ade shell start --wait` does not end. The
+ * usual causes are a pager (git log, man, systemctl; `more` on Debian waits
+ * at the end even for one line) and the password prompt of git. So the
+ * pagers print through `cat`, and git fails on a missing password instead of
+ * asking for it. A command that sets these itself (`GIT_PAGER=less …`) wins.
+ */
+const REMOTE_RUN_ONCE_ENV: Readonly<Record<string, string>> = {
+  PAGER: "cat",
+  GIT_PAGER: "cat",
+  GIT_TERMINAL_PROMPT: "0",
+};
+
+/**
  * How to run one command once, for a chat on another machine
  * (`ade shell start --machine … --wait`): this machine's shell, started clean
  * (no rc files, as for every command ADE runs), not interactive, so the output
@@ -1332,16 +1347,16 @@ export function remoteRunOnceShellLaunch(
   command: { argv: string[] } | { line: string },
   preferredShellPath: string | null,
   platform: NodeJS.Platform = process.platform,
-): { command: string; args: string[]; env?: Record<string, string> } {
+): { command: string; args: string[]; env: Record<string, string> } {
   const preferred = preferredShellPath ? shellSpecForInstalledShell(preferredShellPath, "clean") : null;
   const posixLine = "argv" in command ? posixArgvLine(command.argv) : command.line;
   if (platform !== "win32") {
     const spec = preferred ?? resolveShellCandidates("clean")[0] ?? { file: "/bin/sh", args: [] };
-    return { command: spec.file, args: [...spec.args, "-c", posixLine], ...(spec.env ? { env: spec.env } : {}) };
+    return { command: spec.file, args: [...spec.args, "-c", posixLine], env: { ...spec.env, ...REMOTE_RUN_ONCE_ENV } };
   }
   const preferredKind = preferred ? resolveWindowsShellKind(preferred.file) : null;
   if (preferred && preferredKind === "git-bash") {
-    return { command: preferred.file, args: [...preferred.args, "-c", posixLine], ...(preferred.env ? { env: preferred.env } : {}) };
+    return { command: preferred.file, args: [...preferred.args, "-c", posixLine], env: { ...preferred.env, ...REMOTE_RUN_ONCE_ENV } };
   }
   const usePwsh = Boolean(preferred && /pwsh(\.exe)?$/i.test(preferred.file));
   const shellPath = usePwsh ? preferred!.file : "powershell.exe";
@@ -1367,6 +1382,7 @@ export function remoteRunOnceShellLaunch(
   return {
     command: shellPath,
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+    env: { ...REMOTE_RUN_ONCE_ENV },
   };
 }
 
@@ -2783,6 +2799,7 @@ export function createPtyService({
   onSessionAttentionRequested,
   onSessionAttentionResolved,
   diskPressureMonitor,
+  launchRefusal,
   releaseChatBrowser,
   appVersion,
   terminalShellPreferences,
@@ -2834,6 +2851,13 @@ export function createPtyService({
   onSessionAttentionRequested?: (args: { sessionId: string; message: string; source: "cli_prompt" }) => boolean;
   onSessionAttentionResolved?: (args: { laneId: string; sessionId: string }) => void;
   diskPressureMonitor?: DiskPressureMonitor | null;
+  /**
+   * A sentence when this host must not start a new process now, else null.
+   * An ADE Cloud computer that the server deletes gives one
+   * (`cloudDeleteFreeze.ts`): a terminal opened then would be lost with it.
+   * Absent: no such refusal.
+   */
+  launchRefusal?: (() => string | null) | null;
   /**
    * A tracked agent CLI with no owning chat ended: let go of anything it held
    * outside ADE (the brain detaches its `ade browser attach`).
@@ -7229,6 +7253,8 @@ export function createPtyService({
       // Reaching here always spawns a NEW PTY/process — the live-attach case
       // returned above — so resuming a tracked CLI session whose PTY is gone
       // is a new launch and must be gated too, not only brand-new sessions.
+      const refusedLaunch = launchRefusal?.() ?? null;
+      if (refusedLaunch) throw new Error(refusedLaunch);
       if (tracked && isTrackedAgentCliToolType(toolTypeHint)) {
         const decision = diskPressureMonitor?.canPerform("cli_launch");
         if (decision && !decision.allowed) {

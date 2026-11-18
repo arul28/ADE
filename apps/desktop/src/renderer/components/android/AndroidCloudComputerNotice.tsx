@@ -15,7 +15,7 @@ import {
 import { androidLowDiskSentence } from "../../../shared/androidDisk";
 import { cloudTierOfMachine, cloudTiers, type CloudTierId } from "../../../shared/cloudTiers";
 import { confirmDialog } from "../ui/dialog";
-import { changeCloudLaneTier, cloudLaneLifeAvailable } from "../cloudLane/cloudLaneActions";
+import { changeCloudLaneTier, cloudLaneChangesAvailable } from "../cloudLane/cloudLaneActions";
 import type { NoticeAction } from "../ui/notice";
 import { Banner } from "../ui/notice";
 import { cloudBoxContext, cloudPendingLabel, useCloudBoxActions } from "../remoteTargets/useCloudBoxActions";
@@ -104,7 +104,7 @@ export function AndroidCloudComputerNotice({
       const toGb = plan.toGb;
       // Inside the plan, or into extra disk the person turned on: the lane's job, whose card shows in its chats.
       const sizeId: CloudTierId | null = cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(account)))?.id ?? null;
-      const viaJob = cloudLaneLifeAvailable() && sizeId != null && plan.within != null;
+      const viaJob = cloudLaneChangesAvailable() && sizeId != null && plan.within != null;
       items.push({
         label: "Grow the disk",
         onClick: viaJob && sizeId

@@ -41,6 +41,9 @@ import { createCloudSetupUpsizer } from "./cloudSetupUpsize";
 import { CloudProviderError } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import { cloudDiskGrowStatePath } from "./cloudDiskGuard";
 import { cloudCatalogOf } from "../../../../desktop/src/shared/adeCloud";
+import { prepareCloudComputerToStop } from "./cloudPrepareStop";
+import { CLOUD_COMPUTER_REMOVING_SENTENCE, CLOUD_DELETE_FREEZE_MS, cloudDeleteFreezeRefusal, liftCloudDeleteFreeze } from "./cloudDeleteFreeze";
+import { cloudChatStoppedForRest } from "../cloudChats/cloudChatUploader";
 
 // The brain's power surface as one contract: reading what the hardware says
 // (machinePowerReader), noticing a suspend nobody announced (suspendGapDetector),
@@ -1177,5 +1180,60 @@ describe("cloud setup upsize for a lane setup that ran out of memory", () => {
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+// A plan change, an automation end or a project delete removes an awake
+// computer right after its prepare and save. Work that starts between the two
+// is lost with the computer, so the prepare freezes new work, and the freeze
+// must end whenever the server will keep the computer.
+describe("cloud prepare-stop before a delete", () => {
+  afterEach(() => {
+    liftCloudDeleteFreeze();
+  });
+
+  /** One project runtime; `busy` turns are still running when the prepare reads it. */
+  function runtimeWith(args: { busy: () => number; onInterrupt?: () => void }) {
+    return {
+      agentChatService: {
+        interruptRunningTurns: async (options?: { onStopping?: (sessionId: string) => void }) => {
+          options?.onStopping?.("chat-1");
+          args.onInterrupt?.();
+          return 1;
+        },
+        listBusyFacts: () => Array.from({ length: args.busy() }, () => ({ waitingOnPerson: false, lastActivityAt: 0 })),
+      },
+      ptyService: { interruptAgentClis: () => 0 },
+    } as never;
+  }
+
+  it.each<[string, { forDelete: boolean; busy: () => number; timeoutMs: number }, boolean]>([
+    ["confirmed for a delete: frozen until the delete", { forDelete: true, busy: () => 0, timeoutMs: 40_000 }, true],
+    ["a turn still runs at the deadline: the server keeps it, so no freeze", { forDelete: true, busy: () => 1, timeoutMs: 1_000 }, false],
+    ["not for a delete (the 0-hours stop, a Sleep): no freeze", { forDelete: false, busy: () => 0, timeoutMs: 40_000 }, false],
+  ])("%s", async (_label, input, frozen) => {
+    let refusedDuringPrepare: string | null = null;
+    const result = await prepareCloudComputerToStop({
+      runtimes: [runtimeWith({ busy: input.busy, onInterrupt: () => { refusedDuringPrepare = cloudDeleteFreezeRefusal(); } })],
+      timeoutMs: input.timeoutMs,
+      forDelete: input.forDelete,
+    });
+
+    expect(result.frozen).toBe(frozen);
+    // From the start of a delete's prepare, so nothing starts between the interrupts and the save.
+    expect(refusedDuringPrepare).toBe(input.forDelete ? CLOUD_COMPUTER_REMOVING_SENTENCE : null);
+    expect(cloudDeleteFreezeRefusal()).toBe(frozen ? CLOUD_COMPUTER_REMOVING_SENTENCE : null);
+    // A computer the server never deletes takes work again on its own.
+    expect(cloudDeleteFreezeRefusal(Date.now() + CLOUD_DELETE_FREEZE_MS + 1)).toBeNull();
+    // The stopped chat's saved row reads Stopped while the computer rests.
+    expect(cloudChatStoppedForRest("chat-1")).toBe(true);
+  });
+
+  it("a prepare that fails part way leaves nothing frozen", async () => {
+    const broken = runtimeWith({ busy: () => { throw new Error("chat service gone"); } });
+
+    await expect(prepareCloudComputerToStop({ runtimes: [broken], timeoutMs: 40_000, forDelete: true })).rejects.toThrow("chat service gone");
+
+    expect(cloudDeleteFreezeRefusal()).toBeNull();
   });
 });

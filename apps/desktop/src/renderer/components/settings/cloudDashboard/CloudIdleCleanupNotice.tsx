@@ -15,7 +15,7 @@ import { Banner } from "../../ui/notice";
 /**
  * The idle cleanup's notices on Settings › ADE Cloud, one per computer the
  * server warned about (`account.dueForDeletion`): when it is deleted, that
- * its work is committed and pushed to the lane's branch first, which files
+ * its lanes' work that isn't on GitHub is saved first (no wake, no push), which files
  * git ignores won't be kept, and "Keep it", which restarts the idle clock on
  * the server with no wake and no hours. A computer kept because its save
  * failed says why and what to do. The facts are the emails' (the same
@@ -39,14 +39,14 @@ function idleSubject(entry: CloudIdleCleanupEntry): string {
 /** What the delete loses: the files git ignores, with a leading space, or "" when none were found. */
 function ignoredDetail(entry: CloudIdleCleanupEntry): string {
   // Absent (an older server) reads like unknown: the warning still says ignored files aren't kept.
-  if (entry.ignoredFiles == null) return " Files git ignores, such as .env, aren't pushed.";
+  if (entry.ignoredFiles == null) return " Files git ignores, such as .env, aren't saved.";
   const list = ignoredFilesList(entry.ignoredFiles);
   if (entry.ignoredFiles.incomplete) {
     return list
-      ? ` Files git ignores aren't pushed, so these won't be kept: ${list}. ADE couldn't read every lane, so there may be more.`
-      : " ADE couldn't read every lane to see which files git ignores, such as .env; those aren't pushed.";
+      ? ` Files git ignores aren't saved, so these won't be kept: ${list}. ADE couldn't read every lane, so there may be more.`
+      : " ADE couldn't read every lane to see which files git ignores, such as .env; those aren't saved.";
   }
-  return list ? ` Files git ignores aren't pushed, so these won't be kept: ${list}.` : "";
+  return list ? ` Files git ignores aren't saved, so these won't be kept: ${list}.` : "";
 }
 
 function idleDetail(entry: CloudIdleCleanupEntry): string {
@@ -55,8 +55,8 @@ function idleDetail(entry: CloudIdleCleanupEntry): string {
     ? `Computers unused for ${entry.idleDays} days are deleted; this one goes on ${when}.`
     : `It isn't used, so ADE Cloud deletes it on ${when}.`;
   const save = entry.laneName
-    ? ` ADE pushes its work to ${entry.branch ?? "the lane's branch"} first, and the lane and its chats stay.`
-    : " ADE pushes its work to GitHub first.";
+    ? " Its work that isn't on GitHub is saved in ADE Cloud, and the lane and its chats stay."
+    : " Its work that isn't on GitHub is saved in ADE Cloud first.";
   return `${head}${save}${ignoredDetail(entry)}`;
 }
 

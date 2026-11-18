@@ -7,10 +7,10 @@
  *
  * A row comes to exist when a person frees the computer ("Keep the lane on a
  * fresh computer": the desktop pushed the work first), the idle cleanup
- * removes it (`idleCleanup.ts`: the computer committed and pushed its work
- * first; `inactive` rows are from the old 30-day rule), or a cheaper plan's limits free it (`planCleanup.ts`: the
- * computer pushed the work first). A new computer made for the same lane id ends it; so does the
- * person deleting the lane.
+ * removes it (`idleCleanup.ts`: it rested with every lane's work saved on ADE
+ * Cloud, `laneBackups.ts`; `inactive` rows are from the old 30-day rule), or a
+ * cheaper plan's limits free it (`planCleanup.ts`: saved the same way). A new computer made for the same lane id ends it; so does the
+ * person deleting the lane, which also deletes the lane's backups.
  */
 
 import { CLOUD_LANE_METADATA, CLOUD_PATHS, type CloudLaneWithoutComputer } from "./contract";
@@ -199,7 +199,7 @@ export async function listLanesWithoutComputer(env: CloudDb, userId: string): Pr
 }
 
 /** `GET /cloud/lanes/without-computer` and `DELETE /cloud/lanes/without-computer/:lane`. Needs no provider. */
-export async function routeLanesWithoutComputer(request: Request, path: string, env: CloudDb, userId: string): Promise<Response> {
+export async function routeLanesWithoutComputer(request: Request, path: string, env: CloudDb, userId: string, deleteBackups?: (laneId: string) => Promise<unknown>): Promise<Response> {
   const rest = path.slice(CLOUD_PATHS.lanesWithoutComputer.length).split("/").filter(Boolean);
   if (rest.length === 0) {
     return request.method === "GET" ? json({ lanes: await listLanesWithoutComputer(env, userId) }) : notFound();
@@ -211,7 +211,12 @@ export async function routeLanesWithoutComputer(request: Request, path: string, 
     laneId = "";
   }
   if (rest.length !== 1 || !LANE_ID.test(laneId) || request.method !== "DELETE") return notFound();
+  // A lane a computer still holds is not a lane without one: its saved work stays with it.
+  const live = await env.DB.prepare("select 1 as n from cloud_computers where user_id = ? and lane_id = ? and deleted_at is null limit 1").bind(userId, laneId).first<{ n: number }>();
+  if (live) return fail("lane_has_computer", "This lane has a computer on ADE Cloud. Delete the lane instead.", 409);
   const result = await env.DB.prepare("delete from cloud_lanes_without_computer where user_id = ? and lane_id = ?").bind(userId, laneId).run();
+  // The lane is gone, so its saved work goes with it (`laneBackups.ts`).
+  await deleteBackups?.(laneId);
   return json({ forgotten: (result.meta?.changes ?? 0) > 0 });
 }
 
