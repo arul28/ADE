@@ -58,6 +58,7 @@ import {
   formatChatLocate,
   locateChatOnAccount,
   routedToLocation,
+  restingCloudChatLocation,
   type ChatLocateReport,
 } from "./cliChatLocate";
 import { isDevicesCommand, runDevicesCommand, withChatDeviceChoice } from "./cliDevices";
@@ -16420,12 +16421,29 @@ async function runChatHereThenElsewhere(
     const there = { ...routedToLocation(parsed, match), options: { ...parsed.options, projectRoot: match.scope.rootPath } };
     return await withShellScopeFor(there.options, () => runParsedCli(there));
   }
+  // Asleep on ADE Cloud: a send goes to the computer that saved the chat, and
+  // the `--machine` call wakes it (a wake uses hours, like a send from the app).
+  // A read is not worth a wake: it gets the "asleep" sentence instead.
+  if (!match && report.restingCloud?.length && isChatSendCommand(parsed.command)) {
+    const resting = await restingCloudChatLocation(parsed.options, report);
+    if (resting) {
+      process.stderr.write(`· on ${resting.machineName} (asleep on ADE Cloud: waking it, which uses hours)\n`);
+      return await runOnMachine(routedToLocation(parsed, resting));
+    }
+  }
   if (!match) chatLookupMiss = report;
   if (!match && report.deleted) process.stderr.write(`${chatDeletedSentence(sessionId, report.deleted)}\n`);
   if (failure) throw failure;
   const hint = chatOtherMachineHint(process.argv.slice(2));
   if (hint) process.stderr.write(`${hint}\n`);
   return local!;
+}
+
+/** `ade chat send|message`: a command that gives a chat work, so its sleeping computer is worth a wake. */
+function isChatSendCommand(command: string[]): boolean {
+  const typed = command[0]?.toLowerCase() ?? "";
+  const sub = command[1]?.toLowerCase();
+  return (CLI_COMMAND_ALIASES[typed] ?? typed) === "chat" && (sub === "send" || sub === "message");
 }
 
 /** `ade chat locate <session>`: which machine of the account has a chat. */

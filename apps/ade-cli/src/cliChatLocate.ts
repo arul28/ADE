@@ -70,7 +70,7 @@ export type ChatLocateReport = {
    * Of `offline`, the ADE Cloud computers that are asleep. A lookup never
    * wakes one (a wake uses hours); the person or agent wakes it, then asks again.
    */
-  restingCloud?: Array<{ machine: string; instanceId: string }>;
+  restingCloud?: Array<{ machine: string; machineKey?: string; instanceId: string }>;
   /** Machines that were asked and did not answer (older ADE, timeout, error). */
   unreachable: Array<{ machine: string; error: string }>;
   /** Why other machines were not asked at all (signed out, no brain). */
@@ -290,22 +290,60 @@ export async function locateChatOnAccount(
 async function restingCloudComputers(
   client: SocketJsonRpcClient,
   offline: ReadonlyArray<{ key: string; name: string }>,
-): Promise<Array<{ machine: string; instanceId: string }>> {
+): Promise<Array<{ machine: string; machineKey: string; instanceId: string }>> {
   const answer = await Promise.race([
     client.request("cloud.call", { action: "list", args: {} }).catch(() => null),
     new Promise<null>((resolve) => { setTimeout(() => resolve(null), 8_000).unref?.(); }),
   ]);
   const body = isRecord(answer) && isRecord(answer.result) ? answer.result : answer;
   const machines = isRecord(body) && Array.isArray(body.machines) ? body.machines.filter(isRecord) : [];
-  const resting: Array<{ machine: string; instanceId: string }> = [];
+  const resting: Array<{ machine: string; machineKey: string; instanceId: string }> = [];
   for (const machine of offline) {
     const box = machines.find((entry) => asString(entry.machineKey) === machine.key);
     const instanceId = box ? asString(box.instanceId) : null;
     const state = box ? asString(box.state) : null;
     // Only a computer that sleeps: one that is starting (an update, a restart) answers soon by itself.
-    if (instanceId && (state === "asleep" || state === "stopped")) resting.push({ machine: machine.name, instanceId });
+    if (instanceId && (state === "asleep" || state === "stopped")) resting.push({ machine: machine.name, machineKey: machine.key, instanceId });
   }
   return resting;
+}
+
+/**
+ * The asleep ADE Cloud computer that saved the report's chat, as a location a
+ * `--machine` call can reach (that call wakes it). Read from the account's
+ * copy: it wakes nothing. Null when none of them saved it or it can't be read.
+ */
+export async function restingCloudChatLocation(options: GlobalOptions, report: ChatLocateReport): Promise<ChatLocation | null> {
+  const resting = (report.restingCloud ?? []).filter((entry): entry is { machine: string; machineKey: string; instanceId: string } => Boolean(entry.machineKey));
+  if (!resting.length) return null;
+  let client: SocketJsonRpcClient;
+  try {
+    client = await connectMachineRuntimeDaemon(options, options.socketPath?.trim() || null, { allowSpawn: false });
+  } catch {
+    return null;
+  }
+  try {
+    const answer = await Promise.race([
+      client.request("cloud.call", { action: "saved_chat_machine", args: { chatId: report.sessionId, machineKeys: resting.map((entry) => entry.machineKey) } }).catch(() => null),
+      new Promise<null>((resolve) => { setTimeout(() => resolve(null), LOCATE_TIMEOUT_MS).unref?.(); }),
+    ]);
+    const body = isRecord(answer) && "result" in answer ? answer.result : answer;
+    const machineKey = isRecord(body) ? asString(body.machineKey) : null;
+    const projectId = isRecord(body) ? asString(body.projectId) : null;
+    const entry = machineKey ? resting.find((candidate) => candidate.machineKey === machineKey) : undefined;
+    if (!entry) return null;
+    return {
+      machineKey: entry.machineKey,
+      machineName: entry.machine,
+      isThisMachine: false,
+      // A saved chat with no project id is a personal chat on that computer.
+      scope: projectId
+        ? { kind: "project", projectId, name: null, rootPath: isRecord(body) ? asString(body.projectRoot) : null }
+        : { kind: "personal" },
+    };
+  } finally {
+    client.close();
+  }
 }
 
 function restingCloudSentence(resting: ReadonlyArray<{ machine: string; instanceId: string }>): string | null {
