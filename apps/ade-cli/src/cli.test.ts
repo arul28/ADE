@@ -427,11 +427,15 @@ describe("ADE CLI", () => {
       machineOnly: true,
       machineAutoStart: true,
       connectRole: "cto",
-      steps: [{
-        method: "account.call",
-        params: { action: "listMachines", args: {} },
-      }],
     });
+    // The account's list, then an optional ADE Cloud read that marks which
+    // machines are ADE Cloud computers (a signed-out or cloudless account
+    // still lists its machines).
+    expect(machines.steps[0]).toMatchObject({
+      method: "account.call",
+      params: { action: "listMachines", args: {} },
+    });
+    expect(machines.steps.slice(1).every((step) => step.method === "cloud.call" && step.optional === true)).toBe(true);
     expect(shouldAutoRegisterProjectForPlan(machines)).toBe(false);
     const rename = expectExecutePlan(buildCliPlan([
       "machines",
