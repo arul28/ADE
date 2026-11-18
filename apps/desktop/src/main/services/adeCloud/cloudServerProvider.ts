@@ -135,7 +135,8 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     const base = deps.baseUrl()?.replace(/\/+$/, "");
     if (!base) throw new CloudProviderError("ADE's account service isn't set up on this computer.", "network", 0);
     const token = await deps.accessToken();
-    if (!token) throw new CloudProviderError("Sign in to ADE to use ADE Cloud.", CLOUD_ACCESS_REFUSED, 401);
+    // Signed out is a state the person fixes, not a defect.
+    if (!token) throw markExpected(new CloudProviderError("Sign in to ADE to use ADE Cloud.", CLOUD_ACCESS_REFUSED, 401), "user");
     // Cached after the first read: one OS probe per process. Not on the access
     // check, which every signed-in account polls: the id goes only to an
     // account ADE Cloud lets in.
