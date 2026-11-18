@@ -1351,6 +1351,7 @@ An app runs where a scene runs: a `sandbox="allow-scripts"` iframe without `allo
 
 - `buildMcpAppContentSecurityPolicy` (main) builds the policy from the resource's `_meta.ui.csp` only; the renderer passes the declaration, never a policy string.
 - `connectDomains` become `connect-src`; `resourceDomains` join script, style, image, media and font sources. An origin is kept only if it is `https://` (or `wss://` for connections) plus a host name and optional port: no path, quotes, keyword, bare `*`, IP address or local host. A resource that declared nothing gets `connect-src 'none'`.
+- Up to 128 origins and 40,000 characters per list (`MCP_APP_LIMITS.maxCspDomains`, `maxCspListChars`), so a whole policy stays under the phone's 256 KB. Real servers declare many: Higgsfield's pages declare more than 40, and the old cap of 24 cut the list so the page never ran. The phone serves a policy under 256 KB (`workMcpAppPolicyIsUsable`); iPhone builds from before the cap rose refuse one of 8,000 characters or more and show "This machine's ADE is too old to show apps on the phone." for such an app. `capture` logs `agent_chat.mcp_app_csp_gaps` (info, local log only) when declared origins were dropped or the page's own `<script src>` / `<link href>` tags load from an origin its policy does not allow.
 - Narrower than the spec: no `'self'`, no nested frames (`frameDomains` dropped), no base URI, no `'unsafe-eval'`, no `blob:`, no workers, no camera, microphone, geolocation or clipboard. `will-frame-navigate` refuses self-navigation.
 - The row says what it is, outside the frame: the tool name, "app from <server>", and "can reach <origin>" when network access was declared. A border marks the frame.
 
@@ -1407,6 +1408,7 @@ The iPhone runs the same card (`WorkMcpAppCardView`, `apps/ios/ADE/Views/Work/Wo
 - One page: 4 MB. Stored tool input and result: 512 KB each (beyond that, the app shows without them). 40 apps per chat, oldest first out.
 - Call arguments: 256 KB. A result handed to the app: 2 MB.
 - The frame runs while its row is on screen (`useSceneOnScreen`) and while a call it made is out. Scrolling back restarts it from the stored input and result; there is no still.
+- A page that has not finished the handshake after 10 s folds (desktop): the frame is hidden and an inline warning `Banner` says "Preview from <server> did not load" and "The tool call finished.", with the stored result's text and links. The fold sticks across scrolling; a page that answers late unfolds. **Reload preview** reads the stored app and mounts a fresh frame; it never runs the tool again (the tool already ran, and may have cost money). The phone keeps its frame and says "The preview did not load." with **Reload**, which also only reloads the page.
 - Not built: full screen and picture-in-picture, partial tool input while arguments stream, sampling, `ui/update-model-context`, nested frames, device permissions, apps on hosted web.
 
 ## Claude mod UI
