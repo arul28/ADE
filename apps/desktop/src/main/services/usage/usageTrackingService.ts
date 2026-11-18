@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type {
@@ -28,7 +28,9 @@ import type {
   AdeUsageModelSummary,
   AdeUsageProviderSummary,
   AdeUsageRangePreset,
+  AdeUsageActivityDatabase,
   AdeUsageRollup,
+  AdeUsageRollupActivity,
   AdeUsageRollupRow,
   AdeUsageScope,
   AdeUsageStats,
@@ -171,6 +173,7 @@ import {
   MAX_LIVE_QUOTA_WINDOWS,
   buildRollupRows,
   mergeAccountUsageStats,
+  mergeOwnActivity,
   omitUnknownAccountCounts,
   type AccountUsageContribution,
 } from "./accountUsageRollup";
@@ -198,6 +201,8 @@ import {
 } from "./accountUsageRollupStore";
 import {
   collectAdeDatabaseUsageStats,
+  collectDatabaseActivityDays,
+  readActivityDatabaseId,
   type AdeDatabaseUsageStats,
 } from "./usageStatsStore";
 import {
@@ -4730,10 +4735,52 @@ export function createUsageTrackingService({
    * needs the key every peer files this machine under, and any other key is a
    * phantom computer. See `defaultLocalMachineIdentity`.
    */
+  /**
+   * This machine's chats, shells, commits and PRs per day, per project
+   * database, as last read. Refreshed by `refreshLocalActivity` on the ledger
+   * scan's publish; null until the first read in this process.
+   */
+  let cachedLocalActivity: AdeUsageRollupActivity | null = null;
+
+  /**
+   * Re-read the activity of every attached project database.
+   *
+   * Rides the scan's publish (and runs once lazily before the first one), so
+   * it adds no cadence of its own: three plain scans per attached database
+   * per ledger scan. Databases not attached right now keep their last counts
+   * (`mergeOwnActivity`), from this process's cache or, after a restart, from
+   * this machine's own stored meta row.
+   */
+  function refreshLocalActivity(nowMs: number, machineKey: string): AdeUsageRollupActivity {
+    const oldestDay = rollupOldestDay(nowMs);
+    let previous = cachedLocalActivity;
+    if (!previous) {
+      previous = accountRollupStore.readAll().find((stored) => stored.machineKey === machineKey)?.activity ?? null;
+    }
+    const fresh: AdeUsageActivityDatabase[] = [];
+    for (const scope of allScopes()) {
+      try {
+        const counted = collectDatabaseActivityDays(scope.db, oldestDay);
+        if (!counted) continue;
+        const folder = scopeRootKey(scope.projectRoot) || scope.key;
+        fresh.push({
+          id: counted.id,
+          scope: createHash("sha256").update(folder).digest("hex").slice(0, 16),
+          days: counted.days,
+        });
+      } catch (error) {
+        logger.warn("usage.account.activity_read_failed", { error: getErrorMessage(error) });
+      }
+    }
+    cachedLocalActivity = mergeOwnActivity(previous, fresh, oldestDay);
+    return cachedLocalActivity;
+  }
+
   function buildLocalRollup(nowMs: number): AdeUsageRollup | null {
     const identity = readLocalMachineIdentity();
     if (!identity) return null;
     const rows = buildRollupRows(cachedCosts, { oldestDay: rollupOldestDay(nowMs) });
+    const activity = cachedLocalActivity ?? refreshLocalActivity(nowMs, identity.machineKey);
     return {
       version: 1,
       machineKey: identity.machineKey,
@@ -4746,11 +4793,14 @@ export function createUsageTrackingService({
       // Bounded here too, so an unbounded snapshot cannot ride the wire.
       windows: lastSnapshot.windows.slice(0, MAX_LIVE_QUOTA_WINDOWS),
       accounts: (lastSnapshot.accounts ?? []).slice(0, MAX_LIVE_QUOTA_ACCOUNTS),
+      activity,
     };
   }
 
   function publishLocalRollup(nowMs: number): void {
     try {
+      const machineKey = readLocalMachineIdentity()?.machineKey;
+      if (machineKey) refreshLocalActivity(nowMs, machineKey);
       const rollup = buildLocalRollup(nowMs);
       // No identity, no publish. A hostname-keyed rollup replicates to every
       // machine on the account as a second computer that never reconciles with
@@ -6567,6 +6617,7 @@ export function createUsageTrackingService({
         localStats: stats,
         contributions: collectAccountContributions(nowMs),
         nowMs,
+        localDatabaseId: readActivityDatabaseId(forScope.db),
       });
     } catch (error) {
       // Account scope is additive. If the merge itself fails, the honest answer

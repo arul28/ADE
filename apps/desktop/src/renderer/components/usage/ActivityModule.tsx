@@ -172,11 +172,16 @@ function persistActivityPatch(patch: Partial<PersistedState>): void {
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
-/** Null when the host has no count (the account scope has none yet). */
+/** Null when the host has no count (no machine on the account reports one). */
 function sessionsTotal(stats: AdeUsageStats): number | null {
   const { chatSessions, terminalSessions } = stats.summary;
   if (chatSessions == null && terminalSessions == null) return null;
   return (chatSessions ?? 0) + (terminalSessions ?? 0);
+}
+
+/** "12", or "12+" when a machine too old to report its sessions is left out. */
+function formatSessions(stats: AdeUsageStats, sessions: number): string {
+  return `${formatCompact(sessions)}${stats.summary.sessionCountsPartial ? "+" : ""}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -910,7 +915,7 @@ function ariaSummary(stats: AdeUsageStats | null, preset: AdeUsageRangePreset): 
   const rangeLabel = RANGE_OPTIONS.find((option) => option.preset === preset)?.label ?? preset;
   if (!stats) return `Activity summary for ${rangeLabel}. Loading.`;
   const sessions = sessionsTotal(stats);
-  return `Activity for ${rangeLabel}: ${formatTokens(stats.summary.totalTokens)} tokens, ${sessions != null ? `${sessions} sessions, ` : ""}${stats.summary.activeDays ?? 0} active days.`;
+  return `Activity for ${rangeLabel}: ${formatTokens(stats.summary.totalTokens)} tokens, ${sessions != null ? `${stats.summary.sessionCountsPartial ? "at least " : ""}${sessions} sessions, ` : ""}${stats.summary.activeDays ?? 0} active days.`;
 }
 
 export function ActivityModule({
@@ -1094,7 +1099,7 @@ export function ActivityModule({
                 {sessions != null ? (
                   <>
                     {" · "}
-                    <b>{formatCompact(sessions)}</b> sessions
+                    <b>{formatSessions(stats, sessions)}</b> sessions
                   </>
                 ) : null}
                 {activeDays != null ? (

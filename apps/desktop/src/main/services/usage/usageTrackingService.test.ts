@@ -14,6 +14,7 @@ import { type AdeDb } from "../state/kvDb";
 import { openFreshKvDb } from "../../../test/freshKvDb";
 import {
   collectAdeDatabaseUsageStats,
+  collectDatabaseActivityDays,
   isMeaningfulUsageAction,
   recordUsageInteraction,
   usageActionFromIpcChannel,
@@ -6072,6 +6073,44 @@ describe("ADE database usage aggregation", () => {
     // has no per-day counts and no lane name, and a bare UUID row would be
     // worse than none.
     expect(stats?.lanes?.some((lane) => lane.laneId === "lane-gone")).toBe(false);
+  });
+
+  it("publishes the account activity the machine scope counts, with a deleted lane on its last active day", async () => {
+    // The account merge takes the larger of a database's published counts
+    // and the open project's machine-scope counts per day, so the two reads
+    // must agree on every live row, or one day shows two different numbers.
+    const db = await createStatsDb();
+    const session = (id: string, startedAt: string, toolType: string, chatSessionId: string | null) => db.run(
+      `insert into terminal_sessions(id, lane_id, tool_type, chat_session_id, title, started_at, transcript_path, status)
+       values (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, "lane-1", toolType, chatSessionId, id, startedAt, "", "ended"],
+    );
+    session("chat-1", "2026-07-08T12:00:01.000Z", "claude-chat", null);
+    session("chat-2", "2026-07-08T12:00:02.000Z", "claude", "chat-row-2");
+    session("shell-1", "2026-07-08T12:00:03.000Z", "shell", null);
+    session("too-old", "2026-05-01T12:00:00.000Z", "shell", null);
+    for (const [id, kind, status] of [["op-c", "git_commit", "succeeded"], ["op-p", "pr_land", "succeeded"], ["op-f", "git_commit", "failed"]]) {
+      db.run(
+        `insert into operations(id, project_id, lane_id, kind, started_at, ended_at, status)
+         values (?, ?, ?, ?, ?, ?, ?)`,
+        [id, "project-1", "lane-1", kind, "2026-07-08T12:00:04.000Z", "2026-07-08T12:00:05.000Z", status],
+      );
+    }
+    insertTombstone(db);
+
+    const published = collectDatabaseActivityDays(db, "2026-07-01");
+    const machine = collectAdeDatabaseUsageStats(db, { since: "2026-07-01T00:00:00.000Z", until: "2026-07-09T23:59:59.999Z" });
+    // One instant's day in every time zone: all the rows above are seconds apart.
+    const day = localDayKey("2026-07-08T12:00:00.000Z");
+    const point = machine?.daily.find((entry) => entry.date === day);
+
+    expect(published?.id).toBe("project-1");
+    expect(published?.days[day]).toEqual([2, 1, 1, 1]);
+    expect([point?.sessions, point?.commits, point?.prs]).toEqual([3, 1, 1]);
+    // Before the retention edge: not published.
+    expect(Object.keys(published?.days ?? {}).some((key) => key < "2026-07-01")).toBe(false);
+    // The tombstone keeps totals, not days, so they sit on its last active day.
+    expect(published?.days["2026-07-07"]).toEqual([3, 2, 4, 1]);
   });
 
   it("counts a fresh delete once when the operations row and the tombstone both survive", async () => {

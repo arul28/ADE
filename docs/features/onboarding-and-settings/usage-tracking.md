@@ -492,6 +492,35 @@ Two rules shape the account scope:
   (`last_token_usage`), carried as `calls` on the per-model token breakdown; a
   scanner that only sees aggregates leaves it absent rather than zero.
 
+### Chats, shells, commits and PRs across machines
+
+Each rollup also carries the machine's activity: per project database, per
+local day, `[chats, shells, commits, prs]` (`AdeUsageRollup.activity`). The
+counts come from the same rows the machine scope reads (`terminal_sessions`
+by start day with the same chat rule, succeeded `git_commit` / `pr_land`
+operations), plus each deleted lane's tombstone totals on its last active day.
+`collectDatabaseActivityDays` reads every attached project database on the
+ledger scan's publish (and once lazily before the first one), never per read;
+databases not attached right now keep their last counts.
+
+- **Stored in the retired `source_window` column** of
+  `usage_machine_rollup_meta`, as JSON, written only when it changes. Every
+  build since the table exists has that column and none reads or writes it,
+  so an older peer applies the replicated change, does not show it, and does
+  not clear it when it republishes a meta row. A new column would leave such a
+  peer with changes for a column it lacks, and sentinel rows in
+  `usage_machine_rollups` would show in its provider and model lists.
+- **Deduped by database, not summed by machine.** Desktops that sync one
+  project database hold the same session rows. A database's id is its oldest
+  `projects` row id, which every replica shares, so the merge groups counts by
+  that id and takes the larger count per day; separate databases add up. The
+  open project's fresh machine-scope counts join their database's group the
+  same way, so the page is not a scan behind for it.
+- **Unknown is not zero.** With no machine reporting activity, the session
+  counts stay unknown (the UI shows no session figure). A machine on an older
+  ADE that used a model in the range makes the counts a floor:
+  `summary.sessionCountsPartial`, shown as "12+", with a source note naming it.
+
 GitHub metrics are excluded from the merge for the same reason in a different
 direction: they are repo-scoped, so three machines with the same clone each
 report the same pull requests and summing them would triple work that happened
