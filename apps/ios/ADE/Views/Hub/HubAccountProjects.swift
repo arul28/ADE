@@ -279,7 +279,7 @@ enum HubAccountNotice: Equatable {
   case connecting(machineName: String?)
   /// The phone has a computer, but none is reachable. `byUser`: the user
   /// disconnected it. `failed`: the last attempt to reach it failed.
-  case noComputerOnline(machineName: String?, lastSeen: String?, failed: Bool, byUser: Bool)
+  case noComputerOnline(machineName: String?, lastSeen: String?, failed: Bool, byUser: Bool, cloud: Bool = false)
   /// Signed in with projects; the account has computers of the person's own,
   /// but this phone is connected to none.
   case noComputer
@@ -309,6 +309,9 @@ struct HubAccountStatusInputs: Equatable {
   var focusedDisconnectedByUser: Bool
   var focusedMachineName: String?
   var focusedLastSeen: String?
+  /// The focused machine is one of the account's ADE Cloud computers: it
+  /// wakes on its own, so nobody has to start ADE on it.
+  var focusedIsCloud: Bool = false
   var anyFleetMachineLive: Bool
   var anyFleetMachineConnecting: Bool
   /// The phone holds a pairing it can reconnect with (primary or fleet).
@@ -337,7 +340,8 @@ func hubAccountNotice(_ inputs: HubAccountStatusInputs) -> HubAccountNotice? {
       machineName: inputs.focusedMachineName,
       lastSeen: inputs.focusedLastSeen,
       failed: inputs.focusedState == .error,
-      byUser: inputs.focusedDisconnectedByUser
+      byUser: inputs.focusedDisconnectedByUser,
+      cloud: inputs.focusedIsCloud
     )
   }
   // With no computer of their own, nothing is missing: chats run on ADE
@@ -436,7 +440,7 @@ struct HubAccountStatusCard: View {
   private var tone: ADEKitTone {
     switch notice {
     case .savedProjects: return .warn
-    case .noComputerOnline(_, _, let failed, _): return failed ? .crit : .neutral
+    case .noComputerOnline(_, _, let failed, _, _): return failed ? .crit : .neutral
     case .noComputer, .connecting: return .neutral
     }
   }
@@ -445,7 +449,7 @@ struct HubAccountStatusCard: View {
     switch notice {
     case .savedProjects: return "Showing saved projects"
     case .connecting: return ""
-    case .noComputerOnline(let name, _, let failed, let byUser):
+    case .noComputerOnline(let name, _, let failed, let byUser, _):
       if failed { return name.map { "Can’t reach \($0)" } ?? "Can’t reach your computer" }
       if byUser { return name.map { "Disconnected from \($0)" } ?? "Disconnected" }
       return name.map { "\($0) is offline" } ?? "No computer online"
@@ -459,7 +463,12 @@ struct HubAccountStatusCard: View {
       return "ADE could not reach your account. The list may be out of date."
     case .connecting:
       return ""
-    case .noComputerOnline(_, let lastSeen, let failed, let byUser):
+    case .noComputerOnline(_, let lastSeen, let failed, let byUser, let cloud):
+      // An ADE Cloud computer sleeps and wakes on its own: nobody starts ADE on it.
+      if cloud {
+        if failed { return "ADE Cloud didn't answer. Check that this phone is online, then reconnect." }
+        return "Its computer is asleep or restarting. Reconnect, or send a message: it wakes in about 20 seconds."
+      }
       if failed { return "Check that ADE is running on it and that both are online." }
       if byUser { return "Reconnect to run agents. Your projects stay here." }
       if let lastSeen { return "Last seen \(lastSeen). Start ADE on it to run agents." }

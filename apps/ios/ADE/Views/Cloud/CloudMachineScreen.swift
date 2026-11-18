@@ -332,7 +332,7 @@ struct CloudMachineControls: View {
       if working {
         HStack(spacing: 8) {
           ProgressView().controlSize(.small)
-          Text("ADE Cloud is on it. Freeing a computer or changing its size can take a few minutes.")
+          Text("ADE Cloud is on it. This can take a few minutes.")
             .font(.system(size: 12))
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)

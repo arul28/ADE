@@ -1156,8 +1156,19 @@ extension SyncService {
   /// machine that is not one of the account's ADE Cloud computers. A chat
   /// on ADE Cloud from the phone is offered without one.
   func accountHasOwnComputer(_ machines: [AccountMachine]) -> Bool {
+    let cloudKeys = adeCloudMachineKeys
+    return machines.contains { !cloudKeys.contains($0.machineKey.lowercased()) }
+  }
+
+  /// Whether a machine key is one of the account's ADE Cloud computers.
+  func isADECloudMachineKey(_ key: String?) -> Bool {
+    guard let key, !key.isEmpty else { return false }
+    return adeCloudMachineKeys.contains(key.lowercased())
+  }
+
+  private var adeCloudMachineKeys: Set<String> {
     var cloudKeys = Set(cloudServerInstances.compactMap { $0.machineKey?.lowercased() })
     for key in cloudAccountMachineKeys ?? [] { cloudKeys.insert(key.lowercased()) }
-    return machines.contains { !cloudKeys.contains($0.machineKey.lowercased()) }
+    return cloudKeys
   }
 }

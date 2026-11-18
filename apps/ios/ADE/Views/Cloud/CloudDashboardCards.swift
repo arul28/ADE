@@ -200,6 +200,14 @@ struct CloudHero: View {
     return (account.plan == "paid" ? "Renews \(end)" : "Resets \(end)", .plain)
   }
 
+  /// The free plan's hours are held, so the account has none of its own
+  /// this month: the GitHub rules hold them, or this computer's free plan
+  /// went to another account.
+  private func freeHoursHeld(_ account: CloudPhoneAccount) -> Bool {
+    guard account.plan == "free", account.hours.includedMilli <= 0, (account.catalog?.plans.free.includedMilli ?? 0) > 0 else { return false }
+    return account.freePlan?.github != nil || account.freePlan?.state == "refused"
+  }
+
   private func hours(_ account: CloudPhoneAccount) -> some View {
     let hours = account.hours
     let percentLeft = hours.includedMilli > 0 ? Double(hours.leftMilli) / Double(hours.includedMilli) * 100 : 0
@@ -217,7 +225,11 @@ struct CloudHero: View {
           .foregroundStyle(CloudBrandColor.skyText)
           .lineLimit(1)
           .minimumScaleFactor(0.6)
-        Text("of \(cloudHours(hours.includedMilli)) h")
+        // Free hours held (GitHub rules, or another account used them here):
+        // the plan's hours, on hold, never "of 0 h" (the desktop's hero).
+        Text(freeHoursHeld(account)
+          ? "of \(cloudHours(account.catalog?.plans.free.includedMilli ?? 0)) h, on hold"
+          : "of \(cloudHours(hours.includedMilli)) h")
           .font(.system(size: 13))
           .foregroundStyle(CloudBrandColor.skyText2)
       }

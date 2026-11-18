@@ -1942,7 +1942,8 @@ struct WorkRootListScreen: View, Equatable {
                 status: selectedStatus,
                 searchText: searchText,
                 hasFilters: hasActiveFilters,
-                isLive: inputs.isLive
+                isLive: inputs.isLive,
+                cloudOnly: AccountService.shared.isSignedIn && !syncService.accountHasOwnComputer(AccountService.shared.machines)
               )
             ) {
               if hasActiveFilters {

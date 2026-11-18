@@ -414,7 +414,9 @@ func workSessionEmptyStateTitle(status: WorkSessionStatusFilter, searchText: Str
   }
 }
 
-func workSessionEmptyStateMessage(status: WorkSessionStatusFilter, searchText: String, hasFilters: Bool, isLive: Bool) -> String {
+/// `cloudOnly`: the account has no computer of its own, so a chat started
+/// here runs on ADE Cloud and there is nothing to reconnect to.
+func workSessionEmptyStateMessage(status: WorkSessionStatusFilter, searchText: String, hasFilters: Bool, isLive: Bool, cloudOnly: Bool = false) -> String {
   if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
     return "Try a different search or clear the current filters."
   }
@@ -430,8 +432,9 @@ func workSessionEmptyStateMessage(status: WorkSessionStatusFilter, searchText: S
   case .archived:
     return "Archived sessions stay here until you restore them."
   default:
-    return isLive
-      ? "Start a new chat, then filter by lane or status as activity comes in."
+    if isLive { return "Start a new chat, then filter by lane or status as activity comes in." }
+    return cloudOnly
+      ? "Start a new chat. It runs on its own ADE Cloud computer, and its lane shows up here."
       : "A computer's chats show here while it is online. Reconnect to see them and start new ones."
   }
 }
