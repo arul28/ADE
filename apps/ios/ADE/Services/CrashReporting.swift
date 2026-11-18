@@ -70,6 +70,10 @@ enum CrashReporting {
       options.enableReportNonFullyBlockingAppHangs = false
       options.enableWatchdogTerminationTracking = true
       options.enableLogs = true
+      // A build below its minimum sends no logs and starts no traces either
+      // (see `beforeSend`). A nil from the sampler means "use the rate below".
+      options.beforeSendLog = { log in PhoneUpdateGateFlag.isBlocked ? nil : log }
+      options.tracesSampler = { _ in PhoneUpdateGateFlag.isBlocked ? NSNumber(value: 0) : nil }
       options.tracesSampleRate = 0.05
       options.tracePropagationTargets = firstPartyTargets
       options.enableCaptureFailedRequests = true

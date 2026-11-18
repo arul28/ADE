@@ -11,13 +11,14 @@
 import * as Sentry from "@sentry/electron/renderer";
 import { connectSentry } from "../../shared/sentry/capture";
 import { createSentryEventHooks } from "../../shared/sentry/eventFilter";
-import { SENTRY_TRACES_SAMPLE_RATE } from "../../shared/sentry/config";
 import { toMegabytes } from "../../shared/sentry/diagnostics";
 
 export function initRendererSentry(): void {
   const hooks = createSentryEventHooks();
   Sentry.init({
-    tracesSampleRate: SENTRY_TRACES_SAMPLE_RATE,
+    // The shared rate, and no trace while the update gate blocks this build
+    // (the window's gate store sets it). Errors and logs also pass main's hooks.
+    tracesSampler: hooks.tracesSampler,
     // Never add trace headers to provider, GitHub or other third-party requests.
     tracePropagationTargets: [],
     integrations: (defaults) => [

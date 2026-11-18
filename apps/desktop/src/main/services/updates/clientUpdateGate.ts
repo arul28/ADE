@@ -8,7 +8,7 @@ import {
 } from "../../../shared/clientUpdateGate";
 import { createClientMinimumReader, fetchClientMinimumBody, type ClientMinimumReader } from "../../../shared/clientMinimumReader";
 import { CLIENT_MINIMUM_LINKS } from "../../../../../account-directory/src/clientMinimumContract";
-import { setSentryUnsupportedBuild } from "../../../shared/sentry/eventFilter";
+import { setSentryUpdateGateResolver } from "../../../shared/sentry/eventFilter";
 import { compareUpdateVersions, isWindowsSelfInstallBlocked } from "../../../shared/updateVersions";
 import { updateTrackOfVersion } from "../../../shared/updateTrack";
 import type { AutoUpdateSnapshot } from "../../../shared/types";
@@ -24,7 +24,7 @@ import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
  * answer goes stale, so an offline computer is let through on time.
  *
  * The rule is `desktopUpdateRequirement`; a stale or failed read never blocks.
- * While blocked, this build drops its own Sentry error events.
+ * While blocked, this build drops its own Sentry errors, logs and traces.
  */
 
 export const CLIENT_MINIMUM_READ_INTERVAL_MS = 3 * 60 * 60_000;
@@ -123,6 +123,8 @@ export function createClientUpdateGateService(args: {
   let stateKey = JSON.stringify(state);
   let timer: { cancel(): void } | null = null;
   let disposed = false;
+  // Main's Sentry hooks read this at send time; renderer events and logs pass them too.
+  setSentryUpdateGateResolver(() => ({ requirement: state.self, version: args.currentVersion }));
 
   function compute(): ClientUpdateGateState {
     const minimum = reader.current();
@@ -151,7 +153,6 @@ export function createClientUpdateGateService(args: {
     const wasRequired = state.self.required;
     state = next;
     stateKey = key;
-    setSentryUnsupportedBuild(next.self.required);
     if (next.self.required && !wasRequired) {
       args.logger.warn("client_update.required", {
         currentVersion: next.self.currentVersion,
@@ -212,6 +213,7 @@ export function createClientUpdateGateService(args: {
     },
     dispose() {
       disposed = true;
+      setSentryUpdateGateResolver(null);
       timer?.cancel();
       timer = null;
       listeners.clear();

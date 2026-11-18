@@ -18,7 +18,6 @@ import {
   SENTRY_DATA_COLLECTION,
   sentryDist,
   sentryReleaseName,
-  SENTRY_TRACES_SAMPLE_RATE,
   shouldEnableSentry,
 } from "../../shared/sentry/config";
 import { createSentryEventHooks } from "../../shared/sentry/eventFilter";
@@ -64,7 +63,8 @@ export function initMainSentry(options: {
     // Classic IPC: no custom protocol scheme, and only ADE's own preload
     // carries the bridge (see `src/preload/preload.ts`).
     ipcMode: Sentry.IPCMode.Classic,
-    tracesSampleRate: SENTRY_TRACES_SAMPLE_RATE,
+    // The shared rate, and no trace while the update gate blocks this build.
+    tracesSampler: hooks.tracesSampler,
     // Never add trace headers to provider, GitHub or other third-party requests.
     tracePropagationTargets: [],
     sendClientReports: true,

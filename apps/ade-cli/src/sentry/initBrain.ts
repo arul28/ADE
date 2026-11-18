@@ -20,7 +20,6 @@ import {
   SENTRY_DATA_COLLECTION,
   sentryDist,
   sentryReleaseName,
-  SENTRY_TRACES_SAMPLE_RATE,
   shouldEnableSentry,
 } from "../../../desktop/src/shared/sentry/config";
 import { createSentryEventHooks } from "../../../desktop/src/shared/sentry/eventFilter";
@@ -59,7 +58,8 @@ export function initBrainSentry(args: { mode: "serve" | "service" }): boolean {
     release: sentryReleaseName(version),
     environment: resolveSentryEnvironment({ env: process.env, packaged, version }),
     dist: sentryDist(process.platform, process.arch),
-    tracesSampleRate: SENTRY_TRACES_SAMPLE_RATE,
+    // The shared rate, and no trace while the update gate blocks this build.
+    tracesSampler: hooks.tracesSampler,
     // Never add trace headers to provider, GitHub or other third-party requests.
     tracePropagationTargets: [],
     sendClientReports: true,
