@@ -40,31 +40,33 @@ function escapeBelongsToInnerLayer(event: KeyboardEvent, gate: HTMLElement | nul
  * - the gate was already open when the app loaded (a reload during setup), so
  *   setup never finished here.
  *
- * Desktop only: the hosted web client controls other computers, and setup is
- * about the one it runs on. Over a project tab bound to another machine the
- * agents card is left out (`useFirstRunSteps`' `skipAgents`): its status and
- * sign-ins would go to that machine.
+ * In ADE Web it is also the welcome a new account sees on its first visit:
+ * the welcome card alone (`welcomeOnly`), since the agents and projects cards
+ * set up the computer ADE runs on and the web has none of its own. Over a
+ * project tab bound to another machine the agents card is left out
+ * (`useFirstRunSteps`' `skipAgents`): its status and sign-ins would go to
+ * that machine.
  */
 export function OnboardingBootstrap() {
   const remoteTab = useAppStore((state) => state.projectBinding?.kind === "remote");
+  const web = isWebClientMode();
   const steps = useFirstRunSteps({
-    enabled: !isWebClientMode(),
+    welcomeOnly: web,
     skipAgents: remoteTab,
-    onFinish: showFirstRunProjects,
+    onFinish: web ? undefined : showFirstRunProjects,
   });
   const { phase, restart, skip } = steps;
   const gateRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (isWebClientMode()) return undefined;
     const replay = () => {
       // A replay finds projects again: some were added since the last run.
-      void prefetchOnboardingDiscovery({ fresh: true }).catch(() => undefined);
+      if (!web) void prefetchOnboardingDiscovery({ fresh: true }).catch(() => undefined);
       restart();
     };
     window.addEventListener(ADE_WELCOME_VIDEO_REPLAY_EVENT, replay);
     return () => window.removeEventListener(ADE_WELCOME_VIDEO_REPLAY_EVENT, replay);
-  }, [restart]);
+  }, [restart, web]);
 
   const open = phase === "welcome" || phase === "agents" || phase === "projects";
 

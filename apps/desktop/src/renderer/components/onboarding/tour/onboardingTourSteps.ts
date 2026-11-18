@@ -1,8 +1,13 @@
-import { useAppStore } from "../../../state/appStore";
 import { anchorShown, findVisibleAnchor, isAnchorVisible } from "./anchorGeometry";
 
 /**
- * The guided tour, in order. Each step points at a real control, marked with
+ * The guided tour, in order. It runs inside a project, the first time one is
+ * open (the screens before that explain themselves), on the desktop and in
+ * ADE Web alike, once per account. Six cards at most: what to type, how the
+ * agent runs, where it runs, the first send, where chats live, and the tools.
+ * Everything else is in ADE Tips.
+ *
+ * Each step points at a real control, marked with
  * `data-onboarding-anchor="<anchor>"` where it renders; the host finds the
  * first one on screen.
  *
@@ -36,6 +41,8 @@ type TourCopy = { title: string; line: string; ask?: TourAsk };
 
 export type TourStepDef = TourCopy & {
   id: string;
+  /** The number the card shows ("3 of 6"). Two steps that stand in for each other (send a first chat, or open one) share it. */
+  number: number;
   anchors: readonly string[];
   advance: "click" | "action" | "next";
   byAnchor?: Readonly<Record<string, Partial<TourCopy & { place: readonly TourPlace[] }>>>;
@@ -46,6 +53,9 @@ export type TourStepDef = TourCopy & {
   where: string;
   skipIf?: () => boolean;
 };
+
+/** How many cards one person sees: "Send your first chat" and "Open a chat" never both apply. */
+export const TOUR_CARD_COUNT = 6;
 
 /** The id the tour's progress holds while the closing "You're all set" card is up. */
 export const TOUR_FINISH_ID = "finish";
@@ -64,11 +74,6 @@ const toolsPaneOpen = () => onScreen("[data-work-tools-pane]");
 export const noChatsToOpen = () => anchorShown("session-list") && !anchorShown("session-row");
 /** A chat is open (its header has the Tools toggle). */
 const inOpenChat = () => anchorOnScreen("tools-toggle");
-/** A project is open and on screen (not Home). */
-const inProject = () => {
-  const state = useAppStore.getState();
-  return state.project != null && !state.showWelcome;
-};
 
 export function isDoStep(step: TourStepDef): boolean {
   return step.advance !== "next";
@@ -87,41 +92,11 @@ export function stepCopy(step: TourStepDef, anchorId: string | null): TourCopy &
 
 export const TOUR_STEPS: readonly TourStepDef[] = [
   {
-    // Setup lands on Home; everything else lives inside a project.
-    id: "open-project",
-    anchors: ["project-row", "add-project"],
-    title: "Open a project",
-    line: "Chats, lanes and tools all live inside a project. Pick one to start.",
-    ask: { label: "Click a project", icon: "click" },
-    byAnchor: {
-      "add-project": {
-        title: "Add a project",
-        line: "Point ADE at a folder with a git repo. It opens in its own tab, ready for chats.",
-        ask: { label: "Click Add project", icon: "click" },
-        place: ["below", "left"],
-      },
-    },
-    advance: "action",
-    place: ["right", "below", "left"],
-    goTo: "home",
-    where: "Home",
-    skipIf: inProject,
-  },
-  {
-    id: "lanes",
-    anchors: ["lane-picker"],
-    title: "ADE works in lanes",
-    line: "This chat runs in your primary lane: the checkout you already have. New work can get its own lane, a git worktree on its own branch, so agents never step on each other.",
-    advance: "next",
-    place: ["below", "right", "above"],
-    goTo: "draft",
-    where: "a new chat",
-  },
-  {
     id: "composer",
+    number: 1,
     anchors: ["composer"],
     title: "Tell an agent what to do",
-    line: "Type @ to bring in files, other chats, a subagent or another machine. Type / for commands.",
+    line: "Describe the change you want. Type @ to bring in files, other chats, or a subagent on any model, and / for commands.",
     advance: "next",
     place: ["above", "below"],
     goTo: "draft",
@@ -129,62 +104,38 @@ export const TOUR_STEPS: readonly TourStepDef[] = [
   },
   {
     id: "composer-controls",
+    number: 2,
     anchors: ["composer-controls"],
-    title: "Permissions, model and effort",
-    line: "Choose how much the agent may do before it asks you, which model runs, and how hard it thinks.",
+    title: "Model, permissions and effort",
+    line: "Pick which model runs, how much it may do before it asks you, and how hard it thinks.",
     advance: "next",
     place: ["below", "above", "right"],
     goTo: "draft",
     where: "a new chat",
   },
   {
-    id: "lane-menu-open",
-    anchors: ["lane-picker"],
-    title: "Start work in a new lane",
-    line: "The lane menu picks where this chat runs.",
-    ask: { label: "Click the lane", icon: "click" },
-    advance: "click",
-    place: ["below", "right", "above"],
+    id: "where-it-runs",
+    number: 3,
+    anchors: ["run-on", "lane-picker"],
+    title: "Where it runs",
+    line: "Run here, on another computer of yours, or on ADE Cloud, which keeps going while your laptop sleeps. Beside it: your main checkout, or a new lane on its own branch.",
+    byAnchor: {
+      "lane-picker": {
+        line: "Your main checkout, or a new lane on its own branch, so agents never step on each other.",
+      },
+    },
+    advance: "next",
+    place: ["below", "above", "right"],
     goTo: "draft",
     where: "a new chat",
   },
   {
-    id: "lane-menu",
-    anchors: ["lane-picker-menu"],
-    title: "Pick or create a lane",
-    line: "Every lane on this project, on every machine. + creates a new one; Auto-create lane makes one for the chat when you send it.",
-    advance: "next",
-    place: ["right", "left", "above", "below"],
-    where: "the lane menu",
-    // The menu closed (the user picked a lane or clicked away): carry on.
-    skipIf: () => !anchorOnScreen("lane-picker-menu"),
-  },
-  {
-    id: "import-chats",
-    anchors: ["import-pill", "import-button"],
-    title: "Bring your other chats",
-    line: "Continue chats from Claude Code, Codex, Cursor and more in ADE, each in the lane it ran in.",
-    advance: "next",
-    place: ["above", "below", "right"],
-    goTo: "draft",
-    where: "a new chat",
-  },
-  {
-    id: "sidebar",
-    anchors: ["session-list"],
-    title: "Every chat, every lane",
-    line: "Chats, CLIs and terminals from all your lanes and machines live here, newest first.",
-    advance: "next",
-    place: ["right", "below"],
-    goTo: "work",
-    where: "Work",
-  },
-  {
-    // Only for someone with no chats yet; the host fills the composer in.
+    // Only for someone with no chats yet; the host fills the composer in when it can.
     id: "first-chat",
+    number: 4,
     anchors: ["composer"],
     title: "Send your first chat",
-    line: "We filled in a first question. Pick a model, then press Send. Nothing runs until you do.",
+    line: "Pick a model and press Send. Nothing runs until you do.",
     ask: { label: "Press Send", icon: "send" },
     advance: "action",
     place: ["above", "below"],
@@ -194,7 +145,20 @@ export const TOUR_STEPS: readonly TourStepDef[] = [
     skipIf: () => anchorShown("session-row"),
   },
   {
+    id: "sidebar",
+    number: 5,
+    anchors: ["session-list"],
+    title: "Every chat, in one list",
+    line: "Chats, CLIs and terminals from every lane and machine, ADE Cloud included. A dot means one needs you.",
+    advance: "next",
+    place: ["right", "below"],
+    goTo: "work",
+    where: "Work",
+  },
+  {
+    // People who had chats before the tour land on a new chat: open one first.
     id: "open-chat",
+    number: 6,
     anchors: ["session-row"],
     title: "Open a chat",
     line: "A chat picks up where it left off.",
@@ -206,85 +170,17 @@ export const TOUR_STEPS: readonly TourStepDef[] = [
     skipIf: () => noChatsToOpen() || inOpenChat(),
   },
   {
-    id: "tools-toggle",
+    id: "tools",
+    number: 6,
     anchors: ["tools-toggle"],
-    title: "Open the Tools pane",
-    line: "Every chat has tools beside it, for the same lane the agent works in.",
-    ask: { label: "Click the Tools button", icon: "click" },
+    title: "Tools beside every chat",
+    line: "Terminal, Git, files, a browser and simulators, for the lane the agent works in. Agents use the same ones, so you can watch them work.",
+    ask: { label: "Click Tools", icon: "click" },
     advance: "click",
     place: ["below", "left"],
     goTo: "work",
     where: "a chat",
-    skipIf: () => toolsPaneOpen() || onDraftPage(),
-  },
-  {
-    id: "tools-pane",
-    anchors: ["tools-pane"],
-    title: "Tools for this lane",
-    line: "Terminal, Git, files, a browser, simulators and more. Agents use the same ones, and you can watch them work.",
-    advance: "next",
-    place: ["left", "below"],
-    goTo: "work",
-    where: "a chat",
-    skipIf: () => !toolsPaneOpen(),
-  },
-  {
-    id: "back-to-new-chat",
-    anchors: ["new-chat"],
-    title: "Back to a new chat",
-    line: "Start the next piece of work from here, in a new lane or this one.",
-    ask: { label: "Click New chat", icon: "click" },
-    advance: "click",
-    place: ["right", "below"],
-    goTo: "work",
-    where: "Work",
-    skipIf: onDraftPage,
-  },
-  {
-    id: "new-tab",
-    anchors: ["new-tab"],
-    title: "Open another project",
-    line: "Each project gets its own tab, including projects on your other machines.",
-    ask: { label: "Click + for a new tab", icon: "click" },
-    advance: "click",
-    place: ["below", "left"],
-    where: "the top bar",
-  },
-  {
-    id: "home-customize",
-    anchors: ["home-customize"],
-    title: "Your home page",
-    line: "Widgets for what's going on everywhere: chats that need you, usage, PRs and tips. Make the page yours from here.",
-    ask: { label: "Click to customize", icon: "click" },
-    advance: "click",
-    place: ["below", "left"],
-    goTo: "home",
-    where: "Home",
-    // Already editing: the tools step covers it.
-    skipIf: () => anchorOnScreen("home-edit-tools"),
-  },
-  {
-    id: "home-edit-tools",
-    anchors: ["home-edit-tools"],
-    title: "Add, move and resize",
-    line: "Add widgets, pick a card look, save layouts. Drag a widget to move it and pull its corner to resize.",
-    // Asks for Done, so the tour never leaves Home stuck in edit mode.
-    ask: { label: "Press Done when you're finished", icon: "click" },
-    advance: "action",
-    place: ["below", "left"],
-    goTo: "home",
-    where: "Home",
-    // Editing ended (Done): carry on.
-    skipIf: () => anchorOnScreen("home-customize"),
-  },
-  {
-    id: "connections",
-    anchors: ["connections"],
-    title: "Work from every computer",
-    line: "Connect your other machines and your phone here. Their lanes and chats show up right beside these.",
-    ask: { label: "Click Connections", icon: "click" },
-    advance: "click",
-    place: ["below", "left"],
-    where: "the top bar",
+    // Already open, or no chat to open it on.
+    skipIf: () => toolsPaneOpen() || (onDraftPage() && noChatsToOpen()),
   },
 ];

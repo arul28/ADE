@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../../ui/notice/appBannerStore";
-import { adeTipGroup, machineTipOrder, runTipAction, tipActionAvailable, type AdeTip } from "../../../onboarding/adeTips";
+import { adeTipGroup, machineTipOrder, runTipAction, tipOfferedAsCard, type AdeTip } from "../../../onboarding/adeTips";
 import {
   answerTipCard,
   claimTipCard,
@@ -31,7 +31,7 @@ const ASK_AFTER_TEST_MS = 4_000;
 /** The tip to offer next: the first in this computer's random order not tried or shown yet. */
 function nextTip(): AdeTip | null {
   const done = doneTipIds();
-  return machineTipOrder().find((tip) => tipActionAvailable(tip.action) && !done.has(tip.id)) ?? null;
+  return machineTipOrder().find((tip) => tipOfferedAsCard(tip) && !done.has(tip.id)) ?? null;
 }
 
 export function useFeatureTipCard(enabled: boolean): void {

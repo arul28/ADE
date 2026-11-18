@@ -41,7 +41,7 @@ import {
  *
  * - **After an update** this computer installed itself (not one pressed on
  *   another machine): on the first launch of the new version, on whatever
- *   screen ADE opens to. Up to three unseen catalogue pages, then "And more",
+ *   screen ADE opens to. Up to two unseen catalogue pages, then "And more",
  *   the release notes since the version it came from. AutoUpdateControl asks
  *   for it (`openWhatsNewAfterUpdate`) in place of its old notice. It waits
  *   for the boot splash to go, then arrives: the logo flies from the splash
@@ -51,8 +51,10 @@ import {
  *   moment like the in-project showing, and the logo then rises in the middle
  *   of the window instead.
  *   The other two ways open with the plain dialog fade.
- * - **Inside a project**, by itself: up to three unseen catalogue pages, at
- *   most once a day (an after-update showing counts), and only when nothing
+ * - **Inside a project**, by itself: up to two unseen catalogue pages, at
+ *   most once a week (an after-update showing counts), never in a new
+ *   account's first three days or on a day something else unasked showed
+ *   (`unaskedBudget.ts`), and only when nothing
  *   else wants the user's attention — onboarding finished or was skipped
  *   before this launch, no dialog, setup screen or tour card is up, the
  *   project has been open a few seconds, nothing was typed or clicked for
@@ -181,7 +183,7 @@ export function AnnouncementsHost() {
     };
   }, []);
 
-  // Wait for a quiet moment inside a project, once per launch and once a day.
+  // Wait for a quiet moment inside a project, once per launch and once a week.
   const waiting = !showing && !shownThisLaunch && inProject && due.length > 0;
   useEffect(() => {
     if (!waiting) return undefined;

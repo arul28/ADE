@@ -83,13 +83,13 @@ export function TourFinishCard({
       <section className="kit-card ade-tour-card ade-tour-finish" data-float="true" {...FLOATS_OVER_BROWSER_PROPS} aria-labelledby={titleId}>
         <span className="ade-tour-count">Tour complete</span>
         <h2 id={titleId} className="ade-tour-finish-title">You're all set</h2>
-        <p className="ade-tour-line">Thanks for installing ADE. When you want more, it's all one click away.</p>
+        <p className="ade-tour-line">That's the whole loop: ask, watch it run, check the work. The rest can wait until you need it.</p>
         <ul className="ade-tour-finish-list">
           <li>
             <Lightbulb size={15} aria-hidden />
             <span className="ade-tour-finish-text">
               <b>ADE Tips</b>
-              <span>Every feature, one line each.</span>
+              <span>Every feature in one line, with a Try it button.</span>
             </span>
             <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={openTips}>
               Open
