@@ -165,6 +165,12 @@ func duoHomeMachines(syncService: SyncService, fleet: MachineFleet) -> [DuoHomeM
       if focusedIsCloud {
         rows[0].projectCount += machine.projects.count
         rows[0].workingCount += working
+        // ADE Cloud is up while any of its computers is, the focused one or not.
+        if machine.state == .live, !rows[0].isLive {
+          rows[0].statusWord = duoMachineFleetStateWord(machine.state)
+          rows[0].tone = duoMachineFleetStateTone(machine.state)
+          rows[0].isLive = true
+        }
         continue
       }
       hasCloud = true
@@ -205,7 +211,12 @@ func duoHomeMachines(syncService: SyncService, fleet: MachineFleet) -> [DuoHomeM
       word = duoMachineFleetStateWord(state)
       tone = duoMachineFleetStateTone(state)
     } else {
-      word = instances.isEmpty && !hasCloud ? "No lanes" : "Asleep"
+      // An empty list is only believed once the account answered.
+      if instances.isEmpty, !hasCloud {
+        word = syncService.cloudServerReadFinished ? "No lanes" : "Checking"
+      } else {
+        word = "Asleep"
+      }
       tone = .neutral
     }
     rows.insert(
