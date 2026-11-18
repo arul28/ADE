@@ -19,7 +19,7 @@ const READ_FAILURES = 30;
 export function createWebCloudCopies(api: () => CloudApiClient | null) {
   const listeners = new Set<(progress: CloudCreateProgress) => void>();
   /** The copies this tab follows, by the card's request id. */
-  const followed = new Map<string, { copyId: string; cancelled: boolean }>();
+  const followed = new Map<string, string>();
   const emit = (progress: CloudCreateProgress) => {
     for (const listener of listeners) listener(progress);
   };
@@ -29,11 +29,6 @@ export function createWebCloudCopies(api: () => CloudApiClient | null) {
     let lastLine = "";
     let failures = 0;
     for (;;) {
-      const entry = followed.get(requestId);
-      if (entry?.cancelled && record.cancellable) {
-        entry.cancelled = false;
-        record = await api()?.cancelCopy(record.copyId).catch(() => record) ?? record;
-      }
       const instanceId = record.targetInstanceId ?? undefined;
       if (record.state === "done") {
         emit({
@@ -94,7 +89,7 @@ export function createWebCloudCopies(api: () => CloudApiClient | null) {
         if (error instanceof CloudApiError && error.status === 404) throw new Error("Copy this computer from the ADE desktop app. ADE Cloud can't copy it from here yet.");
         throw error;
       }
-      followed.set(args.requestId, { copyId: record.copyId, cancelled: false });
+      followed.set(args.requestId, record.copyId);
       void follow(args.requestId, record).finally(() => followed.delete(args.requestId));
       return { started: true };
     },
@@ -104,12 +99,22 @@ export function createWebCloudCopies(api: () => CloudApiClient | null) {
         listeners.delete(cb);
       };
     },
-    /** Before the copy signs in, the server deletes it; after, it is a whole computer. */
+    /**
+     * Before the copy signs in, the server deletes it; after, it is a whole
+     * computer and the server says no (409 `copy_signed_in`), so the card
+     * keeps following it. The follow loop reads the cancelled record next.
+     */
     cancelCreate: async (requestId: string) => {
-      const entry = followed.get(requestId);
-      if (!entry) return { cancelled: false };
-      entry.cancelled = true;
-      return { cancelled: true };
+      const copyId = followed.get(requestId);
+      const client = api();
+      if (!copyId || !client) return { cancelled: false };
+      try {
+        // A 200 is a cancel taken: done now, or at the end of the step that runs.
+        const record = await client.cancelCopy(copyId);
+        return { cancelled: record.state !== "done" };
+      } catch {
+        return { cancelled: false };
+      }
     },
   };
 }
