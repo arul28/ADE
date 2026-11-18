@@ -547,7 +547,9 @@ struct HubScreen: View {
     // Kept while a send switches machines: the primary is reconnecting, and the
     // draft and any error belong to this composer.
     // Select mode puts its own bar under the list instead.
-    if (canShowProjects || composerSwitchingMachine) && !selecting {
+    // Signed in, it stays while the primary is unreachable: ADE Cloud and the
+    // other machines still take a chat.
+    if (canShowProjects || composerSwitchingMachine || account.isSignedIn) && !selecting {
       // The list ends above it: the composer is the screen's footer, never a
       // layer over the last rows.
       HubInlineComposer(

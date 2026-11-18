@@ -1812,14 +1812,31 @@ struct WorkRootListScreen: View, Equatable {
       onCloudChatReady: { chatId in
         // A chat started on ADE Cloud runs: read the server's list so the
         // chat routes to its lane's computer, then open it.
-        syncService.refreshCloudServerIfStale(force: true)
-        await syncService.cloudServerReadTask?.value
+        await syncService.readCloudForLaunchedChat()
         selectedSessionTransitionId = nil
-        await showNewChatRoute(WorkSessionRoute(sessionId: chatId))
+        await openLaunchedCloudChat(chatId)
       }
     )
     .environmentObject(syncService)
     .environmentObject(dictationController)
+  }
+
+  /// A chat a cloud launch just started lives on its lane's computer, not on
+  /// this tab's machine: open its Work row, which routes to that computer,
+  /// once the fresh reads list it. A bare route would look the chat up on the
+  /// tab's machine and find nothing.
+  private func openLaunchedCloudChat(_ chatId: String) async {
+    for _ in 0..<20 {
+      if let row = mergedSessions.first(where: { $0.id == chatId }) {
+        // Off the new-chat page first, as `showNewChatRoute` does.
+        path = NavigationPath()
+        duoComposeRoute = nil
+        openSession(row)
+        return
+      }
+      try? await Task.sleep(for: .milliseconds(250))
+    }
+    await showNewChatRoute(WorkSessionRoute(sessionId: chatId))
   }
 
   /// The new-chat screen's handover: a pushed chat on every phone, the detail
@@ -1891,9 +1908,8 @@ struct WorkRootListScreen: View, Equatable {
             WorkCloudLaunchCard(entry: entry) {
               guard let chatId = entry.record?.sessionId else { return }
               Task { @MainActor in
-                syncService.refreshCloudServerIfStale(force: true)
-                await syncService.cloudServerReadTask?.value
-                await showNewChatRoute(WorkSessionRoute(sessionId: chatId))
+                await syncService.readCloudForLaunchedChat()
+                await openLaunchedCloudChat(chatId)
               }
             }
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
