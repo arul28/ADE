@@ -642,7 +642,7 @@ export async function prepareLaneBranchFromBackup(args: {
   branchRef: string;
   projectRoot: string;
   logger: Logger;
-}): Promise<{ created: boolean; branch?: string }> {
+}): Promise<{ created: boolean; branch?: string; note?: string }> {
   const branch = args.branchRef.replace(/^refs\/heads\//, "").replace(/^origin\//, "");
   const cwd = args.projectRoot;
   if (await resolveCommit(cwd, `refs/remotes/origin/${branch}`)) return { created: false };
@@ -653,9 +653,22 @@ export async function prepareLaneBranchFromBackup(args: {
     .filter((entry) => entry.laneId === args.laneId && entry.machineKey !== args.machineKey && entry.branchRef === branch)
     .sort((a, b) => b.savedAt - a.savedAt)[0];
   const local = await resolveCommit(cwd, `refs/heads/${branch}`);
+  if (!backup) {
+    // No backup and not on GitHub: the lane had nothing GitHub lacked when its
+    // computer went (a lane with no commits of its own is never pushed, and a
+    // merged branch GitHub deleted counts as saved). It starts again at the
+    // repository's default branch, where that work is, instead of failing.
+    // A retry finds the branch it made there, so it is still not published.
+    const base = await resolveCommit(cwd, "refs/remotes/origin/HEAD");
+    if (!base || (local && local !== base)) return { created: false };
+    if (!local) await git(cwd, ["update-ref", `refs/heads/${branch}`, base, ""]);
+    const defaultName = (await runGit(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], { cwd, timeoutMs: 15_000, env: READ_ENV }))
+      .stdout.trim().replace(/^origin\//, "") || "the default branch";
+    args.logger.info("cloud.lane_branch_from_default", { laneId: args.laneId });
+    return { created: true, branch, note: `${branch} wasn't on GitHub, so ADE started it again from ${defaultName}.` };
+  }
   // A retry: an earlier attempt made the branch from this backup, so it is still not published.
-  if (local) return backup && local === backup.headSha ? { created: true, branch } : { created: false };
-  if (!backup) return { created: false };
+  if (local) return local === backup.headSha ? { created: true, branch } : { created: false };
   const chunks: Buffer[] = [];
   for (let part = 1; part <= backup.bundleParts; part += 1) chunks.push(Buffer.from(await args.api.readLaneBackupPart(backup.machineKey, args.laneId, "bundle", part)));
   const content = Buffer.concat(chunks);

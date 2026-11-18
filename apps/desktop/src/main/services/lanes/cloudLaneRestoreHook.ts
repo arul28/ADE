@@ -7,6 +7,8 @@
  *    a branch the person never pushed is not on GitHub, so the new computer
  *    makes it locally from the lane's backup. The import must then not
  *    publish it (`publishUpstream: false`): ADE never pushes on its own.
+ *    With no backup either, the branch starts again at the default branch,
+ *    and its note says so.
  * 2. `restoreCloudLaneWork`, once the lane exists and before its chat
  *    starts: applies the lane's backup when the lane lacks that work.
  *
@@ -14,7 +16,7 @@
  * server for the person, and the answer is a note for the launch card.
  */
 
-export type CloudLaneBranchPrepare = (args: { laneId: string; branchRef: string; projectRoot: string }) => Promise<{ created: boolean; branch?: string | null }>;
+export type CloudLaneBranchPrepare = (args: { laneId: string; branchRef: string; projectRoot: string }) => Promise<{ created: boolean; branch?: string | null; note?: string | null }>;
 export type CloudLaneRestore = (args: { laneId: string; worktreePath: string; projectRoot: string }) => Promise<string | null>;
 
 let prepare: CloudLaneBranchPrepare | null = null;
@@ -30,13 +32,14 @@ export function cloudLaneRestoreInstalled(): boolean {
 }
 
 /**
- * The local branch made here from the lane's backup (the import uses it and
- * must not publish it), or null when the branch is here or on GitHub already.
+ * The local branch made here (the import uses it and must not publish it)
+ * with a note for the launch card when it is not the lane's saved work, or
+ * null when the branch is here or on GitHub already.
  */
-export async function prepareCloudLaneBranch(args: { laneId: string; branchRef: string; projectRoot: string }): Promise<string | null> {
+export async function prepareCloudLaneBranch(args: { laneId: string; branchRef: string; projectRoot: string }): Promise<{ branch: string; note: string | null } | null> {
   if (!prepare) return null;
   const made = await prepare(args);
-  return made.created ? made.branch ?? null : null;
+  return made.created && made.branch ? { branch: made.branch, note: made.note ?? null } : null;
 }
 
 /** A note for the launch card, or null. Throws only when the hook itself throws; the caller keeps the launch going. */

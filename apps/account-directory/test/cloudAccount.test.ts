@@ -10,6 +10,7 @@ import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
 import { runIdleCleanup } from "../src/cloud/idleCleanup";
 import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
 import { createCloudProvider } from "../src/cloud/provider";
+import { failUnjoinedLaunches } from "../src/cloud/launches";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
 import { prepareStopBackupReportId, runCloudMinuteCron } from "../src/cloud/cron";
 import { runLinearRenewalCron } from "../src/cloud/linearRenewal";
@@ -3028,6 +3029,35 @@ describe("ADE Cloud without a computer", () => {
     expect(await partsOf("key-new")).toEqual(["third\n", "second\n", "first\n"]);
     seedComputer(harness, { instance_id: "thirdbox12", machine_key: "key-old" });
     expect((await savePart("thirdbox12", "key-old", 1, "other\n")).status).toBe(409);
+  });
+
+  it.each([
+    { name: "fails before its agent runs: its computer goes and the lane is kept without one", agent: false, kept: true },
+    { name: "fails after its agent ran: its computer stays", agent: true, kept: false },
+  ])("a continue launch that $name", async ({ agent, kept }) => {
+    harness.env.CLERK_SECRET_KEY = "sk_test";
+    harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { machine_key: "key-gone", lane_id: LANE, lane_name: "Fix the login page", lane_project_origin: "https://github.com/acme/widgets", lane_branch: "ade/fix-login" });
+    expect((await savePart(INSTANCE, "key-gone", 1, "{}\n")).status).toBe(200);
+    harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
+    const sent = await harness.send(OWNER, "POST", "/cloud/chats/key-gone/c1/messages", { messageId: "m1", text: "Go on." });
+    const { wake } = (await sent.json()) as { wake: { launchId: string } };
+    const { instance_id: instanceId } = harness.row("select instance_id from cloud_launches where launch_id = ?", wake.launchId) as { instance_id: string };
+    expect(harness.row("select lane_id from cloud_computers where instance_id = ? and deleted_at is null", instanceId)).toEqual({ lane_id: LANE });
+
+    const stages = [
+      { id: "clone", status: "done", detail: null, error: null },
+      { id: "checkout", status: agent ? "done" : "failed", detail: null, error: agent ? null : "Branch 'ade/fix-login' not found" },
+      ...(agent ? [{ id: "agent", status: "failed", detail: null, error: "The agent stopped." }] : []),
+    ];
+    harness.exec("update cloud_launches set state = 'failed', error = 'It failed.', stages_json = ? where launch_id = ?", JSON.stringify(stages), wake.launchId);
+    await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+
+    const alive = harness.rows("select instance_id from cloud_computers where instance_id = ? and deleted_at is null", instanceId);
+    const lanes = ((await (await harness.send(OWNER, "GET", "/cloud/lanes/without-computer")).json()) as { lanes?: Array<{ laneId: string; branchRef: string | null }> }).lanes ?? [];
+    expect([alive.length, lanes.map((lane) => [lane.laneId, lane.branchRef])]).toEqual(kept ? [0, [[LANE, "ade/fix-login"]]] : [1, []]);
   });
 
   it("a send to a chat whose computer is gone continues it on one new computer: a second send rides the same launch", async () => {

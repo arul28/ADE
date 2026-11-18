@@ -736,6 +736,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     };
     const config = record.laneConfig;
     let lane: LaneSummary;
+    let branchNote: string | null = null;
     if (config?.mode === "existing") {
       if (!config.branchRef) throw new Error("Importing a branch needs a branch ref.");
       if (!deps.laneService.importBranch) throw new Error("This runtime cannot import an existing branch.");
@@ -746,9 +747,10 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
             return null;
           })
         : null;
+      branchNote = madeFromBackup?.note ?? null;
       lane = await deps.laneService.importBranch(
         {
-          branchRef: madeFromBackup ?? config.branchRef,
+          branchRef: madeFromBackup?.branch ?? config.branchRef,
           name: record.snapshot.laneName,
           ...(madeFromBackup ? { publishUpstream: false } : {}),
         },
@@ -805,7 +807,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     }
     // The start's fallbacks (no local branch, nothing to copy, a copy that
     // failed) finished the checkout another way than asked: say so.
-    const notes = [...(lane.createdFrom?.notes ?? []), ...linkNotes, ...(restoreNote ? [restoreNote] : [])];
+    const notes = [...(lane.createdFrom?.notes ?? []), ...(branchNote ? [branchNote] : []), ...linkNotes, ...(restoreNote ? [restoreNote] : [])];
     setStage(record, "checkout", notes.length ? "warning" : "done", {
       percent: 100,
       detail: totalFiles > 0 ? `${totalFiles.toLocaleString("en-US")} files` : null,

@@ -251,7 +251,8 @@ function subscribe(listener: () => void): () => void {
 /**
  * The queue of one chat, for its pane. The address is the chat's saved copy
  * (its computer's machine key); a chat with no saved copy has no queue.
- * Reads the queue when the chat opens and when the window gets focus.
+ * Reads the queue when the chat opens, when the window gets focus, and when
+ * ADE Cloud's status changes (a launch that carries a message ended).
  */
 export function useAdeCloudChatQueue(args: { pin: OpenProjectBinding | null | undefined; sessionId: string | null | undefined }): AdeCloudChatQueueState & {
   address: { machineKey: string; chatId: string } | null;
@@ -276,7 +277,11 @@ export function useAdeCloudChatQueue(args: { pin: OpenProjectBinding | null | un
     refresh();
     const onFocus = () => refresh();
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    const off = window.ade?.cloud?.onStatusChanged?.(refresh) ?? null;
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      off?.();
+    };
   }, [chatId, machineKey, refresh]);
   const cancel = useCallback(async (messageId: string) => {
     if (!machineKey || !chatId) return;

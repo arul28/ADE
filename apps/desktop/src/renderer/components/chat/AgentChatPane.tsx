@@ -6321,6 +6321,10 @@ export function AgentChatPane({
   // computer is asleep or a new one is set up. Account level, by the chat's
   // machine key; read on open and focus only (`useAdeCloudChatQueue`).
   const cloudQueue = useAdeCloudChatQueue({ pin: chatForeignPin, sessionId: selectedSessionId });
+  // The send card follows this launch and shows its message; the queue list leaves that message out.
+  const followedCloudLaunchId = cloudQueueSend?.chatId === selectedSessionId && cloudQueueSend.wake === "launching"
+    ? cloudQueueSend.launchId
+    : null;
   // A queued row goes when its message arrives in the transcript. The user
   // message carries the `clientSendId` of its send, which is the row's
   // `messageId`, so a row matches by id first. An older host writes no id:
@@ -21807,8 +21811,8 @@ export function AgentChatPane({
         ) : null}
         {renderedSessionId === selectedSessionId ? (
           <CloudQueuedMessages
-            messages={cloudQueue.messages}
-            failed={cloudQueue.failed}
+            messages={cloudQueue.messages.filter((message) => !message.launchId || message.launchId !== followedCloudLaunchId)}
+            failed={cloudQueue.failed.filter((message) => !message.launchId || message.launchId !== followedCloudLaunchId)}
             waking={cloudQueue.waking && !(cloudQueueSend?.chatId === selectedSessionId && cloudQueueSend.wake === "launching")}
             style={RUNTIME_BANNER_STYLE}
             onCancel={cloudQueue.cancel}
