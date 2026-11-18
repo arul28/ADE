@@ -1,6 +1,13 @@
 {
   "name": "ade",
   "private": true,
+  "workspaces": [
+    "apps/account-directory",
+    "apps/password-key-service",
+    "apps/push-relay",
+    "apps/tunnel-relay",
+    "apps/webhook-relay"
+  ],
   "scripts": {
     "dev": "npm run dev:desktop",
     "dev:all": "node scripts/dev-all.mjs",

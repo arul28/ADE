@@ -148,12 +148,13 @@ Run in parallel — ensures lock files are in sync with package.json (mirrors CI
 cd apps/desktop && npm install
 cd apps/ade-cli && npm install
 cd apps/web && npm install
+npm install   # repo root: the Cloudflare Workers' one workspace
 ```
 
 After install, check for uncommitted lock file changes — a dirty lock file means `package.json` was modified without regenerating the lock, which will break CI's `npm ci`:
 
 ```bash
-git diff --name-only -- '*/package-lock.json'
+git diff --name-only -- package-lock.json '*/package-lock.json'
 ```
 
 This is a **hard gate**: if any lock file is dirty, stage it (`git add <path>`) and report it in the Phase 4 summary so the user commits it before pushing. Do not proceed past 3b with dirty lock files.

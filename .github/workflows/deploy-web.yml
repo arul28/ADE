@@ -25,6 +25,8 @@ on:
       - "apps/tunnel-relay/**"
       - "apps/push-relay/**"
       - "apps/password-key-service/**"
+      # The Workers' one workspace lockfile (root package.json "workspaces").
+      - "package-lock.json"
       - ".github/workflows/deploy-web.yml"
   workflow_dispatch:
 
@@ -81,14 +83,19 @@ jobs:
               - "apps/desktop/vite.webclient.config.ts"
             account-directory:
               - "apps/account-directory/**"
+              - "package-lock.json"
             webhook-relay:
               - "apps/webhook-relay/**"
+              - "package-lock.json"
             tunnel-relay:
               - "apps/tunnel-relay/**"
+              - "package-lock.json"
             push-relay:
               - "apps/push-relay/**"
+              - "package-lock.json"
             password-key-service:
               - "apps/password-key-service/**"
+              - "package-lock.json"
 
   webclient:
     needs: changes
@@ -153,7 +160,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: cd apps/account-directory && npm ci
+      # The Workers are one npm workspace; this installs it from the root lockfile.
+      - run: npm ci
       # The two parts of `npm run deploy:production`; see the top of this file.
       - name: Check deploy config and apply D1 migrations
         run: cd apps/account-directory && npm run deploy:production:prepare
@@ -187,7 +195,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: cd apps/webhook-relay && npm ci
+      - run: npm ci
       # The two parts of `npm run deploy`; see the top of this file.
       - name: Apply D1 migrations
         run: cd apps/webhook-relay && npm run deploy:prepare
@@ -219,7 +227,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: cd apps/tunnel-relay && npm ci
+      - run: npm ci
       - name: Deploy Worker
         run: cd apps/tunnel-relay && ../../scripts/ci/retry-cloudflare.sh npm run deploy -- --tag "$GITHUB_SHA" --message "main $GITHUB_SHA" --var "SENTRY_RELEASE:$SENTRY_RELEASE" --var "POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}" --upload-source-maps
       - name: Upload source maps to Sentry
@@ -274,7 +282,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: cd apps/password-key-service && npm ci
+      - run: npm ci
       - run: cd apps/password-key-service && ../../scripts/ci/retry-cloudflare.sh npm run deploy
 
   push-relay:
@@ -290,7 +298,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: cd apps/push-relay && npm ci
+      - run: npm ci
       # Not retried: deploy:ci also applies D1 migrations and triggers and
       # runs the auth smoke checks in one script.
       - name: Mint Clerk smoke tokens and deploy Worker

@@ -64,22 +64,22 @@ jobs:
           path: |
             apps/web/node_modules
           key: nm-web-v1-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
-      - name: Check webhook-relay node_modules cache
-        id: cache_webhook_relay
+      # The five Cloudflare Workers are one npm workspace (root package.json):
+      # one root lockfile, shared packages in the root node_modules, and only
+      # each Worker's own versions under apps/<worker>/node_modules.
+      - name: Check workers node_modules cache
+        id: cache_workers
         uses: actions/cache@v4
         with:
           lookup-only: true
           path: |
-            apps/webhook-relay/node_modules
-          key: nm-webhook-relay-v1-${{ runner.os }}-${{ hashFiles('apps/webhook-relay/package-lock.json') }}
-      - name: Check push-relay node_modules cache
-        id: cache_push_relay
-        uses: actions/cache@v4
-        with:
-          lookup-only: true
-          path: |
+            node_modules
+            apps/account-directory/node_modules
+            apps/password-key-service/node_modules
             apps/push-relay/node_modules
-          key: nm-push-relay-v1-${{ runner.os }}-${{ hashFiles('apps/push-relay/package-lock.json') }}
+            apps/tunnel-relay/node_modules
+            apps/webhook-relay/node_modules
+          key: nm-workers-v1-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Check sdk node_modules cache
         id: cache_sdk
         uses: actions/cache@v4
@@ -98,12 +98,11 @@ jobs:
           key: nm-chat-ui-v1-${{ runner.os }}-${{ hashFiles('packages/chat-ui/package-lock.json') }}
 
       - name: Install missing dependency groups (parallel)
-        if: steps.cache_core.outputs.cache-hit != 'true' || steps.cache_web.outputs.cache-hit != 'true' || steps.cache_webhook_relay.outputs.cache-hit != 'true' || steps.cache_push_relay.outputs.cache-hit != 'true' || steps.cache_sdk.outputs.cache-hit != 'true' || steps.cache_chat_ui.outputs.cache-hit != 'true'
+        if: steps.cache_core.outputs.cache-hit != 'true' || steps.cache_web.outputs.cache-hit != 'true' || steps.cache_workers.outputs.cache-hit != 'true' || steps.cache_sdk.outputs.cache-hit != 'true' || steps.cache_chat_ui.outputs.cache-hit != 'true'
         env:
           MISS_CORE: ${{ steps.cache_core.outputs.cache-hit != 'true' }}
           MISS_WEB: ${{ steps.cache_web.outputs.cache-hit != 'true' }}
-          MISS_WEBHOOK_RELAY: ${{ steps.cache_webhook_relay.outputs.cache-hit != 'true' }}
-          MISS_PUSH_RELAY: ${{ steps.cache_push_relay.outputs.cache-hit != 'true' }}
+          MISS_WORKERS: ${{ steps.cache_workers.outputs.cache-hit != 'true' }}
           MISS_SDK: ${{ steps.cache_sdk.outputs.cache-hit != 'true' }}
           MISS_CHAT_UI: ${{ steps.cache_chat_ui.outputs.cache-hit != 'true' }}
         run: |
@@ -112,8 +111,7 @@ jobs:
           # The same script the core restore action runs on a miss.
           if [ "$MISS_CORE" = "true" ]; then scripts/ci/install-core-node-modules.sh & pids+=($!); fi
           if [ "$MISS_WEB" = "true" ]; then (cd apps/web && npm ci) & pids+=($!); fi
-          if [ "$MISS_WEBHOOK_RELAY" = "true" ]; then (cd apps/webhook-relay && npm ci) & pids+=($!); fi
-          if [ "$MISS_PUSH_RELAY" = "true" ]; then (cd apps/push-relay && npm ci) & pids+=($!); fi
+          if [ "$MISS_WORKERS" = "true" ]; then npm ci & pids+=($!); fi
           if [ "$MISS_SDK" = "true" ]; then (cd packages/sdk && npm ci) & pids+=($!); fi
           if [ "$MISS_CHAT_UI" = "true" ]; then (cd packages/chat-ui && npm ci) & pids+=($!); fi
           fail=0
@@ -348,9 +346,8 @@ jobs:
   # The five Cloudflare Workers in one job, with one step per check. Every
   # check runs even when an earlier step failed (`!cancelled()`), so one
   # failure does not hide another, and the failed step names its check.
-  # webhook-relay and push-relay restore their node_modules from the install
-  # job. tunnel-relay, account-directory and password-key-service each have a
-  # lockfile outside the shared cache, so they install here, in parallel.
+  # They are one npm workspace and restore its node_modules from the install
+  # job; a miss runs the one root `npm ci` here.
   services:
     needs: install
     runs-on: ubuntu-latest
@@ -362,36 +359,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: actions/cache/restore@v4
+      - name: Restore workers node_modules cache
+        id: cache_workers
+        uses: actions/cache/restore@v4
         with:
           path: |
-            apps/webhook-relay/node_modules
-          key: nm-webhook-relay-v1-${{ runner.os }}-${{ hashFiles('apps/webhook-relay/package-lock.json') }}
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
+            node_modules
+            apps/account-directory/node_modules
+            apps/password-key-service/node_modules
             apps/push-relay/node_modules
-          key: nm-push-relay-v1-${{ runner.os }}-${{ hashFiles('apps/push-relay/package-lock.json') }}
-      - name: Install tunnel-relay, account-directory and password-key-service
-        run: |
-          set -euo pipefail
-          apps=(tunnel-relay account-directory password-key-service)
-          pids=()
-          for app in "${apps[@]}"; do
-            (cd "apps/$app" && npm ci) > "$RUNNER_TEMP/npm-ci-$app.log" 2>&1 &
-            pids+=($!)
-          done
-          fail=0
-          for i in "${!apps[@]}"; do
-            if wait "${pids[$i]}"; then
-              echo "npm ci passed in apps/${apps[$i]}"
-            else
-              echo "::error::npm ci failed in apps/${apps[$i]}"
-              cat "$RUNNER_TEMP/npm-ci-${apps[$i]}.log"
-              fail=1
-            fi
-          done
-          exit "$fail"
+            apps/tunnel-relay/node_modules
+            apps/webhook-relay/node_modules
+          key: nm-workers-v1-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install the workers workspace (no cache entry)
+        if: steps.cache_workers.outputs.cache-hit != 'true'
+        run: npm ci
       - name: "webhook-relay: typecheck"
         if: ${{ !cancelled() }}
         run: cd apps/webhook-relay && npm run typecheck

@@ -300,8 +300,11 @@ refused token reaches Sentry on each tick.
 
 ### Local development
 
+The five Workers are one npm workspace, so one `npm install` at the repo root
+installs this one too (from the root `package-lock.json`).
+
 ```sh
-(cd apps/webhook-relay && npm install)
+npm install
 npm --prefix apps/webhook-relay run typecheck
 npm --prefix apps/webhook-relay run test
 npm --prefix apps/webhook-relay run build

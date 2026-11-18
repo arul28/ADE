@@ -73,11 +73,8 @@ ios-signing/
 /.playwright-mcp
 /.codex-derived-data
 package-lock.json
-!/apps/webhook-relay/package-lock.json
-!/apps/push-relay/package-lock.json
-!/apps/tunnel-relay/package-lock.json
-!/apps/account-directory/package-lock.json
-!/apps/password-key-service/package-lock.json
+# The Cloudflare Workers' one workspace lockfile (root package.json "workspaces").
+!/package-lock.json
 !/packages/sdk/package-lock.json
 !/packages/chat-ui/package-lock.json
 !/packages/demo/package-lock.json
