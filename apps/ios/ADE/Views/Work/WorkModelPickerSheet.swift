@@ -325,6 +325,12 @@ struct WorkModelPickerSheet: View {
       if case .providerGroup(let key, _) = selection {
         await refreshCatalog(for: key)
       }
+      // The host lists OpenCode only once it has read OpenCode's models for
+      // this project. A group that is not listed has no tile to tap, so its
+      // per-group refresh never runs: ask for it here.
+      if cloudCatalog == nil, rawCatalogGroups?.contains(where: { $0.key == "opencode" }) != true {
+        await refreshCatalog(for: "opencode")
+      }
     }
     // The scoped catalog is cached, so a change to either scoping input must
     // re-scope it. Both are `let`s the parent can replace while this `@State`

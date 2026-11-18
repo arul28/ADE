@@ -6895,13 +6895,29 @@ final class SyncService: ObservableObject {
       resetChatEventState(clearHistory: false)
       resetTerminalSubscriptionState(clearHistory: true)
       logProjectSwitchPhase("reconnect_started")
-      let connectedEndpoint = try await connectUsingProfile(
-        profile,
-        token: resolvedToken,
-        connectAttemptGeneration: connectAttemptGeneration,
-        preferLiveCandidatesOnly: false,
-        publishConnecting: true
-      )
+      // The machine just answered the switch, so it is up. A socket that does
+      // not open in time means it is busy opening the project (a slow disk
+      // can hold it for seconds), not gone: try again before failing the open.
+      var switchedEndpoint: (host: String, port: Int)?
+      var openTimeoutRetries = 0
+      while switchedEndpoint == nil {
+        do {
+          switchedEndpoint = try await connectUsingProfile(
+            profile,
+            token: resolvedToken,
+            connectAttemptGeneration: connectAttemptGeneration,
+            preferLiveCandidatesOnly: false,
+            publishConnecting: true
+          )
+        } catch where syncIsSocketOpenTimeout(error)
+          && openTimeoutRetries < Self.projectSwitchOpenTimeoutRetries
+          && isCurrentConnectAttempt(connectAttemptGeneration)
+          && isCurrentProjectSelection(selectionGeneration) {
+          openTimeoutRetries += 1
+          syncConnectLog.notice("ADE_SYNC_TRACE project_switch open_timeout retry=\(openTimeoutRetries, privacy: .public)")
+        }
+      }
+      guard let connectedEndpoint = switchedEndpoint else { return }
       guard isCurrentConnectAttempt(connectAttemptGeneration), isCurrentProjectSelection(selectionGeneration) else { return }
       currentAddress = connectedEndpoint.host
       if dismissHome { projectHubPresented = false }
@@ -24656,6 +24672,10 @@ final class SyncService: ObservableObject {
     return true
   }
 
+  /// More tries for a socket that did not open after a project switch the
+  /// machine already accepted (each try waits the full open timeout).
+  static let projectSwitchOpenTimeoutRetries = 2
+
   private func awaitSocketOpen(_ task: URLSessionWebSocketTask) async throws {
     try await withCheckedThrowingContinuation { continuation in
       let taskIdentifier = task.taskIdentifier
@@ -24670,7 +24690,7 @@ final class SyncService: ObservableObject {
             NSError(
               domain: "ADE",
               code: 25,
-              userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the machine connection to open."]
+              userInfo: [NSLocalizedDescriptionKey: syncSocketOpenTimeoutMessage]
             )
           )
         )
@@ -30587,4 +30607,14 @@ extension SyncService {
     }
     cloudMachineFleetKeys = Set(keys)
   }
+}
+
+/// The socket-open timeout's sentence: the one failure a busy machine causes.
+let syncSocketOpenTimeoutMessage = "Timed out waiting for the machine connection to open."
+
+/// Whether `error` is a socket that did not open in time.
+func syncIsSocketOpenTimeout(_ error: Error) -> Bool {
+  let nsError = error as NSError
+  return nsError.domain == "ADE" && nsError.code == 25
+    && nsError.localizedDescription == syncSocketOpenTimeoutMessage
 }
