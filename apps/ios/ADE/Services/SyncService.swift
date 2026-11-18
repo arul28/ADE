@@ -29552,6 +29552,7 @@ extension SyncService {
     var fields = (focusedChatStreamTraces[trimmed] ?? ChatStreamTrace()).fields
     fields["path"] = "focused"
     fields["connState"] = connectionState.rawValue
+    fields["hostAppVersion"] = focusedSocketMachineKey.flatMap { hostAppVersionByMachineKey[$0] } ?? "nil"
     fields["canSendLive"] = String(canSendLiveRequests())
     fields["hostChatStreaming"] = String(supportsChatStreaming)
     fields["hostChatLogV2"] = String(supportsChatLogV2)
