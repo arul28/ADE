@@ -562,6 +562,10 @@ export class ProjectScopeRegistry {
       // project it now names instead of being told the project is unknown.
       const movedTo = this.projectRegistry.resolveMovedProjectId(projectId);
       if (movedTo && movedTo !== projectId) return await this.get(movedTo, options);
+      // A window that knows the project only from the account names its
+      // repository; this machine's one checkout of it is that project.
+      const sameRepository = this.projectRegistry.resolveRepositoryProjectId(projectId);
+      if (sameRepository) return await this.get(sameRepository, options);
       this.reportUnknownProjectId(projectId, options.requestedBy);
       throw new Error(`Unknown projectId: ${projectId}`);
     }
