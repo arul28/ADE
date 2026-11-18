@@ -940,6 +940,16 @@ extension SyncService {
     return out
   }
 
+  /// Before opening a chat a launch just started: the server's list and the
+  /// account's machines, both fresh. The launch made a new computer, and a
+  /// machine list from before it would route the chat to a "deleted" copy.
+  func readCloudForLaunchedChat() async {
+    refreshCloudServerIfStale(force: true)
+    async let machines: Void = AccountService.shared.loadMachines()
+    await cloudServerReadTask?.value
+    await machines
+  }
+
   /// The fleet key of a saved chat's computer that left the account: no
   /// device id names it, so its account machine key does.
   func cloudSavedFleetKey(accountMachineKey: String) -> String {

@@ -1812,8 +1812,7 @@ struct WorkRootListScreen: View, Equatable {
       onCloudChatReady: { chatId in
         // A chat started on ADE Cloud runs: read the server's list so the
         // chat routes to its lane's computer, then open it.
-        syncService.refreshCloudServerIfStale(force: true)
-        await syncService.cloudServerReadTask?.value
+        await syncService.readCloudForLaunchedChat()
         selectedSessionTransitionId = nil
         await showNewChatRoute(WorkSessionRoute(sessionId: chatId))
       }
@@ -1891,8 +1890,7 @@ struct WorkRootListScreen: View, Equatable {
             WorkCloudLaunchCard(entry: entry) {
               guard let chatId = entry.record?.sessionId else { return }
               Task { @MainActor in
-                syncService.refreshCloudServerIfStale(force: true)
-                await syncService.cloudServerReadTask?.value
+                await syncService.readCloudForLaunchedChat()
                 await showNewChatRoute(WorkSessionRoute(sessionId: chatId))
               }
             }
