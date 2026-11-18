@@ -171,6 +171,7 @@ import {
   MAX_LIVE_QUOTA_WINDOWS,
   buildRollupRows,
   mergeAccountUsageStats,
+  omitUnknownAccountCounts,
   type AccountUsageContribution,
 } from "./accountUsageRollup";
 import { createPeerLiveQuota, type AccountLiveQuotaFetcher } from "./peerLiveQuota";
@@ -6572,6 +6573,7 @@ export function createUsageTrackingService({
       // is this machine's numbers with an explanation — not an empty page.
       logger.warn("usage.account.merge_failed", { error: getErrorMessage(error) });
       stats.scope = "account";
+      omitUnknownAccountCounts(stats);
       stats.sourceNotes = [
         ...(stats.sourceNotes ?? []),
         "Couldn't add up the other computers — showing this one only.",
