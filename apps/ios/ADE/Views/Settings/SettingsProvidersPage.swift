@@ -42,7 +42,14 @@ struct SettingsProvidersPage: View {
         // No computer of the person's own: the providers on ADE Cloud.
         SettingsCloudAccountProviders(syncService: syncService)
       } else if !connected {
-        ADESettingsNotice(message: SettingsPageCopy.connectMachine)
+        // The account's ADE Cloud providers need no computer of the person's
+        // own: with theirs offline, the cloud ones still show and save.
+        if AccountService.shared.identity != nil && syncService.cloudSettingsOffered {
+          ADESettingsNotice(message: "Connect a machine to change its own providers.", tone: .neutral)
+          SettingsCloudAccountProviders(syncService: syncService)
+        } else {
+          ADESettingsNotice(message: SettingsPageCopy.connectMachine)
+        }
       } else if !syncService.supportsRemoteAction("ai.getStatus") {
         ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))
       } else {

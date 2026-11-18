@@ -25,9 +25,13 @@ private let cloudPaneLog = Logger(subsystem: "com.ade.ios", category: "cloud-pan
 ///
 /// Two ways in, both behind `sync.cloudAvailable && sync.cloudSupported`:
 /// Work › ⋯ › ADE Cloud (this sheet) and Settings › ADE Cloud
-/// (`CloudSettingsPage`). Every read and write goes to the machine the phone
-/// is connected to (`cloud.read` / `cloud.write`); the account's ADE Cloud is
-/// the same from any of the person's machines.
+/// (`CloudSettingsPage`). Reads go to the machine the phone is connected to
+/// (`cloud.read`); with none, the phone reads the account server itself. A
+/// computer's actions (sleep, wake, size, free, clear caches, keep, update,
+/// delete) work with no computer of the person's own: they go to the account
+/// server with the phone's own sign-in, the same routes the desktop uses
+/// (sleep, wake and a no-lane delete still go through a connected machine's
+/// `cloud.write`). The account's ADE Cloud is the same from any device.
 ///
 /// Layouts: on a phone and the Duo's outer display, one page that pushes a
 /// computer. On the inner display held as a book, the page on the left and
@@ -58,9 +62,6 @@ struct CloudPaneSheet: View {
       default:
         NavigationStack {
           CloudDashboardScreen(store: store, onClose: { dismiss() }, pushes: true)
-            .navigationDestination(for: CloudPhoneMachine.self) { machine in
-              CloudMachineScreen(store: store, instanceId: machine.instanceId)
-            }
         }
       }
     }
@@ -143,9 +144,6 @@ struct CloudSettingsPage: View {
 
   var body: some View {
     CloudDashboardScreen(store: store, onClose: nil, pushes: true)
-      .navigationDestination(for: CloudPhoneMachine.self) { machine in
-        CloudMachineScreen(store: store, instanceId: machine.instanceId)
-      }
       .task { await store.reload() }
       .cloudLaneActionsHost()
   }
@@ -154,9 +152,10 @@ struct CloudSettingsPage: View {
 /// A cloud lane's "Manage computer": the same `CloudMachineScreen` as ADE
 /// Cloud's dashboard, for one computer. It shows the computer's state, size,
 /// disk and last run; opens the lane's work (at rest when the computer is
-/// asleep); sleeps or wakes it from a controlling device; deletes the lane
-/// (with its computer, from the account, no wake); and downloads the lane's
-/// saved work. Size and freeing the computer stay in the ADE desktop app.
+/// asleep); sleeps or wakes it; changes its size; frees its computer (the
+/// lane stays); clears its caches; deletes the lane (with its computer, from
+/// the account, no wake); and downloads the lane's saved work. All of it
+/// works with no computer of the person's own.
 struct CloudLaneManageSheet: View {
   @StateObject private var store: CloudPaneStore
   let instanceId: String
@@ -261,8 +260,10 @@ final class CloudPaneStore: ObservableObject {
 
   /// No connected computer runs this page: the phone reads the account
   /// server itself (`/cloud/account`, `/cloud/instances`, `/cloud/limits`,
-  /// `/cloud/sign-ins`). Actions on one computer then need ADE on a computer.
+  /// `/cloud/sign-ins`), and acts on each computer there too.
   @Published private(set) var isDirect = false
+  /// Why the direct read of the account's computers failed; nil once it worked.
+  @Published private(set) var instancesError: String?
   /// The revision of the limits a direct write names (`ifRevision`).
   private var limitsRevision: String?
 
@@ -282,6 +283,7 @@ final class CloudPaneStore: ObservableObject {
       return
     }
     isDirect = false
+    instancesError = nil
     do {
       // The full list: each computer's lane, size, disk parts and last run,
       // and the whole account. An older brain ignores `detail` and sends its
@@ -318,14 +320,27 @@ final class CloudPaneStore: ObservableObject {
       return
     }
     async let accountRead = Self.readDirect("account") { try await client.account() }
-    async let instancesRead = Self.readDirect("instances") { try await client.instances() }
+    // The computers' read keeps its failure: the lanes card shows the
+    // server's sentence then, never "No cloud lanes yet".
+    async let instancesRead: Result<[CloudServerInstance], Error> = {
+      do { return .success(try await client.instances()) } catch { return .failure(error) }
+    }()
     limitsError = nil
     async let limitsRead = client.agentLimits()
-    let (account, instances) = await (accountRead, instancesRead)
+    let (account, instancesResult) = await (accountRead, instancesRead)
+    let instances = try? instancesResult.get()
+    if case .failure(let error) = instancesResult {
+      instancesError = cloudPhoneWords(cloudServerFailureMessage(error)) ?? "ADE Cloud couldn't list your computers. Try again in a moment."
+      cloudPaneLog.notice("cloud_pane read=instances failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+    } else {
+      instancesError = nil
+    }
     now = Date()
     if let account { self.account = account }
     if let instances {
-      let list = instances.filter { !$0.isGone }.compactMap(cloudPhoneMachine(from:))
+      let live = instances.filter { !$0.isGone }
+      serverInstances = Dictionary(live.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+      let list = live.compactMap(cloudPhoneMachine(from:))
       machines = Self.ordered(list, now: now)
       if selectedId == nil || machine(selectedId!) == nil { selectedId = machines.first?.instanceId }
     }
@@ -435,6 +450,165 @@ final class CloudPaneStore: ObservableObject {
     await reload()
   }
 
+  // MARK: Actions on one computer
+
+  /// The phone can act on a computer: through the connected computer's
+  /// `cloud.write`, or with its own sign-in straight on the account server
+  /// (no computer of the person's own needed).
+  var canManage: Bool { canWrite || AccountService.shared.isSignedIn }
+
+  /// Sleep, wake and a no-lane delete go through the connected computer when
+  /// one runs this page and lets the phone write (as before); otherwise the
+  /// phone asks the account server itself. Every other action always asks
+  /// the account server: it is the account's, the same from any device.
+  private var writesThroughComputer: Bool { !isDirect && canWrite }
+
+  /// The account server's rows from the last direct read, by id.
+  @Published private(set) var serverInstances: [String: CloudServerInstance] = [:]
+
+  /// The account server's row for a computer (its update facts): this page's
+  /// last direct read, else the phone's own read of the account's computers.
+  func serverInstance(_ instanceId: String) -> CloudServerInstance? {
+    serverInstances[instanceId] ?? syncService.cloudServerInstances.first { $0.id == instanceId }
+  }
+
+  func sleep(_ machine: CloudPhoneMachine) async {
+    if writesThroughComputer { return await run("sleep", on: machine) }
+    await act(on: machine) { client in
+      try await client.sleep(instanceId: machine.instanceId)
+      return nil
+    }
+  }
+
+  func wake(_ machine: CloudPhoneMachine) async {
+    if writesThroughComputer { return await run("wake", on: machine) }
+    await act(on: machine) { client in
+      try await client.start(instanceId: machine.instanceId)
+      return nil
+    }
+  }
+
+  /// Deletes a computer that holds no lane, and takes it off the account's machines.
+  func deleteComputer(_ machine: CloudPhoneMachine) async {
+    if writesThroughComputer {
+      await run("delete", on: machine)
+      if actionError == nil { CloudLaneActions.shared.deleted(instanceId: machine.instanceId) }
+      return
+    }
+    await act(on: machine, title: "Deleted \(machine.displayName)", gone: true) { client in
+      guard try await client.deleteInstanceConfirmed(machine.instanceId) else {
+        return CloudComputerOutcome(ok: false, message: "ADE Cloud took the delete but hasn't finished it yet. Check again in a minute; if the computer is still there, delete it again.")
+      }
+      let account = AccountService.shared
+      if let key = machine.machineKey,
+         let row = account.machines.first(where: { $0.machineKey.caseInsensitiveCompare(key) == .orderedSame }) {
+        do {
+          try await account.removeMachineFromAccount(row)
+        } catch {
+          cloudPaneLog.notice("cloud_pane delete account_row=left error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+          return CloudComputerOutcome(ok: true, message: "Deleted on ADE Cloud. ADE couldn't take it off your computers; remove it in Settings › Machines.")
+        }
+      }
+      return CloudComputerOutcome(ok: true, message: "Deleted on ADE Cloud and removed from ADE.")
+    }
+  }
+
+  /// "Keep the lane, free its computer": the work is pushed, the computer
+  /// goes, the lane and its chats stay. It takes minutes.
+  func freeComputer(_ machine: CloudPhoneMachine) async {
+    let name = machine.displayName
+    await act(on: machine, title: "Freed \(name)'s computer", failureTitle: "Kept \(name)'s computer", gone: true) { client in
+      await client.freeLane(instanceId: machine.instanceId)
+    }
+  }
+
+  /// A size of the same kind, now: the computer restarts on it.
+  func changeSize(_ machine: CloudPhoneMachine, to tier: CloudPhoneTier) async {
+    await act(on: machine, title: "Changing \(machine.displayName) to \(tier.label)") { client in
+      await client.changeSize(instanceId: machine.instanceId, to: tier)
+    }
+  }
+
+  func clearCaches(_ machine: CloudPhoneMachine) async {
+    await act(on: machine, title: "Cleared caches on \(machine.displayName)") { client in
+      await client.clearCaches(instanceId: machine.instanceId)
+    }
+  }
+
+  /// "Keep it": the idle cleanup's clock starts again, with no wake.
+  func keep(_ machine: CloudPhoneMachine) async {
+    await act(on: machine, title: "Kept \(machine.displayName)") { _ in
+      if let failure = await AccountCloudStore.shared.keep(instanceId: machine.instanceId, using: syncService) {
+        return CloudComputerOutcome(ok: false, message: failure)
+      }
+      return CloudComputerOutcome(ok: true, message: "ADE won't delete it for not being used. Its idle clock starts again.")
+    }
+  }
+
+  /// Moves the computer to its channel's newest image; it restarts on it.
+  func update(_ machine: CloudPhoneMachine) async {
+    await act(on: machine, title: "Updating \(machine.displayName)") { _ in
+      if let failure = await AccountCloudStore.shared.updateComputer(instanceId: machine.instanceId, using: syncService) {
+        return CloudComputerOutcome(ok: false, message: failure)
+      }
+      return CloudComputerOutcome(ok: true, message: "It restarts and is back in a few minutes.")
+    }
+  }
+
+  /// One action on a computer, straight on the account server with the
+  /// phone's own sign-in. Its buttons wait meanwhile; a long one (a free
+  /// pushes work for minutes) goes on for a while with the app in the
+  /// background. It worked: a toast with its sentence (`title`). It didn't:
+  /// the server's sentence in `actionError` (and a toast with `failureTitle`).
+  /// `gone`: the computer is deleted after it worked, so its pages close and
+  /// the phone's own list reads again. The page reads again after.
+  private func act(
+    on machine: CloudPhoneMachine,
+    title: String? = nil,
+    failureTitle: String? = nil,
+    gone: Bool = false,
+    _ body: (CloudServerClient) async throws -> CloudComputerOutcome?
+  ) async {
+    let instanceId = machine.instanceId
+    guard !busy.contains(instanceId) else { return }
+    busy.insert(instanceId)
+    actionError = nil
+    var background = UIBackgroundTaskIdentifier.invalid
+    background = UIApplication.shared.beginBackgroundTask(withName: "ade.cloud.computer-action") {
+      UIApplication.shared.endBackgroundTask(background)
+      background = .invalid
+    }
+    var worked = false
+    if let client = await syncService.cloudServerClient() {
+      do {
+        let outcome = try await body(client)
+        worked = outcome?.ok ?? true
+        if let outcome, !outcome.ok {
+          // The phone never points at a purchase (App Store rule).
+          actionError = cloudPhoneWords(outcome.message) ?? "ADE Cloud couldn't do that."
+          if let failureTitle { CloudLaneActions.shared.toast = ADEToastMessage(text: failureTitle, kind: .failure, detail: actionError) }
+        } else if let title {
+          CloudLaneActions.shared.toast = ADEToastMessage(text: title, detail: outcome.flatMap { cloudPhoneWords($0.message) })
+        }
+      } catch {
+        actionError = cloudPhoneWords(cloudServerFailureMessage(error)) ?? "ADE Cloud couldn't do that."
+      }
+    } else {
+      actionError = "Sign in to ADE, then try again."
+    }
+    if worked { ADEHaptics.success() } else { ADEHaptics.error() }
+    busy.remove(instanceId)
+    if worked && gone {
+      CloudLaneActions.shared.deleted(instanceId: instanceId)
+      await syncService.refreshCloudServerInstances()
+    }
+    await reload()
+    if background != .invalid {
+      UIApplication.shared.endBackgroundTask(background)
+      background = .invalid
+    }
+  }
+
   func setLimits(_ args: [String: Any]) async {
     actionError = nil
     if isDirect {
@@ -510,6 +684,19 @@ func cloudPhoneMachine(from instance: CloudServerInstance) -> CloudPhoneMachine?
     object["lane"] = lane
   }
   object["pastDue"] = instance.pastDue
+  // Its size, disk and last run: the computer page's facts, sizes and disk parts.
+  if let type = instance.type { object["type"] = type }
+  if let resources = instance.resources {
+    object["resources"] = ["cpu": resources.cpu, "memoryGb": resources.memory, "diskGb": resources.disk]
+  }
+  if let lastActiveAt = instance.lastActiveAt { object["lastActiveAtMs"] = lastActiveAt }
+  // The server's `created` is in seconds.
+  if let created = instance.created { object["createdAtMs"] = created * 1000 }
+  if let usage = instance.diskUsage,
+     let data = try? JSONEncoder().encode(usage),
+     let json = try? JSONSerialization.jsonObject(with: data) {
+    object["diskUsage"] = json
+  }
   // "Safe to delete" and the delete's warning read it.
   if let work = instance.laneWork {
     object["laneWork"] = ["unpushed": work.unpushed as Any? ?? NSNull(), "prState": work.prState as Any? ?? NSNull()]

@@ -137,7 +137,7 @@ func cloudIdleCleanupWhen(_ deletesAt: Double, now: Double) -> String {
 }
 
 /// One idle cleanup notice on the phone, in the desktop's words, with how to
-/// keep it from here (send a message in the lane) since "Keep it" is on the desktop.
+/// keep it: a message in the lane, or "Keep it" on the computer's page.
 func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) -> String {
   let subject = entry.laneName.map { $0.isEmpty ? entry.displayName : "\($0)'s computer" } ?? entry.displayName
   if let held = entry.held {
@@ -147,7 +147,7 @@ func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double
     ? "Its work that isn't on GitHub is saved in ADE Cloud, and the lane and its chats stay."
     : "Its work that isn't on GitHub is saved in ADE Cloud first."
   let ignored = cloudIgnoredFilesShort(entry.ignoredFiles)
-  return "\(subject) will be \(cloudIdleCleanupWhen(entry.deletesAt, now: now)), on \(cloudDate(entry.deletesAt)), because it isn't used. \(save)\(ignored) To keep it, send a message in the lane, or choose Keep it in the ADE desktop app."
+  return "\(subject) will be \(cloudIdleCleanupWhen(entry.deletesAt, now: now)), on \(cloudDate(entry.deletesAt)), because it isn't used. \(save)\(ignored) To keep it, send a message in the lane, or choose Keep it on its computer's page."
 }
 
 /// The ignored files a delete loses, in one short sentence (with a leading space), or "" when none were found.
