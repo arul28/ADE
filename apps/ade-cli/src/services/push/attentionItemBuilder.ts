@@ -18,6 +18,7 @@ import type {
 } from "../../../../desktop/src/shared/types/chat";
 import { isSessionSnoozed } from "../../../../desktop/src/shared/sessionCanonicalState";
 import { scheduledWakeState } from "../../../../desktop/src/shared/sessionStatusPresentation";
+import { laneDisplayName } from "../../../../desktop/src/shared/laneDisplayName";
 import { withActivityFingerprints } from "./activityFingerprint";
 import type { StoredUserMessage } from "./pushRegistrationStore";
 
@@ -732,7 +733,8 @@ async function buildRosterItems(
   if (!context.includeRoster) return [];
   const projects = await context.loadRoster();
   const items = projects.flatMap((project): AttentionItem[] => {
-    const laneNames = new Map(project.lanes.map((lane) => [lane.id, lane.name]));
+    // Every screen calls the primary lane "Main checkout" (its stored name is "Primary").
+    const laneNames = new Map(project.lanes.map((lane) => [lane.id, laneDisplayName(lane)]));
     const lanePrWaits = new Map(project.lanes.map((lane) => [lane.id, lane.prWaitingReason ?? null]));
     const rosterChatIds = new Set(project.chats.map((chat) => chat.id));
     return project.chats.filter((chat) => {
