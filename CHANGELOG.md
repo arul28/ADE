@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.131] - 2026-11-18
+
+### Desktop and web
+
+- Update gate: ADE can ask a build that is too old to update before it keeps working, on every surface (#2381).
+- Delete account in Settings › Account (#2381).
+- ADE Cloud: approval cards for deletes and resizes in full-auto chats, drafts list models and branches, launches no longer need the tab's computer online (#2388, #2389, #2395).
+- Sends to a just-slept cloud computer go to the queue; slow-link typing and macOS redraw improvements; Sentry fixes (#2364, #2369, #2373, #2329, #2331, #2374, #2377, #2378).
+
+### iOS
+
+- ADE Cloud managed fully from the phone with no computer connected; Hub composer cloud lanes; delete and sleep fixes (#2379, #2385, #2387, #2390, #2393, #2396, #2398, #2399).
+
 ## [1.2.130] - 2026-11-18
 
 ### Desktop and web
@@ -2874,6 +2887,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.130...HEAD
+[1.2.131]: https://github.com/arul28/ADE/compare/v1.2.130...v1.2.131
 [1.2.130]: https://github.com/arul28/ADE/compare/v1.2.129...v1.2.130
 [1.2.129]: https://github.com/arul28/ADE/compare/v1.2.128...v1.2.129
 [1.2.128]: https://github.com/arul28/ADE/compare/v1.2.127...v1.2.128

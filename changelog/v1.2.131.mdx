@@ -1,0 +1,45 @@
+---
+title: "v1.2.131"
+description: "Release notes for ADE v1.2.131 - November 18, 2026"
+---
+
+ADE 1.2.131 makes ADE Cloud work fully from the iPhone and the web with no computer of your own, adds Delete account in the app, and lets ADE ask an old build to update before it keeps working.
+
+## New
+
+- ADE can ask a build that is too old to update before it keeps working, on the desktop, ADE Web, the iPhone and your other machines, with an Update button that finishes the update; your work stays where it is (#2381).
+- You can delete your ADE account from Settings › Account, on the desktop, the web and the iPhone (#2381).
+- In a full-auto chat, an agent asks you on a card before it deletes or resizes a cloud computer or loosens agent limits (#2389).
+- Starting work on ADE Cloud no longer needs the tab's computer to be online (#2388).
+
+## Improved
+
+- ADE Cloud drafts list the provider's models and the repository's GitHub branches, and each model can be picked (#2389, #2395).
+- A cloud launch starts at the disk size its repository's setup grew to, and setup failures show on their own step (#2383, #2389).
+- Typing and reconnects work well on a slow link to another machine (#2329).
+- The window no longer redraws in full for every small change on macOS (#2331).
+- A message to a CLI is typed at once when only its subagents are still running (#2339).
+- A quick reply shows at once instead of under the send animation (#2391).
+- New users' sidebar nudges and the import pill wait until the tour ends, and the invite comes before the star (#2365).
+
+## Fixed
+
+- A send to a cloud computer that just went to sleep goes to the queue within seconds, also on the web, and a resent failed message clears (#2364, #2369, #2373).
+- A chat named after its turn keeps its title when its computer sleeps (#2370).
+- A failed launch that a later launch replaced leaves the active list, and an old failed launch hides once its lane is on a new computer (#2367, #2363).
+- An ADE Cloud lane computer never adds a second Main checkout (#2366).
+- The account Usage and Activity views count every machine and no longer show a false "0 sessions" (#2368, #2376).
+- Broken work copies never touch the main checkout, Windows stays signed in, and scheduled sends to another machine fire (#2371).
+- A long chat opens at its end without a blank frame, and MCP App pages with many declared origins run again (#2382, #2386).
+- Live Sentry issues after v1.2.130 are fixed: relay budget waits, account read noise, a missing Claude thread, an attachment path outside the chat's roots, and a stale-session rescan after a project database vanished (#2374, #2377, #2378).
+- "Working now" names the main checkout, and the grid tip counts only the open project's chats (#2372).
+- CI, review devices and dev builds stay out of real-user counts (#2352).
+
+## iOS
+
+- You can manage ADE Cloud fully from the phone with no computer connected: sleep, wake, delete, keep, update, change size, free a computer and clear caches (#2390, #2399).
+- The Hub composer always offers ADE Cloud, starts a cloud lane from it, works with the phone's machine offline, and picks a project you just added (#2385, #2387, #2393).
+- ADE Cloud chats open from their launch card, and the account view lists slept lanes and their saved chats (#2387, #2362).
+- A cloud lane delete says Deleted only when the computer is gone, and the lane leaves Lanes and Work at once (#2396, #2398).
+- Delete lane works from Settings › ADE Cloud, sleep shows the computer asleep, and held free hours read "on hold" instead of "0 of 0 h" (#2399).
+- ADE Cloud is on in production for every account (#2397, #2392, #2379).
