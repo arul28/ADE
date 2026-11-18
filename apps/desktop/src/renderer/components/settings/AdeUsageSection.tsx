@@ -927,6 +927,9 @@ export function AdeUsageSection() {
 
   const noStats = loading || !stats;
   const footnote = costFootnote(stats?.providers ?? [], stats?.pricingUpdatedAt);
+  // The account scope has no session count yet (no machine publishes one), so
+  // the host leaves both fields out and the card says so instead of showing 0.
+  const sessionsKnown = summary != null && (summary.chatSessions != null || summary.terminalSessions != null);
   const sessions = (summary?.chatSessions ?? 0) + (summary?.terminalSessions ?? 0);
   // Some ledgers count cache reads inside input, others beside it (Anthropic
   // reports them separately, so cached can exceed "input" many times over).
@@ -1094,9 +1097,13 @@ export function AdeUsageSection() {
                 />
                 <Metric
                   label="Sessions"
-                  value={summary ? formatWhole(sessions) : "—"}
-                  detail={summary ? `${formatCompact(summary.chatSessions ?? 0)} chats · ${formatCompact(summary.terminalSessions ?? 0)} shells` : ""}
-                  trend={trendSessions.some((value) => value > 0) ? (
+                  value={sessionsKnown ? formatWhole(sessions) : "—"}
+                  detail={!summary
+                    ? ""
+                    : sessionsKnown
+                    ? `${formatCompact(summary.chatSessions ?? 0)} chats · ${formatCompact(summary.terminalSessions ?? 0)} shells`
+                    : "Not counted for all machines"}
+                  trend={sessionsKnown && trendSessions.some((value) => value > 0) ? (
                     <>
                       <UsageSparkline values={trendSessions} label="Daily sessions, last 14 days" />
                       <DeltaTag delta={periodDelta(trendSessions)} title={trendTitle} />

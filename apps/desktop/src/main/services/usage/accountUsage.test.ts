@@ -146,7 +146,7 @@ function contribution(
 }
 
 describe("account usage merge", () => {
-  it("adds a second machine's tokens, cost, providers, models and daily points into the totals", () => {
+  it("adds a second machine's tokens, cost, providers, models and daily points into the totals, and leaves out session counts", () => {
     const local = makeRollup("local", [
       row({ date: TODAY, provider: "claude", inputTokens: 100, outputTokens: 50, totalTokens: 150, costUsd: 1 }),
     ]);
@@ -180,6 +180,9 @@ describe("account usage merge", () => {
     localStats.daily[1]!.outputTokens = 50;
     localStats.daily[1]!.totalTokens = 150;
     localStats.daily[1]!.byProvider = { claude: { totalTokens: 150, costUsd: 1 } };
+    // One project's database on this machine: no account total.
+    localStats.summary.chatSessions = 7;
+    localStats.summary.terminalSessions = 2;
 
     const merged = mergeAccountUsageStats({
       localStats,
@@ -191,6 +194,8 @@ describe("account usage merge", () => {
     });
 
     expect(merged.scope).toBe("account");
+    expect(merged.summary.chatSessions).toBeUndefined();
+    expect(merged.summary.terminalSessions).toBeUndefined();
     expect(merged.summary.observedProviderTokens).toBe(150 + 300 + 15);
     expect(merged.summary.observedProviderInputTokens).toBe(100 + 200 + 10);
     expect(merged.summary.observedProviderCostRangeUsd).toBeCloseTo(4.5, 5);

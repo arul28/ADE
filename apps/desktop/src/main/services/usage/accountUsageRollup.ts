@@ -548,6 +548,20 @@ function sortSummaries(stats: AdeUsageStats): void {
 }
 
 /**
+ * Remove the counts the account has no total for.
+ *
+ * Chat and terminal session counts come from one project's database on the
+ * machine that answers. No machine publishes a session count in its rollup,
+ * so on the account scope that number is one project's, and on ADE Web or a
+ * cloud lane computer it is often a fresh project's 0. An unknown count is
+ * left out (the UI then shows no session figure) instead of a wrong one.
+ */
+export function omitUnknownAccountCounts(stats: AdeUsageStats): void {
+  delete stats.summary.chatSessions;
+  delete stats.summary.terminalSessions;
+}
+
+/**
  * Merge every machine's contribution into an account-scoped payload.
  *
  * `localStats` must already be the machine-scoped result for the same range —
@@ -569,6 +583,7 @@ export function mergeAccountUsageStats({
   const stats = foldRollupsIntoStats(localStats, accepted, nowMs);
   stats.scope = "account";
   stats.machines = machines;
+  omitUnknownAccountCounts(stats);
   // Active days are a stat about the user, so on the account scope they count
   // a day any machine used a model, not only days this project's database
   // saw. The database's own count can include days the daily series does not
