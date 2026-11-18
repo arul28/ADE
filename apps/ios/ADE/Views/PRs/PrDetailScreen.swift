@@ -1662,7 +1662,7 @@ struct PrDetailView: View {
       },
       reactionFailed: { error in
         ADEHaptics.error()
-        toast = ADEToastMessage(text: "Couldn't add the reaction. \(error.localizedDescription)", kind: .failure)
+        toast = ADEToastMessage(text: "Couldn't add the reaction", kind: .failure, detail: error.localizedDescription)
       },
       editComment: { entry in
         guard let githubId = entry.commentGithubId else { return }

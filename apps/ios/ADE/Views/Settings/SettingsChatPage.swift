@@ -93,7 +93,7 @@ struct SettingsChatPage: View {
       } catch {
         if generation == fastModeWriteGeneration {
           fastModeEnabled = !next
-          toast = ADEToastMessage(text: "Couldn't change Fast mode. \(SyncUserFacingError.message(for: error))", kind: .failure)
+          toast = ADEToastMessage(text: "Couldn't change Fast mode", kind: .failure, detail: SyncUserFacingError.message(for: error))
         }
       }
       if generation == fastModeWriteGeneration {

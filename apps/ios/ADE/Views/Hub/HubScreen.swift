@@ -174,9 +174,14 @@ struct HubScreen: View {
     }
     .onChange(of: syncService.projectOpenFailure) { _, failure in
       guard let failure else { return }
+      let project = failure.project
       projectOpenFailureToast = ADEToastMessage(
-        text: "Couldn’t open \(failure.projectName): \(failure.message)",
-        kind: .failure
+        text: "Couldn’t open \(failure.projectName)",
+        kind: .failure,
+        action: ADEToastAction(title: "Retry") { [syncService] in
+          syncService.selectProject(project)
+        },
+        detail: failure.message
       )
       syncService.projectOpenFailure = nil
     }

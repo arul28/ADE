@@ -1197,8 +1197,11 @@ struct SyncConnectAttemptTarget: Equatable {
 /// A project the machine would not open, for the hub to say so.
 struct SyncProjectOpenFailure: Equatable, Identifiable {
   let id = UUID()
-  let projectName: String
+  /// The project that failed to open, so the notice can offer Retry.
+  let project: MobileProjectSummary
   let message: String
+
+  var projectName: String { project.displayName }
 }
 
 /// Why adding a machine next to the primary failed; shown on that machine's row.
@@ -3153,6 +3156,9 @@ enum SyncUserFacingError {
     let nsError = error as NSError
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
       return "A machine on this route rejected the saved pairing — possibly a different ADE machine. ADE kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
+    }
+    if syncIsSocketOpenTimeout(error) {
+      return "The computer took too long to answer."
     }
     if isSyncHostUnavailableError(error) {
       if let snapshot = syncHostReadinessSnapshot(from: error) {
@@ -5934,7 +5940,7 @@ final class SyncService: ObservableObject {
           guard self.isCurrentProjectSelection(selectionGeneration) else { return }
           syncConnectLog.notice("ADE_SYNC_TRACE project_switch failure=\(syncLogErrorSummary(error), privacy: .public)")
           self.projectOpenFailure = SyncProjectOpenFailure(
-            projectName: project.displayName,
+            project: project,
             message: SyncUserFacingError.message(for: error)
           )
           self.logProjectSwitchPhase("failed", completed: true)

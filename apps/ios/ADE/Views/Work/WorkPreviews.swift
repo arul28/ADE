@@ -1528,6 +1528,8 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The Work list's slim "Couldn't load your chats" notice. See
   /// `WorkLoadNoticePreviewHost`.
   case workLoadNotice = "work-load-notice"
+  /// Every kind of toast pill. See `ADEToastPreviewHost`.
+  case toasts = "toasts"
   /// The Files workspace sheet. See `FilesWorkspacePickerPreviewHost`.
   case filesPicker = "files-picker"
   /// The flat PR list, detail tabs and diff page. See `PrFlatPreviews.swift`.
@@ -1718,6 +1720,8 @@ struct ADEPreviewScreenHost: View {
       SettingsMachinesPreviewHost(showsPage: true, showsUpdates: true)
     case .workLoadNotice:
       WorkLoadNoticePreviewHost()
+    case .toasts:
+      ADEToastPreviewHost()
     case .filesPicker:
       FilesWorkspacePickerPreviewHost()
     case .prsList:
