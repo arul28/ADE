@@ -88,6 +88,10 @@ export const commandWith = (...lines: string[]) => [
   ...lines,
 ].join("\n");
 const PREPARE_COMMAND = commandWith("ade cloud prepare-stop --timeout 40 --json");
+/** The prepare before a delete: the computer also freezes new work until the delete (`cloudDeleteFreeze.ts` in ade-cli). */
+const PREPARE_FOR_DELETE_COMMAND = commandWith(CLOUD_COMPUTER_COMMANDS.prepareForDelete);
+const UNFREEZE_COMMAND = commandWith(CLOUD_COMPUTER_COMMANDS.unfreeze);
+const UNFREEZE_TIMEOUT_MS = 45_000;
 /** Capsules, CLI and shell copies, Git summaries and lane backups, so the lane reads and continues with no computer (CONTRACTS 4). */
 const SAVE_FOR_REST_COMMAND = commandWith(CLOUD_COMPUTER_COMMANDS.saveForRest);
 /** Capsules upload up to 20 MB each and a lane backup up to 50 MB: bounded all the same. */
@@ -741,7 +745,11 @@ async function freeComputer(env: CloudEnv, provider: CloudProvider, choice: Plan
       metadata = await saveWithoutPush(provider, computer);
     }
     // The save took minutes: the person may have stayed on Pro since, or started it.
-    if (!(await stillPicked(env, computer.user_id, computer.instance_id, choice))) return await release();
+    // An awake computer was frozen for the delete (`saveBeforeDelete`): it takes work again at once.
+    if (!(await stillPicked(env, computer.user_id, computer.instance_id, choice))) {
+      if (!resting) await unfreezeComputer(provider, computer.instance_id);
+      return await release();
+    }
     if (resting && !(await stillRestsWithBackups(env, computer.instance_id))) return await release();
 
     const lane = mergeLaneFacts(laneFactsOfRow(computer), laneFactsOf(metadata));
@@ -770,7 +778,8 @@ async function saveWithoutPush(provider: CloudProvider, computer: ComputerRow): 
   try {
     const instance = await provider.getInstance(computer.instance_id);
     if (isMeteredStatus(instance.status)) {
-      await provider.exec(computer.instance_id, PREPARE_COMMAND, PREPARE_TIMEOUT_MS).catch(() => null);
+      // The delete follows whatever the prepare says, so the computer stays frozen until it.
+      await provider.exec(computer.instance_id, PREPARE_FOR_DELETE_COMMAND, PREPARE_TIMEOUT_MS).catch(() => null);
     }
     return instance.metadata;
   } catch {
@@ -805,9 +814,26 @@ export async function saveBeforeDelete(env: CloudEnv, provider: CloudProvider, c
     return { ok: false, reason: backupNotSavedReason(row), code: "backup_not_current" };
   }
   // Agents stopped and chats saved first: anything still writing could land after the backup.
-  const prepared = await provider.exec(computer.instance_id, PREPARE_COMMAND, PREPARE_TIMEOUT_MS);
-  if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) return { ok: false, reason: "ADE on the computer couldn't stop its agents and save its chats.", code: "prepare_stop_failed" };
-  const saved = await provider.exec(computer.instance_id, SAVE_FOR_REST_COMMAND, SAVE_FOR_REST_TIMEOUT_MS);
+  // Every delete but the idle cleanup also freezes new work on the computer until the delete:
+  // the idle cleanup has its own rule, where a person's use calls the delete off (`/use`).
+  const freezes = reason !== "idle_cleanup";
+  /** The computer stays (a throw is read as "couldn't reach it"): it takes work again. */
+  const unfreezeOnThrow = async (error: unknown): Promise<never> => {
+    if (freezes) await unfreezeComputer(provider, computer.instance_id);
+    throw error;
+  };
+  const prepared = await provider.exec(computer.instance_id, freezes ? PREPARE_FOR_DELETE_COMMAND : PREPARE_COMMAND, PREPARE_TIMEOUT_MS)
+    .catch(unfreezeOnThrow);
+  if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) {
+    // A readable answer that is not confirmed: the computer ended its own freeze. Any other answer may hide one.
+    if (freezes && (prepared.exitCode !== 0 || readResult(prepared.stdout) == null)) await unfreezeComputer(provider, computer.instance_id);
+    return { ok: false, reason: "ADE on the computer couldn't stop its agents and save its chats.", code: "prepare_stop_failed" };
+  }
+  const kept = async (outcome: SaveBeforeDeleteOutcome): Promise<SaveBeforeDeleteOutcome> => {
+    if (freezes) await unfreezeComputer(provider, computer.instance_id);
+    return outcome;
+  };
+  const saved = await provider.exec(computer.instance_id, SAVE_FOR_REST_COMMAND, SAVE_FOR_REST_TIMEOUT_MS).catch(unfreezeOnThrow);
   const report = saved.exitCode === 0 ? readResult(saved.stdout) as Partial<CloudSaveForRestReport> | null : null;
   const reportId = report?.backups && typeof report.backups === "object" ? report.backups.reportId ?? null : null;
   logCloud("cloud.save_for_rest", {
@@ -819,10 +845,28 @@ export async function saveBeforeDelete(env: CloudEnv, provider: CloudProvider, c
     git: Number(report?.git) || 0,
     backups: report?.backups?.state ?? "none",
   });
-  if (!reportId) return { ok: false, reason: "This computer's ADE is too old to save its lanes' work. It saves them after it updates, the next time it rests.", code: "backup_unsupported" };
+  if (!reportId) return await kept({ ok: false, reason: "This computer's ADE is too old to save its lanes' work. It saves them after it updates, the next time it rests.", code: "backup_unsupported" });
   const row = await backupRestRow(env, computer.instance_id);
   if (row?.backup_report_id === reportId && row.backup_report_state === "current") return { ok: true, metadata: instance.metadata, resting: false };
-  return { ok: false, reason: backupNotSavedReason(row ?? {}), code: "backup_not_current" };
+  return await kept({ ok: false, reason: backupNotSavedReason(row ?? {}), code: "backup_not_current" });
+}
+
+/**
+ * Ends the freeze of a computer `saveBeforeDelete` prepared for a delete that
+ * now does not happen, so it takes work again at once, not when the freeze
+ * runs out (10 minutes). Best effort, and only on a computer that is awake:
+ * exec wakes a sleeping computer, and a sleeping one does no work.
+ */
+export async function unfreezeComputer(provider: CloudProvider, instanceId: string): Promise<void> {
+  try {
+    const instance = await provider.getInstance(instanceId);
+    if (!isMeteredStatus(instance.status)) return;
+    const result = await provider.exec(instanceId, UNFREEZE_COMMAND, UNFREEZE_TIMEOUT_MS);
+    logCloud("cloud.delete_freeze_ended", { instanceId, exitCode: result.exitCode });
+  } catch (error) {
+    // The freeze ends on its own.
+    logCloud("cloud.delete_freeze_end_failed", { instanceId, code: error instanceof CloudProviderError ? error.code : "unknown" });
+  }
 }
 
 async function backupRestRow(env: CloudEnv, instanceId: string): Promise<Pick<ComputerRow, "backup_rest_at" | "backup_report_id" | "backup_report_state" | "backup_problems_json"> | null> {

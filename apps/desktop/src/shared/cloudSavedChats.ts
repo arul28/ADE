@@ -14,6 +14,14 @@ export type { CloudChatComputer, CloudComputerDeleteReason };
  */
 export const SAVED_CHATS_MACHINE_PREFIX = "cloud-saved:";
 
+/**
+ * The saved row status of a chat whose running turn ADE stopped because its
+ * computer went to sleep, stopped or was deleted (`ade cloud prepare-stop`).
+ * A client shows that chat as Stopped while the computer rests, as the turn
+ * itself reads ("Stopped" in the chat), not Done.
+ */
+export const SAVED_CHAT_STOPPED_STATUS = "interrupted";
+
 /** The machine key a saved-chat machine id names, or null. */
 export function savedChatsMachineKey(machineId: string | null | undefined): string | null {
   if (!machineId?.startsWith(SAVED_CHATS_MACHINE_PREFIX)) return null;

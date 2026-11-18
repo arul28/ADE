@@ -1,13 +1,21 @@
 /**
- * The step before a computer stops at 0 hours (`ade cloud prepare-stop`):
- * interrupt running chat turns and agent CLIs, then write the saved chat copy
- * and each lane's backup, so the stop that follows loses nothing a save could
- * keep. Nothing is committed or pushed.
+ * The step before a computer stops at 0 hours, sleeps on the person's Sleep,
+ * or is deleted by the server (`ade cloud prepare-stop`): interrupt running
+ * chat turns and agent CLIs, then write the saved chat copy and each lane's
+ * backup, so the stop that follows loses nothing a save could keep. Nothing
+ * is committed or pushed.
+ *
+ * Each chat whose turn it stops is marked (`noteCloudChatStoppedForRest`), so
+ * its saved row reads Stopped, not Done, while the computer rests. Before a
+ * delete (`forDelete`), the computer also freezes new work from the start
+ * (`cloudDeleteFreeze.ts`), and lifts the freeze again when the prepare is
+ * not confirmed, because then the server keeps the computer.
  */
 
 import type { CloudBackupSaveSummary } from "../../../../account-directory/src/cloud/contract";
 import type { AdeRuntime } from "../../bootstrap";
-import { uploadPendingCloudChats } from "../cloudChats/cloudChatUploader";
+import { noteCloudChatStoppedForRest, uploadPendingCloudChats } from "../cloudChats/cloudChatUploader";
+import { freezeCloudComputerForDelete, liftCloudDeleteFreeze } from "./cloudDeleteFreeze";
 
 const POLL_MS = 400;
 /** Held back from the timeout for writing the chat copy. */
@@ -26,7 +34,14 @@ export type CloudPrepareStopResult = {
   /** The lane backups of the save (`cloudLaneBackup.ts`): the server's 0-hours stop rests the computer with them when `current`. */
   backups: CloudBackupSaveSummary | null;
   timedOut: boolean;
+  /** A prepare for a delete: new work stays refused after it (`cloudDeleteFreeze.ts`). False when not asked, or not confirmed. */
+  frozen: boolean;
 };
+
+/** The same rule as the server's `prepareConfirmed`: the turns ended and every chat is saved, in time. */
+function prepareConfirmed(result: Pick<CloudPrepareStopResult, "stillRunning" | "chatsNotUploaded" | "timedOut">): boolean {
+  return result.stillRunning === 0 && result.chatsNotUploaded === 0 && !result.timedOut;
+}
 
 function stillBusy(runtimes: readonly AdeRuntime[]): number {
   return runtimes.reduce((total, runtime) => total + (runtime.agentChatService?.listBusyFacts?.().length ?? 0), 0);
@@ -40,10 +55,28 @@ export async function prepareCloudComputerToStop(args: {
   keepTurns?: boolean;
   /** The rest save without capsules, in the time left after the chats (`cloudRestSave.ts`). */
   saveForRest?: (budgetMs: number) => Promise<{ sessions: number; git: number; backups?: CloudBackupSaveSummary | null }>;
+  /** The server deletes the computer next: freeze new work until then (`cloudDeleteFreeze.ts`). */
+  forDelete?: boolean;
 }): Promise<CloudPrepareStopResult> {
+  // First, so no new turn or terminal starts between the interrupts and the save.
+  if (args.forDelete) freezeCloudComputerForDelete();
+  try {
+    const result = await prepare(args);
+    if (args.forDelete && !result.frozen) liftCloudDeleteFreeze();
+    args.logger?.info("cloud.prepare_stop", result);
+    return result;
+  } catch (error) {
+    // The server reads a failed prepare as "keep the computer": nothing stays frozen.
+    if (args.forDelete) liftCloudDeleteFreeze();
+    throw error;
+  }
+}
+
+async function prepare(args: Parameters<typeof prepareCloudComputerToStop>[0]): Promise<CloudPrepareStopResult> {
   const deadline = Date.now() + Math.max(1_000, args.timeoutMs);
   const counts: Array<{ chats: number; clis: number }> = args.keepTurns ? [] : await Promise.all(args.runtimes.map(async (runtime) => {
-    const chats = await runtime.agentChatService?.interruptRunningTurns?.().catch((error: unknown) => {
+    // Each chat is marked before its stop, so the upload its end starts already reads Stopped.
+    const chats = await runtime.agentChatService?.interruptRunningTurns?.({ onStopping: noteCloudChatStoppedForRest }).catch((error: unknown) => {
       args.logger?.warn("cloud.prepare_stop_chats_failed", { error: error instanceof Error ? error.message : String(error) });
       return 0;
     }) ?? 0;
@@ -76,17 +109,19 @@ export async function prepareCloudComputerToStop(args: {
         return { sessions: 0, git: 0, backups: null };
       })
     : { sessions: 0, git: 0, backups: null };
-  const result: CloudPrepareStopResult = {
+  const counted = {
+    stillRunning: remaining,
+    chatsNotUploaded: flush.remaining < 0 ? 0 : flush.remaining,
+    timedOut: remaining > 0 || flush.timedOut || chatsLate,
+  };
+  return {
     interruptedChats,
     interruptedClis,
-    stillRunning: remaining,
+    ...counted,
     chatsUploaded: flush.uploaded,
-    chatsNotUploaded: flush.remaining < 0 ? 0 : flush.remaining,
     sessionsSaved: rest.sessions,
     gitSaved: rest.git,
     backups: rest.backups ?? null,
-    timedOut: remaining > 0 || flush.timedOut || chatsLate,
+    frozen: args.forDelete === true && prepareConfirmed(counted),
   };
-  args.logger?.info("cloud.prepare_stop", result);
-  return result;
 }

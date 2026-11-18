@@ -1333,6 +1333,20 @@ export type CloudChatMessageReport = {
 export const CLOUD_COMPUTER_COMMANDS = {
   drainMessages: "ade cloud messages drain --json",
   saveForRest: "ade cloud save-for-rest --capsules --json",
+  /**
+   * Before a delete of an awake computer: stop the agents, save the chats,
+   * and freeze new work until the delete (or for 10 minutes). An older ADE
+   * ignores `--for-delete` and does a normal prepare, with no freeze.
+   */
+  prepareForDelete: "ade cloud prepare-stop --timeout 40 --for-delete --json",
+  /** The server keeps a computer it prepared for a delete: the freeze ends. An older ADE refuses it, and has no freeze. */
+  unfreeze: "ade cloud unfreeze --json",
+  /**
+   * Before the person's Sleep of an awake computer: stop the turns and save
+   * the chats, so a cut turn reads Stopped while it sleeps. An older ADE
+   * ignores `--chats-only` and also saves the lane backups.
+   */
+  prepareForSleep: "ade cloud prepare-stop --timeout 20 --chats-only --json",
 } as const;
 /**
  * What a computer's ADE can do, in its boot report

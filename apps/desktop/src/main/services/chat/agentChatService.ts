@@ -12329,6 +12329,14 @@ export function createAgentChatService(args: {
   prService?: ReturnType<typeof createPrService> | null;
   diskPressureMonitor?: DiskPressureMonitor | null;
   /**
+   * A sentence when this host must not start a chat turn now, else null. An
+   * ADE Cloud computer that the server deletes gives one
+   * (`cloudDeleteFreeze.ts`): a turn started then would be lost with it. It
+   * refuses a send, a steer, a rerun and a recovery; a scheduled wake waits.
+   * Absent: no such refusal.
+   */
+  turnStartRefusal?: (() => string | null) | null;
+  /**
    * This host's sleep state, so a turn interrupted by a suspending machine can
    * say so instead of reporting a provider retry with cause `unknown`.
    *
@@ -12700,6 +12708,7 @@ export function createAgentChatService(args: {
     getSearchService,
     prService,
     diskPressureMonitor,
+    turnStartRefusal,
     getTestService,
     getTerminalWatchService,
     ptyService,
@@ -67295,6 +67304,12 @@ export function createAgentChatService(args: {
       }
     };
     await assertCtoHomeHere(args.sessionId, { onRefused: (message) => throwForScheduledWakeRefusal(message, true) });
+    // Before any turn or steer starts: a host that must not start one now says why.
+    const refusedTurn = turnStartRefusal?.() ?? null;
+    if (refusedTurn) {
+      throwForScheduledWakeRefusal(refusedTurn, true);
+      throw new Error(refusedTurn);
+    }
     const dispatchStartedAt = Date.now();
     const managed = ensureManagedSession(args.sessionId);
     // A send during an account switch runs on the account the chat lands on.
@@ -67654,6 +67669,9 @@ export function createAgentChatService(args: {
       onAcceptedDispatch?: () => void;
     },
   ): Promise<AgentChatSteerResult> => {
+    // A steer feeds a turn too: refused before the thread comments are taken.
+    const refusedTurn = turnStartRefusal?.() ?? null;
+    if (refusedTurn) throw new Error(refusedTurn);
     const reviewed = takeThreadReviewForSend(steerArgs);
     try {
       const result = await steerWithOptionsWithoutReview(reviewed.args, options);
@@ -71566,6 +71584,8 @@ export function createAgentChatService(args: {
       emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
       return { ok: false, mode: args.mode, reason: "recovery_failed" };
     }
+    const refusedTurn = turnStartRefusal?.() ?? null;
+    if (refusedTurn) throw new Error(refusedTurn);
 
     // Recovery opens a fresh provider thread, which has heard none of the
     // epoch directives; forget them before the capsule is prepared. A
@@ -74712,12 +74732,15 @@ export function createAgentChatService(args: {
    * Stops every running turn, for a computer about to be stopped at 0 hours
    * (`ade cloud prepare-stop`). A turn stopped this way shows as interrupted,
    * the same as a Stop, and the chat copy written afterwards records it.
+   * `onStopping` hears each chat before its stop, so the caller can mark it
+   * before the turn's end event comes.
    */
-  const interruptRunningTurns = async (): Promise<number> => {
+  const interruptRunningTurns = async (options?: { onStopping?: (sessionId: string) => void }): Promise<number> => {
     const running = [...managedSessions.values()].filter((managed) =>
       !managed.closed && !managed.deleted && (managed.session.status === "active" || hasRuntimeActiveWorkload(managed.runtime)));
     await Promise.allSettled(running.map(async (managed) => {
       try {
+        options?.onStopping?.(managed.session.id);
         await interrupt({ sessionId: managed.session.id, mode: DEFAULT_AGENT_CHAT_STOP_MODE });
       } catch (error) {
         logger.warn("agent_chat.prepare_stop_interrupt_failed", { sessionId: managed.session.id, error: String(error) });
@@ -82536,6 +82559,8 @@ export function createAgentChatService(args: {
     }
     const diskDecision = diskPressureMonitor?.canPerform("chat_turn");
     if (diskDecision && !diskDecision.allowed) throw new Error(diskDecision.message);
+    const refusedTurn = turnStartRefusal?.() ?? null;
+    if (refusedTurn) throw new Error(refusedTurn);
     assertContinuityDispatchAllowed(managed);
 
     let conversationRollback: AgentChatRerunLastTurnResult["conversationRollback"] = "not_delivered";
@@ -83376,6 +83401,8 @@ export function createAgentChatService(args: {
       // Low disk refuses every turn until it clears. Wait quietly here: firing
       // would post the refusal into the chat on every retry.
       if (diskPressureMonitor?.canPerform("chat_turn").allowed === false) return true;
+      // A computer that the server deletes now refuses every turn: wait quietly, the same way.
+      if (turnStartRefusal?.()) return true;
       const liveManaged = managedSessions.get(schedule.sessionId);
       const liveRuntime = liveManaged?.runtime?.kind === "claude" ? liveManaged.runtime : null;
       // Never enqueue a scheduler-owned wake behind a foreground turn. Queued

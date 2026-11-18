@@ -504,6 +504,17 @@ with no wake.
   and goes when that report is current. Else it stays with "ADE couldn't save
   this lane's work." An image older than lane backups never reports, so it
   stays until its next real wake updates it.
+- **Freeze before a delete.** Every cleanup but the idle one runs
+  `prepare-stop --for-delete` on an awake computer
+  (`CLOUD_COMPUTER_COMMANDS.prepareForDelete`). From the start of that
+  prepare, the computer refuses new chat turns (send, steer, rerun,
+  recovery; a scheduled wake waits), new terminals and agent CLIs, and remote
+  work, with "This ADE Cloud computer is being removed. …"
+  (`cloudDeleteFreeze.ts`). So nothing is written after the save and lost
+  with the delete. The freeze ends when the prepare is not confirmed, when
+  the server keeps the computer (`ade cloud unfreeze`, `unfreezeComputer`),
+  or after 10 minutes. The idle cleanup keeps its own rule: a person's use
+  calls its delete off (`/use`).
 - **Restore.** A lane launch on a cloud computer (`chatLaunchService.ts`,
   `cloudLaneRestoreHook.ts`): a branch never pushed is made locally from the
   backup and imported with `publishUpstream: false`; once the lane exists,
@@ -1283,6 +1294,15 @@ One busy list, `decideCloudBusy` in
 - `ade cloud prepare-stop --timeout 40` (before a stop at 0 hours) interrupts
   chat turns and agent CLIs, writes the saved chat copy, and saves each lane's
   backup (`backups` in its `--json` result).
+- **The person's Sleep** of an awake computer first runs
+  `prepare-stop --timeout 20 --chats-only` (`prepareForPersonSleep` in
+  `routes.ts`): the running turns stop and the chats are saved, then the
+  computer sleeps whatever the prepare says.
+- **A turn stopped for a rest reads Stopped.** Each chat whose turn a
+  prepare-stop interrupts is marked (`noteCloudChatStoppedForRest`). Its saved
+  row then has status `interrupted` (`SAVED_CHAT_STOPPED_STATUS`), and the
+  saved Work row reads Stopped, as the turn reads in the chat, not Done. The
+  next turn end that is not an interrupt removes the mark.
 
 ### A resting computer in the clients
 

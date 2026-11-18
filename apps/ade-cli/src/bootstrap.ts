@@ -331,7 +331,9 @@ import {
   resolveReachableMachineDesktopBridgeSocketPath,
 } from "./services/projects/machineLayout";
 import { redactSecrets, sha256Hex } from "../../desktop/src/main/services/shared/utils";
-import { createCloudChatUploader } from "./services/cloudChats/cloudChatUploader";
+import { cloudChatStoppedForRest, createCloudChatUploader } from "./services/cloudChats/cloudChatUploader";
+import { cloudDeleteFreezeRefusal } from "./services/power/cloudDeleteFreeze";
+import { SAVED_CHAT_STOPPED_STATUS } from "../../desktop/src/shared/cloudSavedChats";
 import { noteAccountLanesChanged } from "./services/account/accountLaneIndexPublisher";
 import { createCloudLaneNameSync, type CloudLaneNameSync } from "../../desktop/src/main/services/adeCloud/cloudLaneNameSync";
 import { createCloudServerProvider } from "../../desktop/src/main/services/adeCloud/cloudServerProvider";
@@ -2067,6 +2069,8 @@ export async function createAdeRuntime(args: {
         pushPublisherForPtySignals?.handleSessionAttentionResolved(projectId, sessionId);
       },
       diskPressureMonitor,
+      // An ADE Cloud computer that the server deletes now opens no new terminal (`cloudDeleteFreeze.ts`).
+      ...(isAdeCloudComputer() ? { launchRefusal: () => cloudDeleteFreezeRefusal() } : {}),
       onSessionEnded: (event) => {
         void sessionDeltaService.computeSessionDelta(event.sessionId).catch((error) => {
           logger.warn("runtime.session_delta_compute_failed", {
@@ -2971,7 +2975,7 @@ export async function createAdeRuntime(args: {
     // Jira is per project and follows the project to the account's other
     // machines. A project with none of its own adopts the machine's old one.
     jiraCredentialServiceForAccount = createJiraCredentialService({
-      credentialStore: new EncryptedFileCredentialStore({ secretsDir: path.join(paths.adeDir, "secrets") }),
+      credentialStore: new EncryptedFileCredentialStore({ secretsDir: path.join(paths.adeDir, "secrets"), projectRoot }),
       legacyCredentialStore: new EncryptedFileCredentialStore(),
       projectRoot,
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
@@ -3091,15 +3095,20 @@ export async function createAdeRuntime(args: {
             if (!row) return null;
             const summary = await agentChatService?.getSessionSummary(sessionId).catch(() => null);
             const projectKey = normalizeGitRemoteIdentity(readGitOriginUrl(projectRoot));
+            const liveStatus = summary?.status ?? row.status ?? null;
             return {
               title: redactSecrets(row.title ?? row.goal ?? ""),
               laneId: row.laneId ?? null,
               laneName: redactSecrets(row.laneName ?? ""),
-              // A last turn that died on an error reads "failed", so the
-              // saved row says Failed while the computer rests, not Done.
-              status: (summary?.status ?? row.status ?? null) !== "active" && row.lastTurnFailedAt
-                ? "failed"
-                : summary?.status ?? row.status ?? null,
+              // A last turn that ADE stopped for a sleep, a stop or a delete
+              // (`prepare-stop`) reads "interrupted", and one that died on an
+              // error reads "failed". So while the computer rests the saved
+              // row says Stopped or Failed, not Done.
+              status: liveStatus !== "active" && cloudChatStoppedForRest(sessionId)
+                ? SAVED_CHAT_STOPPED_STATUS
+                : liveStatus !== "active" && row.lastTurnFailedAt
+                  ? "failed"
+                  : liveStatus,
               toolType: row.toolType ?? null,
               provider: summary?.provider ?? null,
               model: summary?.model ?? null,
@@ -3208,6 +3217,8 @@ export async function createAdeRuntime(args: {
         issueTrackerService,
         prService: headlessLinearServices.prService,
         diskPressureMonitor,
+        // An ADE Cloud computer that the server deletes now takes no new turn (`cloudDeleteFreeze.ts`).
+        ...(isAdeCloudComputer() ? { turnStartRefusal: () => cloudDeleteFreezeRefusal() } : {}),
         // Sleep is a machine fact, so every chat in this brain reads the one
         // monitor. Borrowed: the chat service must not be able to dispose it out
         // from under the account publisher, or vice versa.
@@ -3329,7 +3340,7 @@ export async function createAdeRuntime(args: {
           feedDemoTrackFromChatEvent(event);
           linearAgentRuntime?.onChatEvent(event);
           pushEvent("runtime", event as unknown as Record<string, unknown>);
-          if (event.event.type === "done") cloudChatUploader?.noteTurnEnded(event.sessionId);
+          if (event.event.type === "done") cloudChatUploader?.noteTurnEnded(event.sessionId, event.event.status);
           // A routine added, changed or removed between turns is part of the copy too.
           if ((event.event.type === "done" || event.event.type === "scheduled_work_update") && ctoAccountCopyRef.current && agentChatServiceHolder.current?.sessionIdentityKeyNow(event.sessionId) === "cto") {
             ctoAccountCopyRef.current.noteTurnEnded();
@@ -3893,6 +3904,7 @@ export async function createAdeRuntime(args: {
         projectId,
         credentialStore: new EncryptedFileCredentialStore({
           secretsDir: path.join(paths.adeDir, "secrets"),
+          projectRoot,
         }),
         getLinearClient: () => headlessLinearServices.linearClient,
         getLinearAccessToken: headlessLinearAccessToken,

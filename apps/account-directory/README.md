@@ -657,7 +657,12 @@ its own idle sleep names the report (`POST .../idle {backupReportId}`), or
 the 0-hours stop follows a prepare-stop whose report is current. Any start
 clears that. Else it stays with "ADE couldn't save this lane's work." and the
 lanes' reasons. An awake computer is saved in place first (`prepare-stop`,
-then `save-for-rest --capsules`). Nothing is committed or pushed.
+then `save-for-rest --capsules`). Nothing is committed or pushed. Every
+delete but the idle cleanup runs `prepare-stop --for-delete`: from that
+prepare until the delete, the computer refuses new turns, terminals and
+remote work, so nothing written after the save is lost. When the server
+keeps the computer after all, it runs `ade cloud unfreeze`; the freeze also
+ends on its own after 10 minutes.
 
 Migrations `0039_cloud_no_computer.sql` and `0044_cloud_lane_backups.sql`. The bucket and
 `CLOUD_CHAT_MASTER_KEY` are in [Cloudflare deployment](#cloudflare-deployment).

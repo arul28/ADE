@@ -35,7 +35,7 @@ export async function resolveRepoRoot(selectedPath: string, opts: { userChosen?:
 }
 
 /** Whether `start` or a folder above it holds a `.git` directory or file. */
-function hasGitEntryAbove(start: string): boolean {
+export function hasGitEntryAbove(start: string): boolean {
   for (let dir = path.resolve(start); ; dir = path.dirname(dir)) {
     if (fs.existsSync(path.join(dir, ".git"))) return true;
     if (path.dirname(dir) === dir) return false;
