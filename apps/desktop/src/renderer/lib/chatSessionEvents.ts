@@ -128,3 +128,33 @@ export function getChatSessionLocalTouchTimestampForEvent(
 export function shouldRefreshSessionListForChatEvent(envelope: AgentChatEventEnvelope): boolean {
   return isPrWatchChangedOnlyMetaEvent(envelope.event) || getChatSessionLocalTouchTimestampForEvent(envelope) != null;
 }
+
+/**
+ * Whether `envelope` (a text event already in `queued`) is the first text of
+ * its chat's turn: no text since the turn's user message or start. The pane
+ * that shows a new chat mounts after the send, so it reads the events it
+ * holds instead of tracking the turn itself. A chat with no known events
+ * counts as a first text.
+ */
+export function isFirstTextOfTurn(
+  envelope: AgentChatEventEnvelope,
+  queued: readonly AgentChatEventEnvelope[],
+  committed: readonly AgentChatEventEnvelope[] | undefined,
+): boolean {
+  const verdict = (candidate: AgentChatEventEnvelope): boolean | null => {
+    if (candidate === envelope || candidate.sessionId !== envelope.sessionId) return null;
+    const event = candidate.event;
+    if (event.type === "text") return false;
+    if (event.type === "user_message" || (event.type === "status" && event.turnStatus === "started")) return true;
+    return null;
+  };
+  for (let index = queued.length - 1; index >= 0; index -= 1) {
+    const found = verdict(queued[index]!);
+    if (found !== null) return found;
+  }
+  for (let index = (committed?.length ?? 0) - 1; index >= 0; index -= 1) {
+    const found = verdict(committed![index]!);
+    if (found !== null) return found;
+  }
+  return true;
+}

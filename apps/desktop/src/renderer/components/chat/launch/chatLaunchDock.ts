@@ -123,10 +123,13 @@ export function onSendHandoffSettle(listener: () => void): () => void {
  * Ends every send animation still running: the draft chrome copies and the
  * Work area's dissolve. The chat pane calls it when the shown chat's reply
  * shows its first words, because the reply must not sit under a fading draft
- * or a blur. A reply that comes after the animations ended changes nothing.
+ * or a blur. It acts only while a send's draft copy is on screen, so a reply
+ * that comes after the animations ended, or a chat opened another way,
+ * changes nothing.
  */
 export function settleSendHandoff(): void {
   pruneDepartures();
+  if (departuresOnScreen.size === 0) return;
   for (const end of Array.from(departuresOnScreen.values())) end();
   departuresOnScreen.clear();
   for (const listener of Array.from(sendHandoffSettleListeners)) listener();

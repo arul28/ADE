@@ -326,6 +326,7 @@ import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../li
 import {
   compareChatSessionsByEffectiveRecency,
   getChatSessionLocalTouchTimestampForEvent,
+  isFirstTextOfTurn,
   shouldRefreshSessionListForChatEvent,
 } from "../../lib/chatSessionEvents";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -570,13 +571,13 @@ import {
 import {
   captureComposerHandoff,
   CHAT_SHELL_HEADER_SELECTOR,
-  settleSendHandoff,
   findDraftComposerHandoffElement,
   peekComposerHandoffFirstMessage,
   playComposerDock,
   playDepartingDraftChrome,
   playFirstMessageFlight,
   refreshComposerHandoffDeparture,
+  settleSendHandoff,
   stashComposerHandoffOrigin,
   stashComposerDockOrigin,
   takeComposerDockOrigin,
@@ -1661,36 +1662,6 @@ function prepareDraftLaunch(snapshot: DraftLaunchSnapshot): PreparedDraftLaunch 
  * Where a sent draft's departing chrome lives: the whole Work draft surface
  * (its mode switcher sits outside this pane), or just this pane elsewhere.
  */
-/**
- * Whether `envelope` (a text event already in `queued`) is the first text of
- * its chat's turn: no text since the turn's user message or start. The pane
- * that shows a new chat mounts after the send, so it reads the events it
- * holds instead of tracking the turn itself. A chat with no known events
- * counts as a first text.
- */
-function isFirstTextOfTurn(
-  envelope: AgentChatEventEnvelope,
-  queued: readonly AgentChatEventEnvelope[],
-  committed: readonly AgentChatEventEnvelope[] | undefined,
-): boolean {
-  const verdict = (candidate: AgentChatEventEnvelope): boolean | null => {
-    if (candidate === envelope || candidate.sessionId !== envelope.sessionId) return null;
-    const event = candidate.event;
-    if (event.type === "text") return false;
-    if (event.type === "user_message" || (event.type === "status" && event.turnStatus === "started")) return true;
-    return null;
-  };
-  for (let index = queued.length - 1; index >= 0; index -= 1) {
-    const found = verdict(queued[index]!);
-    if (found !== null) return found;
-  }
-  for (let index = (committed?.length ?? 0) - 1; index >= 0; index -= 1) {
-    const found = verdict(committed![index]!);
-    if (found !== null) return found;
-  }
-  return true;
-}
-
 function draftDepartingScope(shell: HTMLElement | null): Element | null {
   return shell?.closest("[data-work-draft-surface]") ?? shell;
 }
