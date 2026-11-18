@@ -686,10 +686,10 @@ export async function deleteSavedChatsForLane(env: CloudEnv, userId: string, mac
  */
 export async function deleteAllAccountChats(env: Pick<CloudEnv, "DB" | "CLOUD_CHATS">, userId: string): Promise<number> {
   const bucket = bucketFor(env);
-  // Saved chats, CLI and shell copies and fork capsules: every object this account has in the bucket.
+  // Saved chats, CLI and shell copies, fork capsules and lane backups: every object this account has in the bucket.
   let removed = 0;
   if (bucket) {
-    for (const prefix of [`chats/${userId}/`, `sessions/${userId}/`, `capsules/${userId}/`]) removed += await deleteObjectsUnder(bucket, prefix);
+    for (const prefix of [`chats/${userId}/`, `sessions/${userId}/`, `capsules/${userId}/`, `backups/${userId}/`]) removed += await deleteObjectsUnder(bucket, prefix);
   }
   await env.DB.batch([
     env.DB.prepare("delete from cloud_chat_copies where user_id = ?").bind(userId),
@@ -697,6 +697,7 @@ export async function deleteAllAccountChats(env: Pick<CloudEnv, "DB" | "CLOUD_CH
     env.DB.prepare("delete from cloud_session_copies where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_git_summaries where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_fork_capsules where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_lane_backups where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_user_keys where user_id = ?").bind(userId),
   ]);
   logCloud("cloud.chats_deleted_for_account", { userId, removed });

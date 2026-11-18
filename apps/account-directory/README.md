@@ -436,10 +436,10 @@ account bearer. The plan rules, hours, disk and cleanups are in
 | `GET /cloud/access` | `{ enabled }`; a blocked account gets `{ enabled: false, readOnly: true, reason }` |
 | `GET /cloud/account` | Plan, hours, disk, billing notice, `blocked` |
 | `GET/POST /cloud/instances` | The account's computers (`idleSaving` while an idle save runs; a 5-second Cache API copy of the provider's list, skipped after a change of the account's rows), or a create |
-| `POST /cloud/instances/:id/<action>` | `sleep`, `idle` (the brain asks to sleep), `start` (`{reason:"push_work"}` is the free wake), `stop`, `update`, `booted`, `keep`, `resize`, `fork`, `exec`, `disk-usage`, `cpu-report`, `backups`, `signed-url`, `public-ports`, `sign-ins`, and `use` (a person's use during the idle save, `last_active_at`; 409 `computer_deleting` once the delete runs). `PUT` `auto-sleep`, `name`, `metadata` |
+| `POST /cloud/instances/:id/<action>` | `sleep`, `idle` (the brain asks to sleep; `{backupReportId}` rests it with that lane backup report), `start` (every wake is use; none at 0 hours), `stop`, `update`, `booted`, `keep`, `resize`, `fork`, `exec`, `disk-usage`, `cpu-report`, `backups`, `signed-url`, `public-ports`, `sign-ins`, and `use` (a person's use during the idle save, `last_active_at`; 409 `computer_deleting` once the delete runs). `PUT` `auto-sleep`, `name`, `metadata` |
 | `GET /cloud/instances/:id/update-check` | Whether the computer is behind its channel's image |
 | `PUT /cloud/instances/:id/event-wakes`, `PUT/DELETE /cloud/wake` | [Timed wakes and event wakes](#ade-cloud-timed-wakes-and-event-wakes) |
-| `/cloud/instances/:id/messages…`, `/cloud/chats…`, `/cloud/sessions…`, `/cloud/git…`, `/cloud/capsules…`, `/cloud/projects/overview` | [Saved copies](#saved-chats-and-other-saved-copies) and [the queue](#the-message-queue-of-an-existing-chat-or-cli) |
+| `/cloud/instances/:id/messages…`, `/cloud/chats…`, `/cloud/sessions…`, `/cloud/git…`, `/cloud/capsules…`, `/cloud/backups…`, `/cloud/projects/overview` | [Saved copies](#saved-chats-and-other-saved-copies) and [the queue](#the-message-queue-of-an-existing-chat-or-cli) |
 | `/cloud/launches…`, `/cloud/sign-ins…`, `/cloud/models` | [Launches](#launches-from-the-web-and-the-phone) |
 | `POST /cloud/billing/{checkout,portal,extra-hours,extra-disk,plan-cleanup,free-unlock}` | [Payments](#payments) |
 | `GET /cloud/referrals`, `POST /cloud/referrals/redeem` | Referral summary and invite redeem |
@@ -463,11 +463,12 @@ account bearer. The plan rules, hours, disk and cleanups are in
   stretches. Hours are integer thousandths of a Small-hour. Free accounts
   reset on the 1st UTC; paid accounts follow Stripe's `period_end`
   (`applyCloudPlanChange` is the one place a plan changes).
-- At 0 hours with extra hours off, it runs `ade cloud prepare-stop --timeout 40`
-  on each awake computer, then stops it (409 retries; 400 is cold storage and
-  stays). Starts and creates are refused, except a free 15-minute
-  `POST .../start {"reason":"push_work"}` once a day per computer. Timed wakes
-  are dropped.
+- At 0 hours with extra hours off, it runs
+  `ade cloud prepare-stop --timeout 40 --json` on each awake computer (it
+  stops the agents and saves the chats and each lane's backup), then stops
+  it (409 retries; 400 is cold storage and stays). When that save's report
+  is current, the computer rests with it (`backup_rest_at`). Every start and
+  create is refused; no wake is free. Timed wakes are dropped.
 - It sleeps an awake computer with no check-in for 10 minutes.
 - Daily after 02:00 UTC, it corrects each computer-day to the provider's
   `awake_minutes` and alerts the owner to unexplained minutes. Every 10
@@ -620,7 +621,7 @@ The server's own rules:
 ADE Cloud computers can't answer while asleep, stopped, out of hours or
 deleted. So each computer saves here what a person reads, and every client
 reads it with no wake. The R2 bucket behind `CLOUD_CHATS` holds all of it
-under the prefixes `chats/`, `sessions/` and `capsules/`.
+under the prefixes `chats/`, `sessions/`, `capsules/` and `backups/`.
 
 - **Sealing** (`src/cloud/seal.ts`): AES-GCM with one random key per user.
   That key is sealed with `CLOUD_CHAT_MASTER_KEY` and kept in D1, apart from
@@ -638,14 +639,27 @@ under the prefixes `chats/`, `sessions/` and `capsules/`.
 | `GET/PUT/DELETE /cloud/sessions[/:m/:s]` (`sessionCopies.ts`) | CLI and shell copies, one sealed object each. A shell keeps its last 5,000 lines. | 2 MiB a copy; 512 MiB an account; 50 copies a computer |
 | `GET/PUT /cloud/git/:m/:lane` (`gitSummaries.ts`) | One sealed Git summary per lane. A PUT with an older `checkedAt` answers `kept: false`. | |
 | `PUT /cloud/capsules/:m/:c/parts/:n`, `POST .../commit`, `GET` (`forkCapsules.ts`) | A provider's native history for a continue on a new computer. Part 1 starts a new upload; parts come in order (409 `capsule_out_of_order`). The commit checks each part and deletes the old parts. | 6 MiB a part; 20 MiB a capsule; 1 GiB an account |
+| `/cloud/backups[/:m/:lane[/...]]` (`laneBackups.ts`) | One lane backup per lane and machine key: the lane's work that is not on GitHub (a sealed git bundle and a sealed patch). An upload goes to its own prefix (`backups/<user>/<m>/<lane>/<upload>/`) and replaces the row only at its commit, so the old backup stays whole until then. Only a computer whose machine key is `:m` writes. A browser (`Origin`) gets the list, the manifest and the patch, never the bundle, and writes nothing. `POST /cloud/backups/report` records the computer's state after each save. | 6 MiB a part; 50 MiB a lane (bundle and patch); 1 GiB an account (413 `backup_too_large`, `backup_account_full`, with the sentence) |
 | `GET /cloud/projects/overview?origin=` (`projectOverview.ts`) | One project's view: computers, lanes without a computer, the first 50 chats, 100 sessions and the Git summaries. One fixed set of indexed reads, no provider call. | |
 
 Deleting a computer keeps its copies. Deleting a chat removes its parts,
 messages and capsule. Deleting a lane removes its sessions, capsules and Git
-summaries. Deleting the account (Clerk `user.deleted`) removes the R2
+summaries, and its backups (`DELETE /cloud/instances/:id` with no `keepLane`,
+or `DELETE /cloud/lanes/without-computer/:lane`). A computer deletes the
+backup of a lane whose work is all on GitHub, with every backup of that lane
+it restored. Deleting the account (Clerk `user.deleted`) removes the R2
 prefixes, the rows and the user key.
 
-Migration `0039_cloud_no_computer.sql`. The bucket and
+**Lane backups and cleanups.** A cleanup (idle, plan, project delete, the
+end of an automation run) never starts a computer. A resting computer goes
+only when it rested right after a backup report that saved every lane:
+its own idle sleep names the report (`POST .../idle {backupReportId}`), or
+the 0-hours stop follows a prepare-stop whose report is current. Any start
+clears that. Else it stays with "ADE couldn't save this lane's work." and the
+lanes' reasons. An awake computer is saved in place first (`prepare-stop`,
+then `save-for-rest --capsules`). Nothing is committed or pushed.
+
+Migrations `0039_cloud_no_computer.sql` and `0044_cloud_lane_backups.sql`. The bucket and
 `CLOUD_CHAT_MASTER_KEY` are in [Cloudflare deployment](#cloudflare-deployment).
 
 ## The message queue of an existing chat or CLI
@@ -706,8 +720,9 @@ logs carry the op name and status only.
 Writes have two more minute budgets per account in the same table
 (`store.ts` `takeRequest`, 429 `rate_limited`):
 
-- `uploads`, 1,200: session copies, Git summaries, and fork capsule parts and
-  commits. A delete's save sends one capsule for each chat.
+- `uploads`, 1,200: session copies, Git summaries, fork capsule parts and
+  commits, and lane backup writes. A delete's save sends one capsule for each
+  chat.
 - `settings`, 120: `PUT /cloud/limits`, `PUT /cloud/instances/:id/event-wakes`
   and `PUT /account/lanes`.
 

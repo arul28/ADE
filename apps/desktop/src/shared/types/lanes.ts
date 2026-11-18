@@ -472,6 +472,8 @@ export type ImportBranchLaneArgs = {
    * stops the git checkout while it runs.
    */
   operationId?: string;
+  /** False: never push the branch to make its upstream (a lane from a saved ADE Cloud backup). Default true. */
+  publishUpstream?: boolean;
 };
 
 export type CancelLaneGitWriteArgs = { operationId: string };

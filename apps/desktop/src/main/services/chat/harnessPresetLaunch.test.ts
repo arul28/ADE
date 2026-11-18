@@ -16,6 +16,7 @@ import {
   type HarnessPresetLaunchDeps,
 } from "./harnessPresetLaunch";
 import { resolveAgentPins } from "./harnessPresetSubagents";
+import { resolveRouteSource } from "./harnessRouteLaunch";
 import {
   listLaunchableCredentials,
   resolveCredentialForLaunch,
@@ -1239,5 +1240,27 @@ describe("previewHarnessLaunchPlan", () => {
     );
 
     expect(preview).toMatchObject({ status: "unsupported", model: null, env: {} });
+  });
+});
+
+describe("resolveRouteSource — an OpenCode source on another computer", () => {
+  const source = { kind: "opencode" as const, providerId: "opencode-go" };
+  const login = { token: "oc-login", expiresAt: null, orgId: null, methodType: "oauth" as const };
+  // A route saved where OpenCode is signed in runs where only the account's key is.
+  it.each([
+    ["OpenCode's own login wins over the key", login, "account-key", { token: "oc-login", signInKind: "oauth" }],
+    ["no OpenCode login: the provider's key from the account", null, "account-key", { token: "account-key", signInKind: "key" }],
+    ["neither: refused with the sign-in sentence", null, null, null],
+  ] as const)("%s", (_label, secret, key, expected) => {
+    const resolved = resolveRouteSource(source, {
+      adeHome: "/unused",
+      readOpenCodeSecret: () => secret,
+      getCredentialKey: (provider, credentialId) => (provider === "opencode-go" && credentialId === "default" ? key : null),
+    });
+    if (!expected) {
+      expect(resolved).toEqual({ unsupported: "OpenCode Go is not signed in to OpenCode on this machine. Sign in under Providers › OpenCode." });
+      return;
+    }
+    expect(resolved).toMatchObject({ ...expected, sourceProvider: "opencode-go", expiresAt: null });
   });
 });

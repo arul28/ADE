@@ -11,9 +11,10 @@
  *  - `over`: Free plan in force, over its limits (a cancel made in the billing portal).
  *  - `full`: Free plan out of hours with the disk 92% full.
  *  - `blocked`: Free plan refused on this computer (another account used it).
- *  - `idle`: Free plan, one lane unused 2 days (deleted in 1 day, ignored files listed) and one whose computer the idle cleanup removed.
+ *  - `idle`: Free plan, one lane unused 2 days (deleted in 1 day, ignored files listed) and one whose computer the idle cleanup removed,
+ *    with its saved work; Settings › ADE Cloud also lists saved work from a deleted project's lane.
  *  - `idlepaid`: Plus, one lane unused 7 days (deleted in 3 days, no ignored-files summary yet).
- *  - `idleheld`: Free plan, one lane ADE didn't delete because its push was refused.
+ *  - `idleheld`: Free plan, one lane ADE didn't delete because it couldn't save its work (over 50 MB).
  *  - `pastdue`: Plus with its last payment failed (free plan rules until it's paid).
  *  - `extradisk`: Plus with extra disk on, past the plan's 30 GB.
  *  - `upgraded`: Plus a moment after checkout, with this computer last seeing Free
@@ -38,6 +39,31 @@ import {
   type CloudPlanCleanup,
 } from "../shared/adeCloud";
 import { githubRepoOf, type CloudLaneMachine, type CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
+import {
+  CLOUD_BACKUP_NOT_SAVED_SENTENCE,
+  CLOUD_BACKUP_TOO_LARGE_SENTENCE,
+  type CloudLaneBackup,
+  type CloudLaneBackupFacts,
+} from "../../../account-directory/src/cloud/contract";
+
+/** A saved lane work for the preview: fake ids and sizes only. */
+function mockBackup(facts: Pick<CloudLaneBackupFacts, "branchRef" | "laneName" | "projectKey" | "commits" | "files"> & { laneId: string; savedAt: number }): CloudLaneBackup {
+  return {
+    ...facts,
+    machineKey: `mk-gone-${facts.laneId}`,
+    instanceId: null,
+    headSha: "1".repeat(40),
+    snapshotSha: facts.files > 0 ? "2".repeat(40) : null,
+    baseSha: "3".repeat(40),
+    fingerprint: "f".repeat(64),
+    bundleBytes: 48_000,
+    patchBytes: 9_600,
+    bundleParts: 1,
+    patchParts: 1,
+    restoredAt: null,
+    restoredByMachineKey: null,
+  };
+}
 import { CLOUD_PLAN_SEEN_STORAGE_KEY } from "./components/settings/cloudDashboard/cloudPlanMoment";
 
 type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "over" | "full" | "blocked" | "idle" | "idlepaid" | "idleheld" | "pastdue" | "extradisk" | "upgraded" | "emptyplus";
@@ -342,7 +368,7 @@ function fixture(scenario: Scenario): Fixture {
           inMs: scenario === "idle" ? DAY - HOUR : 4 * HOUR,
           days: 3,
           ignored: { checkedAt: Date.now() - 2 * DAY, paths: [".env", ".env.local", "prisma/dev.db"], more: 2, rebuildable: 3 },
-          ...(scenario === "idleheld" ? { held: "Work that isn't on GitHub yet: pricing-page." } : {}),
+          ...(scenario === "idleheld" ? { held: `${CLOUD_BACKUP_NOT_SAVED_SENTENCE} pricing-page: ${CLOUD_BACKUP_TOO_LARGE_SENTENCE}` } : {}),
         }],
       };
     case "idlepaid":
@@ -540,6 +566,11 @@ export function applyBrowserMockCloud(ade: any): void {
     projectOrigin: "github.com/acme/web",
     freedAt: now - 3 * DAY,
   }) as unknown as CloudLaneWithoutComputer);
+  // Lane backups at rest (`laneBackups.ts`): the kept lane's saved work, and one from a deleted project's lane.
+  let backups: CloudLaneBackup[] = scenario === "idle" ? [
+    mockBackup({ laneId: "lane-without-0", laneName: "onboarding-copy", branchRef: "ade/onboarding-copy", projectKey: "github.com/acme/web", commits: 2, files: 3, savedAt: now - 3 * DAY }),
+    mockBackup({ laneId: "lane-docs-search", laneName: "docs-search", branchRef: "ade/docs-search", projectKey: "github.com/acme/docs", commits: 4, files: 0, savedAt: now - 5 * DAY }),
+  ] : [];
   const statusListeners = new Set<() => void>();
   const result = (): CloudMachinesResult => ({
     state: "ok",
@@ -619,6 +650,15 @@ export function applyBrowserMockCloud(ade: any): void {
       return { ok: true, message: "Done in the preview." };
     },
     onLaneJob: () => () => undefined,
+    laneBackups: async (laneId?: string | null) => backups.filter((entry) => !laneId || entry.laneId === laneId),
+    saveLaneBackupPatch: async (_machineKey: string, laneId: string) => {
+      console.info("[browser mock] cloud.saveLaneBackupPatch", laneId);
+      return { savedTo: `${laneId}-saved-work.patch` };
+    },
+    forgetLaneBackup: async (machineKey: string, laneId: string) => {
+      backups = backups.filter((entry) => !(entry.machineKey === machineKey && entry.laneId === laneId));
+      return { deleted: 1 };
+    },
     clearCaches: async () => ({ freedGb: 1.2 }),
     // The CTO's home on ADE Cloud, as the desktop makes it (`ctoCloudHomeService.ts`).
     // `?mockCtoCloud=fail` fails the clone step, so Retry and Cancel can be seen.

@@ -5191,6 +5191,14 @@ declare global {
         reconnectMachine?: (args: { requestId: string; instanceId: string }) => Promise<{ started: boolean }>;
         personIsHere?: () => Promise<boolean>;
         pushAllWork?: (instanceId: string) => Promise<CloudMachineActionResult>;
+        /** The account's lane backups (`laneBackups.ts`); the web reads them too. */
+        laneBackups?: (laneId?: string | null) => Promise<import("../../../account-directory/src/cloud/contract").CloudLaneBackup[]>;
+        /** Downloads a lane backup's patch (a save dialog on the desktop, a browser download on the web). */
+        saveLaneBackupPatch?: (machineKey: string, laneId: string) => Promise<{ savedTo: string | null }>;
+        /** The desktop only: the work on a new branch of a clone on this computer. */
+        laneBackupToBranch?: (machineKey: string, laneId: string, projectRoot: string) => Promise<{ branch: string }>;
+        /** Deletes a lane backup for good; refused while a computer still holds its machine key. */
+        forgetLaneBackup?: (machineKey: string, laneId: string) => Promise<{ deleted: number }>;
         /** "Keep it" on an idle cleanup warning: the server restarts the computer's idle clock with no wake. Account level, no pin. */
         keepIdleComputer?: (instanceId: string) => Promise<{ ok: boolean; message?: string }>;
         /**

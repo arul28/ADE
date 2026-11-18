@@ -66,6 +66,11 @@ export type ChatLocateReport = {
   matches: ChatLocation[];
   /** Machines that are offline: not asked, never waited on. */
   offline: string[];
+  /**
+   * Of `offline`, the ADE Cloud computers that are asleep. A lookup never
+   * wakes one (a wake uses hours); the person or agent wakes it, then asks again.
+   */
+  restingCloud?: Array<{ machine: string; machineKey?: string; instanceId: string }>;
   /** Machines that were asked and did not answer (older ADE, timeout, error). */
   unreachable: Array<{ machine: string; error: string }>;
   /** Why other machines were not asked at all (signed out, no brain). */
@@ -189,7 +194,7 @@ export async function locateChatOnAccount(
   sessionId: string,
   settings: { includeThisMachine?: boolean; onlyThisMachine?: boolean } = {},
 ): Promise<ChatLocateReport> {
-  const report: ChatLocateReport = { sessionId, matches: [], offline: [], unreachable: [], note: null, deleted: null };
+  const report: ChatLocateReport = { sessionId, matches: [], offline: [], unreachable: [], restingCloud: [], note: null, deleted: null };
   let client: SocketJsonRpcClient;
   try {
     client = await connectMachineRuntimeDaemon(options, options.socketPath?.trim() || null, { allowSpawn: false });
@@ -268,17 +273,95 @@ export async function locateChatOnAccount(
       const key = only.machineKey;
       writeCache((entries) => { entries[sessionId] = { machineKey: key, machineName: only.machineName, at: Date.now() }; });
     }
+    if (!report.matches.length && report.offline.length) {
+      report.restingCloud = await restingCloudComputers(client, others.filter((machine) => !machine.online));
+    }
     return report;
   } finally {
     client.close();
   }
 }
 
+/**
+ * Which of the offline machines are ADE Cloud computers at rest, from the
+ * account's computer list (a read: it wakes nothing). Empty when that list
+ * can't be read; the plain "offline" line then stands.
+ */
+async function restingCloudComputers(
+  client: SocketJsonRpcClient,
+  offline: ReadonlyArray<{ key: string; name: string }>,
+): Promise<Array<{ machine: string; machineKey: string; instanceId: string }>> {
+  const answer = await Promise.race([
+    client.request("cloud.call", { action: "list", args: {} }).catch(() => null),
+    new Promise<null>((resolve) => { setTimeout(() => resolve(null), 8_000).unref?.(); }),
+  ]);
+  const body = isRecord(answer) && isRecord(answer.result) ? answer.result : answer;
+  const machines = isRecord(body) && Array.isArray(body.machines) ? body.machines.filter(isRecord) : [];
+  const resting: Array<{ machine: string; machineKey: string; instanceId: string }> = [];
+  for (const machine of offline) {
+    const box = machines.find((entry) => asString(entry.machineKey) === machine.key);
+    const instanceId = box ? asString(box.instanceId) : null;
+    const state = box ? asString(box.state) : null;
+    // Only a computer that sleeps: one that is starting (an update, a restart) answers soon by itself.
+    if (instanceId && (state === "asleep" || state === "stopped")) resting.push({ machine: machine.name, machineKey: machine.key, instanceId });
+  }
+  return resting;
+}
+
+/**
+ * The asleep ADE Cloud computer that saved the report's chat, as a location a
+ * `--machine` call can reach (that call wakes it). Read from the account's
+ * copy: it wakes nothing. Null when none of them saved it or it can't be read.
+ */
+export async function restingCloudChatLocation(options: GlobalOptions, report: ChatLocateReport): Promise<ChatLocation | null> {
+  const resting = (report.restingCloud ?? []).filter((entry): entry is { machine: string; machineKey: string; instanceId: string } => Boolean(entry.machineKey));
+  if (!resting.length) return null;
+  let client: SocketJsonRpcClient;
+  try {
+    client = await connectMachineRuntimeDaemon(options, options.socketPath?.trim() || null, { allowSpawn: false });
+  } catch {
+    return null;
+  }
+  try {
+    const answer = await Promise.race([
+      client.request("cloud.call", { action: "saved_chat_machine", args: { chatId: report.sessionId, machineKeys: resting.map((entry) => entry.machineKey) } }).catch(() => null),
+      new Promise<null>((resolve) => { setTimeout(() => resolve(null), LOCATE_TIMEOUT_MS).unref?.(); }),
+    ]);
+    const body = isRecord(answer) && "result" in answer ? answer.result : answer;
+    const machineKey = isRecord(body) ? asString(body.machineKey) : null;
+    const projectId = isRecord(body) ? asString(body.projectId) : null;
+    const entry = machineKey ? resting.find((candidate) => candidate.machineKey === machineKey) : undefined;
+    if (!entry) return null;
+    return {
+      machineKey: entry.machineKey,
+      machineName: entry.machine,
+      isThisMachine: false,
+      // A saved chat with no project id is a personal chat on that computer.
+      scope: projectId
+        ? { kind: "project", projectId, name: null, rootPath: isRecord(body) ? asString(body.projectRoot) : null }
+        : { kind: "personal" },
+    };
+  } finally {
+    client.close();
+  }
+}
+
+function restingCloudSentence(resting: ReadonlyArray<{ machine: string; instanceId: string }>): string | null {
+  if (!resting.length) return null;
+  const wakes = resting.map((entry) => `\`ade cloud wake ${entry.instanceId}\` (${entry.machine})`).join(", ");
+  return `asleep on ADE Cloud, not asked: ${resting.map((entry) => entry.machine).join(", ")}. `
+    + `If the chat is there, wake its computer with ${wakes} (a wake uses hours), then run this again`;
+}
+
 /** What the lookup could not cover, for a "not found" message. */
 export function describeUnasked(report: ChatLocateReport): string | null {
   const parts: string[] = [];
   if (report.note) parts.push(report.note);
-  if (report.offline.length) parts.push(`offline, not asked: ${report.offline.join(", ")}`);
+  const resting = report.restingCloud ?? [];
+  const plainOffline = report.offline.filter((name) => !resting.some((entry) => entry.machine === name));
+  if (plainOffline.length) parts.push(`offline, not asked: ${plainOffline.join(", ")}`);
+  const restingLine = restingCloudSentence(resting);
+  if (restingLine) parts.push(restingLine);
   if (report.unreachable.length) {
     parts.push(`no answer from: ${report.unreachable.map((entry) => `${entry.machine} (${entry.error})`).join(", ")}`);
   }
@@ -343,6 +426,7 @@ export function chatLocateValue(report: ChatLocateReport): JsonObject {
       scope: match.scope as unknown as JsonObject,
     })),
     offline: report.offline,
+    restingCloud: report.restingCloud ?? [],
     unreachable: report.unreachable,
     note: report.note,
     read: only ? readCommandFor(report.sessionId, only) : null,
@@ -360,9 +444,20 @@ export function chatDeletedSentence(sessionId: string, deleted: { deletedAt?: un
 export function formatChatLocate(value: unknown): string {
   const record = isRecord(value) ? value : {};
   const matches = Array.isArray(record.matches) ? record.matches.filter(isRecord) : [];
+  const resting = Array.isArray(record.restingCloud)
+    ? record.restingCloud.filter(isRecord).flatMap((entry) => {
+      const machine = asString(entry.machine);
+      const instanceId = asString(entry.instanceId);
+      return machine && instanceId ? [{ machine, instanceId }] : [];
+    })
+    : [];
+  const plainOffline = Array.isArray(record.offline)
+    ? record.offline.filter((name) => !resting.some((entry) => entry.machine === name))
+    : [];
   const unasked = [
     asString(record.note),
-    Array.isArray(record.offline) && record.offline.length ? `offline, not asked: ${record.offline.join(", ")}` : null,
+    plainOffline.length ? `offline, not asked: ${plainOffline.join(", ")}` : null,
+    restingCloudSentence(resting),
     Array.isArray(record.unreachable) && record.unreachable.length
       ? `no answer from: ${record.unreachable.filter(isRecord).map((entry) => entry.machine).join(", ")}`
       : null,

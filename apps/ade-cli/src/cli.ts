@@ -58,6 +58,7 @@ import {
   formatChatLocate,
   locateChatOnAccount,
   routedToLocation,
+  restingCloudChatLocation,
   type ChatLocateReport,
 } from "./cliChatLocate";
 import { isDevicesCommand, runDevicesCommand, withChatDeviceChoice } from "./cliDevices";
@@ -5126,10 +5127,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   Each computer on your ADE Cloud account is one of your machines: reach it
   with --machine <its name>. They sleep on their own after a few idle minutes
-  and use no hours while asleep; a --machine call or opening a lane wakes one
-  in about a second. <machine> is its name or id. Sizes: small,
-  medium, large, x-large (or 2x4, 4x8, 4x16, 4x32). --kind vm is a full
-  computer: Android (medium or bigger) and Docker.
+  and use no hours while asleep; a --machine call or a message wakes one in
+  about 20 seconds. Reading a sleeping lane's saved chats does not wake it.
+  <machine> is its name or id. Sizes: small, medium, large, xlarge
+  (ade cloud status lists each one's CPU, memory and hours). large and
+  xlarge are full computers: Android and Docker need one.
 
     $ ade cloud status --text                     Everything in one read: can a new lane start (and why not),
                                                     plan, hours, disk, computers, each lane, sizes, agent limits
@@ -5138,7 +5140,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade cloud work-state --text                 On a cloud computer: which lanes have work not on GitHub yet
     $ ade cloud invite --text                     Your invite link: friends joined, rewards left, hours earned
                                                     (enter a friend's invite in Settings › Account)
-    $ ade cloud create --kind vm --shape medium --name "android vm"
+    $ ade cloud create --kind vm --shape large --name "android vm"
     $ ade cloud sleep <machine>                   Sleep now (uses no hours)
     $ ade cloud wake <machine>                    Wake (the server refuses it at 0 hours)
     $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts
@@ -16435,12 +16437,29 @@ async function runChatHereThenElsewhere(
     const there = { ...routedToLocation(parsed, match), options: { ...parsed.options, projectRoot: match.scope.rootPath } };
     return await withShellScopeFor(there.options, () => runParsedCli(there));
   }
+  // Asleep on ADE Cloud: a send goes to the computer that saved the chat, and
+  // the `--machine` call wakes it (a wake uses hours, like a send from the app).
+  // A read is not worth a wake: it gets the "asleep" sentence instead.
+  if (!match && report.restingCloud?.length && isChatSendCommand(parsed.command)) {
+    const resting = await restingCloudChatLocation(parsed.options, report);
+    if (resting) {
+      process.stderr.write(`· on ${resting.machineName} (asleep on ADE Cloud: waking it, which uses hours)\n`);
+      return await runOnMachine(routedToLocation(parsed, resting));
+    }
+  }
   if (!match) chatLookupMiss = report;
   if (!match && report.deleted) process.stderr.write(`${chatDeletedSentence(sessionId, report.deleted)}\n`);
   if (failure) throw failure;
   const hint = chatOtherMachineHint(process.argv.slice(2));
   if (hint) process.stderr.write(`${hint}\n`);
   return local!;
+}
+
+/** `ade chat send|message`: a command that gives a chat work, so its sleeping computer is worth a wake. */
+function isChatSendCommand(command: string[]): boolean {
+  const typed = command[0]?.toLowerCase() ?? "";
+  const sub = command[1]?.toLowerCase();
+  return (CLI_COMMAND_ALIASES[typed] ?? typed) === "chat" && (sub === "send" || sub === "message");
 }
 
 /** `ade chat locate <session>`: which machine of the account has a chat. */
@@ -30851,18 +30870,16 @@ async function runServe(
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
         readBusy: readCloudBusy,
-        requestIdleSleep: async (instanceId) => {
+        requestIdleSleep: async (instanceId, extras) => {
           const client = await (await getCloudBrainAccess()).client();
           if (!client) throw new Error("no ADE Cloud access");
-          await client.requestIdleSleep(instanceId);
+          await client.requestIdleSleep(instanceId, { backupReportId: extras?.backupReportId ?? null });
         },
         growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
         diskGrowDueNow: () => cloudDiskGrower?.growDueNow() ?? false,
         reportUse: async (lastWorkAt, stillIdle) => await cloudDiskUsageReporter?.report(lastWorkAt, stillIdle),
         // Copies and Git summaries before the sleep: the lane reads the same with no computer awake.
-        saveForRest: async (stillIdle) => {
-          await cloudRest?.saveAtIdle(stillIdle);
-        },
+        saveForRest: async (stillIdle: () => boolean): Promise<string | null> => (cloudRest ? await cloudRest.saveAtIdle(stillIdle) : null),
         // Messages queued for its chats while it slept go now.
         onWoke: () => cloudRest?.drain("woke"),
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
@@ -32430,6 +32447,31 @@ async function runServe(
     if (Object.keys(update).length === 1) return;
     await chat.updateSession(update);
   };
+  // ADE Cloud computer: a lane that starts here gets its saved work back. Installed
+  // before the boot launch starts, so its first lane never misses the restore.
+  if (!embedded && cloudInstanceId && cloudRest && cloudKeepAwake) {
+    const [{ installCloudLaneRestore }, laneBackup] = await Promise.all([
+      import("../../desktop/src/main/services/lanes/cloudLaneRestoreHook"),
+      import("./services/cloudChats/cloudLaneBackup"),
+    ]);
+    installCloudLaneRestore({
+      prepareBranch: async ({ laneId, branchRef, projectRoot }) => {
+        const api = await accountCloudApi();
+        const machineKey = thisMachineKey();
+        if (!api || !machineKey) return { created: false };
+        return await laneBackup.prepareLaneBranchFromBackup({ api, machineKey, laneId, branchRef, projectRoot, logger: headlessProjectLogger });
+      },
+      restore: async ({ laneId, worktreePath, projectRoot }) => {
+        const api = await accountCloudApi();
+        const machineKey = thisMachineKey();
+        if (!api || !machineKey) return null;
+        const outcome = await laneBackup.restoreLaneBackupIfNeeded({ api, instanceId: cloudInstanceId, machineKey, laneId, worktreePath, projectRoot, logger: headlessProjectLogger });
+        return outcome === "kept_newer_local_work" || outcome === "kept_branch_differs"
+          ? "This lane has other work than its saved work on ADE Cloud, so ADE left the lane as it is. Download the saved work from the lane to compare."
+          : outcome === "applied" ? "ADE put back this lane's work that wasn't on GitHub." : null;
+      },
+    });
+  }
   if (bootLaunchEnv) {
     startCloudBootLaunch(bootLaunchEnv, {
       cloudInstanceId,
@@ -32529,11 +32571,21 @@ async function runServe(
 
   // ADE Cloud computer: the rest save and the queue of messages for its chats.
   if (!embedded && cloudInstanceId && cloudRest && cloudKeepAwake) {
-    const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats, uploadSubagentCloudCopy }] = await Promise.all([
+    const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats, uploadSubagentCloudCopy }, laneBackup, { normalizeGitRemoteIdentity }, { readGitOriginUrl }] = await Promise.all([
       import("./services/cloudChats/cloudRestSave"),
       import("./services/cloudChats/cloudChatMessageQueue"),
       import("./services/cloudChats/cloudChatUploader"),
+      import("./services/cloudChats/cloudLaneBackup"),
+      import("../../desktop/src/shared/crossMachineHandoff"),
+      import("../../desktop/src/main/services/projects/recentProjectSummary"),
     ]);
+    const projectKeyOf = (root: string): string | null => {
+      try {
+        return normalizeGitRemoteIdentity(readGitOriginUrl(root)) || null;
+      } catch {
+        return null;
+      }
+    };
     const restSave = createCloudRestSave({
       adeHome: layout.adeDir,
       instanceId: cloudInstanceId,
@@ -32551,6 +32603,16 @@ async function runServe(
       flushChats: (timeoutMs) => uploadPendingCloudChats(timeoutMs),
       accountUserId: () => brainAccountAuthService.getStatus().userId ?? null,
       uploadSubagentCopy: uploadSubagentCloudCopy,
+      backupLanes: laneBackup.createBackupLaneLister({
+        cachePath: path.join(layout.adeDir, "cloud", "backup-lanes.json"),
+        projects: () => projectRegistry.list().map((record) => ({
+          projectId: record.projectId,
+          booted: async () => (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null,
+          open: async () => (await scopeRegistry.get(record.projectId)).runtime,
+        })),
+        projectKey: projectKeyOf,
+        logger: headlessProjectLogger,
+      }),
     });
     const chatQueue = createCloudChatMessageQueue({
       instanceId: cloudInstanceId,

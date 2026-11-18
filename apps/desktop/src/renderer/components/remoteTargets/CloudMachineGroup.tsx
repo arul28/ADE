@@ -16,7 +16,7 @@ import {
 } from "../../../shared/adeCloud";
 import { Banner } from "../ui/notice";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
-import { PushAllWorkButton } from "./PushAllWorkButton";
+import { CloudLaneSavedWork } from "../cloudLane/CloudLaneSavedWork";
 import type { NoticeAction } from "../ui/notice/NoticeParts";
 import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
 import {
@@ -90,13 +90,17 @@ export function CloudGroupBanners({
   if (accountBanner) {
     if (cloudOutOfHours(result?.account) && result?.machines.length) {
       banners.push(
-        <div key="push-work" className="ade-ig-mini-rows">
-          {result.machines.map((box) => (
-            <div key={box.instanceId} className="ade-ig-mini-row">
-              <span className="ade-ig-mini-title">{(box as CloudLaneMachine).lane?.laneName ?? "Computer without a lane"}</span>
-              <PushAllWorkButton instanceId={box.instanceId} />
-            </div>
-          ))}
+        <div key="saved-work" className="ade-ig-mini-rows">
+          {result.machines.flatMap((box) => {
+            // At 0 hours no computer wakes; each lane's saved work reads with no wake.
+            const lane = (box as CloudLaneMachine).lane;
+            return lane?.laneId ? [
+              <div key={box.instanceId} className="ade-ig-mini-row">
+                <span className="ade-ig-mini-title">{lane.laneName ?? "Lane"}</span>
+                <CloudLaneSavedWork laneId={lane.laneId} laneName={lane.laneName} />
+              </div>,
+            ] : [];
+          })}
         </div>,
       );
     }

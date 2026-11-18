@@ -745,6 +745,10 @@ function routeLoginProvider(target: Pick<HarnessLaunchTarget, "harness" | "sourc
       return null;
     case "subscription":
       return target.source.provider;
+    case "opencode":
+      // OpenCode's own login or key serves the route; another harness's login
+      // (Claude Code's, Codex's) plays no part in it.
+      return target.harness === "opencode" ? "opencode" : null;
     default:
       return target.harness;
   }
@@ -4319,6 +4323,23 @@ function isLikelyMacRenderer(): boolean {
   return /\bMac\b/i.test(navigator.platform) || /\bMac OS X\b/i.test(navigator.userAgent);
 }
 
+/**
+ * A file the composer saved on a machine (its chat attachment store), read
+ * back from that machine as bytes (`agentChat.getImageDataUrl`, the call
+ * that owns those paths on the desktop and the web).
+ */
+async function readMachineFile(filePath: string, pin: OpenProjectBinding | null): Promise<{ bytes: Uint8Array; contentType: string }> {
+  if (!pin) throw new Error("the machine that holds it is not connected");
+  const { dataUrl } = await window.ade.agentChat.getImageDataUrl(filePath, pin);
+  const match = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(dataUrl ?? "");
+  if (!match) throw new Error("ADE couldn't read the file on this machine");
+  const body = match[3] ?? "";
+  const bytes = match[2]
+    ? Uint8Array.from(atob(body), (char) => char.charCodeAt(0))
+    : new TextEncoder().encode(decodeURIComponent(body));
+  return { bytes, contentType: match[1] || "application/octet-stream" };
+}
+
 export function AgentChatPane({
   laneId,
   laneLabel,
@@ -7606,11 +7627,16 @@ export function AgentChatPane({
     subagentViewSnapshot?.reasoningEffort,
   ]);
 
+  // A custom provider whose source brings its own login (a key, an account,
+  // OpenCode) needs the harness installed, not signed in.
+  const routeBringsOwnLogin = activeLaunchTarget != null
+    && routeLoginProvider(activeLaunchTarget) !== activeProviderConnection?.provider;
   const cliRuntimeBlocked = Boolean(
     selectedSessionId
     // A turn that is running proves the runtime is there, whatever a status
     // read from before it started says.
     && !turnActive
+    && !(routeBringsOwnLogin && activeProviderConnection?.runtimeDetected)
     && activeProviderConnection
     && !activeProviderConnection.runtimeAvailable
     // ADE's copy is downloading, or downloads at this chat's first turn: an
@@ -14172,6 +14198,12 @@ export function AgentChatPane({
       return false;
     }
     const prepared = prepareDraftLaunch(snapshot);
+    // Only images can be read back from the machine that holds them; another file would be lost on the way.
+    const notImages = prepared.selectedAttachments.filter((file) => file.type === "file").map((file) => file.path.split(/[\\/]/).pop() || "file");
+    if (notImages.length) {
+      setError({ message: `A new ADE Cloud chat from here can carry images, not other files. Remove ${notImages.join(", ")} to start it.`, kind: "status" });
+      return false;
+    }
     let built: ReturnType<typeof buildChatCreateArgs>;
     try {
       built = buildDraftChatLaunch(prepared);
@@ -14182,16 +14214,25 @@ export function AgentChatPane({
     const laneName = configuredLane?.name.trim()
       || createDeterministicAutoLaneName(buildDraftLaunchNamingSeed(snapshot), { genericSuffix: autoLaneGenericSuffix() });
     const list = readAccountProjectList();
-    void startAccountCloudChat(buildAccountCloudDraftStart({
-      prepared,
-      chat: { create: built.createArgs, message: buildDraftChatMessageArgs(prepared, built.provider, prepared.interactionMode) },
-      origin: `https://${origin}`,
-      accountProjectId: (list.state === "ready" ? accountProjectForOrigin(list.projects, cloud.originUrl) : null)?.id ?? null,
-      laneName,
-      laneConfig: configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null,
-      sizeId: cloud.sizeId,
-      sizeChoice: cloud.sizeChoice,
-    }))
+    // The files sit on the machine the composer saved them to: each is read back from
+    // there (its pin) and sent to ADE Cloud before the start names it.
+    const filesPin = draftAttachmentOwnerBindingRef.current ?? draftExecutionBindingRef.current;
+    const files = prepared.selectedAttachments
+      .filter((file) => file.type !== "image-url")
+      .map((file) => ({ name: file.path.split(/[\\/]/).pop() || "file", read: () => readMachineFile(file.path, filesPin) }));
+    void startAccountCloudChat({
+      ...buildAccountCloudDraftStart({
+        prepared,
+        chat: { create: built.createArgs, message: buildDraftChatMessageArgs(prepared, built.provider, prepared.interactionMode) },
+        origin: `https://${origin}`,
+        accountProjectId: (list.state === "ready" ? accountProjectForOrigin(list.projects, cloud.originUrl) : null)?.id ?? null,
+        laneName,
+        laneConfig: configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null,
+        sizeId: cloud.sizeId,
+        sizeChoice: cloud.sizeChoice,
+      }),
+      ...(files.length ? { files } : {}),
+    })
       .catch((startError: unknown) => setError({ message: errorMessage(startError), kind: "status" }));
     clearPromptSuggestionForSession(selectedSessionId);
     setError(null);
@@ -18852,7 +18893,10 @@ export function AgentChatPane({
   const providerSignInNeed = useMemo<(ProviderSignInNeed & { key: string }) | null>(() => {
     if (!signInProvider || turnActive || subagentView || chatScope || draftSkipsLocalSignIn) return null;
     const machineKey = activeComposerRuntimeBinding?.key ?? "tab";
-    if (chatSignInFailure && chatSignInFailure.provider === signInProvider) {
+    // A failed sign-in asks for a login only when this chat runs on that login:
+    // a custom provider or a key brings its own, so the harness's sign-out is
+    // not the reason its turn failed.
+    if (chatSignInFailure && chatSignInFailure.provider === signInProvider && signInLoginProvider === signInProvider) {
       return {
         provider: signInProvider,
         reason: "failed-turn",
@@ -20697,6 +20741,12 @@ export function AgentChatPane({
     : null;
 
   const composerMachineBinding = activeComposerRuntimeBinding;
+  // A resting ADE Cloud computer cannot say which models it can run: its
+  // sign-ins are unknown, not missing. The picker then lists every model as
+  // one to pick (the send wakes the computer, which names a real sign-in
+  // problem), instead of "Sign in" rows that lead to a settings page for a
+  // computer that is asleep.
+  const restingModelPicker = chatComputerResting && !cursorCloudSessionActive;
   const composerAvailableModelIds = cursorCloudSessionActive ? cursorCloudModelIds : effectiveAvailableModelIds;
   const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudSessionActive;
 
@@ -20925,13 +20975,13 @@ export function AgentChatPane({
             onModelPickerOpenRequestHandled={handleModelPickerOpenRequestHandled}
             // Cloud mode narrows the picker to the models Cursor Cloud can actually run. Leaving
             // it (or picking a non-cursor model another way) restores the full list.
-            availableModelIds={composerAvailableModelIds}
+            {...(restingModelPicker ? {} : { availableModelIds: composerAvailableModelIds })}
             mentionModelIds={handoffAvailableModelIds}
             catalogScopeKey={modelCatalogScopeKey}
             constrainModelSelection={composerConstrainModelSelection}
             modelUnavailableMessage={cursorCloudSessionActive ? undefined : constrainedModelSelectionError ?? undefined}
-            providerAuthStatus={modelPickerProviderAuthStatus}
-            {...(modelPickerProviderRuntimeMissing ? { providerRuntimeMissing: modelPickerProviderRuntimeMissing } : {})}
+            {...(restingModelPicker || !modelPickerProviderAuthStatus ? {} : { providerAuthStatus: modelPickerProviderAuthStatus })}
+            {...(modelPickerProviderRuntimeMissing && !restingModelPicker ? { providerRuntimeMissing: modelPickerProviderRuntimeMissing } : {})}
             onRuntimeCatalogRefreshed={() => {
               setRuntimeCatalogVersion((version) => version + 1);
             }}

@@ -16,7 +16,7 @@
  *   POST   /cloud/instances/:id/sleep          { status }
  *   POST   /cloud/instances/:id/start          { status }
  *   POST   /cloud/instances/:id/stop           { status }
- *   POST   /cloud/instances/:id/idle           { status }   the computer asks to be slept
+ *   POST   /cloud/instances/:id/idle           { status }   the computer asks to be slept ({ backupReportId }: it rests with that backup report)
  *   POST   /cloud/instances/:id/update         { status, templateVersion }   409 `update_in_progress`
  *   GET    /cloud/instances/:id/update-check   CloudUpdateCheck   (from the computer)
  *   POST   /cloud/instances/:id/booted         CloudBootReportResult   (from the computer)
@@ -77,9 +77,10 @@
  * (`GET, POST, PUT, DELETE`, headers `authorization, content-type`); any other
  * Origin is refused before the token is read. Native clients send no Origin.
  *
- * `POST /cloud/instances/:id/start` with `{ reason: "push_work" }` is the one
- * wake allowed at 0 hours, or on the free plan with more disk than it has
- * (`over_plan_disk`): free, short, once a day per computer.
+ * Every wake is use: it bills hours and restarts the idle cleanup clock. No
+ * wake is allowed at 0 hours, or on the free plan with more disk than it has
+ * (`over_plan_disk`). The work of a resting computer is in its lane backups
+ * (`laneBackups.ts`), which read with no wake.
  * `DELETE /cloud/instances/:id` takes `{ who, reason }`, recorded in the log.
  * With `{ keepLane: { branchRef } }` the lane the computer was made for
  * (its lane metadata) stays as a lane without a computer; the 30-day rule
@@ -198,6 +199,8 @@ export const CLOUD_PATHS = {
   git: "/cloud/git",
   /** Fork capsules saved before a delete (`forkCapsules.ts`). */
   capsules: "/cloud/capsules",
+  /** Lane backups saved at rest: the work of each lane that is not on GitHub yet (`laneBackups.ts`). */
+  backups: "/cloud/backups",
   /** The account lane index of every machine (`accountLanes/`): not under `/cloud`, so a blocked account's brains keep it. */
   accountLanes: "/account/lanes",
 } as const;
@@ -220,6 +223,9 @@ export const cloudSessionPath = (machineKey: string, sessionId: string): string 
 export const cloudGitPath = (machineKey: string, laneId: string): string =>
   `${CLOUD_PATHS.git}/${encodeURIComponent(machineKey)}/${encodeURIComponent(laneId)}`;
 /** `/cloud/capsules/:machine/:chat[/parts/:n | /commit]`. */
+/** `/cloud/backups/:m/:lane[/...]`: a lane backup (`laneBackups.ts`). */
+export const cloudBackupPath = (machineKey: string, laneId: string, tail?: string): string =>
+  `${CLOUD_PATHS.backups}/${encodeURIComponent(machineKey)}/${encodeURIComponent(laneId)}${tail ? `/${tail}` : ""}`;
 export const cloudCapsulePath = (machineKey: string, chatId: string, tail?: { part: number } | "commit"): string =>
   `${CLOUD_PATHS.capsules}/${encodeURIComponent(machineKey)}/${encodeURIComponent(chatId)}${tail === "commit" ? "/commit" : tail ? `/parts/${tail.part}` : ""}`;
 
@@ -267,10 +273,10 @@ export type CloudLaneWithoutComputer = {
   /**
    * `freed`: the person kept the lane on a fresh computer. `inactive`: the
    * old 30-day rule removed its computer. `idle_cleanup`: the idle cleanup
-   * removed it after its work was committed and pushed to the lane's branch
-   * (`idleCleanup.ts`). `plan_limit`: the person had ADE free it to fit a
-   * cheaper plan (`planCleanup.ts`), its work pushed first unless they said
-   * not to. An older ADE shows an unknown reason as a removed computer.
+   * removed it after each lane's work was saved as a lane backup
+   * (`idleCleanup.ts`, `laneBackups.ts`). `plan_limit`: the person had ADE
+   * free it to fit a cheaper plan (`planCleanup.ts`), its work saved first
+   * unless they said not to. An older ADE shows an unknown reason as a removed computer.
    */
   reason: "freed" | "inactive" | "idle_cleanup" | "plan_limit";
   /** The size the old computer had. */
@@ -339,6 +345,12 @@ export type CloudInstance = {
    * `computer_deleting`). Older servers leave it out: read it as false.
    */
   idleSaving?: boolean;
+  /**
+   * Its lane backups (`laneBackups.ts`): `saved` when it rests with every
+   * lane's work saved (a cleanup may delete it with no wake), and the lanes
+   * its last save couldn't save, each with why. Null before its first report.
+   */
+  backups?: { saved: boolean; problems: CloudBackupProblem[] } | null;
 };
 
 /**
@@ -845,7 +857,9 @@ export type CloudPlanCleanupComputer = {
  * What the person picked to free for a cheaper plan (`POST
  * /cloud/billing/checkout` `cleanup`, or `POST /cloud/billing/plan-cleanup`).
  * The server frees exactly these, and only when they make the account fit.
- * `push` false: ADE deletes them without pushing their work to GitHub first.
+ * `push` true ("Save each lane's work first"): each goes only when every
+ * lane's work is saved as a lane backup (no wake, nothing pushed). `push`
+ * false: ADE deletes them without that check. The name stays for older apps.
  */
 export type CloudPlanCleanupPick = { push: boolean; instanceIds: string[] };
 
@@ -885,9 +899,9 @@ export type CloudPlanCleanup = {
 export type CloudPlanCleanupDone = {
   at: number;
   planId: CloudPlanId;
-  /** Freed: the work is on `branch` on GitHub (when pushed). `laneKept` when the lane stays without a computer. */
+  /** Freed: `pushed` (the name older apps read) is true when each lane's work was saved first. `laneKept` when the lane stays without a computer. */
   freed: Array<{ name: string; branch: string | null; laneKept: boolean; pushed?: boolean }>;
-  /** Kept because its work couldn't all be pushed; it stays until the person deletes it or picks again. */
+  /** Kept because its lanes' work couldn't all be saved; it stays until the person deletes it or picks again. */
   kept: Array<{ name: string; reason: string }>;
 };
 
@@ -917,15 +931,15 @@ export function ignoredFilesList(ignored: Pick<CloudIgnoredFiles, "paths" | "mor
  * that the computer hasn't said yet.
  */
 export function ignoredFilesSentence(ignored: CloudIgnoredFiles | null | undefined): string {
-  if (!ignored) return "ADE doesn't know yet which files git ignores on it (such as .env or a local database); those are never pushed, so they won't be kept.";
+  if (!ignored) return "ADE doesn't know yet which files git ignores on it (such as .env or a local database); those are never saved, so they won't be kept.";
   const list = ignoredFilesList(ignored);
   const builds = ignored.rebuildable > 0 ? " Build and install folders such as node_modules aren't listed: they come back when you build." : "";
   if (ignored.incomplete) {
-    if (!list) return `ADE couldn't read every lane on it to see which files git ignores (such as .env or a local database); those are never pushed, so they won't be kept.${builds}`;
-    return `Files git ignores are never pushed, so these won't be kept: ${list}. ADE couldn't read every lane on it, so there may be more.${builds}`;
+    if (!list) return `ADE couldn't read every lane on it to see which files git ignores (such as .env or a local database); those are never saved, so they won't be kept.${builds}`;
+    return `Files git ignores are never saved, so these won't be kept: ${list}. ADE couldn't read every lane on it, so there may be more.${builds}`;
   }
   if (!list) return `No files that git ignores were found on it.${builds}`;
-  return `Files git ignores are never pushed, so these won't be kept: ${list}.${builds}`;
+  return `Files git ignores are never saved, so these won't be kept: ${list}.${builds}`;
 }
 
 /** "in 1 day", "in 5 hours", "within the hour": how far away a time is. */
@@ -956,29 +970,29 @@ export function idleCleanupSaveSentence(branch: string | null | undefined): stri
 }
 
 /**
- * What to do about a computer the idle cleanup kept because its work couldn't
- * be saved, and when ADE tries again (each failed try waits longer: 1, 2, 4
- * ... days, at most 14).
+ * What to do about a computer the idle cleanup kept because its lanes' work
+ * isn't saved, and when ADE reads again (1, 2, 4 ... days, at most 14). ADE
+ * never wakes it to save: its next use saves it when it rests.
  */
 export function idleCleanupHeldNext(retryAt: number, now: number): string {
-  return `Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again ${inHowLong(retryAt, now)}.`;
+  return `Open the lane once so ADE saves its work when the computer rests, or delete the lane if you don't need it. ADE checks again ${inHowLong(retryAt, now)}.`;
 }
 
 /** What a cheaper plan's limits freed and kept, for ADE's notice after the run. */
 export function planCleanupDoneSentence(done: CloudPlanCleanupDone): string {
   const parts: string[] = [];
   if (done.freed.length) {
-    const list = done.freed.map((entry) => (entry.branch && entry.pushed !== false ? `${entry.name} (work on ${entry.branch})` : entry.name)).join(", ");
+    const list = done.freed.map((entry) => entry.name).join(", ");
     const lanesKept = done.freed.filter((entry) => entry.laneKept).length;
     // Only a computer that held a lane keeps one: a computer made for no lane is simply gone.
     const kept = lanesKept === 0 ? ""
       : ` ${lanesKept === done.freed.length ? (lanesKept === 1 ? "Its lane and chats stay" : "Their lanes and chats stay") : (lanesKept === 1 ? "The lane among them and its chats stay" : "The lanes among them and their chats stay")}; the next message to a lane makes a new computer.`;
-    const pushedAll = done.freed.every((entry) => entry.pushed !== false);
-    const how = pushedAll ? "pushed each lane's work to GitHub and removed" : "removed";
+    const savedAll = done.freed.every((entry) => entry.pushed !== false);
+    const how = savedAll ? "saved each lane's work and removed" : "removed";
     parts.push(`To fit ${CLOUD_PLAN_SENTENCE_NAMES[done.planId]}, ADE ${how} ${done.freed.length === 1 ? "this computer" : "these computers"}: ${list}.${kept}`);
   }
   if (done.kept.length) {
-    parts.push(`ADE kept ${done.kept.map((entry) => entry.name).join(", ")}, because its work couldn't all be pushed to GitHub. Push its work or delete it yourself, or pick again in ADE.`);
+    parts.push(`ADE kept ${done.kept.map((entry) => entry.name).join(", ")}, because ADE couldn't save its lanes' work. Use it once so ADE saves the work when it rests, delete it yourself, or pick again in ADE.`);
   }
   return parts.join(" ");
 }
@@ -1173,6 +1187,7 @@ export const CLOUD_BLOCKED_READ_ROUTES = [
   "/cloud/account-secrets",
   "/cloud/projects/overview",
   "/cloud/cto",
+  "/cloud/backups",
 ] as const;
 
 /* ---- Wakes ---- */
@@ -1338,8 +1353,141 @@ export type CloudSaveForRestReport = {
   git: number;
   /** Chats with no capsule (a provider that replays, over the cap, a failed build). */
   skipped: number;
+  /** The lane backups of this save (`CloudBackupReport`); left out by an ADE older than lane backups. */
+  backups?: CloudBackupSaveSummary | null;
   error?: string | null;
 };
+
+/* ---- Lane backups at rest (`laneBackups.ts`) ---- */
+
+/**
+ * A lane backup is everything of one lane that is not on GitHub yet: the
+ * commits the lane has that no `origin` branch has, and a snapshot commit of
+ * its uncommitted work (staged, unstaged and untracked files that git does
+ * not ignore). It is one `git bundle` (the exact restore) and one
+ * `git diff --binary` patch (to download on the web and the phone). Neither
+ * is pushed, and the snapshot commit is on no branch.
+ *
+ * One backup per lane and machine key: a new one replaces the old one. The
+ * server seals each part with the account's own key (AES-GCM, the additional
+ * data names the user, the machine key, the lane, the upload, the kind and
+ * the part). This is encryption at rest, not end-to-end: the server can open
+ * it, so it can give it back to the account.
+ *
+ *   GET    /cloud/backups[?laneId=]                       { backups: CloudLaneBackup[] }
+ *   GET    /cloud/backups/:m/:lane                        CloudLaneBackup
+ *   GET    /cloud/backups/:m/:lane/:kind/:part            the part's bytes (`bundle` only from a native caller)
+ *   POST   /cloud/backups/:m/:lane/uploads                CloudBackupUploadStarted   (from the computer: CloudBackupUploadStart)
+ *   PUT    /cloud/backups/:m/:lane/uploads/:id/:kind/:part { ok, bytes }   (from the computer)
+ *   POST   /cloud/backups/:m/:lane/uploads/:id/commit     CloudLaneBackup   (from the computer: CloudBackupUploadCommit)
+ *   DELETE /cloud/backups/:m/:lane                        { deleted }   (from the computer: the lane's work is on GitHub)
+ *   POST   /cloud/backups/:m/:lane/restored               { ok }   (from the computer that applied it)
+ *   POST   /cloud/backups/report                          { state }   (from the computer: CloudBackupReport)
+ *
+ * Only a computer of the account writes, and only under its own machine key.
+ * Every read checks the owner; another account gets 404.
+ */
+export type CloudBackupKind = "bundle" | "patch";
+/** Most bytes of one lane's backup, the bundle and the patch together: the cross-machine handoff's tested bundle cap. */
+export const CLOUD_BACKUP_MAX_BYTES = 50 * 1024 * 1024;
+/** One part of a backup: under the Worker's memory, as a capsule part. */
+export const CLOUD_BACKUP_MAX_PART_BYTES = 6 * 1024 * 1024;
+/** Most stored bytes of one account's backups, as the fork capsules: about 20 lanes at the full lane cap. */
+export const CLOUD_BACKUP_MAX_ACCOUNT_BYTES = 1024 * 1024 * 1024;
+/** Said when one lane's work is over `CLOUD_BACKUP_MAX_BYTES`. */
+export const CLOUD_BACKUP_TOO_LARGE_SENTENCE = `This lane's work that isn't on GitHub is over ${CLOUD_BACKUP_MAX_BYTES / (1024 * 1024)} MB, so ADE can't save it. Push it to GitHub, or remove large files that git doesn't ignore. The computer is kept until then.`;
+/** Said when the account's backups are over `CLOUD_BACKUP_MAX_ACCOUNT_BYTES`. */
+export const CLOUD_BACKUP_ACCOUNT_FULL_SENTENCE = `This account's saved lane work is over ${CLOUD_BACKUP_MAX_ACCOUNT_BYTES / (1024 * 1024 * 1024)} GB, so ADE can't save more. Push lanes to GitHub or delete lanes you don't need. The computer is kept until then.`;
+/** The one sentence a cleanup gives when a lane has no current backup. */
+export const CLOUD_BACKUP_NOT_SAVED_SENTENCE = "ADE couldn't save this lane's work.";
+/** A resting computer whose ADE has not saved lane work yet (it rested before an update): kept until its next rest saves it. */
+export const CLOUD_BACKUP_NEVER_SAVED_SENTENCE = "ADE keeps this computer: it went to sleep before ADE saved lane work. The next time you use it and it sleeps again, ADE saves its lanes and can clean it up.";
+
+/** What the computer read from the lane when it made the backup. */
+export type CloudLaneBackupFacts = {
+  /** The lane's branch (no `refs/heads/`); null on a detached HEAD. */
+  branchRef: string | null;
+  laneName: string | null;
+  /** The repository (`normalizeGitRemoteIdentity`, such as `github.com/acme/web`). */
+  projectKey: string | null;
+  /** The lane's HEAD commit. */
+  headSha: string;
+  /** The snapshot commit of the uncommitted work (parent `headSha`); null when nothing is uncommitted. */
+  snapshotSha: string | null;
+  /** The commit the patch starts from (on GitHub, or the empty tree). */
+  baseSha: string;
+  /** Commits on the lane that no `origin` branch has. */
+  commits: number;
+  /** Files the snapshot changes. */
+  files: number;
+};
+
+export type CloudLaneBackup = CloudLaneBackupFacts & {
+  machineKey: string;
+  laneId: string;
+  instanceId: string | null;
+  /** The lane's state when the backup was made: equal for equal work (HEAD and the working tree). */
+  fingerprint: string;
+  bundleBytes: number;
+  patchBytes: number;
+  bundleParts: number;
+  patchParts: number;
+  savedAt: number;
+  /** A computer applied it to the lane (`restoredByMachineKey`); the backup stays until that lane's work is on GitHub or a newer backup replaces it. */
+  restoredAt: number | null;
+  restoredByMachineKey: string | null;
+};
+
+export type CloudBackupUploadStart = {
+  instanceId: string;
+  fingerprint: string;
+  bundleBytes: number;
+  patchBytes: number;
+  facts: CloudLaneBackupFacts;
+};
+export type CloudBackupUploadStarted = { uploadId: string; partBytes: number };
+export type CloudBackupUploadCommit = { instanceId: string; bundleParts: number; patchParts: number };
+
+/**
+ * One lane in a save's report. `clean`: nothing of it is off GitHub.
+ * `saved`: a backup was saved now. `unchanged`: the backup the server has is
+ * of the same work. `failed` and `too_large` keep the computer.
+ */
+export type CloudBackupLaneState = "clean" | "saved" | "unchanged" | "failed" | "too_large";
+export type CloudBackupLaneReport = {
+  laneId: string;
+  laneName?: string | null;
+  state: CloudBackupLaneState;
+  /** The backup's fingerprint for `saved` and `unchanged`: the server checks it has that backup. */
+  fingerprint?: string | null;
+  /** One plain sentence for `failed` and `too_large`. */
+  reason?: string | null;
+};
+/**
+ * `POST /cloud/backups/report`, at the end of each save: the state of every
+ * lane on the computer. `complete` is false when the save could not read every
+ * project. `reportId` names this report: the computer's own sleep request
+ * (`POST .../idle { backupReportId }`) and the 0-hours stop say which report
+ * they rest with.
+ */
+export type CloudBackupReport = {
+  instanceId: string;
+  reportId: string;
+  complete: boolean;
+  lanes: CloudBackupLaneReport[];
+};
+/** `current`: every lane is clean or has its backup on the server. */
+export type CloudBackupReportState = "current" | "failed";
+export type CloudBackupSaveSummary = {
+  reportId: string | null;
+  state: CloudBackupReportState;
+  saved: number;
+  unchanged: number;
+  clean: number;
+  failed: number;
+};
+/** What the person sees of a computer whose lanes are not all saved (the cleanup keeps it). */
+export type CloudBackupProblem = { laneId: string; laneName: string | null; reason: string };
 
 /* ---- Chat move after a fork restore ---- */
 
@@ -2085,9 +2233,9 @@ export type CloudProjectComputersDeleteStarted = { jobId: string; accepted: stri
 
 /**
  * One computer's place in a delete job: `pending` until the server takes it,
- * `working` while it wakes it and pushes its work, then `deleted`, `gone`
- * (deleted already), or `kept` with `reason` when its work couldn't all be
- * pushed (the caller offers "Delete anyway": a plain `DELETE /cloud/instances/:id`).
+ * `working` while ADE checks that each lane's work is saved (no wake), then
+ * `deleted`, `gone` (deleted already), or `kept` with `reason` when its work
+ * isn't all saved (the caller offers "Delete anyway": a plain `DELETE /cloud/instances/:id`).
  */
 export type CloudProjectComputerDeleteState = "pending" | "working" | "deleted" | "kept" | "gone";
 export type CloudProjectComputersJob = {
@@ -2185,7 +2333,7 @@ export type CloudAutomationRegistered = {
  * - `queued`: waiting for the rule's run before it (one waits at most).
  * - `starting`: its computer is being made.
  * - `running`: its chat runs on its computer.
- * - `finishing`: the chat ended; the server pushes its work and frees the computer.
+ * - `finishing`: the chat ended; the server saves each lane's work (a lane backup, nothing pushed) and frees the computer.
  * - `done`, `failed`: ended; `reason` says why it failed.
  * - `skipped`: never started (another run was waiting, the storm stop, a missed schedule).
  */

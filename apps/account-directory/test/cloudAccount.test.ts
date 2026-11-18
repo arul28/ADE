@@ -4,12 +4,14 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
-import type { CloudAccountState } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, type CloudAccountState } from "../src/cloud/contract";
+import { deleteAllAccountChats } from "../src/cloud/chats";
+import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
 import { runIdleCleanup } from "../src/cloud/idleCleanup";
 import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
 import { createCloudProvider } from "../src/cloud/provider";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
-import { runCloudMinuteCron } from "../src/cloud/cron";
+import { prepareStopBackupReportId, runCloudMinuteCron } from "../src/cloud/cron";
 import { runLinearRenewalCron } from "../src/cloud/linearRenewal";
 import { nextFireAt } from "../src/cloud/automationSchedule";
 import { handleCloudRequest } from "../src/cloud/routes";
@@ -852,7 +854,7 @@ describe("ADE Cloud account", () => {
 
   it.each<[string, Row, Row, number, string | null, boolean]>([
     ["the free plan above its disk can't wake", { plan: "free" }, {}, 402, "over_plan_disk", false],
-    ["the free plan above its disk still gets the push-work wake, which isn't use", { plan: "free" }, { reason: "push_work" }, 200, null, false],
+    ["the free plan above its disk gets no wake, the old push-work one too", { plan: "free" }, { reason: "push_work" }, 402, "over_plan_disk", false],
     ["a failed payment with the same disk still wakes", { ...plusAccount, stripe_status: "past_due" }, {}, 200, null, true],
   ])("free shared disk: %s", async (_label, overrides, body, status, code, lastAwakeMoves) => {
     seedAccount(harness, OWNER, overrides);
@@ -1839,72 +1841,110 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
  * A cheaper plan's limits free only the computers the person picked
  * (`planCleanup.ts`). The run deletes computers with nobody watching, from
  * the cron only, so a test is the one way to prove it frees exactly the pick,
- * never deletes work that isn't on GitHub when push is on, and never a
- * computer whose pick no longer applies.
+ * never deletes a computer whose lanes aren't saved when `push` is on, never
+ * wakes one, and never one whose pick no longer applies.
  */
 describe("ADE Cloud plan cleanup", () => {
   const NEWER = ["newer000001", "newer000002", "newer000003"];
-  const lane = (overrides: Row = {}) => ({ laneId: "lane_main", laneName: "main", branchRef: "main", primary: true, state: "clean", ...overrides });
-  const tally = (lanes: Row[], extra: Row = {}) => JSON.stringify({ result: { pushed: 0, failed: 0, skipped: 0, lanes, ...extra } });
   const quiet = JSON.stringify({ result: { interruptedChats: 0, interruptedClis: 0, stillRunning: 0, chatsUploaded: 0, chatsNotUploaded: 0, timedOut: false } });
+  const REPORT = "a".repeat(32);
 
-  /** The free plan allows 3 computers; the person picked the oldest of 4, its work pushed first. */
+  /** The free plan allows 3 computers; the person picked the oldest of 4, each lane's work saved first. */
   function seedOverFreePlan(): void {
     seedAccount(harness, OWNER, { plan_cleanup_choice_json: JSON.stringify({ planId: "free", push: true, instanceIds: [INSTANCE], at: NOW - HOUR }) });
-    seedComputer(harness, { created_at: NOW - 40 * DAY });
+    seedComputer(harness, { created_at: NOW - 40 * DAY, machine_key: "key-a" });
     provide(harness);
     NEWER.forEach((id, index) => seedComputer(harness, { instance_id: id, created_at: NOW - (10 - index) * DAY, disk_gb: 2 }));
   }
 
-  /** The computer's four answers, in order: prepare-stop, push-work, save-for-rest (an older ADE that lacks it), work-state. */
-  function answerExecs(prepare: string, push: string, check: string): void {
-    for (const stdout of [prepare, push, null, check]) {
-      harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply(stdout == null ? OLD_ADE_EXEC : { exit_code: 0, stdout, stderr: "" }) });
+  /**
+   * An awake computer's two answers, in order: prepare-stop, then save-for-rest.
+   * Its save posts its backup report (`lanes`) as the real computer does,
+   * before the exec answers; `lanes` null is an ADE older than lane backups.
+   */
+  function answerExecs(prepare: string, lanes: Row[] | null): void {
+    harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply({ exit_code: 0, stdout: prepare, stderr: "" }) });
+    if (!lanes) {
+      harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply(OLD_ADE_EXEC) });
+      return;
     }
+    const saved = JSON.stringify({ result: { ok: true, capsules: 0, sessions: 0, git: 0, skipped: 0, backups: { reportId: REPORT, state: "current", saved: 0, unchanged: 0, clean: lanes.length, failed: 0 } } });
+    harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply({ exit_code: 0, stdout: saved, stderr: "" }) });
+    harness.net.after.push({
+      match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`),
+      run: async () => {
+        // The first exec (prepare-stop) passes; the report lands during the second.
+        harness.net.after.push({
+          match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`),
+          run: async () => {
+            const sent = await harness.send(OWNER, "POST", "/cloud/backups/report", { instanceId: INSTANCE, reportId: REPORT, complete: true, lanes });
+            expect(sent.status).toBe(200);
+          },
+        });
+      },
+    });
   }
 
   const run = async () => runPlanCleanupPicks(harness.env, createCloudProvider("provider-key"), clock);
+  const cleanLane = { laneId: "lane_main", state: "clean" };
 
-  it.each<[string, () => void, boolean]>([
-    ["every lane on GitHub, read against the remotes: freed", () => answerExecs(quiet, tally([lane(), lane({ laneId: "lane_x", primary: false, state: "pushed" })], { readsRemotes: true }), tally([lane()], { readsRemotes: true })), true],
-    ["a primary lane 'clean' from an ADE that counts against its own branch: kept", () => answerExecs(quiet, tally([lane()]), tally([lane()])), false],
-    ["a lane in a state the server doesn't know: kept", () => answerExecs(quiet, tally([lane({ primary: false, state: "unknown" })], { readsRemotes: true }), tally([lane()], { readsRemotes: true })), false],
-    ["agents still running after prepare-stop: kept", () => answerExecs(JSON.stringify({ result: { stillRunning: 1, chatsNotUploaded: 0, timedOut: true } }), tally([lane()], { readsRemotes: true }), tally([lane()], { readsRemotes: true })), false],
-    ["the person bought Plus while it pushed, so the pick no longer applies: not freed", () => {
-      answerExecs(quiet, tally([lane()], { readsRemotes: true }), tally([lane()], { readsRemotes: true }));
-      // Lands as the computer is read for the push: after the first check, before the delete.
+  // `arrange` may return the reason a kept computer shows.
+  it.each<[string, () => string | void, boolean]>([
+    ["awake, every lane saved in place: freed", () => answerExecs(quiet, [cleanLane, { laneId: "lane_x", state: "clean" }]), true],
+    ["awake, a lane too large to save: kept with the sentence", () => answerExecs(quiet, [{ laneId: "lane_x", laneName: "big", state: "too_large" }]), false],
+    ["awake, an ADE older than lane backups: kept", () => answerExecs(quiet, null), false],
+    ["agents still running after prepare-stop: kept", () => answerExecs(JSON.stringify({ result: { stillRunning: 1, chatsNotUploaded: 0, timedOut: true } }), [cleanLane]), false],
+    ["the person bought Plus while it saved, so the pick no longer applies: not freed", () => {
+      answerExecs(quiet, [cleanLane]);
       harness.net.after.push({ match: new RegExp(`GET .*/instances/${INSTANCE}$`), run: () => { harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_status = 'active' where user_id = ?", OWNER); } });
     }, false],
-    ["a move of it that began while it pushed: not freed, so the move keeps its files", () => {
-      answerExecs(quiet, tally([lane()], { readsRemotes: true }), tally([lane()], { readsRemotes: true }));
+    ["a move of it that began while it saved: not freed, so the move keeps its files", () => {
+      answerExecs(quiet, [cleanLane]);
       harness.net.after.push({ match: new RegExp(`GET .*/instances/${INSTANCE}$`), run: () => { seedComputer(harness, { instance_id: "pending_move_target", moving_from: INSTANCE, status: "provisioning", created_at: NOW }); } });
     }, false],
-    ["a sleeping computer it woke for the push and then kept goes back to sleep", () => {
+    ["asleep, rested with every lane saved: freed with no start and no command", () => {
+      harness.exec("update cloud_computers set status = 'sleeping', awake_since = null, backup_rest_at = ? where instance_id = ?", NOW - HOUR, INSTANCE);
+      harness.net.instances.get(INSTANCE)!.status = "sleeping";
+    }, true],
+    ["asleep, its last save failed: kept, never woken", () => {
+      harness.exec("update cloud_computers set status = 'sleeping', awake_since = null, backup_report_id = ?, backup_report_state = 'failed' where instance_id = ?", REPORT, INSTANCE);
+      harness.net.instances.get(INSTANCE)!.status = "sleeping";
+      return "ADE couldn't save this lane's work.";
+    }, false],
+    ["asleep, it rested before its ADE saved lane work: kept, never woken, and told it isn't a failure", () => {
       harness.exec("update cloud_computers set status = 'sleeping', awake_since = null where instance_id = ?", INSTANCE);
       harness.net.instances.get(INSTANCE)!.status = "sleeping";
-      answerExecs(quiet, tally([lane({ primary: false, state: "unpushed" })], { readsRemotes: true }), tally([lane()], { readsRemotes: true }));
+      return CLOUD_BACKUP_NEVER_SAVED_SENTENCE;
     }, false],
   ])("%s", async (_label, arrange, freed) => {
     seedOverFreePlan();
-    arrange();
+    const keptReason = arrange();
     const startedAs = harness.net.instances.get(INSTANCE)!.status;
 
     await run();
 
     expect(computer(harness).deleted_at != null).toBe(freed);
-    // A computer it keeps ends as it started: one it woke is never left running.
+    // Never a wake: every wake is use.
+    expect(providerCalls(harness, /POST .*\/(start|stop|sleep)$/)).toEqual([]);
+    if (startedAs === "sleeping") expect(providerCalls(harness, /POST .*\/exec$/)).toEqual([]);
+    // Never a commit or a push.
+    expect(providerCalls(harness, /POST .*\/exec$/).map((call) => String(call.body?.command))).not.toContainEqual(expect.stringContaining("push-work"));
     if (!freed) expect([harness.net.instances.get(INSTANCE)?.status, computer(harness).status]).toEqual([startedAs, startedAs]);
     expect(providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`))).toHaveLength(freed ? 1 : 0);
     // Only the pick: the newer computers are never touched.
     for (const id of NEWER) expect(computer(harness, id).deleted_at).toBeNull();
+    if (keptReason) {
+      const done = JSON.parse(String(harness.row("select plan_cleanup_result_json from cloud_accounts where user_id = ?", OWNER).plan_cleanup_result_json)) as { kept: Array<{ reason: string }> };
+      expect(done.kept[0]!.reason).toContain(keptReason);
+    }
   });
 
-  it("a downgrade's pick is checked before Stripe is asked, then only the picked computers are freed, each pushed before its delete", async () => {
+  it("a downgrade's pick is checked before Stripe is asked, then only the picked computers are freed, each saved before its delete", async () => {
     harness.env.STRIPE_PRO_PRICE_ID = "price_pro";
     seedAccount(harness, OWNER, { plan: "paid", paid_plan: "pro", included_milli: 1_600_000, stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1", stripe_status: "active" });
     harness.net.subscriptions.set("sub_1", { status: "active", customer: "cus_1", items: { data: [{ id: "si_plan", price: { id: "price_pro" } }, { id: "si_extra", price: { id: "price_extra" } }] } });
     // 48 GB against Plus's 40: freeing the 4 GB computer leaves the account over, freeing the 44 GB one fits.
-    seedComputer(harness, { disk_gb: 44, created_at: NOW - 40 * DAY });
+    seedComputer(harness, { disk_gb: 44, created_at: NOW - 40 * DAY, machine_key: "key-a" });
     provide(harness);
     seedComputer(harness, { instance_id: SECOND, disk_gb: 4, created_at: NOW - 10 * DAY });
     provide(harness, SECOND);
@@ -1921,13 +1961,13 @@ describe("ADE Cloud plan cleanup", () => {
     expect(await made.json()).toEqual({ url: null, change: "next_period", freeing: [INSTANCE] });
     expect(stored()).toEqual({ paid_plan_next: "plus", picked: 1 });
 
-    answerExecs(quiet, tally([lane()], { readsRemotes: true }), tally([lane()], { readsRemotes: true }));
+    answerExecs(quiet, [cleanLane]);
     await run();
     expect([computer(harness).deleted_at != null, computer(harness, SECOND).deleted_at != null]).toEqual([true, false]);
-    const pushedAt = harness.net.calls.findIndex((call) => call.url.endsWith(`/instances/${INSTANCE}/exec`) && String(call.body?.command).includes("ade cloud push-work"));
+    const savedAt = harness.net.calls.findIndex((call) => call.url.endsWith(`/instances/${INSTANCE}/exec`) && String(call.body?.command).includes("ade cloud save-for-rest"));
     const deletedAt = harness.net.calls.findIndex((call) => call.method === "DELETE" && call.url.endsWith(`/instances/${INSTANCE}`));
-    expect(pushedAt).toBeGreaterThan(-1);
-    expect(deletedAt).toBeGreaterThan(pushedAt);
+    expect(savedAt).toBeGreaterThan(-1);
+    expect(deletedAt).toBeGreaterThan(savedAt);
     expect(providerCalls(harness, new RegExp(`(POST|DELETE) .*/instances/${SECOND}`))).toEqual([]);
 
     // Nothing left to free: the next tick finishes the pick.
@@ -1940,18 +1980,16 @@ describe("ADE Cloud plan cleanup", () => {
  * The idle cleanup (`idleCleanup.ts`) deletes unused computers from the cron
  * with nobody watching, so a test is the one way to prove the deletes that
  * must not happen: before the time the warning announced (a plan change
- * included), when the push didn't go through, for an account out of hours,
+ * included), when a lane isn't saved, for an account out of hours,
  * for a computer used since its warning or while its save ran, and for one
  * with a timed wake-up booked; and that a failure never repeats every minute.
  */
 describe("ADE Cloud idle cleanup", () => {
   const BRANCH = "ade/pricing-page";
-  const lane = (overrides: Row = {}) => ({ laneId: "lane_pricing", laneName: "pricing-page", branchRef: BRANCH, primary: false, state: "pushed", ...overrides });
-  const tally = (lanes: Row[]) => JSON.stringify({ result: { pushed: 1, failed: 0, skipped: 0, lanes, readsRemotes: true } });
-  const quiet = JSON.stringify({ result: { interruptedChats: 0, interruptedClis: 0, stillRunning: 0, chatsUploaded: 0, chatsNotUploaded: 0, timedOut: false } });
   const run = async () => runIdleCleanup(harness.env, createCloudProvider("provider-key"), clock);
   const execs = () => providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/exec$`));
   const deletes = () => providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`));
+  const wakes = () => providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/(start|stop|sleep)$`));
   /** Every email the cleanup sent, as Resend got it. */
   const emails = () => providerCalls(harness, /POST https:\/\/api\.resend\.com/).map((call) => ({ subject: String(call.body?.subject), text: String(call.body?.text) }));
 
@@ -1964,7 +2002,7 @@ describe("ADE Cloud idle cleanup", () => {
     }
   });
 
-  /** A sleeping lane computer last used `idleMs` ago, with the ignored files it reported. */
+  /** A sleeping lane computer last used `idleMs` ago, rested with every lane saved, with the ignored files it reported. */
   function seedIdle(idleMs: number, overrides: Row = {}): void {
     seedComputer(harness, {
       status: "sleeping",
@@ -1972,24 +2010,21 @@ describe("ADE Cloud idle cleanup", () => {
       last_awake_at: clock - idleMs,
       status_changed_at: clock - idleMs,
       created_at: clock - 30 * DAY,
+      machine_key: "key-a",
       lane_id: "lane_pricing",
       lane_name: "pricing-page",
       lane_project_origin: "github.com/acme/web",
       lane_branch: BRANCH,
+      backup_report_id: "b".repeat(32),
+      backup_report_state: "current",
+      backup_rest_at: clock - idleMs,
       ignored_files_json: JSON.stringify({ checkedAt: clock - idleMs, paths: [".env", "prisma/dev.db"], more: 1, rebuildable: 2 }),
       ...overrides,
     });
     provide(harness, INSTANCE, "sleeping");
   }
 
-  /** The computer's four answers, in order: prepare-stop, push-work, save-for-rest (an older ADE that lacks it), work-state. */
-  function answerExecs(push: string, check: string): void {
-    for (const stdout of [quiet, push, null, check]) {
-      harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply(stdout == null ? OLD_ADE_EXEC : { exit_code: 0, stdout, stderr: "" }) });
-    }
-  }
-
-  it("a free computer is warned at 2 days, emailed again 6 hours before, saved, and deleted no sooner than announced, its lane kept", async () => {
+  it("a free computer is warned at 2 days, emailed again 6 hours before, and deleted no sooner than announced, with no wake, its lane kept", async () => {
     seedIdle(2 * DAY + 60_000);
     await run();
     const announced = computer(harness).idle_deletes_at as number;
@@ -2009,80 +2044,79 @@ describe("ADE Cloud idle cleanup", () => {
 
     clock = announced - 60_000;
     await run();
-    expect([execs(), deletes()]).toEqual([[], []]);
+    expect(deletes()).toEqual([]);
 
     clock = announced;
-    answerExecs(tally([lane()]), tally([lane()]));
     await run();
-    expect(execs().map((call) => String(call.body?.command)).find((command) => command.includes("push-work"))).toContain("--message 'saved by ADE before cleanup'");
+    // Deleted as it rests: never started, no command run on it, nothing pushed.
+    expect([wakes(), execs()]).toEqual([[], []]);
     expect(deletes()).toHaveLength(1);
     expect(computer(harness).deleted_at).toBe(announced);
+    expect(harness.rows("select action from cloud_power_log where instance_id = ? and action = 'start'", INSTANCE)).toEqual([]);
+    expect(meteredMilli(harness)).toBe(0);
     expect(harness.row("select reason from cloud_delete_log where instance_id = ?", INSTANCE).reason).toBe("idle_cleanup");
     expect(harness.row("select lane_name, branch_ref, reason from cloud_lanes_without_computer where lane_id = 'lane_pricing'"))
       .toEqual({ lane_name: "pricing-page", branch_ref: BRANCH, reason: "idle_cleanup" });
+    expect(emails().at(-1)!.text).toContain("nothing was pushed");
   });
 
   /** Warned a day ago on Free, its announced time now, its last email sent: due unless something below stops it. */
   const dueRow: Row = { idle_warned_at: NOW - DAY, idle_deletes_at: NOW, idle_emailed_at: NOW - 6 * HOUR };
+  const notSaved: Row = { backup_rest_at: null, backup_report_state: "failed", backup_problems_json: JSON.stringify([{ laneId: "lane_pricing", laneName: "pricing-page", reason: "Git LFS files can't travel; push them first. ADE can't save this lane's work until then." }]) };
 
-  it.each<[string, () => Promise<void> | void, boolean]>([
-    ["GitHub refuses the push: kept, back to sleep, and told why", () => {
-      answerExecs(tally([lane({ state: "unpushed" })]), tally([lane({ state: "unpushed" })]));
-    }, true],
-    ["the account is out of hours: never swept", () => {
+  it.each<[string, Row, () => Promise<void> | void, boolean]>([
+    ["a lane isn't saved: kept as it rests, never woken, and told why", notSaved, () => {}, true],
+    ["it slept on the provider's own timer, with no save: kept", { backup_rest_at: null }, () => {}, true],
+    ["it rested before its ADE saved lane work: kept, and no email (nothing failed)", { backup_rest_at: null, backup_report_id: null, backup_report_state: null }, () => {}, false],
+    ["the account is out of hours: never swept", {}, () => {
       harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
     }, false],
-    ["the computer was used after its warning: the clock restarts", () => {
+    ["the computer was used after its warning: the clock restarts", {}, () => {
       harness.exec("update cloud_computers set last_awake_at = ? where instance_id = ?", NOW - HOUR, INSTANCE);
     }, false],
-    ["the person pressed Keep it: the clock restarts with no wake", async () => {
+    ["the person pressed Keep it: the clock restarts with no wake", {}, async () => {
       expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/keep`)).status).toBe(200);
     }, false],
-    ["a paid computer announced for later moved to Free: the announced time holds", () => {
+    ["a paid computer announced for later moved to Free: the announced time holds", {}, () => {
       harness.exec("update cloud_computers set idle_deletes_at = ?, idle_warned_at = ?, idle_emailed_at = ? where instance_id = ?", NOW + 2 * DAY, NOW - DAY, NOW - DAY, INSTANCE);
     }, false],
-    ["a timed wake-up is booked weeks ahead: in use until it fires", () => {
+    ["a timed wake-up is booked weeks ahead: in use until it fires", {}, () => {
       harness.insert("cloud_wakes", { user_id: OWNER, instance_id: INSTANCE, wake_url: "https://box.agent37.app", wake_at: NOW + 20 * DAY, updated_at: NOW });
     }, false],
-  ])("not deleted: %s", async (_label, arrange, saveTried) => {
-    seedIdle(3 * DAY + HOUR, dueRow);
+  ])("not deleted: %s", async (_label, row, arrange, held) => {
+    seedIdle(3 * DAY + HOUR, { ...dueRow, ...row });
     await arrange();
 
     await run();
 
     expect(deletes()).toEqual([]);
     expect(computer(harness).deleted_at).toBeNull();
-    expect(execs().length > 0).toBe(saveTried);
-    // A computer it kept ends as it started: one it woke is never left running.
+    // Kept as it is: never started, nothing run on it.
+    expect([wakes(), execs()]).toEqual([[], []]);
     expect([harness.net.instances.get(INSTANCE)?.status, computer(harness).status]).toEqual(["sleeping", "sleeping"]);
-    // Nothing to tell the person: no warning starts over, no email goes out.
-    if (!saveTried) expect(emails()).toEqual([]);
-    if (saveTried) {
-      expect(computer(harness).idle_held_reason).toEqual(expect.any(String));
+    if (!held) expect(emails()).toEqual([]);
+    if (held) {
+      expect(String(computer(harness).idle_held_reason)).toContain("ADE couldn't save this lane's work.");
       expect(emails().map((email) => email.subject)).toEqual(["ADE Cloud didn't delete pricing-page: its work couldn't be saved"]);
-      // A day later it tries again, and still deletes nothing while the push is refused.
+      // A day later it reads again, and still deletes and wakes nothing.
       clock = NOW + DAY;
-      // The refused push ends the run before the check, so its answer is left over.
-      harness.net.once.splice(0, harness.net.once.length, ...harness.net.once.filter((entry) => !entry.match.source.includes("/exec")));
-      answerExecs(tally([lane({ state: "unpushed" })]), tally([lane({ state: "unpushed" })]));
       await run();
-      expect(deletes()).toEqual([]);
-      expect(harness.rows("select detail from cloud_idle_cleanup_log where step = 'push_refused'")).toEqual([{ detail: "push_left_work" }, { detail: "push_left_work" }]);
+      expect([deletes(), wakes(), execs()]).toEqual([[], [], []]);
       expect(emails()).toHaveLength(1);
-      // Refused twice: the next try waits 2 days, so the computer isn't woken every day.
-      const tried = execs().length;
-      clock = NOW + 2 * DAY + HOUR;
+      // Once it rests with its lanes saved (its next real use), the next read deletes it, still with no wake.
+      harness.exec("update cloud_computers set backup_rest_at = ?, backup_report_state = 'current', backup_problems_json = null where instance_id = ?", clock, INSTANCE);
+      clock = NOW + 3 * DAY + HOUR;
       await run();
-      expect(execs()).toHaveLength(tried);
+      expect(wakes()).toEqual([]);
+      expect(deletes()).toHaveLength(1);
     }
   });
 
-  it("a person who starts the computer while its save runs keeps it, awake", async () => {
+  it("a person who starts the computer while the cleanup reads it keeps it, awake", async () => {
     seedIdle(3 * DAY + HOUR, dueRow);
-    answerExecs(tally([lane()]), tally([lane()]));
-    // The cleanup's free wake already has it running, so this start changes no status.
+    // Lands as the run reads the computer, before the delete claim.
     harness.net.after.push({
-      match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`),
+      match: new RegExp(`GET .*/instances/${INSTANCE}$`),
       run: async () => {
         expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/start`, {})).status).toBe(200);
       },
@@ -2093,11 +2127,12 @@ describe("ADE Cloud idle cleanup", () => {
     expect(deletes()).toEqual([]);
     expect(computer(harness).deleted_at).toBeNull();
     expect([harness.net.instances.get(INSTANCE)?.status, computer(harness).status]).toEqual(["running", "running"]);
+    // The start took it out of rest: its lanes may change, so the backups it rested with no longer count.
+    expect(computer(harness).backup_rest_at).toBeNull();
   });
 
   it("Keep it pressed once the delete is under way is refused, never answered and then ignored", async () => {
     seedIdle(3 * DAY + HOUR, dueRow);
-    answerExecs(tally([lane()]), tally([lane()]));
     let keep: Response | null = null;
     // Lands as the delete reads the computer's last events, just before the provider delete.
     harness.net.after.push({
@@ -2111,21 +2146,18 @@ describe("ADE Cloud idle cleanup", () => {
     expect(computer(harness).deleted_at).toBe(NOW);
   });
 
-  it("a delete the provider refuses after the save waits before it runs again, never every minute", async () => {
+  it("a delete the provider refuses waits before it runs again, never every minute", async () => {
     seedIdle(3 * DAY + HOUR, dueRow);
-    answerExecs(tally([lane()]), tally([lane()]));
     harness.net.once.push({ match: new RegExp(`DELETE .*/instances/${INSTANCE}$`), reply: harness.net.reply({ error: { code: "server_error" } }, 500) });
     await run();
     expect(computer(harness).deleted_at).toBeNull();
-    const saved = execs().length;
-    expect(saved).toBeGreaterThan(0);
+    expect(deletes()).toHaveLength(1);
 
     clock = NOW + 60_000;
     await run();
-    expect(execs()).toHaveLength(saved);
+    expect(deletes()).toHaveLength(1);
 
     clock = NOW + HOUR;
-    answerExecs(tally([lane()]), tally([lane()]));
     await run();
     expect(computer(harness).deleted_at).toBe(clock);
   });
@@ -3055,5 +3087,240 @@ describe("ADE Cloud without a computer", () => {
     const onNew = (await (await harness.send(OWNER, "GET", `/cloud/instances/${SECOND}/messages`)).json()) as { messages: Array<{ messageId: string; targetKind?: string }> };
     expect(onNew.messages.map((message) => [message.messageId, message.targetKind])).toEqual([["m1", "cli"], ["m4", "cli"]]);
     expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(1);
+  });
+});
+
+/**
+ * Lane backups at rest (`laneBackups.ts`): a person's work that isn't on
+ * GitHub lives only here once its computer is gone, so a test is the one way
+ * to prove who can read and write it, that a new backup never loses the old
+ * one before it is whole, that the caps refuse, that a computer rests with
+ * its backups only through its own sleep or the 0-hours stop and a wake
+ * clears that, and that the lane's and the account's deletes remove it.
+ */
+describe("ADE Cloud lane backups", () => {
+  const LANE = "lane_pricing";
+  const REPORT = "c".repeat(32);
+  const FINGERPRINT = "f".repeat(64);
+  const facts = { branchRef: "ade/pricing", laneName: "pricing", projectKey: "github.com/acme/web", headSha: "1".repeat(40), snapshotSha: "2".repeat(40), baseSha: "3".repeat(40), commits: 2, files: 3 };
+  const base = `/cloud/backups/key-a/${LANE}`;
+
+  beforeEach(() => {
+    harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 5).toString("base64");
+    harness.env.CLOUD_CHATS = memoryBucket();
+    seedAccount(harness, OWNER);
+    seedAccount(harness, OTHER);
+    seedComputer(harness, { machine_key: "key-a" });
+    provide(harness);
+  });
+
+  /** A raw part, as a computer sends it: no Origin, its instance header. */
+  const putPart = (caller: string, path: string, bytes: Uint8Array, headers: Record<string, string> = { "x-ade-instance": INSTANCE }) =>
+    handleCloudRequest(new Request(`https://directory.test${path}`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${tokens[caller]}`, "content-type": "application/octet-stream", ...headers },
+      body: bytes as Uint8Array<ArrayBuffer>,
+    }), harness.env);
+  const start = (caller = OWNER, bundleBytes = 5, patchBytes = 4, path = base) =>
+    harness.send(caller, "POST", `${path}/uploads`, { instanceId: INSTANCE, fingerprint: FINGERPRINT, bundleBytes, patchBytes, facts });
+  /** One whole backup: start, a bundle part and a patch part, commit. */
+  async function saveBackup(bundle = "BNDL1", patch = "PTCH"): Promise<string> {
+    const started = await start(OWNER, bundle.length, patch.length);
+    expect(started.status).toBe(200);
+    const { uploadId } = (await started.json()) as { uploadId: string };
+    expect((await putPart(OWNER, `${base}/uploads/${uploadId}/bundle/1`, new TextEncoder().encode(bundle))).status).toBe(200);
+    expect((await putPart(OWNER, `${base}/uploads/${uploadId}/patch/1`, new TextEncoder().encode(patch))).status).toBe(200);
+    const committed = await harness.send(OWNER, "POST", `${base}/uploads/${uploadId}/commit`, { instanceId: INSTANCE, bundleParts: 1, patchParts: 1 });
+    expect(committed.status).toBe(200);
+    return uploadId;
+  }
+  const readPart = async (caller: string, kind: string, headers: Record<string, string> = {}) => {
+    const response = await harness.send(caller, "GET", `${base}/${kind}/1`, undefined, headers);
+    return response.status === 200 ? new TextDecoder().decode(await response.arrayBuffer()) : response.status;
+  };
+  const objects = async () => (await harness.env.CLOUD_CHATS!.list({ prefix: "backups/" })).objects.map((object) => object.key);
+
+  it("only the account reads it, only its own computer writes it, and it is sealed; a new backup replaces the old only when whole", async () => {
+    const first = await saveBackup("BNDL1", "PTCH");
+    expect([await readPart(OWNER, "bundle"), await readPart(OWNER, "patch")]).toEqual(["BNDL1", "PTCH"]);
+    // Sealed at rest: neither the bytes nor the branch name are in R2 or D1 in the clear.
+    const stored = await Promise.all((await objects()).map(async (key) => Buffer.from(await (await harness.env.CLOUD_CHATS!.get(key))!.arrayBuffer()).toString("latin1")));
+    expect(stored.join("")).not.toContain("BNDL1");
+    expect(JSON.stringify(harness.rows("select * from cloud_lane_backups"))).not.toContain("ade/pricing");
+    // A part moved under another lane does not open: the additional data names its place.
+    const key = (await objects()).find((entry) => entry.endsWith("bundle/00001"))!;
+    const moved = key.replace(`/${LANE}/`, "/lane_other/");
+    await harness.env.CLOUD_CHATS!.put(moved, await (await harness.env.CLOUD_CHATS!.get(key))!.arrayBuffer());
+    harness.exec("insert into cloud_lane_backups (user_id, machine_key, lane_id, upload_id, r2_prefix, fingerprint, facts_sealed, bundle_bytes, bundle_parts, saved_at, updated_at) select user_id, machine_key, 'lane_other', upload_id, replace(r2_prefix, ?, 'lane_other'), fingerprint, facts_sealed, bundle_bytes, bundle_parts, saved_at, updated_at from cloud_lane_backups", LANE);
+    expect((await harness.send(OWNER, "GET", "/cloud/backups/key-a/lane_other/bundle/1")).status).toBe(503);
+
+    // Another account: nothing is there, to read or to write.
+    expect(((await (await harness.send(OTHER, "GET", "/cloud/backups")).json()) as { backups: unknown[] }).backups).toEqual([]);
+    expect([await readPart(OTHER, "bundle"), await readPart(OTHER, "patch"), (await harness.send(OTHER, "GET", base)).status]).toEqual([404, 404, 404]);
+    expect((await start(OTHER)).status).toBe(404);
+    expect((await harness.send(OTHER, "DELETE", base, { instanceId: INSTANCE })).status).toBe(404);
+    // The account's own computer may not write under another machine key.
+    expect((await start(OWNER, 5, 4, `/cloud/backups/key-b/${LANE}`)).status).toBe(404);
+    // A browser page reads the manifest and the patch, never the bundle, and writes nothing.
+    const web = { origin: "https://app.ade.test" };
+    harness.env.WEB_CLIENT_ORIGIN = web.origin;
+    expect([await readPart(OWNER, "patch", web), await readPart(OWNER, "bundle", web)]).toEqual(["PTCH", 404]);
+    expect((await harness.send(OWNER, "POST", `${base}/uploads`, { instanceId: INSTANCE, fingerprint: FINGERPRINT, bundleBytes: 5, patchBytes: 4, facts }, web)).status).toBe(404);
+    delete harness.env.WEB_CLIENT_ORIGIN;
+
+    // A commit of less than its upload declared (the patch never sent) is no backup: the old one stays.
+    const { uploadId: short } = (await (await start(OWNER, 5, 4)).json()) as { uploadId: string };
+    expect((await putPart(OWNER, `${base}/uploads/${short}/bundle/1`, new TextEncoder().encode("BNDLX"))).status).toBe(200);
+    expect((await harness.send(OWNER, "POST", `${base}/uploads/${short}/commit`, { instanceId: INSTANCE, bundleParts: 1, patchParts: 0 })).status).toBe(409);
+    expect(await readPart(OWNER, "bundle")).toBe("BNDL1");
+
+    // A second upload that never commits leaves the first one whole and readable.
+    const started = await start(OWNER, 5, 0);
+    const { uploadId } = (await started.json()) as { uploadId: string };
+    expect((await putPart(OWNER, `${base}/uploads/${uploadId}/bundle/1`, new TextEncoder().encode("BNDL2"))).status).toBe(200);
+    expect(await readPart(OWNER, "bundle")).toBe("BNDL1");
+    // Its commit swaps it in, and only then the old one's objects go.
+    expect((await harness.send(OWNER, "POST", `${base}/uploads/${uploadId}/commit`, { instanceId: INSTANCE, bundleParts: 1, patchParts: 0 })).status).toBe(200);
+    expect(await readPart(OWNER, "bundle")).toBe("BNDL2");
+    expect((await objects()).filter((entry) => entry.includes(`/${LANE}/`)).every((entry) => entry.includes(uploadId) && !entry.includes(first))).toBe(true);
+
+    // An upload nobody commits: the minute sweep drops its parts after half an hour; the committed backup stays.
+    const { uploadId: stale } = (await (await start(OWNER, 5, 0)).json()) as { uploadId: string };
+    expect((await putPart(OWNER, `${base}/uploads/${stale}/bundle/1`, new TextEncoder().encode("BNDL3"))).status).toBe(200);
+    expect(await sweepStaleBackupUploads(harness.env, clock + 29 * 60_000)).toBe(0);
+    expect(await sweepStaleBackupUploads(harness.env, clock + 31 * 60_000)).toBe(1);
+    expect([(await objects()).some((entry) => entry.includes(stale)), await readPart(OWNER, "bundle")]).toEqual([false, "BNDL2"]);
+  });
+
+  it.each<[string, () => Promise<Response>, string]>([
+    ["one lane over its cap", () => start(OWNER, CLOUD_BACKUP_MAX_BYTES, 1), "backup_too_large"],
+    ["the account over its cap", async () => {
+      harness.exec("insert into cloud_lane_backups (user_id, machine_key, lane_id, upload_id, bundle_bytes, saved_at, updated_at) values (?, 'key-a', 'lane_full', 'x', ?, ?, ?)", OWNER, CLOUD_BACKUP_MAX_ACCOUNT_BYTES, NOW, NOW);
+      return start(OWNER, 10, 0);
+    }, "backup_account_full"],
+    ["a part past the size the upload said", async () => {
+      const { uploadId } = (await (await start(OWNER, 5, 0)).json()) as { uploadId: string };
+      return putPart(OWNER, `${base}/uploads/${uploadId}/bundle/9`, new TextEncoder().encode("extra"));
+    }, "backup_too_large"],
+    ["a part bigger than its kind's declared size", async () => {
+      const { uploadId } = (await (await start(OWNER, 5, 0)).json()) as { uploadId: string };
+      return putPart(OWNER, `${base}/uploads/${uploadId}/bundle/1`, new TextEncoder().encode("toolong"));
+    }, "backup_too_large"],
+    ["a patch part when the upload declared no patch", async () => {
+      const { uploadId } = (await (await start(OWNER, 5, 0)).json()) as { uploadId: string };
+      return putPart(OWNER, `${base}/uploads/${uploadId}/patch/1`, new TextEncoder().encode("x"));
+    }, "backup_too_large"],
+  ])("refused with a sentence: %s", async (_label, run, code) => {
+    const response = await run();
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    expect([response.status, body.error.code]).toEqual([413, code]);
+    expect(body.error.message).toMatch(/The computer is kept until then\.$|^This lane's work/);
+    expect(harness.rows("select lane_id from cloud_lane_backups where upload_id is not null and lane_id = ?", LANE)).toEqual([]);
+  });
+
+  it("a computer rests with its backups only through its own sleep or the 0-hours stop, naming a current report; a wake clears it", async () => {
+    await saveBackup();
+    const report = (lanes: Row[], reportId = REPORT) => harness.send(OWNER, "POST", "/cloud/backups/report", { instanceId: INSTANCE, reportId, complete: true, lanes });
+    const restAt = () => computer(harness).backup_rest_at;
+    // A fingerprint the server doesn't hold is not saved, whatever the computer says.
+    expect(await (await report([{ laneId: LANE, state: "saved", fingerprint: "e".repeat(64) }])).json()).toEqual({ state: "failed" });
+    expect(await (await report([{ laneId: LANE, state: "unchanged", fingerprint: FINGERPRINT }, { laneId: "lane_clean", state: "clean" }])).json()).toEqual({ state: "current" });
+    // A sleep that names another report, or none, does not rest with it.
+    expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/idle`, { backupReportId: "d".repeat(32) })).status).toBe(200);
+    expect(restAt()).toBeNull();
+    harness.net.instances.get(INSTANCE)!.status = "running";
+    harness.exec("update cloud_computers set status = 'running', awake_since = ? where instance_id = ?", NOW, INSTANCE);
+    expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/idle`, { backupReportId: REPORT })).status).toBe(200);
+    expect(restAt()).toBe(NOW);
+    // A later report means the computer is awake again: the rest ends, whatever the report says.
+    expect(await (await report([{ laneId: LANE, state: "failed" }], "e".repeat(32))).json()).toEqual({ state: "failed" });
+    expect(restAt()).toBeNull();
+    // Any wake: its lanes can change, so the report and the rest go.
+    expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/start`, {})).status).toBe(200);
+    expect([restAt(), computer(harness).backup_report_state]).toEqual([null, null]);
+
+    // 0 hours: prepare-stop's save reports, the stop rests the computer with it, and nothing wakes it again.
+    expect(await (await report([{ laneId: LANE, state: "unchanged", fingerprint: FINGERPRINT }])).json()).toEqual({ state: "current" });
+    harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+    harness.net.once.push({
+      match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`),
+      reply: harness.net.reply({ exit_code: 0, stdout: JSON.stringify({ result: { stillRunning: 0, chatsNotUploaded: 0, timedOut: false, backups: { reportId: REPORT, state: "current" } } }), stderr: "" }),
+    });
+    await harness.tick();
+    expect(providerCalls(harness, /POST .*\/exec$/).map((call) => String(call.body?.command))).toEqual([expect.stringContaining("ade cloud prepare-stop --timeout 40 --json")]);
+    expect([computer(harness).status, restAt()]).toEqual(["stopped", clock]);
+    const starts = providerCalls(harness, /POST .*\/start$/).length;
+    clock = NOW + DAY;
+    await harness.tick();
+    expect(providerCalls(harness, /POST .*\/start$/)).toHaveLength(starts);
+  });
+
+  // A stop that wasn't fully prepared (a turn still running, a chat not saved, out of time) can be written to after its save.
+  it.each<[string, Record<string, unknown>, string | null]>([
+    ["prepared", { stillRunning: 0, chatsNotUploaded: 0, timedOut: false }, REPORT],
+    ["a turn still running", { stillRunning: 1, chatsNotUploaded: 0, timedOut: true }, null],
+    ["a chat not saved", { stillRunning: 0, chatsNotUploaded: 2, timedOut: false }, null],
+    ["out of time", { stillRunning: 0, chatsNotUploaded: 0, timedOut: true }, null],
+    ["an older ADE that sends no counts", {}, null],
+  ])("the 0-hours stop rests with its save only when the stop was prepared: %s", (_label, stop, expected) => {
+    const stdout = JSON.stringify({ result: { ...stop, backups: { reportId: REPORT, state: "current" } } });
+    expect([prepareStopBackupReportId(stdout), prepareStopBackupReportId(stdout.replace('"current"', '"failed"'))]).toEqual([expected, null]);
+  });
+
+  it("the lane's delete and the account's delete remove its backups; a delete that keeps the lane keeps them", async () => {
+    harness.exec("update cloud_computers set lane_id = ? where instance_id = ?", LANE, INSTANCE);
+    await saveBackup();
+    seedComputer(harness, { instance_id: SECOND, machine_key: "key-b", lane_id: LANE, lane_name: "pricing" });
+    provide(harness, SECOND);
+    // The lane's other computer marks the backup it applied by fingerprint: a backup it didn't apply is not marked.
+    const restored = (fingerprint: string) => harness.send(OWNER, "POST", `${base}/restored`, { instanceId: SECOND, fingerprint });
+    expect([(await restored("e".repeat(64))).status, (await restored(FINGERPRINT)).status]).toEqual([404, 200]);
+    // A computer's own round lists the backups it made and the ones it restored, and no other.
+    const listedFor = async (machineKey: string) => ((await (await harness.send(OWNER, "GET", `/cloud/backups?machineKey=${machineKey}`)).json()) as { backups: Array<{ laneId: string }> }).backups.map((entry) => entry.laneId);
+    expect([await listedFor("key-a"), await listedFor("key-b"), await listedFor("key-z")]).toEqual([[LANE], [LANE], []]);
+    // Freeing the other computer and keeping the lane: the backup stays for the lane's next computer.
+    expect((await harness.send(OWNER, "DELETE", `/cloud/instances/${SECOND}`, { keepLane: { branchRef: "ade/pricing" } })).status).toBe(200);
+    expect(harness.rows("select lane_id from cloud_lane_backups")).toEqual([{ lane_id: LANE }]);
+    // A failed move's target is a fork with the computer's machine key: its delete keeps the source's backup.
+    const FORK = "klmno24680";
+    seedComputer(harness, { instance_id: FORK, machine_key: "key-a", lane_id: LANE, lane_name: "pricing" });
+    provide(harness, FORK);
+    expect((await harness.send(OWNER, "DELETE", `/cloud/instances/${FORK}`, { reason: "cleanup" })).status).toBe(200);
+    expect(harness.rows("select lane_id from cloud_lane_backups")).toEqual([{ lane_id: LANE }]);
+    // The idle cleanup deleted the lane's computer and kept the lane; its next computer fails to start.
+    // That delete keeps the backup: it is the only copy of the lane's work.
+    harness.exec("update cloud_computers set deleted_at = ? where instance_id = ?", NOW, INSTANCE);
+    const NEXT = "pqrst13579";
+    seedComputer(harness, { instance_id: NEXT, machine_key: "key-c", lane_id: LANE, lane_name: "pricing" });
+    provide(harness, NEXT);
+    expect((await harness.send(OWNER, "DELETE", `/cloud/instances/${NEXT}`, { reason: "create_failed" })).status).toBe(200);
+    expect(harness.rows("select lane_id from cloud_lane_backups")).toEqual([{ lane_id: LANE }]);
+    harness.exec("update cloud_computers set deleted_at = null where instance_id = ?", INSTANCE);
+    // The lane also has a backup from its earlier computer (another machine key).
+    harness.exec("create temp table earlier as select * from cloud_lane_backups");
+    harness.exec("update earlier set machine_key = 'key-b'");
+    harness.exec("insert into cloud_lane_backups select * from earlier");
+    harness.exec("drop table earlier");
+    // The person deletes the lane (its computer, no lane kept): every backup of it goes.
+    expect((await harness.send(OWNER, "DELETE", `/cloud/instances/${INSTANCE}`, {})).status).toBe(200);
+    expect([harness.rows("select lane_id from cloud_lane_backups"), await objects()]).toEqual([[], []]);
+
+    // The account's delete: every object under backups/<user>/ and every row.
+    // A computer of the account saves again, then the account goes.
+    harness.exec("update cloud_computers set deleted_at = null where instance_id = ?", INSTANCE);
+    await saveBackup();
+    // The person's own delete: refused while a computer holds that work, then from any app (the web too) once it is gone.
+    const forget = (headers: Record<string, string> = {}) => harness.send(OWNER, "POST", `${base}/forget`, {}, headers);
+    expect((await forget()).status).toBe(409);
+    harness.exec("update cloud_computers set deleted_at = ? where instance_id = ?", NOW, INSTANCE);
+    harness.env.WEB_CLIENT_ORIGIN = "https://app.ade.test";
+    expect((await forget({ origin: "https://app.ade.test" })).status).toBe(200);
+    delete harness.env.WEB_CLIENT_ORIGIN;
+    expect([harness.rows("select lane_id from cloud_lane_backups"), await objects()]).toEqual([[], []]);
+    harness.exec("update cloud_computers set deleted_at = null where instance_id = ?", INSTANCE);
+    await saveBackup();
+    expect((await objects()).length).toBeGreaterThan(0);
+    await deleteAllAccountChats(harness.env, OWNER);
+    expect([harness.rows("select lane_id from cloud_lane_backups where user_id = ?", OWNER), await objects()]).toEqual([[], []]);
   });
 });

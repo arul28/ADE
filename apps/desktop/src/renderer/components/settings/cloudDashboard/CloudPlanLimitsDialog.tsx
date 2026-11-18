@@ -17,7 +17,7 @@ type Path = "ade" | "self";
 /** What ADE does now with a pick that was sent: one sentence for the toast. */
 export function planCleanupPickSentence(push: boolean, count: number): string {
   const computers = count === 1 ? "1 computer" : `${count} computers`;
-  return push ? `ADE is pushing the work of ${computers} to GitHub, then freeing ${count === 1 ? "it" : "them"}.` : `ADE is deleting ${computers} now.`;
+  return push ? `ADE is checking that the work of ${computers} is saved, then freeing ${count === 1 ? "it" : "them"}.` : `ADE is deleting ${computers} now.`;
 }
 
 /**
@@ -28,7 +28,8 @@ export function planCleanupPickSentence(push: boolean, count: number): string {
  *   person sees which computers deleting would be enough, deletes them, and
  *   comes back.
  * - "Let ADE handle it": the person picks the computers (the oldest that make
- *   it fit, to start) and whether their work is pushed to GitHub first (on).
+ *   it fit, to start) and whether each lane's work must be saved first (on;
+ *   a lane backup, nothing pushed, no wake).
  *   The pick must fit the plan before it can be sent; the server checks it
  *   again and frees exactly those, at once.
  *
@@ -78,8 +79,8 @@ export function CloudPlanLimitsDialog({
   const send = async () => {
     if (!push) {
       const ok = await confirmDialog({
-        title: `Delete ${count} ${many} without pushing?`,
-        message: "ADE deletes them as they are. Work that isn't on GitHub yet is lost. Their lanes and chats stay readable.",
+        title: `Delete ${count} ${many} without the check?`,
+        message: "ADE deletes them as they are, without checking that each lane's work is saved. Work since a computer last rested can be lost. Their lanes and chats stay readable.",
         confirmLabel: `Delete ${count} ${many}`,
         destructive: true,
       });
@@ -147,8 +148,8 @@ export function CloudPlanLimitsDialog({
             onPick={() => setPath("ade")}
             title="Let ADE handle it"
             hint={`${push
-              ? "ADE pushes the work of the computers you pick to GitHub, then frees them now."
-              : "ADE deletes the computers you pick now, without pushing their work."}${moveLine}`}
+              ? "ADE frees the computers you pick now, once each lane's work is saved. Nothing is pushed to GitHub."
+              : "ADE deletes the computers you pick now, without checking that their work is saved."}${moveLine}`}
           />
           <PathButton
             on={path === "self"}
@@ -164,12 +165,12 @@ export function CloudPlanLimitsDialog({
           <>
             <div className="kit-panel adecd-limits-push">
               <div>
-                <b>Push all work to GitHub first</b>
+                <b>Save each lane's work first</b>
                 <small>{push
-                  ? "Each lane's work goes to its branch before its computer goes. A computer whose work can't be pushed stays."
-                  : "ADE deletes them as they are. Work that isn't on GitHub yet is lost."}</small>
+                  ? "A computer goes only when its lanes' work that isn't on GitHub is saved in ADE Cloud. ADE never wakes it for that and pushes nothing. A computer whose work isn't saved stays."
+                  : "ADE deletes them as they are. Work since a computer last rested can be lost."}</small>
               </div>
-              <SettingsToggle checked={push} disabled={busy} label="Push all work to GitHub first" onChange={setPush} />
+              <SettingsToggle checked={push} disabled={busy} label="Save each lane's work first" onChange={setPush} />
             </div>
             <div className="adecd-limits-list" role="group" aria-label={`Computers to ${verb}, oldest first`}>
               <div className="adecd-limits-list-head">Computers to {verb}, oldest first</div>
@@ -187,7 +188,7 @@ export function CloudPlanLimitsDialog({
                 <ComputerFacts computer={computer} />
               </div>
             ))}
-            <p className="adecd-plan-fine">Delete them from Lanes and computers on this page. Push their work first if you want to keep it.</p>
+            <p className="adecd-plan-fine">Delete them from Lanes and computers on this page. Before a delete, ADE shows the lane's work that isn't on GitHub and offers to push it.</p>
           </div>
         )}
 

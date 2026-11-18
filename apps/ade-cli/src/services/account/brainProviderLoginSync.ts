@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { ProviderLoginCaptureOffReason } from "../../../../desktop/src/shared/types/providerLogins";
+import { ADE_CLOUD_NAME } from "../../../../desktop/src/shared/adeCloudMachine";
 import type { AccountAuthService } from "./accountAuthService";
 import { getSharedAccountDirectoryBaseUrl } from "./sharedAccountAuthService";
 
@@ -72,6 +73,8 @@ export async function installBrainProviderLoginSync(args: {
     ]);
   }
   const machineLabel = (): string => {
+    // A cloud computer's own name is its instance id: people see "ADE Cloud".
+    if (isAdeCloudComputer()) return ADE_CLOUD_NAME;
     try {
       return displayName?.().trim() || os.hostname();
     } catch {
