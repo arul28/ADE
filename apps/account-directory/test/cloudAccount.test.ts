@@ -2403,15 +2403,17 @@ describe("ADE Cloud server launcher", () => {
   // A big repository's install fills the 4 GB every computer starts with: the setup grows it,
   // the computer restarts and setup runs again. The next launch starts at that disk instead,
   // only inside the plan's included disk, so nothing new is billed or refused.
-  // `before`: a disk an earlier setup needed, and how long ago.
-  it.each<[string, { paid: boolean; agentStarted: boolean; before?: { diskGb: number; agoMs: number } }, number | null, number]>([
+  // `before`: a disk an earlier setup needed, and how long ago. `later`: one more launch that much later, and its disk.
+  it.each<[string, { paid: boolean; agentStarted: boolean; before?: { diskGb: number; agoMs: number }; later?: { afterMs: number; diskGb: number } }, number | null, number]>([
     ["a paid account's next launch starts at the disk its setup grew to", { paid: true, agentStarted: false }, 8, 8],
     ["a free account's next launch starts at what its shared disk has left", { paid: false, agentStarted: false }, 8, 4],
     ["a grow after the agent started is not the setup's, and records nothing", { paid: true, agentStarted: true }, null, 4],
     // A launch that grew only partway keeps the most the setup needed; a Small starts at its own limit, never past it.
     ["a smaller grow keeps the larger disk, and a Small starts at its 12 GB limit", { paid: true, agentStarted: false, before: { diskGb: 20, agoMs: DAY } }, 20, 12],
     ["a memory past its 90 days is replaced by the new grow", { paid: true, agentStarted: false, before: { diskGb: 20, agoMs: 91 * DAY } }, 8, 8],
-  ])("%s", async (_label, { paid, agentStarted, before }, remembered, nextDisk) => {
+    // The smaller grow on day 80 keeps day 0's peak and its date, so the peak still ages out: day 100 starts small.
+    ["a smaller grow keeps the peak's date, so the peak still ages out", { paid: true, agentStarted: false, before: { diskGb: 20, agoMs: 80 * DAY }, later: { afterMs: 20 * DAY, diskGb: 4 } }, 20, 12],
+  ])("%s", async (_label, { paid, agentStarted, before, later }, remembered, nextDisk) => {
     if (paid) harness.exec("update cloud_accounts set plan = 'paid', included_milli = 500000 where user_id = ?", OWNER);
     await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
     // Written while this launch (started at 4 GB) was being made, by another computer's setup.
@@ -2432,6 +2434,14 @@ describe("ADE Cloud server launcher", () => {
     expect(madeCalls()[1]!.body!.resources).toEqual(expect.objectContaining({ disk: nextDisk }));
     // The reserved and billed disk is the disk the provider was asked for.
     expect(harness.row("select disk_gb from cloud_computers where request_id = ?", "9d4f6b8a-3e5c-4c7d-9a1b-2c3d4e5f6a7b")).toEqual({ disk_gb: nextDisk });
+    if (later) {
+      clock += later.afterMs;
+      const last = await harness.send(OWNER, "POST", "/cloud/launches", {
+        ...launchBody, launchId: "1b3d5f7a-9c2e-4d6f-8a1b-3c5d7e9f0a2b", lane: { id: "6a8c0e2b-4d6f-4a8c-9e1d-2f3a4b5c6d7e", name: "Later" },
+      });
+      expect(last.status).toBe(201);
+      expect(madeCalls()[2]!.body!.resources).toEqual(expect.objectContaining({ disk: later.diskGb }));
+    }
   });
 
   describe("a default-size launch whose setup runs out of memory", () => {
