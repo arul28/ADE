@@ -11,7 +11,7 @@ import { runIdleCleanup } from "../src/cloud/idleCleanup";
 import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
 import { createCloudProvider } from "../src/cloud/provider";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
-import { runCloudMinuteCron } from "../src/cloud/cron";
+import { prepareStopBackupReportId, runCloudMinuteCron } from "../src/cloud/cron";
 import { runLinearRenewalCron } from "../src/cloud/linearRenewal";
 import { nextFireAt } from "../src/cloud/automationSchedule";
 import { handleCloudRequest } from "../src/cloud/routes";
@@ -3168,6 +3168,12 @@ describe("ADE Cloud lane backups", () => {
     expect((await harness.send(OWNER, "POST", `${base}/uploads`, { instanceId: INSTANCE, fingerprint: FINGERPRINT, bundleBytes: 5, patchBytes: 4, facts }, web)).status).toBe(404);
     delete harness.env.WEB_CLIENT_ORIGIN;
 
+    // A commit of less than its upload declared (the patch never sent) is no backup: the old one stays.
+    const { uploadId: short } = (await (await start(OWNER, 5, 4)).json()) as { uploadId: string };
+    expect((await putPart(OWNER, `${base}/uploads/${short}/bundle/1`, new TextEncoder().encode("BNDLX"))).status).toBe(200);
+    expect((await harness.send(OWNER, "POST", `${base}/uploads/${short}/commit`, { instanceId: INSTANCE, bundleParts: 1, patchParts: 0 })).status).toBe(409);
+    expect(await readPart(OWNER, "bundle")).toBe("BNDL1");
+
     // A second upload that never commits leaves the first one whole and readable.
     const started = await start(OWNER, 5, 0);
     const { uploadId } = (await started.json()) as { uploadId: string };
@@ -3238,7 +3244,7 @@ describe("ADE Cloud lane backups", () => {
     harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
     harness.net.once.push({
       match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`),
-      reply: harness.net.reply({ exit_code: 0, stdout: JSON.stringify({ result: { stillRunning: 0, backups: { reportId: REPORT, state: "current" } } }), stderr: "" }),
+      reply: harness.net.reply({ exit_code: 0, stdout: JSON.stringify({ result: { stillRunning: 0, chatsNotUploaded: 0, timedOut: false, backups: { reportId: REPORT, state: "current" } } }), stderr: "" }),
     });
     await harness.tick();
     expect(providerCalls(harness, /POST .*\/exec$/).map((call) => String(call.body?.command))).toEqual([expect.stringContaining("ade cloud prepare-stop --timeout 40 --json")]);
@@ -3247,6 +3253,18 @@ describe("ADE Cloud lane backups", () => {
     clock = NOW + DAY;
     await harness.tick();
     expect(providerCalls(harness, /POST .*\/start$/)).toHaveLength(starts);
+  });
+
+  // A stop that wasn't fully prepared (a turn still running, a chat not saved, out of time) can be written to after its save.
+  it.each<[string, Record<string, unknown>, string | null]>([
+    ["prepared", { stillRunning: 0, chatsNotUploaded: 0, timedOut: false }, REPORT],
+    ["a turn still running", { stillRunning: 1, chatsNotUploaded: 0, timedOut: true }, null],
+    ["a chat not saved", { stillRunning: 0, chatsNotUploaded: 2, timedOut: false }, null],
+    ["out of time", { stillRunning: 0, chatsNotUploaded: 0, timedOut: true }, null],
+    ["an older ADE that sends no counts", {}, null],
+  ])("the 0-hours stop rests with its save only when the stop was prepared: %s", (_label, stop, expected) => {
+    const stdout = JSON.stringify({ result: { ...stop, backups: { reportId: REPORT, state: "current" } } });
+    expect([prepareStopBackupReportId(stdout), prepareStopBackupReportId(stdout.replace('"current"', '"failed"'))]).toEqual([expected, null]);
   });
 
   it("the lane's delete and the account's delete remove its backups; a delete that keeps the lane keeps them", async () => {

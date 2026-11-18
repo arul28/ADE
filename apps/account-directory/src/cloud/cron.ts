@@ -403,7 +403,9 @@ export function prepareStopBackupReportId(stdout: string): string | null {
   try {
     const parsed = JSON.parse(stdout.trim()) as Record<string, unknown> | null;
     const result = (parsed?.result && typeof parsed.result === "object" ? parsed.result : parsed) as Record<string, unknown> | null;
-    const backups = result?.backups as Record<string, unknown> | null | undefined;
+    // Only a stop that was really prepared: a turn still running (or a chat not saved) can write after the save.
+    if (!result || result.stillRunning !== 0 || result.chatsNotUploaded !== 0 || result.timedOut !== false) return null;
+    const backups = result.backups as Record<string, unknown> | null | undefined;
     return backups && backups.state === "current" && typeof backups.reportId === "string" ? backups.reportId : null;
   } catch {
     return null;

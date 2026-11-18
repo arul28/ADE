@@ -217,7 +217,8 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, mach
   if (!bucket) return unavailable();
   // An upload this lane left unfinished goes first: it holds bytes nobody reads.
   const before = await readRow(env, userId, machineKey, laneId);
-  if (before?.pending_upload_id && before.pending_upload_id !== before.upload_id) {
+  if (before?.pending_upload_id && before.pending_upload_id !== before.upload_id
+    && await claimPendingUpload(env, userId, machineKey, laneId, before.pending_upload_id, null)) {
     await deleteUnder(bucket, uploadPrefix(userId, machineKey, laneId, before.pending_upload_id));
   }
   const uploadId = [...crypto.getRandomValues(new Uint8Array(16))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -285,7 +286,9 @@ async function handleCommit(request: Request, env: CloudEnv, userId: string, mac
   // The sizes in R2 are the truth, not the counts the computer sent.
   const bundleBytes = await storedBytes(bucket, prefix, "bundle", bundleParts);
   const patchBytes = await storedBytes(bucket, prefix, "patch", patchParts);
-  if (bundleBytes == null || patchBytes == null || bundleBytes === 0) {
+  // All of what the upload declared, not a part of it: a short backup could not be restored.
+  if (bundleBytes == null || patchBytes == null || bundleBytes === 0
+    || bundleBytes !== row.pending_bundle_bytes || patchBytes !== (row.pending_patch_bytes ?? 0)) {
     return fail("backup_incomplete", "Some parts of this lane's saved work are missing. Upload it again.", 409);
   }
   if (bundleBytes + patchBytes > CLOUD_BACKUP_MAX_BYTES) return tooLarge();
@@ -312,9 +315,9 @@ async function handleCommit(request: Request, env: CloudEnv, userId: string, mac
   // The backup it replaces goes only now that the new one is whole.
   if (row.upload_id && row.upload_id !== uploadId) await deleteUnder(bucket, uploadPrefix(userId, machineKey, laneId, row.upload_id));
   // A backup of this lane from another machine that this computer applied is in the new one now.
-  const replaced = (await env.DB.prepare("select user_id, machine_key, lane_id from cloud_lane_backups where user_id = ? and lane_id = ? and machine_key <> ? and restored_by_machine_key = ?")
+  const replaced = (await env.DB.prepare("select user_id, machine_key, lane_id, upload_id, pending_upload_id from cloud_lane_backups where user_id = ? and lane_id = ? and machine_key <> ? and restored_by_machine_key = ?")
     .bind(userId, laneId, machineKey, machineKey).all<BackupRow>()).results ?? [];
-  for (const old of replaced) await deleteBackup(env, old);
+  for (const old of replaced) await deleteRestoredBackup(env, old, machineKey);
   logCloud("cloud.backup_saved", { userId, instanceId: computer.instance_id, bytes: bundleBytes + patchBytes, bundleParts, patchParts });
   const keys = await userKeys(env, userId, now);
   const manifest = await manifestOf(keys, (await readRow(env, userId, machineKey, laneId))!);
@@ -340,6 +343,41 @@ async function handleReadPart(request: Request, env: CloudEnv, userId: string, m
 }
 
 /** One backup, its parts and its row. */
+/**
+ * Another machine's backup that `restoredBy` applied, only while it is still
+ * the generation that was read: that machine may have committed a newer one
+ * since (which clears the mark), and that one stays. Its row goes first, so
+ * only the objects of a generation this call owned are deleted.
+ */
+async function deleteRestoredBackup(env: CloudEnv, row: Pick<BackupRow, "user_id" | "machine_key" | "lane_id" | "upload_id" | "pending_upload_id">, restoredBy: string): Promise<boolean> {
+  const gone = await env.DB.prepare(`
+    delete from cloud_lane_backups
+    where user_id = ? and machine_key = ? and lane_id = ? and upload_id is ? and pending_upload_id is ? and restored_by_machine_key = ?
+  `).bind(row.user_id, row.machine_key, row.lane_id, row.upload_id, row.pending_upload_id, restoredBy).run();
+  if ((gone.meta?.changes ?? 0) !== 1) return false;
+  const bucket = bucketOf(env);
+  if (bucket) {
+    for (const uploadId of new Set([row.upload_id, row.pending_upload_id])) {
+      if (uploadId) await deleteUnder(bucket, uploadPrefix(row.user_id, row.machine_key, row.lane_id, uploadId));
+    }
+  }
+  return true;
+}
+
+/**
+ * Takes an unfinished upload off its row, so its parts can go: true when this
+ * call took it. A commit of it after this finds no pending upload and fails.
+ * `olderThan`: only while it is that stale (the sweep).
+ */
+async function claimPendingUpload(env: CloudEnv, userId: string, machineKey: string, laneId: string, uploadId: string, olderThan: number | null): Promise<boolean> {
+  const claimed = await env.DB.prepare(`
+    update cloud_lane_backups set pending_upload_id = null, pending_bytes = null, pending_bundle_bytes = null, pending_patch_bytes = null,
+      pending_fingerprint = null, pending_facts_sealed = null, pending_at = null
+    where user_id = ? and machine_key = ? and lane_id = ? and pending_upload_id = ? and (? is null or pending_at < ?)
+  `).bind(userId, machineKey, laneId, uploadId, olderThan, olderThan).run();
+  return (claimed.meta?.changes ?? 0) === 1;
+}
+
 async function deleteBackup(env: CloudEnv, row: Pick<BackupRow, "user_id" | "machine_key" | "lane_id">): Promise<void> {
   const bucket = bucketOf(env);
   if (bucket) await deleteUnder(bucket, `backups/${row.user_id}/${row.machine_key}/${row.lane_id}/`);
@@ -356,10 +394,14 @@ async function handleDelete(request: Request, env: CloudEnv, userId: string, mac
   const computer = await writingComputer(env, request, userId, machineKey, body?.instanceId ?? null);
   if (!computer) return noComputer();
   const rows = (await env.DB.prepare(`
-    select user_id, machine_key, lane_id from cloud_lane_backups
+    select user_id, machine_key, lane_id, upload_id, pending_upload_id from cloud_lane_backups
     where user_id = ? and lane_id = ? and (machine_key = ? or restored_by_machine_key = ?)
   `).bind(userId, laneId, machineKey, machineKey).all<BackupRow>()).results ?? [];
-  for (const row of rows) await deleteBackup(env, row);
+  // Its own backup goes whole; another machine's goes only while it is still the one this computer restored.
+  for (const row of rows) {
+    if (row.machine_key === machineKey) await deleteBackup(env, row);
+    else await deleteRestoredBackup(env, row, machineKey);
+  }
   if (rows.length) logCloud("cloud.backup_deleted", { userId, instanceId: computer.instance_id, reason: "on_github", count: rows.length });
   return json({ deleted: rows.length });
 }
@@ -412,19 +454,17 @@ export async function sweepStaleBackupUploads(env: CloudEnv, now: number): Promi
     where pending_upload_id is not null and pending_at < ? limit 25
   `).bind(now - UPLOAD_STALE_MS).all<Pick<BackupRow, "user_id" | "machine_key" | "lane_id" | "upload_id" | "pending_upload_id">>()).results ?? [];
   const bucket = bucketOf(env);
+  const staleBefore = now - UPLOAD_STALE_MS;
   for (const row of rows) {
-    if (bucket && row.pending_upload_id && row.pending_upload_id !== row.upload_id) {
+    if (!row.pending_upload_id) continue;
+    // The row is claimed first: a commit that won the race keeps its parts.
+    if (!(await claimPendingUpload(env, row.user_id, row.machine_key, row.lane_id, row.pending_upload_id, staleBefore))) continue;
+    if (bucket && row.pending_upload_id !== row.upload_id) {
       await deleteUnder(bucket, uploadPrefix(row.user_id, row.machine_key, row.lane_id, row.pending_upload_id));
     }
-    const ids = [row.user_id, row.machine_key, row.lane_id, row.pending_upload_id];
-    if (row.upload_id) {
-      await env.DB.prepare(`
-        update cloud_lane_backups set pending_upload_id = null, pending_bytes = null, pending_bundle_bytes = null, pending_patch_bytes = null,
-          pending_fingerprint = null, pending_facts_sealed = null, pending_at = null, updated_at = ?
-        where user_id = ? and machine_key = ? and lane_id = ? and pending_upload_id = ?
-      `).bind(now, ...ids).run();
-    } else {
-      await env.DB.prepare("delete from cloud_lane_backups where user_id = ? and machine_key = ? and lane_id = ? and pending_upload_id = ? and upload_id is null").bind(...ids).run();
+    // A row that never had a committed backup goes with its upload.
+    if (!row.upload_id) {
+      await env.DB.prepare("delete from cloud_lane_backups where user_id = ? and machine_key = ? and lane_id = ? and upload_id is null and pending_upload_id is null").bind(row.user_id, row.machine_key, row.lane_id).run();
     }
   }
   if (rows.length) logCloud("cloud.backup_uploads_swept", { count: rows.length });
