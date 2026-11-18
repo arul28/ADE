@@ -79,6 +79,7 @@ export const RUNTIME_INLINED_PACKAGE_NOTICE_PATHS = new Map([
 
 const PACKAGE_NOTICE_NAME = /^(?:licen[cs]e|notice|copying|third[._-]?party)(?:[._-].*)?$/i;
 const STRIPPED_PACKAGE_DIR = /^(?:\.cache|docs?|examples?|tests?|__tests__|__examples__)$/i;
+const PACKAGE_CODE_FILE = /\.(?:c?js|mjs|json|node|wasm)$/i;
 
 export function isPackageNoticeFile(relativePath) {
   return PACKAGE_NOTICE_NAME.test(path.posix.basename(relativePath));
@@ -98,7 +99,14 @@ function shouldStripPackageFile(relative, entry) {
   if (/^(?:readme|changelog)(?:[._-].*)?$/i.test(basename)) return true;
 
   const segments = relative.split("/");
-  if (!segments.some((segment) => STRIPPED_PACKAGE_DIR.test(segment))) return false;
+  const top = STRIPPED_PACKAGE_DIR.test(segments[0] ?? "");
+  // A deeper folder with one of these names can be the package's own code:
+  // yaml keeps its document model in `dist/doc/`, and stripping it broke every
+  // YAML read of the standalone runtime (ADE Cloud images ade@54 to ade@58).
+  // There only the files that are not code go.
+  const nested = !top && segments.slice(1, -1).some((segment) => STRIPPED_PACKAGE_DIR.test(segment));
+  if (!top && !nested) return false;
+  if (nested && PACKAGE_CODE_FILE.test(basename)) return false;
   // Keep walking excluded documentation/test directories so a nested LICENSE
   // or NOTICE survives. Only their ordinary files are discarded.
   return !isDirectory(entry);
