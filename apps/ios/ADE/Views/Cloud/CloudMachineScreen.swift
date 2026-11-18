@@ -15,6 +15,8 @@ struct CloudMachineScreen: View {
           CloudMachineControls(store: store, machine: machine)
         }
         .padding(16)
+      } else if store.phase == .loading {
+        ProgressView().frame(maxWidth: .infinity).padding(32)
       } else {
         ADESettingsNotice(message: "That computer is gone. It was deleted, or its lane moved to a new one.", tone: .neutral)
           .padding(16)

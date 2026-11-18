@@ -144,6 +144,31 @@ struct CloudSettingsPage: View {
   }
 }
 
+/// One cloud computer's page (size, free, delete) over a resting lane: the
+/// same `CloudMachineScreen` as ADE Cloud's dashboard, with no wake.
+struct CloudLaneManageSheet: View {
+  @StateObject private var store: CloudPaneStore
+  let instanceId: String
+  @Environment(\.dismiss) private var dismiss
+
+  init(syncService: SyncService, instanceId: String) {
+    _store = StateObject(wrappedValue: CloudPaneStore(syncService: syncService))
+    self.instanceId = instanceId
+  }
+
+  var body: some View {
+    NavigationStack {
+      CloudMachineScreen(store: store, instanceId: instanceId)
+        .toolbar {
+          ToolbarItem(placement: .cancellationAction) {
+            Button("Done") { dismiss() }
+          }
+        }
+    }
+    .task { await store.reload() }
+  }
+}
+
 // MARK: - Store
 
 @MainActor

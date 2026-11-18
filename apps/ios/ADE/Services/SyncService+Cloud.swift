@@ -948,6 +948,9 @@ extension SyncService {
       var entry = project(for: origin, projectId: nil, root: nil)
       if let index = entry.lanes.firstIndex(where: { $0.id == laneId }) {
         if entry.lanes[index].branchRef == nil { entry.lanes[index].branchRef = box.laneBranch }
+        // The computer's lane name is current; a saved chat keeps the name the
+        // lane had when the chat started (before a rename).
+        if let current = box.laneName.flatMap({ nonEmptyTrimmed($0) }) { entry.lanes[index].name = current }
       } else {
         entry.lanes.append(RemoteRosterLane(id: laneId, name: box.laneName ?? "Cloud lane", color: nil, icon: nil, laneType: "worktree", branchRef: box.laneBranch))
       }

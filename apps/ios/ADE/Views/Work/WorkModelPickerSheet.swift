@@ -57,6 +57,9 @@ struct WorkModelPickerSheet: View {
   /// Reports the Copilot tiers with each selection, before `onSelect` fires.
   let onSelectCopilotTiers: ((String, String?) -> Void)?
   let onSelect: (WorkModelOption, String?, String, Bool) -> Void
+  /// ADE Cloud's models, when the chat starts on ADE Cloud: the picker lists
+  /// these instead of asking the connected machine, which may not exist.
+  let cloudCatalog: CloudModelCatalog?
 
   init(
     currentModelId: String,
@@ -78,8 +81,10 @@ struct WorkModelPickerSheet: View {
     currentCopilotAutoTier: String? = nil,
     copilotAutoTierPending: Bool = false,
     onSelectCopilotTiers: ((String, String?) -> Void)? = nil,
+    cloudCatalog: CloudModelCatalog? = nil,
     onSelect: @escaping (WorkModelOption, String?, String, Bool) -> Void
   ) {
+    self.cloudCatalog = cloudCatalog
     self.currentModelId = currentModelId
     self.currentProvider = currentProvider
     self.currentReasoningEffort = currentReasoningEffort
@@ -314,7 +319,7 @@ struct WorkModelPickerSheet: View {
         picker.load(syncService: syncService)
       }
     }
-    .task(id: "\(currentModelId)\u{0}\(currentProvider)") {
+    .task(id: "\(currentModelId)\u{0}\(currentProvider)\u{0}\(cloudCatalog.map { "\($0.version ?? "")/\($0.providers.count)" } ?? "")") {
       await loadLiveCatalog()
       pickInitialSelectionIfNeeded()
       if case .providerGroup(let key, _) = selection {
@@ -695,6 +700,16 @@ struct WorkModelPickerSheet: View {
 
   @MainActor
   private func loadLiveCatalog() async {
+    if var cloudCatalog {
+      if cloudCatalog.providers.isEmpty {
+        let launches = AccountCloudLaunchStore.shared
+        await launches.loadCatalogIfNeeded(using: syncService)
+        guard !Task.isCancelled else { return }
+        if let loaded = launches.catalog { cloudCatalog = loaded }
+      }
+      setHostGroups(workModelCatalogGroups(cloudCatalog: cloudCatalog))
+      return
+    }
     isLoadingCatalog = true
     defer { isLoadingCatalog = false }
 
@@ -713,6 +728,7 @@ struct WorkModelPickerSheet: View {
 
   @MainActor
   private func refreshCatalog(for groupKey: String) async {
+    guard cloudCatalog == nil else { return }
     let refreshProvider: String?
     switch groupKey {
     case "opencode", "cursor", "droid", "pi", "muse", "lmstudio", "ollama",

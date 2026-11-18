@@ -669,7 +669,6 @@ struct WorkNewChatScreen: View {
   /// The launch this screen started on ADE Cloud: its setup card shows above
   /// the composer until the chat runs.
   @State private var cloudLaunchId: String?
-  @State private var cloudModelPickerPresented = false
   /// The machine the chat starts on. Nil = the primary (focused) machine.
   @State private var selectedMachineKey: String?
   /// That machine's lanes (namespaced ids), when it is not the primary one.
@@ -928,13 +927,14 @@ struct WorkNewChatScreen: View {
     selectedMachineKey.flatMap { syncService.remoteLaneRepo(machineKey: $0) }
   }
 
+  /// ADE Cloud takes files through the account server, so it needs no
+  /// connected machine; any other target stages them on its machine.
   private var attachmentsAvailable: Bool {
-    syncService.supportsViewerRemoteAction("chat.saveTempAttachment")
+    isCloudSelected || syncService.supportsViewerRemoteAction("chat.saveTempAttachment")
   }
 
   private var canUploadAttachments: Bool {
-    attachmentsAvailable
-      && syncService.connectionState == .connected
+    isCloudSelected || (attachmentsAvailable && syncService.connectionState == .connected)
   }
 
   /// Fast mode only applies to in-app chat sessions on fast-tier models. The
@@ -1159,14 +1159,6 @@ struct WorkNewChatScreen: View {
     .sheet(isPresented: $githubIssuePickerPresented) {
       WorkGitHubIssuePickerSheet(syncService: syncService, onPick: addGitHubLaunchIssue)
     }
-    .sheet(isPresented: $cloudModelPickerPresented) {
-      CloudModelPickerSheet(provider: provider, modelId: modelId) { pickedProvider, pickedModel in
-        provider = pickedProvider
-        modelId = pickedModel
-        reasoningEffort = ""
-        codexFastMode = false
-      }
-    }
     .sheet(isPresented: $modelPickerPresented) {
       WorkModelPickerSheet(
         currentModelId: modelId,
@@ -1177,7 +1169,7 @@ struct WorkNewChatScreen: View {
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
         lanes: visibleLanes,
         // Custom harnesses are the connected host's own; another machine's list
-        // would offer a preset this launch cannot resolve.
+        // (or ADE Cloud) would offer a preset this launch cannot resolve.
         harnessPresets: selectedMachineKey == nil ? harnessPresets : [],
         isBusy: false,
         onSelectPreset: { preset in
@@ -1198,6 +1190,9 @@ struct WorkNewChatScreen: View {
           copilotContextTier = context
           copilotAutoTier = auto
         },
+        // ADE Cloud lists its own models; an empty list until it arrives, never
+        // the connected machine's.
+        cloudCatalog: isCloudSelected ? (cloudLaunches.catalog ?? .pending) : nil,
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedPreset = nil
           selectedModelOption = option
@@ -1792,7 +1787,7 @@ struct WorkNewChatScreen: View {
       fastModeAllowed: fastModeAllowed,
       composerFocused: $composerFocused,
       onOpenModelPicker: {
-        if isCloudSelected { cloudModelPickerPresented = true } else { modelPickerPresented = true }
+        modelPickerPresented = true
       },
       launchMenu: AnyView(launchOptionsMenu),
       onSubmit: submit(openingMessage:attachments:)
@@ -1892,7 +1887,7 @@ struct WorkNewChatScreen: View {
   /// Starts the chat on ADE Cloud through the account server: on a new cloud
   /// lane, or on the picked cloud lane (with or without a computer). The
   /// setup card above the composer follows it; the chat opens when it runs.
-  private func submitOnCloud(opener: String, rawText: String, hasAttachments: Bool) async -> Bool {
+  private func submitOnCloud(opener: String, rawText: String, attachments: [WorkChatInputAttachment]) async -> Bool {
     if let refusal = cloudStore.doingRefusal {
       errorMessage = refusal
       return false
@@ -1901,9 +1896,20 @@ struct WorkNewChatScreen: View {
       errorMessage = "ADE Cloud starts chats from the phone. Switch to Chat."
       return false
     }
-    guard !hasAttachments else {
-      errorMessage = "A chat's first message on ADE Cloud can't carry images yet. Send them once it runs."
-      return false
+    // The files go up with the launch, from the bytes on this phone. A file
+    // restored from a draft lives only on the machine that saved it.
+    var files: [(name: String, contentType: String, data: Data)] = []
+    for attachment in attachments {
+      guard let data = attachment.uploadData ?? attachment.image?.jpegData(compressionQuality: 0.85) else {
+        errorMessage = "\(attachment.filename) is on the machine that saved this draft. Remove it and attach it again to send it to ADE Cloud."
+        return false
+      }
+      let isJPEG = attachment.uploadData == nil
+      files.append((
+        name: attachment.filename,
+        contentType: isJPEG ? "image/jpeg" : attachment.mimeType,
+        data: data
+      ))
     }
     guard let project = syncService.activeAccountProjectForCloud else {
       errorMessage = "Add this project to your account to use ADE Cloud."
@@ -1930,6 +1936,8 @@ struct WorkNewChatScreen: View {
       provider: entry.provider,
       modelId: modelId,
       effort: reasoningEffort,
+      fast: codexFastMode && fastModeAllowed,
+      files: files,
       existingLane: existingLane,
       newLaneName: existingLane == nil ? autoCreatedLaneName(opener: rawText) : nil,
       using: syncService
@@ -1961,7 +1969,7 @@ struct WorkNewChatScreen: View {
       return false
     }
     if isCloudSelected {
-      return await submitOnCloud(opener: chatOpener, rawText: rawText, hasAttachments: !readyAttachments.isEmpty)
+      return await submitOnCloud(opener: chatOpener, rawText: rawText, attachments: readyAttachments)
     }
     guard readyAttachments.isEmpty || canUploadAttachments else {
       errorMessage = "Reconnect to attach images."

@@ -899,6 +899,9 @@ struct WorkChatSessionView: View {
   var onOpenParentSession: (() -> Void)? = nil
 
   var resolvedSessionStatus: String? = nil
+  /// Set while the chat's ADE Cloud computer is not awake: the picker lists
+  /// ADE Cloud's models instead of asking a machine the chat is not on.
+  var modelPickerCloudCatalog: CloudModelCatalog? = nil
   var lanes: [LaneSummary] = []
   var lanesRenderSignature: Int = 0
   // Host-side scroll-back: the engine reports whether older history exists
@@ -3067,6 +3070,7 @@ struct WorkChatSessionView: View {
             currentCopilotAutoTier: chatSummaryContext.copilotAutoTier,
             copilotAutoTierPending: chatSummaryContext.copilotAutoTierPending,
             onSelectCopilotTiers: { context, auto in pickedCopilotTiers = (context, auto) },
+            cloudCatalog: modelPickerCloudCatalog,
             onSelect: { option, pickedReasoning, _, pickedFastMode in
               Task { @MainActor in
                 modelUpdateInFlight = true

@@ -972,6 +972,28 @@ func workModelCatalogGroups(
   )
 }
 
+/// ADE Cloud's models (`GET /cloud/models`) in the picker's groups, so ADE
+/// Cloud gets the same picker as any machine: provider rail, favorites,
+/// efforts and fast mode. Only ADE Cloud's own models; a model picked for
+/// another machine is never added in.
+func workModelCatalogGroups(cloudCatalog: CloudModelCatalog) -> [WorkModelCatalogGroup] {
+  var byProvider: [String: [AgentChatModelInfo]] = [:]
+  for entry in cloudCatalog.providers {
+    byProvider[entry.provider, default: []] += entry.models.map { model in
+      AgentChatModelInfo(
+        id: model.id,
+        displayName: model.displayName,
+        description: "Runs on ADE Cloud",
+        isDefault: model.id == entry.defaultModelId,
+        reasoningEfforts: model.reasoningTiers.map { AgentChatModelReasoningEffort(effort: $0, description: "") },
+        defaultReasoningEffort: model.defaultReasoningEffort,
+        serviceTiers: model.fast ? ["fast"] : nil
+      )
+    }
+  }
+  return workModelCatalogGroups(availableModelsByProvider: byProvider, currentModelId: "", currentProvider: "")
+}
+
 func workModelCatalogGroups(
   hostCatalog: AgentChatModelCatalog,
   currentModelId: String,

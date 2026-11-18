@@ -54,9 +54,15 @@ struct CloudLaneAtRestScreen: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @ObservedObject private var store = CloudAtRestStore.shared
   private var syncService: SyncService { syncPublishes.service }
+  /// The lane's computer on the account server; none once it was deleted.
+  private var manageInstanceId: String? {
+    guard !subject.fleetKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix) else { return nil }
+    return syncService.cloudServerInstance(fleetKey: subject.fleetKey)?.id
+  }
   @State private var commits: CloudAtRestStore.Read<[GitHubDirectCommit]>?
   @State private var commitsError: GitHubDirectError?
   @State private var filesPresented = false
+  @State private var managePresented = false
   @State private var waking = false
   @State private var wakeError: String?
   @State private var changedFileAsk: CloudGitChangedFile?
@@ -117,6 +123,14 @@ struct CloudLaneAtRestScreen: View {
         .accessibilityLabel("Wake the lane's computer")
         .adeInspectable("CloudLane.AtRest.Wake")
       }
+      // Size, free and delete are account actions: none of them wakes the
+      // computer, so a resting lane manages it from here.
+      if manageInstanceId != nil {
+        ToolbarItem(placement: .secondaryAction) {
+          Button("Manage computer", systemImage: "slider.horizontal.3") { managePresented = true }
+            .adeInspectable("CloudLane.AtRest.Manage")
+        }
+      }
       // The system puts a secondary action in the bar's ⋯ menu. A lane
       // moves only with its chats, so a lane with no saved chat has no item.
       if hasSavedChats {
@@ -124,6 +138,11 @@ struct CloudLaneAtRestScreen: View {
           Button("Move to…", systemImage: "arrow.right.circle") { movePresented = true }
             .adeInspectable("CloudLane.AtRest.Move")
         }
+      }
+    }
+    .sheet(isPresented: $managePresented) {
+      if let id = manageInstanceId {
+        CloudLaneManageSheet(syncService: syncService, instanceId: id)
       }
     }
     .sheet(isPresented: $movePresented) {

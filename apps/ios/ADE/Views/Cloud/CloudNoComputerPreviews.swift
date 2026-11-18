@@ -234,7 +234,12 @@ private struct CloudModelsFixture: View {
   var body: some View {
     ADEColor.pageBackground.ignoresSafeArea()
       .sheet(isPresented: .constant(true)) {
-        CloudModelPickerSheet(provider: "claude", modelId: "anthropic/claude-sonnet-4-5") { _, _ in }
+        WorkModelPickerSheet(
+          currentModelId: "anthropic/claude-sonnet-4-5",
+          currentProvider: "claude",
+          isBusy: false,
+          cloudCatalog: CloudNoComputerFixtureData.catalog
+        ) { _, _, _, _ in }
       }
       .task {
         AccountCloudLaunchStore.shared.seedPreview(catalog: CloudNoComputerFixtureData.catalog, catalogError: nil, entries: [])

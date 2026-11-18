@@ -426,6 +426,7 @@ struct CloudServerClient {
     _ path: String,
     query: [URLQueryItem] = [],
     body: Data? = nil,
+    contentType: String = "application/json",
     timeout: TimeInterval = 12
   ) async throws -> Data {
     var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
@@ -440,7 +441,7 @@ struct CloudServerClient {
       request.setValue(correlationID, forHTTPHeaderField: "X-ADE-Correlation-ID")
       if let body {
         request.httpBody = body
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
       }
       request.timeoutInterval = timeout
       request.cachePolicy = .reloadIgnoringLocalCacheData

@@ -607,6 +607,8 @@ struct SettingsAdeHeroCard: View {
   private func status(_ machine: SettingsMachine) -> (text: String, tone: ADEKitTone)? {
     if machine.isPrimary, compatibility == .limited { return ("Update", .warn) }
     if case .connected(.needsUpdate, _) = machine.link { return ("Update", .warn) }
+    // Behind, but too old to take an update from here: say so instead of "Live".
+    if machineUpdates.needsUpdateOnMachine(machine) { return ("Update on it", .warn) }
     if machine.isLive { return ("Live", .ok) }
     if machine.isAsleep { return ("Asleep", .neutral) }
     return machine.online ? nil : ("Offline", .neutral)
