@@ -34,6 +34,10 @@ struct CloudMachineScreen: View {
         .padding(16)
       } else if store.phase == .loading {
         ProgressView().frame(maxWidth: .infinity).padding(32)
+      } else if let move = store.move(for: shownId), move.state != "failed" {
+        // The move deleted this computer and hasn't said it's done yet: its card until it does.
+        CloudMoveCard(store: store, move: move)
+          .padding(16)
       } else {
         ADESettingsNotice(message: "That computer is gone. It was deleted, or its lane moved to a new one.", tone: .neutral)
           .padding(16)
@@ -49,6 +53,16 @@ struct CloudMachineScreen: View {
     // its new computer below first.
     .onChange(of: store.machine(shownId) == nil) { wasGone, gone in
       guard gone, !wasGone, store.phase != .loading, store.endedMove(from: shownId) == nil else { return }
+      // A move of this computer deletes it before it says it's done, and its
+      // ending reads the lists before it is noted as ended: go on to the new
+      // computer when the lists have it, else wait for the move's end below.
+      if let move = store.move(for: shownId), move.state != "failed", move.sourceInstanceId == shownId {
+        if let target = move.targetInstanceId, store.machine(target) != nil {
+          if store.selectedId == shownId { store.selectedId = target }
+          movedTo = target
+        }
+        return
+      }
       if pops {
         dismiss()
       } else if store.selectedId == shownId {

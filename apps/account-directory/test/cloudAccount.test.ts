@@ -3952,6 +3952,24 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
     expect(harness.net.instances.has(INSTANCE)).toBe(false);
   });
 
+  it("reads a busy file from before the free again: a turn that just ended frees at the computer's next check", async () => {
+    // The computer writes the file once a minute: it still says busy right after the work ended.
+    let reads = 0;
+    const exec = harness.net.hooks.exec!;
+    harness.net.hooks.exec = (id, command) => {
+      if (!command.includes("keep-awake.json")) return exec(id, command);
+      reads += 1;
+      const stale = reads <= 2;
+      const startedAt = Number(job().created_at);
+      return { exit_code: 0, stdout: JSON.stringify(stale ? { busy: true, reasons: ["terminal"], updatedAt: startedAt - 30_000 } : { busy: false, reasons: [], updatedAt: startedAt + 60_000 }) };
+    };
+    expect((await start()).status).toBe(201);
+    await drive();
+    expect(reads).toBeGreaterThan(2);
+    expect(await record()).toEqual(expect.objectContaining({ state: "done", laneKept: true }));
+    expect(harness.net.instances.has(INSTANCE)).toBe(false);
+  });
+
   it("wakes a resting computer to push its work", async () => {
     harness.net.instances.get(INSTANCE)!.status = "sleeping";
     harness.exec("update cloud_computers set status = 'sleeping' where instance_id = ?", INSTANCE);
