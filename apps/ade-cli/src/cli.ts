@@ -42620,14 +42620,18 @@ async function executePlan(
       error instanceof CliExecutionError
     )
       throw error;
+    const cause = error instanceof Error ? error.message : String(error);
     throw new CliExecutionError(`Failed while running ${plan.label}.`, {
-      cause: error instanceof Error ? error.message : String(error),
+      cause,
       mode: connection.mode,
       projectRoot: connection.projectRoot,
       workspaceRoot: connection.workspaceRoot,
       socketPath: connection.socketPath,
       nextAction:
-        connection.mode === "desktop-socket"
+        // A clone into a folder that is already there: a doctor run would not help.
+        plan.label === "projects clone" && /already exists/i.test(cause)
+          ? "Clone into another folder: add --name <dir> (a new folder name) or --path <folder> (where it goes)."
+          : connection.mode === "desktop-socket"
           ? "Check ADE desktop logs or retry with --headless if the workflow does not need UI-owned state."
           : "Run ade doctor --json to inspect local project readiness, or start ADE desktop and retry with --socket.",
     });
