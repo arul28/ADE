@@ -354,6 +354,18 @@ export async function computersInJobs(env: CloudEnv): Promise<Set<string>> {
   return out;
 }
 
+/**
+ * A read of a job by a caller that watches it (`GET /cloud/moves/:id`,
+ * `GET /cloud/frees/:id`) runs its due step after the answer, so a watched
+ * job goes on in seconds, not at the next minute's cron. Nothing when no step
+ * is due or another runner holds it (the lease decides).
+ */
+export function nudgeJob(env: CloudEnv, job: JobRow, deps: CloudJobDeps, waitUntil: ((promise: Promise<unknown>) => void) | undefined, now: number): void {
+  if (!waitUntil || !deps.provider || !jobIsDue(job) || job.next_at > now) return;
+  if (job.lease_until != null && job.lease_until > now) return;
+  waitUntil(runJob(env, job.job_id, deps, { fromRequest: true }).catch(() => undefined));
+}
+
 /** Asks a live job to stop at its next step boundary (`runJob` does the cancel). */
 export async function requestJobCancel(env: CloudEnv, jobId: string, now: number): Promise<void> {
   await env.DB.prepare("update cloud_jobs set cancel_requested_at = ?, next_at = min(next_at, ?) where job_id = ? and state not in ('done', 'failed', 'cancelled')")

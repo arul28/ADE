@@ -1887,8 +1887,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (path === CLOUD_PATHS.moves || path.startsWith(`${CLOUD_PATHS.moves}/`)) {
     return providerCall(() => routeMoves(request, path, env, caller.userId, moveDepsFor(env, provider, ctx)));
   }
-  // A server free's record: rows only.
-  if (path.startsWith(`${CLOUD_PATHS.frees}/`)) return routeFrees(request, path, env, caller.userId);
+  // A server free's record; a watched one runs its due step after the answer.
+  if (path.startsWith(`${CLOUD_PATHS.frees}/`)) return providerCall(() => routeFrees(request, path, env, caller.userId, moveDepsFor(env, provider, ctx)));
   // The job's rows only; the minute cron does the work.
   if (path === CLOUD_PATHS.projectComputersDelete || path.startsWith(`${CLOUD_PATHS.projectComputersDelete}/`)) {
     return routeProjectComputersDelete(request, path, env, caller.userId, now);

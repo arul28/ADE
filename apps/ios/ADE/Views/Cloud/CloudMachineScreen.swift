@@ -44,6 +44,17 @@ struct CloudMachineScreen: View {
     .navigationTitle(store.machine(shownId)?.displayName ?? "Computer")
     .navigationBarTitleDisplayMode(.inline)
     .onChange(of: instanceId) { _, _ in movedTo = nil }
+    // Freed or deleted from this page (or elsewhere) while it was open: back to
+    // the list, not a page about a computer that is gone. A move goes on to
+    // its new computer below first.
+    .onChange(of: store.machine(shownId) == nil) { wasGone, gone in
+      guard gone, !wasGone, store.phase != .loading, store.endedMove(from: shownId) == nil else { return }
+      if pops {
+        dismiss()
+      } else if store.selectedId == shownId {
+        store.selectedId = store.machines.first?.instanceId
+      }
+    }
     // A move of this computer ended well and the lists read again: go on to
     // the new computer, or back to the list when there is none to show.
     .onChange(of: store.endedMove(from: shownId)?.moveId) { _, moveId in
