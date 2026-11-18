@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { CLOUD_PHONE_BUILD_TIMEOUT_MS, CLOUD_PHONE_CALL_TIMEOUT_MS } from "../../desktop/src/shared/cloudPhone";
 import {
@@ -311,6 +312,23 @@ function textOf(action: string, value: unknown): string {
 }
 
 /**
+ * The folder a cloud build uploads. A project named for this command
+ * (`--project-root`, `--workspace-root`, an account project; `runCli` applied
+ * them) wins; otherwise the git checkout the command runs in, so an agent that
+ * is in its app's folder builds that app; else the resolved workspace.
+ */
+function buildRoot(options: GlobalOptions): string {
+  if (options.projectRoot || options.workspaceRoot) return resolveRoots(options).workspaceRoot;
+  try {
+    const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: process.cwd(), encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (top) return path.resolve(top);
+  } catch {
+    // Not in a git checkout: the resolved workspace below.
+  }
+  return resolveRoots(options).workspaceRoot;
+}
+
+/**
  * Runs one `ade apple` command on the cloud iPhone. `command` starts with the
  * verb (the `ade apple` primary already taken off).
  */
@@ -321,8 +339,7 @@ export async function runCloudIphoneCommand(parsed: ParsedCli, command: string[]
     const text = "The ADE Cloud iPhone shows in this chat's tools pane: open the iPhone tool there and pick ADE Cloud.\n";
     return { output: options.text ? text : formatOutput({ ok: true, note: text.trim() }, options, undefined), exitCode: 0 };
   }
-  // The caller ran this with the selected project in place (`runCli`), so roots resolve as for any command.
-  const call = callFor(verb, command.slice(1), () => resolveRoots(parsed.options).workspaceRoot);
+  const call = callFor(verb, command.slice(1), () => buildRoot(parsed.options));
   const plan: CliPlan & { kind: "execute" } = {
     kind: "execute",
     label: `ade apple ${verb} (ADE Cloud iPhone)`,
