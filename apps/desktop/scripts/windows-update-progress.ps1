@@ -311,8 +311,9 @@ function Invoke-UnattendedRecovery {
   foreach ($installer in @(Get-ProcessesAtPath $InstallerPath)) {
     try {
       # /T: the old uninstaller it runs is where such a dialog usually sits.
+      # taskkill reports through its exit code, never by throwing.
       & taskkill.exe /PID ([string]$installer.Id) /T /F | Out-Null
-      Write-ProgressLog "installer_stopped" "pid=$($installer.Id)"
+      Write-ProgressLog "installer_stopped" "pid=$($installer.Id) exit=$LASTEXITCODE"
     } catch {
       Write-ProgressLog "installer_stop_failed" $_.Exception.Message
     }
