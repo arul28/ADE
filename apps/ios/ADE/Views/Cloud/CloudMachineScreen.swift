@@ -341,12 +341,15 @@ struct CloudMachineControls: View {
       if let lane = machine.lane {
         CloudSavedWorkRow(syncService: store.syncService, laneId: lane.laneId, machineKey: machine.machineKey)
       }
-      Text(machine.noLane
-        ? "Deleting it removes everything on its disk for good."
-        : "Free computer pushes the lane's work to GitHub, then removes the computer. The lane and its chats stay; your next message makes a new computer.")
-        .font(.system(size: 12))
-        .foregroundStyle(ADEColor.textMuted)
-        .fixedSize(horizontal: false, vertical: true)
+      // The note explains Free computer, so it shows only with that button.
+      if machine.noLane || store.canManage {
+        Text(machine.noLane
+          ? "Deleting it removes everything on its disk for good."
+          : "Free computer pushes the lane's work to GitHub, then removes the computer. The lane and its chats stay; your next message makes a new computer.")
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      }
     }
     .confirmationDialog("Delete \(machine.displayName)?", isPresented: $confirmDelete, titleVisibility: .visible) {
       Button("Delete it", role: .destructive) { Task { await store.deleteComputer(machine) } }
