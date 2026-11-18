@@ -402,14 +402,27 @@ export function signInCardBucket(signIn: Pick<ProviderLoginSignIn, "key" | "prov
   return `${cloudChoiceKey(signIn.provider, signIn.slot)}\u0000${identity ?? `key:${signIn.key}`}`;
 }
 
+/** An ADE Cloud computer's hostname: its 10-character instance id ("abam1ttq26"). */
+const CLOUD_INSTANCE_HOSTNAME = /^[a-z0-9]{10}$/;
+
+/**
+ * The name of the computer a sign-in came from. A cloud computer named itself
+ * by its instance id before it said "ADE Cloud"; the account's list knows a
+ * live one, and a deleted one is a Linux hostname of that shape.
+ */
+export function signInOriginName(origin: ProviderLoginSignIn["origin"]): string {
+  const label = origin.label.trim();
+  if (isAdeCloudComputer({ hostname: label, machineKey: origin.machineKey })) return ADE_CLOUD_NAME;
+  if (origin.platform === "linux" && CLOUD_INSTANCE_HOSTNAME.test(label)) return ADE_CLOUD_NAME;
+  return origin.label;
+}
+
 /** "From Mac Studio", or "From 3 computers" when the same account came from several (one card per account). */
 function originLine(signIn: ProviderLoginSignIn, all: readonly ProviderLoginSignIn[]): string {
   const bucket = signInCardBucket(signIn);
   const copies = all.filter((other) => signInCardBucket(other) === bucket).length;
   if (copies > 1) return `From ${copies} computers`;
-  // A cloud computer named itself by its instance id before it said "ADE Cloud".
-  const cloud = isAdeCloudComputer({ hostname: signIn.origin.label, machineKey: signIn.origin.machineKey });
-  return `From ${cloud ? ADE_CLOUD_NAME : signIn.origin.label}`;
+  return `From ${signInOriginName(signIn.origin)}`;
 }
 
 /**

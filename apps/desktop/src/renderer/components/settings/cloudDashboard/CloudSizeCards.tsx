@@ -87,7 +87,7 @@ export function CloudSizeCards({
                 <span>hours</span>
               </span>
               <span id={`${id}-specs`} className="adecd-sizecard-specs">
-                {[`${tier.cpu} CPU`, `${tier.memoryGb} GB memory`, tier.diskMaxGb != null ? `${tier.diskMaxGb} GB disk` : null]
+                {[`${tier.cpu} CPU`, `${tier.memoryGb} GB memory`, tier.diskMaxGb != null ? `up to ${tier.diskMaxGb} GB disk` : null]
                   .filter(Boolean)
                   .map((fact, at) => <span key={fact}>{at > 0 ? " · " : null}<span className="adecd-sizecard-fact">{fact}</span></span>)}
               </span>
