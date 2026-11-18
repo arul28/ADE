@@ -1110,6 +1110,11 @@ async function handleActiveList(env: CloudEnv, userId: string, now: number): Pro
       -- A failure stays for its window with its error and Retry; a Retry in flight stays too.
       and (state in ('failed', 'retrying')
         or not exists (select 1 from cloud_computers c where c.instance_id = cloud_launches.instance_id and c.deleted_at is not null))
+      -- A failure a later launch of the same lane replaced has nothing left to retry.
+      and (state <> 'failed' or lane_id is null or not exists (
+        select 1 from cloud_launches later
+        where later.user_id = cloud_launches.user_id and later.lane_id = cloud_launches.lane_id
+          and later.created_at > cloud_launches.created_at and later.state not in ('draft', 'cancelled')))
     order by created_at desc limit ?
   `).bind(userId, now - ACTIVE_FAILED_MS, ACTIVE_LIST_LIMIT).all<LaunchRow>()).results ?? [];
   const answer: CloudLaunchList = { launches: rows.map((row) => summaryOf(row, now)) };
