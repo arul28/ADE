@@ -4,7 +4,7 @@ import type { GitHubStatus, LaneSummary, OpenProjectBinding, UsageSnapshot } fro
 import type { AttentionItem } from "../../../../shared/types/attention";
 import { isProviderInstanceProvider } from "../../../../shared/types/providerInstances";
 import { countActivityBoardColumns } from "../../../../shared/attention/activityBoardColumn";
-import { selectActiveProjectStateKey, useAppStore, workViewStoreForProject } from "../../../state/appStore";
+import { selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, workViewStoreForProject } from "../../../state/appStore";
 import { useActivityStore } from "../../../state/activityStore";
 import { useProjectMachines } from "../../../state/projectMachines";
 import { activityFeedItems } from "../../activity/activityPriority";
@@ -254,13 +254,32 @@ function registerTrackerStarter(tracker: IssueTracker, navigate: (path: string) 
   });
 }
 
-function workingChatCount(itemsById: Readonly<Record<string, AttentionItem>>): number {
-  return countActivityBoardColumns(activityFeedItems(itemsById)).working;
+/**
+ * Chats running in the open project. The Activity feed holds every machine's
+ * and project's items, but the Work grid shows only the open project's chats.
+ * A machine names a project by its own folder, so a match is the folder, the
+ * id made from it, or the project's name.
+ */
+function workingChatCount(
+  itemsById: Readonly<Record<string, AttentionItem>>,
+  project: { rootPath: string | null; name: string | null },
+): number {
+  if (!project.rootPath && !project.name) return 0;
+  const name = project.name?.trim().toLowerCase() || null;
+  const inProject = activityFeedItems(itemsById).filter((item) => (
+    (project.rootPath != null && item.project.rootPath === project.rootPath)
+    || (name != null && item.project.name.trim().toLowerCase() === name)
+  ));
+  return countActivityBoardColumns(inProject).working;
 }
 
-/** Three or more chats are running at once and the Work grid is not in use. */
+/** Three or more chats are running at once in the open project and the Work grid is not in use. */
 function useParallelChatsSuggestion({ enabled, navigate }: Props): void {
-  const working = useActivityStore((state) => workingChatCount(state.itemsById));
+  const rootPath = useAppStore(selectActiveProjectRoot);
+  const projectName = useAppStore((state) => (
+    state.projectBinding?.kind === "remote" ? state.projectBinding.displayName : state.project?.displayName
+  ) ?? null);
+  const working = useActivityStore((state) => workingChatCount(state.itemsById, { rootPath, name: projectName }));
   const running = enabled && working >= 3;
   const gridOn = useWorkFocusGridOn(running);
   const start = useCallback(() => {
