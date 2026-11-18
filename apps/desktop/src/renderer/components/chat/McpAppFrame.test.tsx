@@ -66,12 +66,12 @@ describe("McpAppCard, a page that never answers", () => {
 
     await act(async () => { vi.advanceTimersByTime(10_000); });
     const folded = await screen.findByTestId("chat-mcp-app-stalled");
-    expect(screen.queryByTestId("chat-mcp-app-frame")).toBeNull();
+    expect(folded.textContent).toContain("did not load");
     expect(folded.textContent).toContain("job-1");
 
-    fireEvent.click(screen.getByTestId("chat-mcp-app-reload"));
-    await screen.findByTestId("chat-mcp-app-frame");
+    fireEvent.click(screen.getByRole("button", { name: "Reload preview" }));
     await waitFor(() => expect(prepareApp).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByTestId("chat-mcp-app-stalled")).toBeNull());
     expect(getMcpApp).toHaveBeenCalledTimes(2);
     expect(mcpAppRequest).not.toHaveBeenCalled();
   });

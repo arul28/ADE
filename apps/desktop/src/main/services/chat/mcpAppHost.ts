@@ -317,7 +317,8 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
       undeclaredPageOrigins: undeclaredPageOrigins(html, csp.resourceDomains),
     };
     if (gaps.droppedConnectDomains || gaps.droppedResourceDomains || gaps.undeclaredPageOrigins.length) {
-      deps.log("warn", "agent_chat.mcp_app_csp_gaps", { sessionId, server, resourceUri, ...gaps });
+      // Info, so it stays in the local log: it names a third party's origins.
+      deps.log("info", "agent_chat.mcp_app_csp_gaps", { sessionId, server, resourceUri, ...gaps });
     }
     const title = descriptor?.title?.trim() || toolName;
     deps.emitCard(sessionId, {

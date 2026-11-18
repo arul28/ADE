@@ -294,9 +294,25 @@ function answerAppRequest(message: Extract<McpAppFrameMessage, { kind: "request"
 const FALLBACK_TEXT_CHARS = 1_500;
 const FALLBACK_MAX_LINKS = 4;
 
+/** A URL as prose ends it: drop trailing punctuation and a `)` that closes nothing in the URL. */
+function trimProseUrl(value: string): string {
+  let url = value.replace(/[.,;:!?]+$/, "");
+  while (url.endsWith(")") && url.split("(").length < url.split(")").length) url = url.slice(0, -1);
+  return url;
+}
+
+/** Every string inside a JSON value, depth-first, bounded. */
+function jsonStrings(value: unknown, out: string[], depth = 0): void {
+  if (out.length >= 200 || depth > 8) return;
+  if (typeof value === "string") out.push(value);
+  else if (Array.isArray(value)) for (const entry of value) jsonStrings(entry, out, depth + 1);
+  else if (value && typeof value === "object") for (const entry of Object.values(value)) jsonStrings(entry, out, depth + 1);
+}
+
 /**
  * What the folded row shows of a tool's stored result: its text (JSON laid
- * out), cut short, and the first few web links in it.
+ * out), cut short, and the first few web links in it. A JSON result's links
+ * are its whole string values; free text is split on white space and quotes.
  */
 function mcpAppResultPreview(result: McpAppToolResult | null): { text: string; links: string[] } {
   if (!result) return { text: "", links: [] };
@@ -304,7 +320,7 @@ function mcpAppResultPreview(result: McpAppToolResult | null): { text: string; l
   const links = new Set<string>();
   const addLink = (value: unknown) => {
     if (links.size >= FALLBACK_MAX_LINKS || typeof value !== "string") return;
-    const url = readMcpAppOpenLinkUrl({ url: value.replace(/[.,;:]+$/, "") });
+    const url = readMcpAppOpenLinkUrl({ url: value });
     if (url) links.add(url);
   };
   for (const block of result.content) {
@@ -314,19 +330,27 @@ function mcpAppResultPreview(result: McpAppToolResult | null): { text: string; l
     else if (record.type === "resource_link") addLink(record.uri);
   }
   let text = parts.join("\n").trim();
-  for (const match of text.matchAll(/https?:\/\/[^\s"'<>()[\]{}\\]+/g)) addLink(match[0]);
+  let parsed: unknown;
   if (text.length <= 20_000 && /^[[{]/.test(text)) {
-    try { text = JSON.stringify(JSON.parse(text), null, 2); } catch { /* not JSON: shown as it came */ }
+    try { parsed = JSON.parse(text); } catch { /* not JSON: shown as it came */ }
+  }
+  if (parsed !== undefined) {
+    const strings: string[] = [];
+    jsonStrings(parsed, strings);
+    for (const value of strings) if (/^https?:\/\/\S+$/.test(value)) addLink(value);
+    text = JSON.stringify(parsed, null, 2);
+  } else {
+    for (const match of text.matchAll(/https?:\/\/[^\s"'<>`]+/g)) addLink(trimProseUrl(match[0]));
   }
   if (text.length > FALLBACK_TEXT_CHARS) text = `${text.slice(0, FALLBACK_TEXT_CHARS)}\n…`;
   return { text, links: [...links] };
 }
 
 /**
- * The row an app folds to when its page did not answer: one line that says
- * the preview did not load (the tool itself ran; this is never a tool
- * failure), the tool's result, and "Reload preview", which loads the page
- * again and never runs the tool.
+ * The row an app folds to when its page did not answer: it says the preview
+ * did not load (the tool itself ran; this is never a tool failure), shows the
+ * tool's result, and offers "Reload preview", which loads the page again and
+ * never runs the tool.
  */
 function McpAppResultFallback({ app, server, pin, onReload }: {
   app: McpAppDocument;
@@ -335,39 +359,18 @@ function McpAppResultFallback({ app, server, pin, onReload }: {
   onReload: () => void;
 }) {
   const { text, links } = useMemo(() => mcpAppResultPreview(app.toolResult), [app.toolResult]);
-  const outcome = app.toolResult?.isError ? "The tool call returned an error." : "The tool call finished.";
-  return (
-    <div
-      className="min-w-0 rounded-md px-2.5 py-1.5 text-[11px]"
-      style={{ border: `1px solid ${COLORS.borderMuted}`, color: COLORS.textMuted }}
-      data-testid="chat-mcp-app-stalled"
-    >
-      <div className="flex min-w-0 items-center gap-1.5">
-        <WarningCircle size={11} weight="bold" className="shrink-0" style={{ color: COLORS.warning }} />
-        <span className="min-w-0 flex-1 truncate" title={`The page from ${server} did not answer ADE, so its preview is not shown. ${outcome}`}>
-          Preview from {server} did not load. {outcome}
-        </span>
-        <button
-          type="button"
-          className="shrink-0 underline"
-          style={{ color: COLORS.textSecondary }}
-          title="Load the preview page again. The tool is not run again."
-          onClick={onReload}
-          data-testid="chat-mcp-app-reload"
-        >
-          Reload preview
-        </button>
-      </div>
+  const extra = text || links.length ? (
+    <>
       {text ? (
         <pre
-          className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-snug"
+          className="max-h-24 overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-snug"
           style={{ color: COLORS.textSecondary }}
         >
           {text}
         </pre>
       ) : null}
       {links.length ? (
-        <div className="mt-1 flex min-w-0 flex-wrap gap-x-3 gap-y-0.5">
+        <div className="mt-1 flex min-w-0 flex-wrap gap-x-3 gap-y-0.5 text-[11px]">
           {links.map((url) => (
             <button
               key={url}
@@ -382,7 +385,26 @@ function McpAppResultFallback({ app, server, pin, onReload }: {
           ))}
         </div>
       ) : null}
-    </div>
+    </>
+  ) : undefined;
+  return (
+    <Banner
+      layout="inline"
+      testId="chat-mcp-app-stalled"
+      model={{
+        id: `mcp-app-stalled-${app.sessionId}:${app.itemId}`,
+        tone: "warning",
+        title: `Preview from ${server} did not load`,
+        detail: app.toolResult?.isError ? "The tool call returned an error." : "The tool call finished.",
+        extra,
+        actions: [{
+          label: "Reload preview",
+          variant: "secondary",
+          title: "Load the preview page again. The tool is not run again.",
+          onClick: onReload,
+        }],
+      }}
+    />
   );
 }
 
@@ -395,7 +417,7 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [height, setHeight] = useState(() => knownSceneHeight(heightKey) ?? DEFAULT_HEIGHT);
-  /** The page loaded and never finished the handshake. Latched until "Reload preview". */
+  /** The page never finished the handshake. Latched until it does, or until "Reload preview". */
   const [stalled, setStalled] = useState(() => (cacheKey ? stalledApps.has(cacheKey) : false));
   /** Requests this frame has with the brain. The frame stays up while one is out. */
   const [forwarded, setForwarded] = useState(0);
@@ -419,9 +441,7 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
   const { load, reload } = useMcpAppDocument(sessionId, itemId, pin, wanted);
 
   const app = load.status === "ready" ? load.app : null;
-  // A page that did not answer is not mounted again by itself: the row shows
-  // the tool's result until the reader asks for the preview again.
-  const src = load.status === "ready" && wantFrame && !stalled ? load.url : null;
+  const src = load.status === "ready" && wantFrame ? load.url : null;
   const appRef = useRef<McpAppDocument | null>(null);
   appRef.current = app;
   /** Bumped per mounted document, so an answer for the last one is never posted to the next. */
@@ -527,6 +547,9 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
           if (initializedRef.current) return;
           initializedRef.current = true;
           setInitialized(true);
+          // A page that answers late unfolds.
+          if (cacheKey) stalledApps.delete(cacheKey);
+          setStalled(false);
           // The spec's order: the input, then the result.
           post({ method: "ui/notifications/tool-input", params: { arguments: current.toolInput } });
           if (current.toolResult) post({ method: "ui/notifications/tool-result", params: current.toolResult });
@@ -610,15 +633,16 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
   }, [initialized, post]);
 
   // A page that never finishes the handshake: fold to the tool's result
-  // instead of leaving an empty frame.
+  // instead of leaving an empty frame. The frame stays mounted, out of sight,
+  // so a page that answers late still unfolds.
   useEffect(() => {
-    if (!src || initialized) return;
+    if (!src || initialized || stalled) return;
     const timer = window.setTimeout(() => {
       rememberStalled(cacheKey);
       setStalled(true);
     }, INITIALIZE_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
-  }, [src, initialized, cacheKey]);
+  }, [src, initialized, stalled, cacheKey]);
 
   // Loads the page again: reads the stored app and mounts a fresh frame. It
   // never runs the tool again. The tool already ran (it may have cost money),
@@ -638,7 +662,7 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
   const server = card.subtitle?.trim() || app?.server || "an MCP server";
 
   return (
-    <div ref={wrapperRef} className="my-3 w-screen max-w-full" data-testid="chat-mcp-app" data-mcp-app-status={stalled && app ? "stalled" : src ? (initialized ? "running" : "loading") : load.status}>
+    <div ref={wrapperRef} className="my-3 w-screen max-w-full" data-testid="chat-mcp-app" data-mcp-app-status={stalled ? "stalled" : src ? (initialized ? "running" : "loading") : load.status}>
       {/* Always shown: what this is and whose page it is. A page can draw anything. */}
       <div className="mb-1 flex min-w-0 items-center gap-1.5 text-[11px]" style={{ color: COLORS.textMuted }}>
         <AppWindow size={12} weight="bold" style={{ color: COLORS.accent }} />
@@ -672,10 +696,7 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
           </span>
         ))}
       </div>
-      {stalled && load.status !== "unavailable" ? (
-        // Folded: the stored app (and with it the result) may still be on its way in.
-        app ? <McpAppResultFallback app={app} server={server} pin={pin} onReload={reloadPreview} /> : null
-      ) : load.status === "unavailable" ? (
+      {load.status === "unavailable" ? (
         load.reason === MCP_APP_SESSION_NOT_RUNNING ? (
           // Not a failure: the chat has stopped, and trying again changes nothing.
           <div className="flex items-center gap-1.5 text-[11px]" style={{ color: COLORS.textMuted }} data-testid="chat-mcp-app-unavailable">
@@ -697,25 +718,29 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
           </div>
         )
       ) : (
-        <div
-          className="relative min-w-0 overflow-hidden rounded-md"
-          style={{ border: `1px solid ${COLORS.borderMuted}`, background: theme.bg }}
-        >
-          {src ? (
-            <iframe
-              ref={frameRef}
-              title={`${title} (app from ${server})`}
-              data-testid="chat-mcp-app-frame"
-              sandbox="allow-scripts"
-              referrerPolicy="no-referrer"
-              src={src}
-              className="block w-full border-0 bg-transparent"
-              style={{ height, colorScheme: theme.scheme }}
-            />
-          ) : (
-            <div aria-hidden style={{ height }} />
-          )}
-        </div>
+        <>
+          {/* Folded: the stored app (and with it the result) may still be on its way in. */}
+          {stalled && app ? <McpAppResultFallback app={app} server={server} pin={pin} onReload={reloadPreview} /> : null}
+          <div
+            className="relative min-w-0 overflow-hidden rounded-md"
+            style={{ border: `1px solid ${COLORS.borderMuted}`, background: theme.bg, display: stalled ? "none" : undefined }}
+          >
+            {src ? (
+              <iframe
+                ref={frameRef}
+                title={`${title} (app from ${server})`}
+                data-testid="chat-mcp-app-frame"
+                sandbox="allow-scripts"
+                referrerPolicy="no-referrer"
+                src={src}
+                className="block w-full border-0 bg-transparent"
+                style={{ height, colorScheme: theme.scheme }}
+              />
+            ) : (
+              <div aria-hidden style={{ height }} />
+            )}
+          </div>
+        </>
       )}
     </div>
   );
