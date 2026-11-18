@@ -147,6 +147,14 @@ them in PostHog and update this list in the same branch.
 - **Dashboard "ADE · Agent turns (LLM analytics)"** is managed by
   `scripts/posthog/provision.mjs` like the others; PostHog's own LLM analytics
   and Error tracking pages read `$ai_generation` and `$exception` directly.
+- **Real-user counts** use the event properties the apps send, because iOS
+  has person profiles off and a workflow never becomes a person. Leave out
+  `is_internal = true`, `review_context = 'app_review'` and
+  `environment = 'ci'`. Do not count `ade_signed_up` or `ade_marketing_*` as
+  someone who used the app. Count installs with `uniq(properties.machine_id)`.
+  The provisioned dashboards apply the first three filters
+  (`scripts/posthog/dashboard-spec.mjs`). CI and the cloud template check
+  send nothing; a development build that opts in sends `is_internal: true`.
 - **Transformation "Mark ADE team accounts internal"**: sets
   `is_internal: true` (and `is_internal_source: account`) on every event from a
   distinct id on its list: each Clerk account flagged `ade_internal` and each

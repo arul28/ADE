@@ -4,7 +4,12 @@ import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import { safeJsonParse, writeTextAtomic } from "../shared/utils";
-import { doNotTrackRequested } from "../../../shared/doNotTrack";
+import { doNotTrackRequested, isTruthyEnvFlag } from "../../../shared/doNotTrack";
+import {
+  isAutomatedTelemetryEnvironment,
+  telemetryEnvironment,
+} from "../../../shared/telemetryEnvironment";
+import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import type { ReleaseChannel } from "../../../shared/packageChannel";
 import { normalizeAdeUsageClientSurface } from "../../../shared/types/usage";
 import {
@@ -715,11 +720,24 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   let internalInstall: boolean | null = null;
   const isInternalInstall = (): boolean => {
     if (internalInstall == null) {
+      // A development runtime that is allowed to send still says so. CI never
+      // sends (see `isRuntimeDisabled`); the flag is here for the tag if a
+      // caller inspects it anyway.
       internalInstall = process.env.ADE_ANALYTICS_INTERNAL === "1"
-        || fs.existsSync(`${args.stateFilePath}.internal`);
+        || fs.existsSync(`${args.stateFilePath}.internal`)
+        || isAutomatedTelemetryEnvironment()
+        || args.runtimeMode === "desktop_development"
+        || isTruthyEnvFlag(process.env.ADE_DEV_BRAIN)
+        || releaseChannel === "development";
     }
     return internalInstall;
   };
+  const telemetryProperties = (): Record<string, unknown> => ({
+    is_internal: isInternalInstall(),
+    release_channel: releaseChannel,
+    environment: telemetryEnvironment({ releaseChannel, runtimeMode: args.runtimeMode }),
+    ...(isAdeCloudComputer() ? { ade_cloud: true } : {}),
+  });
   let volatileOptOut = false;
   let optOutCanRecoverFromPersistedOptIn = false;
   let optOutWatcherStarted = false;
@@ -799,10 +817,13 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   const isRuntimeDisabled = () =>
     process.env.ADE_DISABLE_PRODUCT_ANALYTICS === "1"
     || doNotTrackRequested()
+    || isAutomatedTelemetryEnvironment()
     || (
       (
         process.env.NODE_ENV === "development"
         || args.runtimeMode === "desktop_development"
+        || isTruthyEnvFlag(process.env.ADE_DEV_BRAIN)
+        || releaseChannel === "development"
       )
       && process.env.ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT !== "1"
     )
@@ -858,8 +879,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         properties: {
           surface: "api",
           ...productAnalyticsEventContext("ade_analytics_budget", "api", null),
-          is_internal: isInternalInstall(),
-          release_channel: releaseChannel,
+          ...telemetryProperties(),
           ...machineProperty(),
           sent_count: summary.sentCount,
           dropped_count: summary.droppedCount,
@@ -976,6 +996,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
               // unmarked machine must not undo that (recording and every
               // person-filtered insight key off it).
               ...(isInternalInstall() ? { is_internal: true } : {}),
+              environment: telemetryEnvironment({ releaseChannel, runtimeMode: args.runtimeMode }),
             },
             $geoip_disable: true,
           },
@@ -1163,8 +1184,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         ...eventProperties,
         surface,
         ...productAnalyticsEventContext(input.event, surface, typedProperties ?? input.properties),
-        is_internal: isInternalInstall(),
-        release_channel: releaseChannel,
+        ...telemetryProperties(),
         ...machineProperty(),
         app_version: appVersion,
         runtime_mode: safeProductAnalyticsString(args.runtimeMode) ?? "unknown",

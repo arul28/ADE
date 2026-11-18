@@ -5,6 +5,7 @@ import { CLOUD_SIGN_INS } from "../../../shared/cloudSignIns";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ReleaseChannel } from "../../../shared/packageChannel";
 import type { AgentChatTurnSettledEvent } from "../chat/agentChatService";
 import type { AdeDb } from "../state/kvDb";
 import { openFreshKvDb } from "../../../test/freshKvDb";
@@ -62,6 +63,7 @@ function makeHarness(options: {
   messages?: Array<Record<string, unknown>>;
   appVersion?: string;
   runtimeMode?: string;
+  releaseChannel?: ReleaseChannel;
   captureClientMessage?: ProductAnalyticsClient["capture"];
   flush?: () => Promise<void>;
   machineId?: () => string | null | undefined;
@@ -87,6 +89,7 @@ function makeHarness(options: {
     logger: { debug: vi.fn(), warn: vi.fn() } as never,
     appVersion: options.appVersion ?? "1.2.3",
     runtimeMode: options.runtimeMode ?? "test_harness",
+    releaseChannel: options.releaseChannel,
     projectToken: options.token ?? "phc_test_project_token",
     dailyBudget: options.dailyBudget,
     now: options.now,
@@ -109,6 +112,12 @@ describe("productAnalyticsService", () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("ADE_DISABLE_PRODUCT_ANALYTICS", "0");
     vi.stubEnv("ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT", "1");
+    // GitHub Actions sets these. The suite turns the test gate off on purpose
+    // so it can watch a send; it still has to clear the CI gate.
+    vi.stubEnv("CI", "");
+    vi.stubEnv("GITHUB_ACTIONS", "");
+    vi.stubEnv("ADE_TEMPLATE_CHECK", "");
+    vi.stubEnv("ADE_DEV_BRAIN", "");
   });
 
   afterEach(() => {
@@ -1332,6 +1341,32 @@ describe("productAnalyticsService", () => {
     });
     fs.rmSync(unconfigured.root, { recursive: true, force: true });
     fs.rmSync(configured.root, { recursive: true, force: true });
+  });
+
+  it.each(["GITHUB_ACTIONS", "CI", "ADE_TEMPLATE_CHECK"] as const)(
+    "accepts nothing when %s is set",
+    (name) => {
+      vi.stubEnv(name, "true");
+      const harness = makeHarness();
+      expect(harness.service.capture({ event: "ade_app_opened", surface: "desktop" })).toEqual({
+        accepted: false,
+        reason: "disabled",
+      });
+      expect(harness.messages).toHaveLength(0);
+      fs.rmSync(harness.root, { recursive: true, force: true });
+    },
+  );
+
+  it("tags a development-channel send as internal when analytics is enabled", () => {
+    const harness = makeHarness({ releaseChannel: "development" });
+    expect(harness.service.capture({ event: "ade_app_opened", surface: "desktop" })).toEqual({
+      accepted: true,
+      reason: "accepted",
+    });
+    expect(harness.messages[0]).toMatchObject({
+      properties: { is_internal: true, environment: "development", release_channel: "development" },
+    });
+    fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
   it("is inert in development unless analytics is explicitly enabled", () => {

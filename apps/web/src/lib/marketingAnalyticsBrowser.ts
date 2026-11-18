@@ -39,8 +39,20 @@ declare global {
   }
 }
 
-// Analytics are on unless the visitor has explicitly opted out on /privacy.
+/** Headless browsers and known link-preview clients. They are not visitors. */
+function isAutomatedBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  if (navigator.webdriver === true) return true;
+  return /(?:\b(?:bot|crawler|spider|slurp|headless)\b|HeadlessChrome|facebookexternalhit|TelegramBot|Slackbot|Discordbot|LinkedInBot|Applebot|Embedly|Pinterestbot|redditbot)/i.test(
+    navigator.userAgent,
+  );
+}
+
+// Analytics are on unless the visitor has explicitly opted out on /privacy,
+// or the browser is a bot. PostHog also drops known bots at ingestion; this
+// stops them creating a person when that transformation is not in front.
 function safePreferenceRead(): boolean {
+  if (isAutomatedBrowser()) return false;
   try {
     return window.localStorage.getItem(PREFERENCE_STORAGE_KEY) !== "false";
   } catch {

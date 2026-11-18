@@ -8,6 +8,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { isTruthyEnvFlag } from "../../shared/doNotTrack";
+import { isAutomatedTelemetryEnvironment } from "../../shared/telemetryEnvironment";
 import { resolveMachineAdeLayout } from "../../../../ade-cli/src/services/projects/machineLayout";
 
 function recordedDisabled(filePath: string): boolean {
@@ -36,12 +38,15 @@ export function hasPriorTelemetryOptOut(): boolean {
 
 /**
  * An ADE team install, as product analytics marks it (`is_internal`):
- * `ADE_ANALYTICS_INTERNAL=1`, or an empty `product-analytics.json.internal`
- * beside the analytics state file. Read once per process, for Sentry's
- * `is_internal` tag.
+ * `ADE_ANALYTICS_INTERNAL=1`, an empty `product-analytics.json.internal`
+ * beside the analytics state file, a workflow, or `ADE_DEV_BRAIN=1`.
+ * A development release channel is tagged at the call site. Read once per
+ * process, for Sentry's `is_internal` tag.
  */
 export function isInternalInstall(): boolean {
   if (process.env.ADE_ANALYTICS_INTERNAL === "1") return true;
+  if (isAutomatedTelemetryEnvironment()) return true;
+  if (isTruthyEnvFlag(process.env.ADE_DEV_BRAIN)) return true;
   try {
     return fs.existsSync(path.join(secretsDir(), "product-analytics.json.internal"));
   } catch {
