@@ -67,6 +67,44 @@
   ${Loop}
 !macroend
 
+; Replaces the end of electron-builder's handleUninstallResult (installUtil.nsh),
+; which runs after the old uninstaller has been tried five times. Its failure
+; box, "$(uninstallFailed): $R0", has no /SD answer, so a silent update shows it
+; anyway and waits for a click. Nobody is there to click when the update was
+; started from another machine or the phone: on 2026-11-18 a PC sat on that
+; hidden box for two hours, with ADE closed and its background service removed,
+; and dropped off the relay. The old uninstaller fails when it cannot rename a
+; file out of $INSTDIR, which a process outside the folder can cause by holding
+; one open (there it was a dev brain with resources\app.asar open).
+;
+; Same outcome as the default, answered: say why, leave the old install in
+; place (the uninstaller already put its files back), exit with code 2. A silent
+; update also reopens that old ADE, which puts its background service back, so
+; the machine comes back online on the old version and can retry later.
+!macro adeHandleUninstallResult
+  ${If} ${Errors}
+    DetailPrint `Uninstall was not successful. Not able to launch uninstaller!`
+    Return
+  ${EndIf}
+  ${If} $R0 != 0
+    DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`
+    MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0" /SD IDOK
+    ${If} ${isUpdated}
+    ${AndIf} ${Silent}
+      DetailPrint "Reopening the installed ADE so its background service comes back."
+      Exec '"$INSTDIR\${APP_EXECUTABLE_FILENAME}"'
+    ${EndIf}
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
+!macroend
+!macro customUnInstallCheck
+  !insertmacro adeHandleUninstallResult
+!macroend
+!macro customUnInstallCheckCurrentUser
+  !insertmacro adeHandleUninstallResult
+!macroend
+
 !macro customInit
   Var /GLOBAL adeHadPreviousInstall
   StrCpy $adeHadPreviousInstall "0"
@@ -170,7 +208,7 @@
   Pop $0
   ${If} $0 != 0
     DetailPrint "Step 2 of 2 failed with exit code $0."
-    MessageBox MB_ICONSTOP|MB_OK "ADE could not remove its background service or terminal command. Close ADE and try uninstalling again.$\r$\n$\r$\nThe cleanup step exited with code $0."
+    MessageBox MB_ICONSTOP|MB_OK "ADE could not remove its background service or terminal command. Close ADE and try uninstalling again.$\r$\n$\r$\nThe cleanup step exited with code $0." /SD IDOK
     Abort
   ${EndIf}
   DetailPrint "Step 2 of 2 done."

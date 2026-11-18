@@ -25,8 +25,9 @@
 #   - install-steps.log lines written after start  -> the named setup step
 #   - a new ADE.exe from AppExe with a window      -> done, close
 #     (an install on quit: any new ADE.exe once the installer is done)
-# When the installer is gone and no new ADE appears, it says so and offers to
-# open ADE, instead of leaving the person with nothing.
+# When the installer is gone and no new ADE appears, or the installer is still
+# running at the timeout, it says so, stops the installer and opens ADE itself
+# (Invoke-UnattendedRecovery), instead of leaving the machine with nothing.
 #
 # The window is topmost. It starts from a background process, and Windows does
 # not let a background process take the foreground, so a normal window opened
@@ -273,6 +274,7 @@ $state = @{
   lastFinishedStep = ""
   lastStepAt = $null
   openingLogged = $false
+  recoveryDone = $false
   done = $false
 }
 
@@ -290,6 +292,42 @@ function Show-Failure([string]$FailureTitle, [string]$FailureDetail) {
   $window.Activate() | Out-Null
   Write-Heartbeat "failed"
   Write-ProgressLog "failed" "$FailureTitle | $FailureDetail"
+  Invoke-UnattendedRecovery
+}
+
+# The failure card alone waits for a click, and an update started from another
+# machine or the phone has nobody at this PC to give one. ADE quit for the
+# install and took its background service down with it, so until ADE runs again
+# the machine is off the relay: on 2026-11-18 one stayed that way for two hours,
+# its installer stuck on a hidden dialog. So a failure also does what the card's
+# "Open" button would: stop an installer that is still running past the timeout
+# (an update measures well under a minute), then start ADE. Whichever version is
+# installed comes up and puts its service back. The heartbeat already says
+# "failed", so that ADE does not defer to this window. An install the person
+# quit into only gets the stuck installer stopped: they closed ADE themselves.
+function Invoke-UnattendedRecovery {
+  if ($state.recoveryDone) { return }
+  $state.recoveryDone = $true
+  foreach ($installer in @(Get-ProcessesAtPath $InstallerPath)) {
+    try {
+      # /T: the old uninstaller it runs is where such a dialog usually sits.
+      & taskkill.exe /PID ([string]$installer.Id) /T /F | Out-Null
+      Write-ProgressLog "installer_stopped" "pid=$($installer.Id)"
+    } catch {
+      Write-ProgressLog "installer_stop_failed" $_.Exception.Message
+    }
+  }
+  if ($QuitInstall) {
+    Write-ProgressLog "recovery_open_skipped" "quit_install"
+    return
+  }
+  try {
+    # A copy that is already running takes this launch and exits.
+    Start-Process -FilePath $AppExe | Out-Null
+    Write-ProgressLog "recovery_opened" "version=$(Get-InstalledVersion)"
+  } catch {
+    Write-ProgressLog "recovery_open_failed" $_.Exception.Message
+  }
 }
 
 $window.FindName("CloseButton").Add_Click({ $window.Close() })
