@@ -24,7 +24,7 @@ import {
  * adopted, then the minute cron deletes it because `deleted_at` is set.
  */
 export async function deleteCloudAccount(
-  env: Pick<CloudEnv, "DB" | "CLOUD_CHATS" | "AGENT37_API_KEY" | "STRIPE_SECRET_KEY" | "NOMAC_API_KEY"> & RelayAccountPurgeEnv,
+  env: Pick<CloudEnv, "DB" | "CLOUD_CHATS" | "AGENT37_API_KEY" | "STRIPE_SECRET_KEY" | "NOMAC_API_KEY" | "CLOUD_PHONE_ACCESS"> & RelayAccountPurgeEnv,
   userId: string,
 ): Promise<void> {
   const now = Date.now();

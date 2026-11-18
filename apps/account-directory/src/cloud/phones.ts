@@ -974,15 +974,20 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
  * email). Throws while NoMac still saves the last phone's replay, so the
  * deletion is retried.
  */
-export async function deleteAccountPhone(env: Pick<CloudEnv, "DB" | "NOMAC_API_KEY">, userId: string): Promise<void> {
+export async function deleteAccountPhone(env: Pick<CloudEnv, "DB" | "NOMAC_API_KEY" | "CLOUD_PHONE_ACCESS">, userId: string): Promise<void> {
+  const hadPhone = await env.DB.prepare("select 1 from cloud_phones where user_id = ? limit 1").bind(userId).first();
+  const inBeta = await env.DB.prepare("select 1 from cloud_phone_beta where user_id = ?").bind(userId).first();
   await env.DB.prepare("delete from cloud_phone_beta where user_id = ?").bind(userId).run();
   const label = phoneLabelFor(userId);
   if (!label) return;
-  // An account that never had a phone has nothing at NoMac: NoMac being down never holds its deletion back.
-  const hadPhone = await env.DB.prepare("select 1 from cloud_phones where user_id = ? limit 1").bind(userId).first();
-  if (!hadPhone) return;
-  // Phones but no key: tried again later, never skipped with its data left at NoMac.
-  if (!env.NOMAC_API_KEY?.trim()) throw new Error("phone_cleanup_no_key");
+  // NoMac is skipped only for an account that could never have started a phone. One that could
+  // may have a phone with no row (its start's answer was lost), so its label is always cleaned.
+  if (!hadPhone && !inBeta && phoneAccessSetting(env) !== "all") return;
+  // No key: a phone with a row means data at NoMac, tried again later; none means no phone could start here.
+  if (!env.NOMAC_API_KEY?.trim()) {
+    if (hadPhone) throw new Error("phone_cleanup_no_key");
+    return;
+  }
   const listed = await nomac(env, "GET", `/api/v1/simulator/sessions?${new URLSearchParams({ label, limit: "100" }).toString()}`);
   // Unread is not "none": the deletion is tried again rather than leaving a phone or its data behind.
   if (listed.status !== 200) throw new Error(`phone_list_${errorOf(listed).code}`);
