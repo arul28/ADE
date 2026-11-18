@@ -309,15 +309,20 @@ function Invoke-UnattendedRecovery {
   if ($state.recoveryDone) { return }
   $state.recoveryDone = $true
   foreach ($installer in @(Get-ProcessesAtPath $InstallerPath)) {
-    try {
-      # /T: the old uninstaller it runs is where such a dialog usually sits.
-      # taskkill reports through its exit code, never by throwing.
-      & taskkill.exe /PID ([string]$installer.Id) /T /F | Out-Null
-      Write-ProgressLog "installer_stopped" "pid=$($installer.Id) exit=$LASTEXITCODE"
-    } catch {
-      Write-ProgressLog "installer_stop_failed" $_.Exception.Message
+    # /T: the old uninstaller it runs is where such a dialog usually sits.
+    # taskkill reports through its exit code, never by throwing, and a nonzero
+    # code can also mean the process had already exited, so whether the
+    # installer is gone is read back from the process itself.
+    & taskkill.exe /PID ([string]$installer.Id) /T /F 2>&1 | Out-Null
+    $killExit = $LASTEXITCODE
+    if (-not $installer.WaitForExit(5000)) {
+      Write-ProgressLog "installer_stop_failed" "pid=$($installer.Id) exit=$killExit"
+    } else {
+      Write-ProgressLog "installer_stopped" "pid=$($installer.Id) exit=$killExit"
     }
   }
+  # ADE opens even when the installer survived: an ADE that comes up is the
+  # only way this machine gets back on the relay.
   if ($QuitInstall) {
     Write-ProgressLog "recovery_open_skipped" "quit_install"
     return

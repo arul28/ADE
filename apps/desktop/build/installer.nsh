@@ -92,13 +92,15 @@
 ; the run), which every released script honors and which removes its heartbeat,
 ; and stops it after 5s if it is still up. Only a window beating in the last 30s
 ; counts, so a stale heartbeat whose pid now names another PowerShell is
-; skipped; a heartbeat it cannot read is skipped too. A window for an install
+; skipped; a heartbeat it cannot read is skipped too, and so is a window for
+; another install (Stable and Beta share %LOCALAPPDATA%\ADE): its appExe must be
+; this install's exe, which rides in ADE_RELEASE_APP_EXE. A window for an install
 ; the person quit into is left alone and answers 1: they closed ADE themselves,
 ; so it is not reopened, the same rule the watchdog follows. Unless they opened
 ; ADE again during the install: that launch left launch-requested.json beside
 ; the window (deferToRunningWindowsInstall), and then the window is closed and
 ; ADE reopened.
-!define ADE_RELEASE_UPDATE_WINDOW `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$r=0;foreach($$d in @(Get-ChildItem -Directory -Path (Join-Path $$env:LOCALAPPDATA 'ADE') -Filter 'update-progress-*' -EA 0)){try{$$b=Get-Content -LiteralPath (Join-Path $$d.FullName 'progress.json') -Raw -EA Stop|ConvertFrom-Json;$$a=Get-Content -LiteralPath (Join-Path $$d.FullName 'progress-args.json') -Raw -EA Stop|ConvertFrom-Json;$$p=Get-Process -Id ([int]$$b.pid) -EA 0;if(!$$p -or $$p.ProcessName -ne 'powershell' -or ([DateTimeOffset]::UtcNow-[DateTimeOffset]$$b.updatedAt).TotalSeconds -gt 30){continue};if($$a.quitInstall -and !(Test-Path -LiteralPath (Join-Path $$d.FullName 'launch-requested.json'))){$$r=1;continue};[IO.File]::WriteAllText((Join-Path $$d.FullName 'progress.json.cancel'),[string]$$a.runId);if(!$$p.WaitForExit(5000)){Stop-Process -Id $$p.Id -Force -EA 0}}catch{continue}};exit $$r"`
+!define ADE_RELEASE_UPDATE_WINDOW `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$r=0;foreach($$d in @(Get-ChildItem -Directory (Join-Path $$env:LOCALAPPDATA ADE) -Filter update-progress-* -EA 0)){try{$$f=$$d.FullName+[char]92;$$b=[IO.File]::ReadAllText($$f+'progress.json')|ConvertFrom-Json;$$a=[IO.File]::ReadAllText($$f+'progress-args.json')|ConvertFrom-Json;if([IO.Path]::GetFullPath($$a.appExe) -ne [IO.Path]::GetFullPath($$env:ADE_RELEASE_APP_EXE)){continue};$$p=Get-Process -Id ([int]$$b.pid) -EA 0;if(!$$p -or $$p.ProcessName -ne 'powershell' -or ([DateTimeOffset]::UtcNow-[DateTimeOffset]$$b.updatedAt).TotalSeconds -gt 30){continue};if($$a.quitInstall -and !(Test-Path -LiteralPath ($$f+'launch-requested.json'))){$$r=1;continue};[IO.File]::WriteAllText($$f+'progress.json.cancel',[string]$$a.runId);if(!$$p.WaitForExit(5000)){Stop-Process -Id $$p.Id -Force -EA 0}}catch{continue}};exit $$r"`
 !macro adeHandleUninstallResult
   ${If} ${Errors}
     DetailPrint `Uninstall was not successful. Not able to launch uninstaller!`
@@ -109,6 +111,7 @@
     MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0" /SD IDOK
     ${If} ${isUpdated}
     ${AndIf} ${Silent}
+      System::Call 'kernel32::SetEnvironmentVariable(t "ADE_RELEASE_APP_EXE", t "$INSTDIR\${APP_EXECUTABLE_FILENAME}")i'
       nsExec::Exec `${ADE_RELEASE_UPDATE_WINDOW}`
       Pop $0
       ${If} $0 == 1

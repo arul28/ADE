@@ -122,10 +122,12 @@ checkout with the installed `resources\app.asar` open did it on 2026-11-18,
 and the PC sat on the hidden box for two hours with no ADE and no service). The
 hook answers the box, reopens the old ADE when the run is a silent update, and
 exits with code 2, leaving the old install in place for a later retry. Before
-that reopen it closes any live update window through the window's own cancel
-file (killing it after 5 s), because the running window is the installed
-release's script: while it beats a non-failed heartbeat, the old ADE would take
-the launch as a hand-launch mid-install and exit. A window for an install on
+that reopen it closes this install's live update window through the window's
+own cancel file (killing it after 5 s), because the running window is the
+installed release's script: while it beats a non-failed heartbeat, the old ADE
+would take the launch as a hand-launch mid-install and exit. Stable and Beta
+keep their windows side by side in `%LOCALAPPDATA%\ADE`, so only a window whose
+`appExe` is this install's exe counts. A window for an install on
 quit is left alone and ADE stays closed, the same rule the window follows,
 unless the person opened ADE during the install (`launch-requested.json` is
 beside the window): then it is closed and ADE reopened.
