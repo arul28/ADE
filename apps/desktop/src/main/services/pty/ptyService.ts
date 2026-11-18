@@ -842,6 +842,8 @@ type PtyEntry = {
   lastUserInputAt: number;
   /** Monotonic generation used to detect user takeover of deferred input. */
   userInputGeneration: number;
+  /** `userInputGeneration` at the last submitted line (Enter). */
+  submittedInputGeneration: number;
   /**
    * App Control started this shell and nobody has typed into it yet, so it is
    * still a candidate for `agentShellCleanup`. Cleared on first typing.
@@ -875,10 +877,11 @@ type PtyEntry = {
    */
   cliTurn: CliTurnState | null;
   /**
-   * When an exact signal last moved the turn to idle, and the user-input
-   * count at that moment; null while working or before any.
+   * When an exact signal last moved the turn to idle, the user-input count at
+   * that moment, and whether keys typed since the last Enter (a draft) were
+   * at the prompt then; null while working or before any.
    */
-  cliTurnEnd: { at: number; inputGeneration: number } | null;
+  cliTurnEnd: { at: number; inputGeneration: number; draftAtEnd: boolean } | null;
   /** The secret this launch's Claude hooks send back (`CLI_TURN_HOOK_TOKEN_ENV`); null without hooks. */
   cliTurnHookToken: string | null;
   /**
@@ -5834,7 +5837,11 @@ export function createPtyService({
       // fallback still measures from the last real output.
       setRuntimeState(entry.sessionId, runtimeState, { touch: false });
       entry.cliTurnEnd = transition.to === "idle"
-        ? { at: now, inputGeneration: entry.userInputGeneration }
+        ? {
+          at: now,
+          inputGeneration: entry.userInputGeneration,
+          draftAtEnd: entry.userInputGeneration !== entry.submittedInputGeneration,
+        }
         : null;
       if (transition.to === "working" && transition.from === "idle") anchorTurnStart(entry.sessionId);
       if (transition.to === "working" && turn.source === "claude-hooks") scheduleIdleTransition(entry.sessionId);
@@ -6399,8 +6406,8 @@ export function createPtyService({
    * ended at least `AGENT_CLI_READY_QUIET_MS` ago, with nothing typed since.
    * Its background agents redraw their timers every second, so the screen
    * never goes quiet while they run, yet its prompt takes a message. The
-   * tracker's starting `idle` does not count: only a reported end does. Any
-   * key the person pressed since then (a draft at the prompt) also does not:
+   * tracker's starting `idle` does not count: only a reported end does. A
+   * draft at the prompt also does not, whether typed before the end or after:
    * typing a message clears the prompt line first.
    */
   const agentCliMainTurnEndedAndSettled = (entry: PtyEntry): boolean => {
@@ -6409,6 +6416,7 @@ export function createPtyService({
     return turn != null
       && ended != null
       && Date.now() - ended.at >= AGENT_CLI_READY_QUIET_MS
+      && !ended.draftAtEnd
       && entry.userInputGeneration === ended.inputGeneration
       && isExactCliTurnSource(turn.source)
       && turn.phase === "idle"
@@ -6945,6 +6953,7 @@ export function createPtyService({
     }
     entry.lastUserInputAt = Date.now();
     entry.userInputGeneration += 1;
+    if (submitted) entry.submittedInputGeneration = entry.userInputGeneration;
     if (entry.cliTurn) noteCliTurnInput(entry, data, submitted);
     if (entry.tracked && isTrackedAgentCliToolType(entry.toolTypeHint)) {
       // A submitted line starts a turn, which is what un-settles a chat too.
@@ -8197,6 +8206,7 @@ export function createPtyService({
         processOutputData: null,
         lastUserInputAt: 0,
         userInputGeneration: 0,
+        submittedInputGeneration: 0,
         // A relaunch in an ended App Control shell is the agent's again: its
         // exit sweeps and a keystroke still claims it for the user.
         agentShellCleanupCandidate: (!existingSession || freshRun) && args.launchedBy === "agent",

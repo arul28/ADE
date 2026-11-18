@@ -1159,6 +1159,14 @@ describe("ptyService", () => {
       hook({ hook_event_name: "UserPromptSubmit", prompt_id: "p-2" });
       expect(service.canTakeTypedMessage("session-agents")).toBe(false);
       hook({ hook_event_name: "Stop" });
+      // The draft typed before this turn ended is still at the prompt.
+      const laterClock = vi.spyOn(Date, "now").mockImplementation(() => settledAt + 700);
+      try {
+        mockPty._emitter.emit("data", box);
+        expect(service.canTakeTypedMessage("session-agents"), "draft from before the end").toBe(false);
+      } finally {
+        laterClock.mockRestore();
+      }
 
       // Each hook is its own process: a short agent's stop can arrive before its start.
       hook({ hook_event_name: "SubagentStop", agent_id: "agent-2" });
