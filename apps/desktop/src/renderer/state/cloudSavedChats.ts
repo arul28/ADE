@@ -154,6 +154,8 @@ export function savedChatSession(row: CloudSavedChatRow): TerminalSessionSummary
     resumeCommand: null,
     runtimeState: "idle",
     cloudSavedCopy: true,
+    // Its computer saved it after a turn that died on an error: Failed, as live.
+    ...(row.status === "failed" ? { lastTurnFailedAt: activity } : {}),
     // A chat another chat started nests under it in Work, as it does live.
     ...(row.parentChatId && row.parentChatId !== row.chatId ? { orchestrationParentSessionId: row.parentChatId } : {}),
     ...(row.spawnKind === "subagent" || row.spawnKind === "peer" ? { spawnKind: row.spawnKind } : {}),

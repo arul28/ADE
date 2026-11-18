@@ -3095,7 +3095,11 @@ export async function createAdeRuntime(args: {
               title: redactSecrets(row.title ?? row.goal ?? ""),
               laneId: row.laneId ?? null,
               laneName: redactSecrets(row.laneName ?? ""),
-              status: summary?.status ?? row.status ?? null,
+              // A last turn that died on an error reads "failed", so the
+              // saved row says Failed while the computer rests, not Done.
+              status: (summary?.status ?? row.status ?? null) !== "active" && row.lastTurnFailedAt
+                ? "failed"
+                : summary?.status ?? row.status ?? null,
               toolType: row.toolType ?? null,
               provider: summary?.provider ?? null,
               model: summary?.model ?? null,
