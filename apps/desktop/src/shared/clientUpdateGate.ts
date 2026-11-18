@@ -61,3 +61,47 @@ export function desktopUpdateRequirement(args: {
  * either, and its work goes on.
  */
 export const CLIENT_MINIMUM_FRESH_MS = 12 * 60 * 60_000;
+
+/**
+ * What the desktop main process (and ADE Web's adapter) tells the window
+ * about the minimum (`clientUpdateGate.getState` / `onChange`). One reader
+ * per process; no window reads `/client/minimum` on its own.
+ */
+export type ClientUpdateGateState = {
+  /**
+   * This build. Never required on a dev build, an Alpha or other channel
+   * build, or ADE Web (the deployed build is always current).
+   */
+  self: DesktopUpdateRequirement;
+  /**
+   * The minimum while the last answer is fresh (`CLIENT_MINIMUM_FRESH_MS`);
+   * null when there is none or it is stale. Another machine's surfaces judge
+   * its version against this with `desktopUpdateRequirement`.
+   */
+  minimum: Pick<ClientMinimumResponse, "desktop"> | null;
+  /** The newest published build per track, as far as this process knows. */
+  latest: { stable: string | null; beta: string | null };
+  /** The desktop download page (`links.download`). */
+  downloadUrl: string;
+  /**
+   * How this computer gets the update: `updater` runs the in-app updater;
+   * `download` means it cannot install updates itself (a Linux package, a
+   * Windows build that cannot run its installer), so only the download page
+   * (and `packageManagerCommand`) can help.
+   */
+  install: "updater" | "download";
+  /** The package manager's upgrade command when ADE was installed with one (Homebrew). */
+  packageManagerCommand: string | null;
+  /** When the account server last answered (epoch ms); null before it has. */
+  answeredAt: number | null;
+};
+
+export const EMPTY_CLIENT_UPDATE_GATE_STATE: ClientUpdateGateState = {
+  self: { required: false },
+  minimum: null,
+  latest: { stable: null, beta: null },
+  downloadUrl: "https://ade-app.dev/download",
+  install: "updater",
+  packageManagerCommand: null,
+  answeredAt: null,
+};

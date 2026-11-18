@@ -1164,6 +1164,8 @@ export const IPC = {
   accountPollDeviceLogin: "ade.account.pollDeviceLogin",
   accountCancelDeviceLogin: "ade.account.cancelDeviceLogin",
   accountSignOut: "ade.account.signOut",
+  /** Deletes the signed-in ADE account (`POST /account/delete`), then signs out. Account level: no pin. */
+  accountDelete: "ade.account.delete",
   accountListMachines: "ade.account.listMachines",
   laneShareGuestListReceived: "ade.laneShareGuest.listReceived",
   laneShareGuestListGiven: "ade.laneShareGuest.listGiven",
@@ -1491,6 +1493,14 @@ export const IPC = {
   updateDismissInstalledNotice: "ade.update.dismissInstalledNotice",
   updateRelaunchApp: "ade.update.relaunchApp",
   updateEvent: "ade.update.event",
+  // This computer's build against the owner's minimum (`/client/minimum`).
+  // About this app only, so no remote pin; another machine's version is
+  // judged in the renderer from its connection status.
+  clientUpdateGateGetState: "ade.clientUpdateGate.getState",
+  clientUpdateGateRefresh: "ade.clientUpdateGate.refresh",
+  clientUpdateGateEvent: "ade.clientUpdateGate.event",
+  /** "Quit ADE" on the update screen: an ordinary quit, with its warnings. */
+  clientUpdateGateQuit: "ade.clientUpdateGate.quit",
   // About the ADE.app on THIS computer only, so these take no remote pin.
   appBundleOwnershipGetStatus: "ade.appBundleOwnership.getStatus",
   appBundleOwnershipFix: "ade.appBundleOwnership.fix",
