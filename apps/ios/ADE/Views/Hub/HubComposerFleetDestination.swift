@@ -125,21 +125,19 @@ func hubComposerDefaultCopy(
 
 /// Pure: the destinations a project offers, one per computer, with every
 /// ADE Cloud lane computer folded into one ADE Cloud (the picked one when one
-/// is, else the first), where the first of them stood. Its lanes then list
-/// together (`cloudLaneChoices`).
+/// is, else the first). ADE Cloud comes right after this phone's own
+/// computer, as in the Machines menu. Its lanes then list together
+/// (`cloudLaneChoices`).
 func hubComposerDestinationCopies(
   _ copies: [HubComposerCopy],
   isPicked: (HubComposerCopy) -> Bool
 ) -> [HubComposerCopy] {
   let cloud = copies.filter(\.isCloud)
-  guard cloud.count > 1, let representative = cloud.first(where: isPicked) ?? cloud.first else { return copies }
-  var placed = false
-  return copies.compactMap { copy in
-    guard copy.isCloud else { return copy }
-    if placed { return nil }
-    placed = true
-    return representative
-  }
+  guard let representative = cloud.first(where: isPicked) ?? cloud.first else { return copies }
+  var others = copies.filter { !$0.isCloud }
+  let afterPrimary = others.lastIndex(where: { $0.machineKey == nil }).map { $0 + 1 } ?? 0
+  others.insert(representative, at: afterPrimary)
+  return others
 }
 
 /// The computers of the chosen project, as small chips under its row.

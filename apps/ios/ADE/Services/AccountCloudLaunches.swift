@@ -245,7 +245,7 @@ extension CloudServerClient {
   /// 201 for a new launch; the same `launchId` again answers the same launch.
   func startLaunch(_ body: RemoteJSONValue) async throws -> CloudLaunchRecord {
     let data = try JSONEncoder().encode(body)
-    return try decode(CloudLaunchRecord.self, from: try await send("POST", "cloud/launches", body: data, timeout: 48))
+    return try decode(CloudLaunchRecord.self, from: try await send("POST", "cloud/launches", body: data, timeout: 48, resendOnLostConnection: true))
   }
 
   /// Stops a launch before its agent starts; the server refuses once it has (`launch_started`).

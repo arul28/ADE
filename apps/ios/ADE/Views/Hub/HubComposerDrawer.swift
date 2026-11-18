@@ -56,6 +56,10 @@ struct HubInlineComposer: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   /// The account list: a project removed from ADE leaves the destination.
   @ObservedObject private var accountProjects = AccountProjectStore.shared
+  /// ADE Cloud's launches and model catalog: a chat on ADE Cloud starts
+  /// through the account server, with no computer of its own linked yet.
+  @ObservedObject private var cloudLaunches = AccountCloudLaunchStore.shared
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
   private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
 
@@ -186,6 +190,7 @@ struct HubInlineComposer: View {
   }
 
   private var pickedProject: MobileProjectSummary? {
+    if pickedAccountCloud { return accountCloudProject.map(hubAccountCloudSummary) }
     if pickedMachineKey != nil { return pickedRemoteProject?.asRemoteMachineProjectSummary }
     return syncService.projects.first { $0.id == pickedProjectId }
   }
@@ -207,7 +212,7 @@ struct HubInlineComposer: View {
   }
 
   private var selectedLaneName: String {
-    if isAutoCreateLane { return "Auto-create lane" }
+    if isAutoCreateLane { return pickedAccountCloud ? "New lane on ADE Cloud" : "Auto-create lane" }
     if let lane = lanesForPickedProject.first(where: { $0.id == selectedLaneId }) {
       return lane.displayName
     }
@@ -356,7 +361,16 @@ struct HubInlineComposer: View {
     // the destination and an open picker across it.
     .onChange(of: pickedProjectId) { _, _ in rememberLiveSelection() }
     .onChange(of: selectedLaneId) { _, _ in rememberLiveSelection() }
-    .onChange(of: pickedMachineKey) { _, _ in rememberLiveSelection() }
+    .onChange(of: pickedMachineKey) { _, _ in
+      rememberLiveSelection()
+      // ADE Cloud runs its own models: switch to one it runs when picked.
+      if pickedAccountCloud {
+        Task {
+          await cloudLaunches.loadCatalogIfNeeded(using: syncService)
+          pickCloudModelIfNeeded()
+        }
+      }
+    }
     .onChange(of: destinationPickerPresented) { _, _ in rememberLiveSelection() }
     // Projects/lanes can appear or vanish while the hub sits open (reconnects,
     // roster refreshes) — keep the persisted destination honest against them.
@@ -373,6 +387,8 @@ struct HubInlineComposer: View {
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
         lanes: lanesForPickedProject.map { $0.asLaneSummary() },
         isBusy: false,
+        // ADE Cloud lists its own models, never the connected machine's.
+        cloudCatalog: pickedAccountCloud ? (cloudLaunches.catalog ?? .pending) : nil,
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedModelOption = option
           modelId = option.id
@@ -405,7 +421,7 @@ struct HubInlineComposer: View {
 
         Text(hubComposerDestinationTitle(
           projectName: pickedAccountProject?.name ?? pickedProject?.displayName,
-          machineName: pickedRemoteMachine?.name
+          machineName: pickedAccountCloud ? ADECloudMachine.name : pickedRemoteMachine?.name
         ))
           .font(.system(size: 13.5, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
@@ -478,7 +494,7 @@ struct HubInlineComposer: View {
       HStack(spacing: 4) {
         Image(systemName: "sparkles")
           .font(.system(size: 10, weight: .semibold))
-        Text("Auto-create lane")
+        Text(pickedAccountCloud ? "New lane" : "Auto-create lane")
           .font(.system(size: 12.5, weight: .medium))
           .lineLimit(1)
       }
@@ -554,6 +570,10 @@ struct HubInlineComposer: View {
       ScrollView {
         LazyVStack(spacing: 2) {
           if pickedMachineIsCloud {
+            // A new lane on ADE Cloud gets its own computer, through the account.
+            if let accountCopy = accountCloudCopy {
+              newCloudLaneRow(accountCopy)
+            }
             // ADE Cloud is one machine: the lanes of each of its computers.
             ForEach(cloudLaneChoices) { choice in
               laneRow(choice.lane, copy: choice.copy)
@@ -631,6 +651,19 @@ struct HubInlineComposer: View {
         ))
       }
     }
+    // ADE Cloud is in every "Run on" list: each project on the account can
+    // start there, through the account server, linked computer or not.
+    if account.isSignedIn {
+      for project in accountProjects.liveProjects {
+        copies.append((HubComposerCopy(
+          machineKey: ADECloudMachine.id,
+          machineName: ADECloudMachine.name,
+          accountMachineKey: nil,
+          project: hubAccountCloudSummary(project),
+          isCloud: true
+        ), project))
+      }
+    }
     return hubComposerProjectEntries(copies)
   }
 
@@ -640,7 +673,8 @@ struct HubInlineComposer: View {
 
   /// The account project of the current pick (one lookup, not the list).
   private var pickedAccountProject: AccountProject? {
-    pickedProject.flatMap { syncService.accountProject(forCheckout: $0, onMachine: pickedMachineKey) }
+    if pickedAccountCloud { return accountCloudProject }
+    return pickedProject.flatMap { syncService.accountProject(forCheckout: $0, onMachine: pickedMachineKey) }
   }
 
   private func pick(_ copy: HubComposerCopy) {
@@ -727,6 +761,42 @@ struct HubInlineComposer: View {
       .padding(.vertical, 6)
       .background(
         isSelected ? ADEKit.pressed : Color.clear,
+        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+      )
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+  }
+
+  private func newCloudLaneRow(_ copy: HubComposerCopy) -> some View {
+    let selected = pickedAccountCloud && isAutoCreateLane
+    return Button {
+      if !isPicked(copy) {
+        pickedMachineKey = copy.machineKey
+        pickedProjectId = copy.project.id
+      }
+      selectedLaneId = workAutoCreateLaneSentinelId
+      destinationPickerPresented = false
+    } label: {
+      HStack(spacing: 8) {
+        Image(systemName: "sparkles")
+          .font(.system(size: 12, weight: .regular))
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(width: 22)
+        Text("New lane on ADE Cloud")
+          .font(.system(size: 14, weight: selected ? .semibold : .regular))
+          .foregroundStyle(ADEColor.textPrimary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        if selected {
+          Image(systemName: "checkmark")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(ADEColor.accent)
+        }
+      }
+      .padding(.horizontal, 8)
+      .padding(.vertical, 7)
+      .background(
+        selected ? ADEKit.pressed : Color.clear,
         in: RoundedRectangle(cornerRadius: 8, style: .continuous)
       )
       .contentShape(Rectangle())
@@ -977,7 +1047,7 @@ struct HubInlineComposer: View {
     }
     // Another machine's project: make that machine primary first, before the
     // draft is cleared, then send as usual.
-    if let key = pickedMachineKey, key != syncService.focusedMachineKey {
+    if let key = pickedMachineKey, key != syncService.focusedMachineKey, !pickedAccountCloud {
       holdsDestination = true
       // Set before the task runs, so a second tap cannot start a second switch.
       busy = true
@@ -1027,6 +1097,9 @@ struct HubInlineComposer: View {
         ? "This model is available for chat only. Choose a CLI-capable model."
         : "This model is available for CLI only. Choose a chat-capable model."
       return false
+    }
+    if pickedAccountCloud {
+      return await submitOnCloud(opener: opener, rawText: rawText, attachments: readyAttachments)
     }
     guard readyAttachments.isEmpty || canUploadAttachments else {
       errorMessage = "Reconnect to attach images."
@@ -1329,6 +1402,72 @@ struct HubInlineComposer: View {
   /// replace it, and every failure is logged with the lane id. Both calls carry
   /// the picked project's scope since the hub can launch into a project other
   /// than the active one (same envelope routing as createLane above).
+  /// A chat on ADE Cloud through the account server (as the Work screen
+  /// starts one): a new cloud lane, or an existing one. Its launch card then
+  /// shows in the project's Work tab, which opens.
+  @MainActor
+  private func submitOnCloud(opener: String, rawText: String, attachments: [WorkChatInputAttachment]) async -> Bool {
+    if let refusal = cloudStore.doingRefusal {
+      errorMessage = refusal
+      return false
+    }
+    guard sessionMode == .chat else {
+      errorMessage = "ADE Cloud starts chats from the phone. Switch to Chat."
+      return false
+    }
+    guard let project = accountCloudProject else {
+      errorMessage = "Pick a project first."
+      return false
+    }
+    guard let entry = cloudLaunches.catalog?.providers.first(where: { $0.provider == provider }),
+          entry.models.contains(where: { $0.id == modelId }) else {
+      errorMessage = "Pick a model ADE Cloud runs."
+      return false
+    }
+    var files: [(name: String, contentType: String, data: Data)] = []
+    for attachment in attachments {
+      guard let data = attachment.uploadData ?? attachment.image?.jpegData(compressionQuality: 0.85) else {
+        errorMessage = "\(attachment.filename) is on the machine that saved this draft. Remove it and attach it again to send it to ADE Cloud."
+        return false
+      }
+      files.append((name: attachment.filename, contentType: attachment.uploadData == nil ? "image/jpeg" : attachment.mimeType, data: data))
+    }
+    let existingLane: (id: String, name: String)? = isAutoCreateLane ? nil : lanesForPickedProject
+      .first { $0.id == selectedLaneId }
+      .map { (id: $0.id, name: $0.name) }
+    if !isAutoCreateLane, existingLane == nil {
+      errorMessage = "Pick a lane."
+      return false
+    }
+    WorkComposerPreferences.save(composerSelection)
+    busy = true
+    errorMessage = nil
+    let launchId = await cloudLaunches.start(
+      accountProjectId: project.id,
+      origin: "\(project.host)/\(project.owner)/\(project.name)",
+      prompt: opener,
+      provider: entry.provider,
+      modelId: modelId,
+      effort: reasoningEffort,
+      fast: codexFastMode && entry.models.contains { $0.id == modelId && $0.fast },
+      files: files,
+      existingLane: existingLane,
+      newLaneName: existingLane == nil
+        ? workDeterministicAutoLaneName(from: rawText, genericSuffix: workAutoLaneGenericSuffix())
+        : nil,
+      using: syncService
+    )
+    busy = false
+    if let failure = cloudLaunches.entries.first(where: { $0.launchId == launchId })?.startError {
+      errorMessage = failure
+      return false
+    }
+    ADEHaptics.success()
+    // The launch card (setup steps, then the chat) lives in the project's Work tab.
+    syncService.openAccountProjectScope(project.id)
+    return true
+  }
+
   private func startBackgroundLaneNaming(
     laneId: String,
     opener: String,
@@ -1404,7 +1543,29 @@ struct HubInlineComposer: View {
   /// An ADE Cloud lane computer exists for its one lane: its main checkout is
   /// left out and no new lane is made there.
   private var pickedMachineIsCloud: Bool {
-    syncService.isCloudFleetKey(pickedMachineKey ?? syncService.focusedMachineKey)
+    pickedAccountCloud || syncService.isCloudFleetKey(pickedMachineKey ?? syncService.focusedMachineKey)
+  }
+
+  /// Keeps the model on one ADE Cloud runs: the last cloud pick, else the
+  /// catalog's default (as the Work screen does).
+  private func pickCloudModelIfNeeded() {
+    guard pickedAccountCloud,
+          cloudLaunches.catalog?.providers.first(where: { $0.provider == provider })?.models.contains(where: { $0.id == modelId }) != true,
+          let pick = cloudLaunches.defaultModel() else { return }
+    provider = pick.provider
+    modelId = pick.modelId
+    selectedModelOption = nil
+    reasoningEffort = ""
+    codexFastMode = false
+  }
+
+  /// ADE Cloud through the account server: `pickedProjectId` is then the
+  /// account project's id.
+  private var pickedAccountCloud: Bool { pickedMachineKey == ADECloudMachine.id }
+
+  private var accountCloudProject: AccountProject? {
+    guard pickedAccountCloud else { return nil }
+    return accountProjects.liveProjects.first { $0.id == pickedProjectId }
   }
 
   private struct CloudLaneChoice: Identifiable {
@@ -1424,9 +1585,38 @@ struct HubInlineComposer: View {
     guard !cloudCopies.isEmpty else {
       return lanesForPickedProject.map { CloudLaneChoice(lane: $0, copy: nil) }
     }
-    return cloudCopies.flatMap { copy in
+    var choices = cloudCopies.filter { $0.machineKey != ADECloudMachine.id }.flatMap { copy in
       cloudLanes(on: copy).map { CloudLaneChoice(lane: $0, copy: copy) }
     }
+    // The project's other cloud lanes, read from the account (their computers
+    // are not linked here, or asleep): a chat there wakes its computer.
+    if let accountCopy = cloudCopies.first(where: { $0.machineKey == ADECloudMachine.id }) {
+      let shown = Set(choices.map(\.lane.id))
+      choices += accountCloudLanes(accountProjectId: accountCopy.project.id)
+        .filter { !shown.contains($0.id) }
+        .map { CloudLaneChoice(lane: $0, copy: accountCopy) }
+    }
+    return choices
+  }
+
+  /// The cloud lanes of one account project, from the account's ADE Cloud
+  /// computers (each holds one lane), newest name order.
+  private func accountCloudLanes(accountProjectId: String) -> [RemoteRosterLane] {
+    guard let project = accountProjects.liveProjects.first(where: { $0.id == accountProjectId }) else { return [] }
+    let origin = "\(project.host)/\(project.owner)/\(project.name)".lowercased()
+    var seen = Set<String>()
+    return syncService.cloudServerInstances.compactMap { instance -> RemoteRosterLane? in
+      guard instance.projectOrigin == origin, let id = instance.laneId, seen.insert(id).inserted else { return nil }
+      return RemoteRosterLane(id: id, name: instance.laneName ?? "Lane", laneType: "worktree", branchRef: instance.laneBranch)
+    }
+    .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+  }
+
+  /// The account-server ADE Cloud destination of the picked project.
+  private var accountCloudCopy: HubComposerCopy? {
+    composerEntries?
+      .first { $0.copies.contains(where: isPicked) }?
+      .copies.first { $0.machineKey == ADECloudMachine.id }
   }
 
   private func cloudLanes(on copy: HubComposerCopy) -> [RemoteRosterLane] {
@@ -1441,6 +1631,7 @@ struct HubInlineComposer: View {
   }
 
   private func lanes(forProjectId id: String) -> [RemoteRosterLane] {
+    if pickedAccountCloud { return accountCloudLanes(accountProjectId: id) }
     let lanes: [RemoteRosterLane]
     if pickedMachineKey != nil {
       lanes = pickedRemoteMachine?.projects.first { $0.projectId == id }?.lanes ?? []
@@ -1461,6 +1652,7 @@ struct HubInlineComposer: View {
     if let first = lanes.first {
       return first.id
     }
+    if pickedAccountCloud { return workAutoCreateLaneSentinelId }
     return pickedMachineIsCloud ? "" : workAutoCreateLaneSentinelId
   }
 
@@ -1481,6 +1673,17 @@ struct HubInlineComposer: View {
     guard !holdsDestination else { return }
     let isRemoved = removedFromAccount()
     if let picked = pickedProject, isRemoved(picked, pickedMachineKey) {
+      pickedMachineKey = nil
+      pickedProjectId = ""
+    }
+    if pickedAccountCloud {
+      // ADE Cloud through the account: kept while the project is on it.
+      if accountCloudProject != nil {
+        if !isAutoCreateLane, !lanesForPickedProject.contains(where: { $0.id == selectedLaneId }) {
+          selectedLaneId = workAutoCreateLaneSentinelId
+        }
+        return
+      }
       pickedMachineKey = nil
       pickedProjectId = ""
     }
@@ -1619,4 +1822,20 @@ final class HubComposerLiveSelection {
   var laneId = ""
   var machineKey: String?
   var pickerOpen = false
+}
+
+/// The account project as the composer's project row for its ADE Cloud copy.
+private func hubAccountCloudSummary(_ project: AccountProject) -> MobileProjectSummary {
+  var summary = MobileProjectSummary(
+    id: project.id,
+    displayName: project.name,
+    repoOwner: project.owner,
+    repoName: project.name,
+    defaultBaseRef: project.defaultBranch,
+    laneCount: 0,
+    isAvailable: true,
+    isCached: false
+  )
+  summary.accountProjectId = project.id
+  return summary
 }
