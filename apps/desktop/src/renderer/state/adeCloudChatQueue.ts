@@ -24,7 +24,7 @@ import { newClientSendId, queuedMessageOpen } from "../../shared/adeCloud/chatQu
 import type { CloudChatSendAnswer } from "../../shared/adeCloudMachine";
 import type { AgentChatSendArgs } from "../../shared/types/chat";
 import type { OpenProjectBinding } from "../../shared/types/core";
-import { clearQueuedChatPicks, peekQueuedChatPicks, savedChatLocation, savedChatLocationForSession, type SavedChatLocation } from "./cloudSavedChats";
+import { clearQueuedChatPicks, peekQueuedChatPicks, savedChatLocation, savedChatLocationForSession, type SavedChatQueueTarget } from "./cloudSavedChats";
 
 export type AdeCloudChatQueueState = {
   /** Messages the chat shows as its own rows: queued, sending, or waiting for a sign-in. Oldest first. */
@@ -74,6 +74,12 @@ const states = new Map<string, AdeCloudChatQueueState>();
 const listeners = new Set<() => void>();
 /** Send ids the live chat already shows: their queued rows go away for good. */
 const delivered = new Set<string>();
+/**
+ * Chat id → the machine key the queue took a message for it under. A live
+ * chat whose computer just went to sleep has no saved copy in the list yet,
+ * and its pane still shows the queued row by this address.
+ */
+const queuedAddresses = new Map<string, string>();
 
 const keyOf = (machineKey: string, chatId: string) => `${machineKey.toLowerCase()}\0${chatId}`;
 
@@ -147,6 +153,7 @@ export function noteAdeCloudQueuedSend(
 ): void {
   const key = keyOf(address.machineKey, address.chatId);
   const current = states.get(key) ?? EMPTY;
+  queuedAddresses.set(address.chatId, address.machineKey);
   const now = Date.now();
   const optimistic: CloudChatQueuedMessage = {
     messageId: answer.messageId,
@@ -202,7 +209,7 @@ export function adeCloudFailedMessageDismissed(messageId: string): boolean {
 }
 
 /** What `withSavedChatReads` does with a send to a chat whose cloud computer is asleep. */
-export type SavedChatQueueSend = (location: SavedChatLocation, args: AgentChatSendArgs) => Promise<"sent" | "unsupported">;
+export type SavedChatQueueSend = (location: SavedChatQueueTarget, args: AgentChatSendArgs) => Promise<"sent" | "unsupported">;
 
 /**
  * Sends through the account's queue. `unsupported` (an older server or
@@ -265,8 +272,8 @@ export function useAdeCloudChatQueue(args: { pin: OpenProjectBinding | null | un
 } {
   const { pin, sessionId } = args;
   const location = sessionId ? savedChatLocation(pin, sessionId, () => false) ?? savedChatLocationForSession(sessionId) : null;
-  const machineKey = location?.machineKey ?? null;
-  const chatId = location?.chatId ?? null;
+  const machineKey = location?.machineKey ?? (sessionId ? queuedAddresses.get(sessionId) : undefined) ?? null;
+  const chatId = location?.chatId ?? (machineKey ? sessionId ?? null : null);
   const key = machineKey && chatId ? keyOf(machineKey, chatId) : null;
   const state = useSyncExternalStore(subscribe, () => (key ? states.get(key) ?? EMPTY : EMPTY), () => EMPTY);
   const refresh = useCallback(() => {

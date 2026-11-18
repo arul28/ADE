@@ -340,8 +340,37 @@ export type SavedChatReach = {
    * queue, which wakes it: the send returns at once (`sent`). `unsupported`
    * (an older server, files with the message): wake, then send, as before.
    */
-  queueSend?: (location: SavedChatLocation, args: Parameters<AgentChatApi["send"]>[0]) => Promise<"sent" | "unsupported">;
+  queueSend?: (target: SavedChatQueueTarget, args: Parameters<AgentChatApi["send"]>[0]) => Promise<"sent" | "unsupported">;
 };
+
+/**
+ * Where the account's queue sends a message: the chat on its computer, by
+ * machine key. A saved copy's location is one; so is a live chat on an ADE
+ * Cloud connection, which the saved list leaves out while it reads live.
+ */
+export type SavedChatQueueTarget = Pick<SavedChatLocation, "machineKey" | "chatId"> & {
+  row: Pick<CloudSavedChatRow, "provider" | "model">;
+};
+
+/**
+ * How long a send to an ADE Cloud computer waits for its answer before the
+ * account's queue takes it. A computer that went to sleep a moment ago still
+ * reads connected until its link goes stale (75 s on ADE Web), and the call
+ * itself gives up only after 65 s: without this, the send sat on the dead
+ * link for a minute and the computer stayed asleep.
+ */
+export const CLOUD_SEND_ANSWER_WAIT_MS = 10_000;
+
+/** The queue target for a send to a chat on an ADE Cloud connection, or null. */
+function cloudConnectionQueueTarget(pin: OpenProjectBinding | null | undefined, sessionId: string): SavedChatQueueTarget | null {
+  if (pin?.kind !== "remote" || !isCloudConnectionTarget(pin.targetId)) return null;
+  // A saved copy from an earlier read names the chat's computer.
+  const saved = savedChatLocation(pin, sessionId, () => false);
+  if (saved) return saved.computerGone ? null : saved;
+  const machineKey = cloudConnectionMachineKey(pin.targetId);
+  // The server reads the chat's agent and model from its saved copy.
+  return machineKey ? { machineKey, chatId: sessionId, row: { provider: null, model: null } } : null;
+}
 
 /**
  * ADE Web's refusals before a command leaves: while a connection comes back,
@@ -402,6 +431,60 @@ export function withSavedChatReads(
       return run(wokenPin as P);
     }
   };
+  /**
+   * A send to a chat on an ADE Cloud connection. Its computer may have gone to
+   * sleep a moment ago with the link still reading connected. A send with no
+   * answer after `CLOUD_SEND_ANSWER_WAIT_MS`, refused before it left, or whose
+   * answer was lost goes to the account's queue, which wakes the computer.
+   * The queue sends the same id (`clientSendId`) and the computer answers a
+   * repeated id without sending again, so a direct copy that did arrive never
+   * runs twice; the direct call then ends on its own. What the queue can't
+   * take (`unsupported`: an older server or image, files) goes as before.
+   */
+  const sendToCloudComputer = async (
+    target: SavedChatQueueTarget,
+    queueSend: NonNullable<SavedChatReach["queueSend"]>,
+    args: Parameters<AgentChatApi["send"]>[0],
+    pin: Parameters<AgentChatApi["send"]>[1],
+  ): Promise<Awaited<ReturnType<AgentChatApi["send"]>>> => {
+    type Outcome = { ok: true; value: Awaited<ReturnType<AgentChatApi["send"]>> } | { ok: false; error: unknown };
+    const direct: Promise<Outcome> = api.send(args, pin).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const first = await Promise.race([
+      direct,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), CLOUD_SEND_ANSWER_WAIT_MS);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (first?.ok) return first.value;
+    // Refused for a reason of its own (a turn already running, a bad argument): the queue changes nothing.
+    if (first && !refusedBeforeSend(first.error) && !isRemoteMachineAwayError(first.error)) throw first.error;
+    let queued: "sent" | "unsupported";
+    try {
+      queued = await queueSend(target, args);
+    } catch (queueError) {
+      // The queue refused it (hours, a block) or could not be asked. A direct
+      // call still out may yet be answered, and then its answer stands.
+      const late = first ?? await direct;
+      if (late.ok) return late.value;
+      throw queueError;
+    }
+    if (queued === "sent") return;
+    // No queue for this chat: wait for the direct call, as before. Only a
+    // call refused before it left wakes the computer and goes again.
+    const settled = first ?? await direct;
+    if (settled.ok) return settled.value;
+    let refused = true;
+    return wakeOnRefusal(pin, args.sessionId, (callPin) => {
+      if (!refused) return api.send(args, callPin);
+      refused = false;
+      return Promise.reject(settled.error);
+    });
+  };
   /** A failed apply of the waiting picks does not stop the message: the send goes on. */
   const picksNotApplied = (error: unknown): void => {
     console.warn("[cloud] the picked chat settings were not applied", error instanceof Error ? error.message : String(error));
@@ -446,23 +529,9 @@ export function withSavedChatReads(
           await wakeOnRefusal(pin, args.sessionId, (callPin) => api.updateSession({ sessionId: args.sessionId, ...picks }, callPin))
             .catch(picksNotApplied);
         }
-        try {
-          return await wakeOnRefusal(pin, args.sessionId, (callPin) => api.send(args, callPin));
-        } catch (error) {
-          // An ADE Cloud computer that went to sleep a moment ago still reads
-          // connected until its link goes stale (about 90 s), so the send left
-          // on a dead link. The account's queue takes it and wakes the
-          // computer. Safe if the first copy did arrive: the queue sends the
-          // same id, and the computer answers a repeated id without sending
-          // again.
-          const resting = isRemoteMachineAwayError(error) && args.clientSendId && reach?.queueSend
-            && pin?.kind === "remote" && isCloudConnectionTarget(pin.targetId)
-            ? savedChatLocation(pin, args.sessionId, () => false)
-            : null;
-          if (!resting || resting.computerGone || !reach?.queueSend) throw error;
-          if (await reach.queueSend(resting, args) === "sent") return;
-          throw error;
-        }
+        const target = args.clientSendId && reach?.queueSend ? cloudConnectionQueueTarget(pin, args.sessionId) : null;
+        if (!target || !reach?.queueSend) return wakeOnRefusal(pin, args.sessionId, (callPin) => api.send(args, callPin));
+        return sendToCloudComputer(target, reach.queueSend, args, pin);
       }
       // The account's queue keeps the message and wakes the computer; the
       // send never waits for the computer to come up.
