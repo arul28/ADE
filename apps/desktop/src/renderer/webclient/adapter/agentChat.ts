@@ -24,6 +24,7 @@ import type {
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatReloadClaudePluginsResult,
   AgentChatRegenerateSessionMetadataResult,
+  AgentChatRespondToInputResult,
   AgentChatResumeUsageLimitNowResult,
   AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatSwitchAccountResult,
@@ -568,7 +569,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     respondToInput: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("respondToInput", pin);
-      await call("chat.respondToInput", args, undefined, false);
+      return await call<AgentChatRespondToInputResult | void>("chat.respondToInput", args, undefined, false);
     },
     dismissPendingInput: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("dismissPendingInput", pin);

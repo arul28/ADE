@@ -40,6 +40,7 @@ import {
 import { takeCloudSignInEnv } from "./providerLoginBoot";
 import { carryRow, type CarryBundle, type ParsedLogin } from "./providerLoginCarry";
 import { copilotCarriedHash, setCopilotCarriedToken } from "./providerLoginCopilotEnv";
+import { readOpenCodeCarryMark } from "../opencode/openCodeCredentials";
 import { notifyProviderLoginsChanged, restartProviderRuntimesWhenIdle, type ProviderLoginRestartOptions } from "./providerLoginHooks";
 import { PROVIDER_LOGIN_VAULT_KIND, parseProviderLoginKey, readProviderLoginPayload, shortHash } from "./providerLoginPayload";
 import {
@@ -106,6 +107,8 @@ export function createApplyPass(s: SyncShared) {
   const policy = deps.cloudComputer ? CLOUD_COMPUTER_POLICY : OWN_COMPUTER_POLICY;
   /** `<place> <key>` pairs whose collision with a local sign-in was logged, so each is logged once. */
   const keptLocalLogged = new Set<string>();
+  /** Places whose provider is not installed here yet (OpenCode), logged once: apply tries again each pass. */
+  const notInstalledLogged = new Set<string>();
 
   /** The local states capture read for the place: Pi's own sub-provider's entries and the file as a whole; every slot otherwise. */
   function* localSlotsAt(provider: ProviderLoginProvider, place: string) {
@@ -171,23 +174,30 @@ export function createApplyPass(s: SyncShared) {
     s.appliedLoginHashes = new Set(Object.values(state.applied).flatMap((entry) => entry.loginHashes ?? []));
   };
 
-  /** Undo every file and env key this computer applied (sign-out, account switch). */
+  /**
+   * Undo every file and env key this computer applied (sign-out, account
+   * switch). An entry whose removal failed (OpenCode's store busy) stays in
+   * `state.applied`, so the next account's first pass tries it again.
+   */
   async function removeAllApplied(state: AppliedStateFile, reason: string): Promise<void> {
     const providers = new Set<string>();
+    const left: AppliedStateFile["applied"] = {};
     for (const [place, entry] of Object.entries(state.applied)) {
+      providers.add(entry.provider);
       try {
         await removeApplied(entry);
       } catch (error) {
+        left[place] = entry;
         deps.logger.warn("provider_login.remove_failed", { place, code: (error as NodeJS.ErrnoException)?.code ?? null });
+        continue;
       }
-      providers.add(entry.provider);
       deps.logger.info("provider_login.removed", { provider: entry.provider, place, reason });
     }
     for (const [name, valueHash] of Object.entries(state.env)) {
       const value = env[name];
       if (value != null && shortHash(value) === valueHash) delete env[name];
     }
-    state.applied = {};
+    state.applied = left;
     state.env = {};
     // Copilot's token lives only in the launch helper (G1).
     setCopilotCarriedToken(null);
@@ -201,13 +211,20 @@ export function createApplyPass(s: SyncShared) {
    */
   function isAppliedBundle(provider: ProviderLoginProvider, bundle: CarryBundle): boolean {
     const entries = Object.values(s.appliedCache?.applied ?? {}).filter((entry) => entry.provider === provider);
+    // OpenCode's store: the row apply wrote is the one in use and nobody changed it.
+    const openCode = entries.find((entry) => entry.openCode);
+    if (openCode?.openCode && bundle.files.some((spec) => spec.store)) {
+      const inUse = readOpenCodeCarryMark(openCode.openCode.dbPath);
+      return inUse !== "unreadable" && inUse?.id === openCode.openCode.id && appliedEntryUnchanged({ ...openCode, files: [] });
+    }
     const files = entries.flatMap((entry) => entry.files);
     if (!files.length) return false;
     // Files apply only adds a part to (Kimi's config, Antigravity's settings) are left out.
     const kimiConfigs = new Set(entries.flatMap((entry) => [entry.kimiConfig?.path, entry.antigravity?.path].filter((abs): abs is string => Boolean(abs))));
     let present = 0;
     for (const spec of bundle.files) {
-      if (kimiConfigs.has(spec.abs)) continue;
+      // A database (OpenCode's store) is never read whole; its row has no file entry here.
+      if (kimiConfigs.has(spec.abs) || spec.store) continue;
       let bytes: Buffer;
       try {
         bytes = fs.readFileSync(spec.abs);
@@ -243,7 +260,10 @@ export function createApplyPass(s: SyncShared) {
       // Another account's sign-ins must not stay on this computer.
       await removeAllApplied(onDisk, "account_switch");
     }
-    s.appliedCache = onDisk && onDisk.accountUserId === accountUserId ? onDisk : emptyAppliedState(accountUserId);
+    // What the last account's removal left (it failed) is this account's to remove, as a copy no longer in use.
+    s.appliedCache = onDisk && onDisk.accountUserId === accountUserId
+      ? onDisk
+      : { ...emptyAppliedState(accountUserId), applied: onDisk?.applied ?? {} };
     rememberAppliedHashes(s.appliedCache);
     return s.appliedCache;
   }
@@ -568,7 +588,7 @@ export function createApplyPass(s: SyncShared) {
       const owned = want.kind === "signin" && want.owned;
       // The same copy, and the same owner: nothing to do. A change of owner (a takeover, or the origin's claim back) writes again.
       if (have && have.source === source && have.contentHash === want.contentHash && Boolean(have.owned) === owned) {
-        applyStates.set(place, { state: want.kind === "key" ? "key" : have.files.length || have.pi || have.qwen ? "applied" : "own", key: want.kind === "key" ? "key" : want.key });
+        applyStates.set(place, { state: want.kind === "key" ? "key" : have.files.length || have.pi || have.qwen || have.openCode ? "applied" : "own", key: want.kind === "key" ? "key" : want.key });
         continue;
       }
       if (want.kind === "signin" && want.own && isOwnLoginHere(provider, want.key)) {
@@ -621,9 +641,13 @@ export function createApplyPass(s: SyncShared) {
       }
       if (!result.ok) {
         applyStates.set(place, { state: "failed", key: want.kind === "key" ? "key" : want.key });
-        deps.logger.warn("provider_login.apply_failed", { provider, place, reason: result.reason, code: result.code ?? null });
+        if (result.reason !== "not_installed" || !notInstalledLogged.has(place)) {
+          if (result.reason === "not_installed") notInstalledLogged.add(place);
+          deps.logger.warn("provider_login.apply_failed", { provider, place, reason: result.reason, code: result.code ?? null });
+        }
         continue;
       }
+      notInstalledLogged.delete(place);
       state.applied[place] = result.entry;
       ownerOff.delete(place);
       applyStates.set(place, { state: want.kind === "key" ? "key" : "applied", key: want.kind === "key" ? "key" : want.key });
@@ -702,7 +726,7 @@ export function createApplyPass(s: SyncShared) {
       void removeAllApplied(onDisk, "signed_out")
         .then(() => {
           try {
-            writeAppliedState(deps.adeDir, emptyAppliedState(null));
+            writeAppliedState(deps.adeDir, { ...emptyAppliedState(null), applied: onDisk.applied });
           } catch (error) {
             // Paths and hashes only; the next account's load starts it over.
             deps.logger.warn("provider_login.applied_write_failed", { code: (error as NodeJS.ErrnoException)?.code ?? null });

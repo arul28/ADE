@@ -1633,11 +1633,14 @@ function QuietNoticeRow({
   event,
   siblings,
   timeLabel,
+  onOpenChat,
 }: {
   event: SystemNoticeEvent;
   siblings?: readonly QuietNoticeSibling[];
   /** Shown after the message: when it happened (the restart notice). */
   timeLabel?: string | null;
+  /** Opens the chat a notice points at (`event.openSessionId`). */
+  onOpenChat?: (sessionId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
@@ -1680,11 +1683,13 @@ function QuietNoticeRow({
     </>
   );
   const summaryClass = "flex min-w-0 max-w-full items-center gap-2 text-left font-sans";
+  const openTarget = event.openSessionId;
   return (
     <div
       className="flex min-w-0 max-w-[var(--chat-content-width,52rem)] flex-col"
       data-testid="quiet-notice"
     >
+      <div className="flex min-w-0 items-center gap-1">
       {expandable ? (
         <button
           type="button"
@@ -1708,6 +1713,17 @@ function QuietNoticeRow({
           {summary}
         </div>
       )}
+      {openTarget && onOpenChat ? (
+        <button
+          type="button"
+          className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45 transition-colors hover:bg-fg/[0.05] hover:text-fg/75 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-fg/20"
+          onClick={() => onOpenChat(openTarget)}
+        >
+          <ArrowSquareOut size={11} weight="regular" aria-hidden />
+          Open chat
+        </button>
+      ) : null}
+      </div>
       {open ? (
         <div
           id={panelId}
@@ -4330,6 +4346,7 @@ function renderEvent(
           event={event}
           siblings={envelope.quietNoticeSiblings}
           timeLabel={isRestartInterruptedNotice(event.message) ? formatTime(envelope.timestamp) : null}
+          onOpenChat={(sessionId) => openSpawnedChat(sessionId, null)}
         />
       );
     }

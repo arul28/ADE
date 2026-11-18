@@ -3,6 +3,7 @@ import {
   buildPrWatchWakeCard,
   buildPrWatchWakeText,
   evaluatePrWatch,
+  holdPrWatchChanges,
   summarizePrWatchChanges,
   type PrChatWatchSummary,
   type PrMergeQueueRemoval,
@@ -53,6 +54,12 @@ export type PrWatchServiceDeps = {
   messageSession: (args: AgentChatMessageSessionArgs) => Promise<unknown>;
   /** Moved-away watches remain armed until the source chat is unlocked. */
   isChatMovedAway?: (sessionId: string) => boolean;
+  /**
+   * Whether the chat is in the middle of a turn. Built with `chatLivenessReader`
+   * by both hosts, like the terminal watch's gate: a chat's persisted session
+   * row is not usable for this.
+   */
+  getChatLiveness?: (sessionId: string) => Promise<{ status?: string | null } | null>;
   emitPrEvent: (event: PrEventPayload) => void;
   getGithubBackgroundPauseUntilMs?: () => number | null | Promise<number | null>;
   tickMs?: number;
@@ -64,6 +71,18 @@ type WatchMemory = {
   lastPrUpdatedAt: string | null;
   lastHeadSha: string | null;
   deliveryFailures: number;
+};
+
+/**
+ * A chat is "mid-turn" while its live turn is running. Liveness that cannot be
+ * read is not a reason to withhold news: the chat queues the wake itself.
+ */
+const chatIsMidTurn = async (deps: PrWatchServiceDeps, sessionId: string): Promise<boolean> => {
+  try {
+    return (await deps.getChatLiveness?.(sessionId))?.status === "active";
+  } catch {
+    return false;
+  }
 };
 
 /**
@@ -252,7 +271,7 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
     }
 
     const { remarks, ignored } = toRemarks(comments, reviews, store.adeCommentIds(pr.id));
-    const evaluation = evaluatePrWatch({
+    const evaluated = evaluatePrWatch({
       mode: record.mode,
       state: record.state,
       pr,
@@ -264,6 +283,15 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
       permanentlyUnreadable,
       nowMs,
     });
+
+    // A chat in the middle of a turn cannot take this yet. Handed over anyway,
+    // the wake waits in the queue beside every other update and each one runs
+    // its own turn; held here, they arrive as one update when the turn ends.
+    // The terminal watch gates on the same liveness.
+    const evaluation = evaluated.changes.length > 0
+      && await chatIsMidTurn(deps, record.sessionId)
+      ? holdPrWatchChanges(evaluated, record.state)
+      : evaluated;
 
     let told: { summary: string; at: string } | null = null;
     if (evaluation.changes.length > 0) {

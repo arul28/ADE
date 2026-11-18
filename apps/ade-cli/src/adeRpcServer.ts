@@ -4326,6 +4326,7 @@ const SCOPED_CHAT_ACTIONS: ReadonlySet<string> = new Set(CHAT_ACTION_SCOPE.keys(
  * agent. `startLaunch` carries its create fields under `chat.create`.
  */
 const RUNTIME_ACTOR_CHAT_ACTIONS = new Set([
+  "respondToInput",
   "createSession",
   "updateSession",
   "handoffSession",

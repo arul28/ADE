@@ -5733,6 +5733,7 @@ app.whenReady().then(async () => {
       sessionService,
       messageSession: (args) => agentChatService.messageSession(args),
       isChatMovedAway: (sessionId) => Boolean(agentChatService.getCrossMachineMoveLock(sessionId, "pr_watch")),
+      getChatLiveness: chatLivenessReader(agentChatService),
       emitPrEvent,
       getGithubBackgroundPauseUntilMs: () => githubService.getBackgroundRequestPauseUntilMs(),
     });

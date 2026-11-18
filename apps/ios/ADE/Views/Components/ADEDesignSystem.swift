@@ -186,6 +186,10 @@ enum ADEColor {
     "anthropic/claude-haiku-4-5": 0x06B6D4,
     "haiku": 0x06B6D4,
     // OpenAI / Codex
+    "openai/gpt-6.2-sol": 0x10A37F,
+    "gpt-6.2-sol": 0x10A37F,
+    "openai/gpt-6.2-astra": 0x10A37F,
+    "gpt-6.2-astra": 0x10A37F,
     "openai/gpt-6.1-sol": 0x10A37F,
     "gpt-6.1-sol": 0x10A37F,
     "openai/gpt-6-astra": 0x10A37F,
@@ -237,14 +241,20 @@ enum ADEColor {
     }
 
     switch lower {
-    case "astra", "gpt-6-astra", "openai/gpt-6-astra":
+    case "astra", "gpt-6.2-astra", "openai/gpt-6.2-astra":
+      append("openai/gpt-6.2-astra")
+      append("gpt-6.2-astra")
+      append("astra")
+    case "sol", "gpt-6.2-sol", "openai/gpt-6.2-sol":
+      append("openai/gpt-6.2-sol")
+      append("gpt-6.2-sol")
+      append("sol")
+    case "gpt-6-astra", "openai/gpt-6-astra":
       append("openai/gpt-6-astra")
       append("gpt-6-astra")
-      append("astra")
-    case "sol", "gpt-6.1-sol", "openai/gpt-6.1-sol":
+    case "gpt-6.1-sol", "openai/gpt-6.1-sol":
       append("openai/gpt-6.1-sol")
       append("gpt-6.1-sol")
-      append("sol")
     case "gpt-6-sol", "openai/gpt-6-sol":
       append("openai/gpt-6-sol")
       append("gpt-6-sol")
@@ -410,11 +420,15 @@ enum ADEColor {
     "claude-sonnet-5": ["low", "medium", "high", "max"],
     // Retired Haiku 4.5 ids canonicalize to the Haiku 5.5 tiers above.
     // OpenAI / Codex
+    "openai/gpt-6.2-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+    "gpt-6.2-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+    "openai/gpt-6.2-astra": ["low", "medium", "high", "xhigh", "max", "ultra"],
+    "gpt-6.2-astra": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "openai/gpt-6.1-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "gpt-6.1-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "openai/gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
     "gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
-    "astra": ["low", "medium", "high", "xhigh", "max"],
+    "astra": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "openai/gpt-6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "gpt-6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "sol": ["low", "medium", "high", "xhigh", "max", "ultra"],

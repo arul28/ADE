@@ -385,7 +385,7 @@ function copilotGhFields(state: MockState): Partial<ProviderLoginProviderStatus>
 function providerRows(state: MockState, own = true): ProviderLoginProviderStatus[] {
   const carry = (provider: ProviderLoginProvider): ProviderLoginProviderStatus["carry"] => {
     if (provider === "claude") return "never";
-    if (provider === "opencode" || provider === "muse") return "fallback";
+    if (provider === "muse") return "fallback";
     if (provider === "copilot" && state.scenario === "copilot-fallback") return "fallback";
     return "carried";
   };

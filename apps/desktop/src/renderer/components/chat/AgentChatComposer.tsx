@@ -2530,6 +2530,8 @@ function AgentChatComposerImpl({
   backgroundJobCount = 0,
   childChatCount = 0,
   onApproval,
+  onImplementPlanInNewChat,
+  planHandoffResponding,
   onAddAttachment,
   onRegisterDropTarget,
   onRemoveAttachment,
@@ -2847,6 +2849,8 @@ function AgentChatComposerImpl({
     responseText?: string | null,
     answers?: Record<string, string | string[]>,
   ) => void | Promise<boolean>;
+  onImplementPlanInNewChat?: () => void;
+  planHandoffResponding?: boolean;
   onAddAttachment: (attachment: AgentChatFileRef) => void;
   /** Register this composer's attachment pipeline with its larger chat shell. */
   onRegisterDropTarget?: (target: AgentChatAttachmentDropTarget | null) => void;
@@ -8996,12 +9000,16 @@ function AgentChatComposerImpl({
         ) : null}
         {askQuestionRequest ? null : pendingInput.kind === "plan_approval" ? (
           <ChatProposedPlanCard
+            key={pendingInput.itemId ?? pendingInput.requestId}
             source={pendingInput.source}
             description={pendingInput.description ?? null}
             question={pendingInput.questions[0]?.question ?? null}
             disabled={approvalResponding ?? false}
             onApprove={() => onApproval("accept")}
             onReject={() => onApproval("decline")}
+            onImplementInNewChat={onImplementPlanInNewChat}
+            planHandoffResponding={planHandoffResponding}
+            planHandoffError={pendingInputError}
           />
         ) : (
           <div className="px-4 py-3">

@@ -603,6 +603,7 @@ export class PersonalChatScope {
         result = await service.resolveUnprocessedMessage(args as never);
         break;
       case "respondToInput":
+        if (args.planAction != null) throw new Error("Plan handoff is available for project chats only.");
         await this.requirePersonalSession(service, readSessionId(args));
         refuseUserOnlyConsentCard(service, args);
         result = await service.respondToInput(args as never);

@@ -544,6 +544,7 @@ import type {
   AgentChatParallelLaunchStateArgs,
   AgentChatDismissPendingInputArgs,
   AgentChatRespondToInputArgs,
+  AgentChatRespondToInputResult,
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatSuggestLaneNameArgs,
@@ -9851,9 +9852,9 @@ export function registerIpc({
     await ctx.agentChatService.approveToolUse(arg);
   });
 
-  handle(IPC.agentChatRespondToInput, async (_event, arg: AgentChatRespondToInputArgs): Promise<void> => {
+  handle(IPC.agentChatRespondToInput, async (_event, arg: AgentChatRespondToInputArgs): Promise<AgentChatRespondToInputResult | void> => {
     const ctx = ensureAgentChatContext();
-    await ctx.agentChatService.respondToInput(arg);
+    return await ctx.agentChatService.respondToInput({ ...arg, runtimeActor: undefined });
   });
 
   handle(IPC.agentChatGetMcpApp, async (_event, arg: McpAppGetArgs): Promise<McpAppGetResult> => {

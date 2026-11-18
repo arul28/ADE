@@ -15,6 +15,11 @@
  *   Antigravity's sign-in is the agy CLI's token file
  *   (`~/.gemini/antigravity-cli/antigravity-oauth-token`); the CLI's settings
  *   are not written.
+ * - OpenCode's sign-in is a row of ADE's own OpenCode store, written through
+ *   OpenCode's own API (`setOpenCodeCredentialWriter`), never by SQL: OpenCode
+ *   makes and migrates its store, checks the value, and a running server has
+ *   the row at once. The row is removed only while it is still the one ADE
+ *   wrote; a sign-in the person made there is another row and stays.
  * - A cloud computer that does not own a renewing sign-in gets it
  *   access-only: its refresh token is taken out (`accessOnlyFile`). Only a
  *   cloud computer that took the renewal over (step 3b, `full`) gets the full
@@ -40,9 +45,13 @@ import path from "node:path";
 
 import type { ProviderLoginProvider } from "../../../shared/types/providerLogins";
 import { writeFileAtomic } from "../state/durableFile";
+import { captureError } from "../../../shared/sentry/capture";
 import { isRecord } from "../shared/utils";
+import { readOpenCodeCarryMark, readOpenCodeCredentialValue, type OpenCodeCarryCredential } from "../opencode/openCodeCredentials";
 import {
+  OPENCODE_DB_REL,
   accessOnlyFile,
+  accessOnlyOpenCodeValue,
   accessOnlyPiEntry,
   carryRootDir,
   carryRow,
@@ -70,6 +79,10 @@ export type AppliedEntry = {
   pi?: { authPath: string; slot: string; entryHash: string };
   kimiConfig?: { path: string };
   qwen?: { path: string; partHash: string; envKeys: string[]; wroteProviders: boolean };
+  /** The OpenCode credential row apply wrote: its id, and the short hash of its value as OpenCode stored it. */
+  openCode?: OpenCodeAppliedRow;
+  /** Earlier OpenCode rows apply wrote whose removal failed (a busy store): each later apply and the sign-out try again. */
+  openCodeLeft?: OpenCodeAppliedRow[];
   /** The agent settings fields apply wrote, by dotted name, with the short hash of each value. */
   antigravity?: { path: string; fields: Record<string, string> };
   /** The copy's expiry (epoch ms), for the short wait before a turn (step 3a); null when it has none. */
@@ -224,7 +237,35 @@ export function appliedEntryUnchanged(entry: AppliedEntry): boolean {
     if (current === "unreadable") return false;
     if (current !== "missing" && qwenPartHash(qwenPartOf(current, entry.qwen.envKeys)) !== entry.qwen.partHash) return false;
   }
+  if (entry.openCode) {
+    const current = readOpenCodeCredentialValue(entry.openCode.dbPath, entry.openCode.id);
+    if (current === "unreadable") return false;
+    if (current && shortHash(JSON.stringify(current)) !== entry.openCode.valueHash) return false;
+    // A sign-in made here after apply is another row, and OpenCode uses it: the copy is no longer the one in use.
+    const inUse = readOpenCodeCarryMark(entry.openCode.dbPath);
+    if (inUse === "unreadable" || (inUse && inUse.id !== entry.openCode.id)) return false;
+  }
   return true;
+}
+
+// ── OpenCode's store (written through OpenCode's own server) ─────────
+
+/**
+ * Writes the carried opencode.ai row into ADE's OpenCode store through
+ * OpenCode's `credential` API. The brain sets the real one
+ * (`openCodeCarryWriter.ts`); without it an OpenCode sign-in is not applied.
+ */
+export type OpenCodeCredentialWriter = {
+  /** Add the row (a new id) to the store at `dbPath` and make it the one in use. "not_installed": no OpenCode here yet. */
+  put(dbPath: string, row: OpenCodeCarryCredential): Promise<"ok" | "not_installed">;
+  /** Take the row out of the store at `dbPath`, with OpenCode not installed too. */
+  remove(dbPath: string, id: string): Promise<void>;
+};
+
+let openCodeWriter: OpenCodeCredentialWriter | null = null;
+
+export function setOpenCodeCredentialWriter(writer: OpenCodeCredentialWriter | null): void {
+  openCodeWriter = writer;
 }
 
 // ── Pi's lock (proper-lockfile 4.1.2, as Pi takes it) ─────────────────
@@ -367,6 +408,38 @@ function readAntigravitySettingsFile(file: string): Record<string, unknown> | "m
 // ── the readback that tells capture "this file is the account's" ──────
 
 /** Hash what capture would read back from this provider's files now (one slot for Pi). */
+/** The login hashes capture will read for an OpenCode row, from the row itself. */
+function openCodeLoginHashes(row: OpenCodeCarryCredential, ctx: CarryContext): string[] {
+  const carry = carryRow("opencode");
+  const bundle = carry.locate?.(ctx)[0];
+  if (!bundle || !carry.parse) return [];
+  const parsed = carry.parse(bundle, new Map([[OPENCODE_DB_REL, Buffer.from(JSON.stringify(row))]]), ctx);
+  return "unreadable" in parsed ? [] : parsed.logins.map((login) => loginContentHash(login));
+}
+
+type OpenCodeAppliedRow = { dbPath: string; id: string; valueHash: string };
+
+/**
+ * Take ADE's own earlier OpenCode rows out: a row that is gone or that
+ * someone changed is left alone. Answers the rows a failure kept, to try again.
+ */
+async function removeOpenCodeRows(rows: readonly OpenCodeAppliedRow[]): Promise<OpenCodeAppliedRow[]> {
+  const left: OpenCodeAppliedRow[] = [];
+  for (const row of rows) {
+    const current = readOpenCodeCredentialValue(row.dbPath, row.id);
+    if (current === null || (current !== "unreadable" && shortHash(JSON.stringify(current)) !== row.valueHash)) continue;
+    try {
+      if (current === "unreadable") throw Object.assign(new Error("OpenCode's store is busy."), { code: "EBUSY" });
+      if (!openCodeWriter) throw Object.assign(new Error("OpenCode is not available here."), { code: "ENOWRITER" });
+      await openCodeWriter.remove(row.dbPath, row.id);
+    } catch (error) {
+      captureError(error, { level: "warning", handled: true, tags: { area: "provider_logins", seam: "opencode_previous_copy" } });
+      left.push(row);
+    }
+  }
+  return left;
+}
+
 export function readBackLoginHashes(provider: ProviderLoginProvider, slot: string | null, ctx: CarryContext): string[] {
   const row = carryRow(provider);
   if (!row.locate || !row.parse) return [];
@@ -374,8 +447,8 @@ export function readBackLoginHashes(provider: ProviderLoginProvider, slot: strin
   for (const bundle of row.locate(ctx)) {
     const contents = new Map<string, Buffer>();
     for (const spec of bundle.files) {
-      const bytes = readBytes(spec.abs);
-      if (bytes) contents.set(spec.rel, bytes);
+      const bytes = spec.store ? spec.store.read(spec.abs) : readBytes(spec.abs);
+      if (bytes && bytes !== "unreadable") contents.set(spec.rel, bytes);
     }
     if (!contents.size) continue;
     const parsed = row.parse(bundle, contents, ctx);
@@ -404,7 +477,9 @@ export type ApplySignIn = {
   full?: boolean;
 };
 
-export type ApplyResult = { ok: true; entry: AppliedEntry } | { ok: false; reason: "refused_path" | "unreadable_target" | "nothing_to_write" | "write_failed"; code?: string | null };
+export type ApplyResult =
+  | { ok: true; entry: AppliedEntry }
+  | { ok: false; reason: "refused_path" | "unreadable_target" | "nothing_to_write" | "write_failed" | "not_installed"; code?: string | null };
 
 /**
  * Write one sign-in. A renewing copy is access-only unless this cloud
@@ -415,6 +490,7 @@ export type ApplyResult = { ok: true; entry: AppliedEntry } | { ok: false; reaso
 export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | null, ctx: CarryContext, now: number): Promise<ApplyResult> {
   const accessOnly = want.class === "renewing" && !want.full;
   let renewalSafe = true;
+  let openCodeSentHashes: string[] | null = null;
   const files: AppliedFile[] = [];
   const entry: AppliedEntry = {
     provider: want.provider,
@@ -496,6 +572,31 @@ export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | nu
       }
     }
 
+    if (want.provider === "opencode") {
+      const row = isRecord(want.parts?.openCodeCredential) ? want.parts!.openCodeCredential as Record<string, unknown> : null;
+      const value = row && isRecord(row.value) ? row.value as Record<string, unknown> : null;
+      if (!row || !value || typeof row.id !== "string" || !row.id) return { ok: false, reason: "nothing_to_write" };
+      if (!openCodeWriter) return { ok: false, reason: "not_installed" };
+      const written = accessOnly ? accessOnlyOpenCodeValue(value) : value;
+      const label = typeof row.label === "string" && row.label ? row.label : "default";
+      const dbPath = path.join(carryRootDir("openCodeData", ctx)!, OPENCODE_DB_REL);
+      // Each copy is a new row: the copy before stays in use until this one is in, so a failed write loses nothing.
+      const id = `cred_ade${crypto.randomBytes(10).toString("hex")}`;
+      const previousUnchanged = previous?.openCode ? appliedEntryUnchanged({ ...previous, files: [] }) : false;
+      if (await openCodeWriter.put(dbPath, { id, label, value: written }) === "not_installed") return { ok: false, reason: "not_installed" };
+      const stored = readOpenCodeCredentialValue(dbPath, id);
+      if (!stored) return { ok: false, reason: "write_failed" };
+      // OpenCode took the row but the store is busy now: it is tracked with what was sent, so capture never
+      // reads ADE's copy as this computer's own sign-in and sign-out still removes it.
+      entry.openCode = { dbPath, id, valueHash: shortHash(JSON.stringify(stored === "unreadable" ? written : stored)) };
+      if (stored === "unreadable") openCodeSentHashes = openCodeLoginHashes({ id, label, value: written }, ctx);
+      // Then the copy before goes, while it is still ADE's; a row the person changed stays. The new copy is
+      // in use already, so a failed removal is never a failed apply: the row is kept on the entry to try again.
+      const earlier = [...(previous?.openCodeLeft ?? []), ...(previous?.openCode && previousUnchanged ? [previous.openCode] : [])];
+      const left = earlier.length ? await removeOpenCodeRows(earlier) : [];
+      if (left.length) entry.openCodeLeft = left;
+    }
+
     // Antigravity: the token file is the whole sign-in (it names its own
     // method), so agy's settings are not touched. An entry an earlier ADE left
     // in them is undone by `removeEntry`.
@@ -508,7 +609,7 @@ export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | nu
     if (!files.some((file) => file.abs === old.abs)) removeIfOurs(old);
   }
   entry.renewalSafe = renewalSafe;
-  entry.loginHashes = readBackLoginHashes(want.provider, want.provider === "pi" ? want.slot : null, ctx);
+  entry.loginHashes = openCodeSentHashes ?? readBackLoginHashes(want.provider, want.provider === "pi" ? want.slot : null, ctx);
   return { ok: true, entry };
 }
 
@@ -735,6 +836,21 @@ export async function removeApplied(entry: AppliedEntry): Promise<{ kept: number
         writePrivateFileAtomic(entry.qwen.path, encodeJson(next));
       }
     }
+  }
+  if (entry.openCode) {
+    const current = readOpenCodeCredentialValue(entry.openCode.dbPath, entry.openCode.id);
+    if (current === "unreadable") throw Object.assign(new Error("OpenCode's store is busy."), { code: "EBUSY" });
+    if (current && shortHash(JSON.stringify(current)) !== entry.openCode.valueHash) {
+      // Changed since apply wrote it (the person renewed or replaced it there): it stays.
+      kept += 1;
+    } else if (current) {
+      if (!openCodeWriter) throw Object.assign(new Error("OpenCode is not available here."), { code: "ENOWRITER" });
+      await openCodeWriter.remove(entry.openCode.dbPath, entry.openCode.id);
+    }
+  }
+  if (entry.openCodeLeft?.length && (await removeOpenCodeRows(entry.openCodeLeft)).length) {
+    // The entry stays (the caller keeps it on a throw), so the next pass tries again.
+    throw Object.assign(new Error("An earlier OpenCode copy is still there."), { code: "EBUSY" });
   }
   if (entry.antigravity && isRecord(entry.antigravity.fields)) {
     const { path: settingsPath, fields } = entry.antigravity;

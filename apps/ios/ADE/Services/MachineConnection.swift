@@ -1262,6 +1262,7 @@ final class MachineConnection {
     }()
     fields["connRoute"] = liveRouteKind.map { String(describing: $0) } ?? "nil"
     fields["connSocketCloses"] = String(socketCloseCount)
+    fields["hostAppVersion"] = hostAppVersion ?? "nil"
     fields["hostChatStreaming"] = String(supportsChatStreaming)
     fields["hostChatLogV2"] = String(supportsChatLogV2)
     fields["subscribed"] = String(chatScopes[sessionId] != nil)

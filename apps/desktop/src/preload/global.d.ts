@@ -440,6 +440,7 @@ import type {
   AgentChatParallelLaunchStateArgs,
   AgentChatDismissPendingInputArgs,
   AgentChatRespondToInputArgs,
+  AgentChatRespondToInputResult,
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatSlashCommand,
@@ -2946,7 +2947,7 @@ declare global {
         respondToInput: (
           args: AgentChatRespondToInputArgs,
           pin: OpenProjectBinding,
-        ) => Promise<void>;
+        ) => Promise<AgentChatRespondToInputResult | void>;
         /**
          * Throw away a non-blocking provider question. Rejects for any card the
          * provider is actually waiting on — see the host's

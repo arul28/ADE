@@ -489,6 +489,10 @@ struct WorkPendingPlanApprovalModel: Identifiable, Hashable {
   let source: String
   let planText: String
   let title: String
+  /// The host offered "implement in a new chat" for this card
+  /// (`providerMetadata.planHandoffSupported`). False for an older brain, a
+  /// personal chat, and a share guest, which is what hides the option.
+  var canImplementInNewChat: Bool = false
 }
 
 struct WorkModelSelectionChoice: Codable, Equatable {

@@ -29,6 +29,20 @@ approvals, identity continuity and handoff on top.
   provider state alone. Only `auth` marks the sign-in failed. A usage limit is
   never `plan`: it keeps its card, reset time and auto-resume.
 
+## Codex models and runtime
+
+ADE uses Codex app-server 0.169.0 for chats and the same pinned Codex build for
+terminal sessions. New Codex chats default to GPT-6.2 Sol; GPT-6.2 Astra is
+available alongside it. Explicit older model IDs keep their original routing.
+The desktop, hosted web, CLI and iOS catalogs offer the same new model IDs and
+Low, Medium, High, Extra High, Max and Ultra reasoning settings. Fast and
+Ultrafast remain subject to the signed-in account's live model catalog.
+
+The registry records each model's maximum supported context of 1,050,000 tokens.
+Codex's default context is smaller: 500,000 tokens for 6.2 Sol and 272,000 for
+6.2 Astra. The running thread's reported limit is authoritative; selecting a
+model does not raise its configured context limit.
+
 ## Source file map
 
 | Path | Role |
@@ -77,6 +91,7 @@ approvals, identity continuity and handoff on top.
 | `apps/desktop/src/main/services/pty/cliStatusInspector.ts` | The idle-terminal check: request (last 40 lines, 200 characters each, 4 KB total, `redactSecrets`) and verdict; `ptyService.ts` decides when and raises `cli_prompt`. |
 | `apps/desktop/src/main/services/chat/nextPromptSuggestion.ts` | Next-prompt suggestion for providers without a native one (`ai.chat.promptSuggestionsEnabled`): after a completed turn with no open card, no subagent parent and no background work, one helper call (fresh temp dir, 15 s, quiet failure) returns `{suggestion}`, cut to one line of 120 characters, emitted as live-only `prompt_suggestion` unless a user message or turn start came first. `sanitizePromptSuggestion` also flattens native Claude suggestions. Codex uses `ai.chat.codexPromptSuggestionsEnabled` and falls back to `sampleThread` only when the helper throws or has no model. See [Next prompt suggestions](#next-prompt-suggestions). |
 | `apps/desktop/src/main/services/chat/codexThreadSample.ts` | Codex `thread/sample` (0.164+, experimental): one answer on a hidden ephemeral fork of an idle chat's thread. The prompt fits Codex's 4,000-byte cap (never half a surrogate pair); one sample per chat at a time; a 429 pauses that account's sampling for Retry-After (default 60 s, max 10 min). Outcomes `answered` / `stale` (dropped) / `unsupported` / `failed`, each logged as `agent_chat.codex_thread_sample`. Only a fallback after the cheap helper fails. |
+| `apps/desktop/src/main/services/chat/codexPlanHandoff.ts` | The plan-approval state machine behind **Implement in a new chat**, shared by the desktop card, the phone, the web client and `ade chat respond --new-chat`. Owns the per-chat decision claim (`beginAnswer` / `handoff`) that makes one plan card take one answer even when two clients press at once, and the `CodexPlanHandoffRecord` ledger (`itemId` → reserved implementation chat id) persisted on the source chat. The record is written before the destination exists, so a timeout, an `ENOSPC` or a brain restart reopens the same chat instead of creating a second one; a destination that never received the plan is dropped again, and one that was deleted puts the card back. `complete` refuses to settle the card until the destination's `user_message` carries the plan marker. |
 | `apps/desktop/src/main/services/chat/codexErrorPresentation.ts` | Actionable Codex refusal cards, read from structure, not wording: `ModelProviderError` in a JSON-RPC error's `data` (from 0.166 a thread stays tied to its model provider, so `thread/resume` and input RPCs refuse it under another), and `modelNotFound` / `policyCapacityUnavailable`. A refusal fall-forward can answer keeps its own notice. |
 | `apps/desktop/src/shared/codexDaybreak.ts`, `apps/desktop/src/shared/codexImageGeneration.ts` | Codex 0.164 shapes. `codexDaybreak.ts` reads `availableAccessPrograms.cyber` from `model/list` to decide whether Daybreak is offered (`codexDaybreakProgram`, `readCodexCyberAccessPrograms`); the switch is in the effort picker and travels as `AgentChatSession.codexDaybreak`. `codexImageGeneration.ts` recognizes results without inline bytes (`fileId`, edit `inputImagePaths`) so the card never claims an image it cannot show. |
 | `apps/desktop/src/main/services/chat/parentWakeBatcher.ts` | `createParentWakeBatcher`: an idle parent's wake waits while a sibling subagent runs (up to `PARENT_WAKE_BATCH_HOLD_MS`, 15 s), so children finishing together wake it once; a busy parent takes each result inline. Each child's promise settles with its batch, and completion rows are written after the wake lands. See [Spawn types](#spawn-types-and-completion-reporting). |
@@ -1057,6 +1072,23 @@ A Codex reset credit is a single-use token that clears an account's rate-limit w
 - **Lane-scoped.** Every session has a `laneId`; branch and worktree path go into the system prompt, and `resolveLaneLaunchContext` resolves the working directory. The workspace directive allows read-only inspection outside the worktree, but edits and mutating commands stay inside the lane unless ADE relaunches the session elsewhere.
 - **Event stream first.** The transcript is a JSON-lines stream of `AgentChatEventEnvelope`; renderer UI derives entirely from it.
 - **Pending input abstraction.** Approvals, questions, permission prompts and plan approvals from every provider become `PendingInputRequest`, derived by `derivePendingInputRequests()`.
+- **Plan handoff.** A Codex plan approval can be implemented in the planning
+  chat (the default) or handed to a chat of its own. The card's action is a
+  split button: **Implement here** plus a caret menu holding **Implement in a
+  new chat**, and `ade chat respond <session> --new-chat` does the same for a
+  person (never an agent or the CTO). The destination is created in the source
+  chat's lane, model and account, with the access an approved plan grants —
+  full auto, exactly as **Implement here** applies, unless a host permission
+  policy owns the chat's approvals. It receives the approved plan as its first
+  message; the planning chat keeps the whole conversation and gains one quiet
+  notice with an **Open chat** link. The destination id is reserved and written
+  to disk before that chat exists, so a timeout, a disk-full failure or a brain
+  restart reopens the same chat instead of making a second one; a plan whose
+  destination was deleted puts the card back rather than leaving a dead end.
+  One plan card takes one answer at a time (`codexPlanHandoff.ts`), so a phone
+  and the desktop cannot implement the same plan twice. Personal chats, share
+  guests and terminal-launched sessions do not offer it, and on ADE Cloud the
+  option is hidden while the lane's computer is asleep.
 - **Codex permission switches.** Codex takes approval/sandbox changes at thread/turn start. When a live session switches to Full Auto while a turn still raises requests from the old policy, the service auto-answers stale lane-confined command/file/permission gates and clears their cards. Auto-grants are turn-scoped and check the request `cwd` and concrete grant paths; escaped or ambiguous whole-root grants stay manual, and the planner guard still declines mutations from turns started in plan mode.
 - **Steer queue.** Follow-ups during a turn can be staged for the turn boundary (cap 10) with per-entry edit, cancel and dispatch. The per-provider composer modes are in [composer-and-ui.md](composer-and-ui.md#staged-messages-and-sending-during-a-turn); the host rules:
   - **Claude** offers two atomic SDK deliveries: **Send during turn** (`priority: "next"`, `shouldQuery: true`: after the current tool step, before the next model call) and **Interrupt & send** (`priority: "now"`, `shouldQuery: true`: redirects the current step without closing the query or killing background work).
