@@ -214,6 +214,9 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /\bon this computer right now: it is not answering\./,
   // A clone over SSH with no key GitHub accepts: the person sets up a key or uses HTTPS.
   /\bPermission denied \(publickey\)/,
+  // Added from PostHog traffic, 2026-11-17. Kimi on a Windows computer with no
+  // Git for Windows: the answer tells the person what to install.
+  /^Kimi needs Git for Windows: /,
 ];
 
 /**

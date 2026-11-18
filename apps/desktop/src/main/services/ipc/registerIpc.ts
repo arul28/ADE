@@ -210,6 +210,7 @@ import { armDeadline } from "../../../shared/deadlineTimer";
 import { noteRendererMemory } from "../../rendererMemoryLedger";
 import {
   brainActionErrorCode,
+  brainActionFailureFrame,
   createMachineRegisterRefusalObserver,
 } from "../analytics/reliabilityTelemetry";
 import { projectSecretScopeForRoot, type createProjectSecretService } from "../secrets/projectSecretService";
@@ -2706,6 +2707,7 @@ export function registerIpc({
               // `expected`, so `unexpected` means what Sentry would also report.
               const expectedKind = expectedErrorKind(error)
                 ?? (isExpectedOutcome(error) || isExpectedFailure(error) ? "expected" : "unexpected");
+              const brainFrame = brainActionFailureFrame(error);
               productAnalyticsService?.captureInternal({
                 event: "ade_brain_action_failed",
                 surface: "desktop",
@@ -2722,6 +2724,7 @@ export function registerIpc({
                   ...(brainAction ? { brain_action: brainAction } : {}),
                   error_code: errorCode,
                   expected_kind: expectedKind,
+                  ...(brainFrame ? { brain_frame: brainFrame } : {}),
                 },
               });
             } catch {

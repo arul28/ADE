@@ -431,6 +431,7 @@
       "properties": [
         "action_domain",
         "brain_action",
+        "brain_frame",
         "error_code",
         "expected_kind"
       ]

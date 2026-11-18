@@ -26650,9 +26650,24 @@ export function createAgentChatService(args: {
       if (managed.session.sideChatParentSessionId && normalizedEvent.status === "completed") {
         forwardSideChatSendsToMain(managed, normalizedEvent.turnId);
       }
+      // The row's failed mark is a database write. A project folder that stops
+      // answering throws here, and that throw skipped the rest of this event:
+      // the `done` never reached the transcript or the app, and the chat read
+      // as running. The mark is best effort; the event is not.
+      const writeTurnVerdict = (write: () => void) => {
+        try {
+          write();
+        } catch (error) {
+          logger.warn("agent_chat.turn_verdict_write_failed", {
+            sessionId: managed.session.id,
+            status: normalizedEvent.status,
+            error: getErrorMessage(error),
+          });
+        }
+      };
       if (normalizedEvent.status === "failed") {
         managed.turnFailureMarked = true;
-        sessionService.markLastTurnFailed(managed.session.id);
+        writeTurnVerdict(() => sessionService.markLastTurnFailed(managed.session.id));
       } else {
         // ANY non-failed end supersedes an earlier failure — not just
         // `completed`. A turn the user interrupted (or a restart cut short) is
@@ -26666,9 +26681,9 @@ export function createAgentChatService(args: {
         // the session-changed broadcast it would emit.
         if (normalizedEvent.status === "completed" || managed.turnFailureMarked) {
           managed.turnFailureMarked = false;
-          sessionService.clearLastTurnFailed(managed.session.id, {
+          writeTurnVerdict(() => sessionService.clearLastTurnFailed(managed.session.id, {
             wakeSnoozed: normalizedEvent.status === "completed",
-          });
+          }));
         }
       }
     }

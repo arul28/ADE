@@ -9,6 +9,7 @@
 
 import { readAccountRefusalCode } from "../../../shared/accountMachineRefusal";
 import { parseCodedErrorMessage } from "../../../shared/codedError";
+import { readBrainFrames } from "../../../shared/runtimeActionReplyError";
 import type { SyncRoleSnapshot } from "../../../shared/types";
 import { JsonRpcErrorCode } from "../../../../../ade-cli/src/jsonrpc";
 
@@ -38,6 +39,17 @@ export function brainActionErrorCode(error: unknown, didTimeout: boolean): strin
     return JSON_RPC_CODE_NAMES[rpcCode] ?? "rpc_error";
   }
   return uncodedErrorClass(error);
+}
+
+/**
+ * Where in the brain an uncoded action failure was thrown: the brain's own top
+ * frame as `function:line` (`brainStackFrames`, no file names or paths). Most
+ * brain throws carry no code, so `rpc_tool_failed` alone could not tell a
+ * failing git read from a failing GitHub call. The brain sends frames only for
+ * an unexpected failure, and the analytics policy re-checks the shape.
+ */
+export function brainActionFailureFrame(error: unknown): string | null {
+  return readBrainFrames(error)?.[0] ?? null;
 }
 
 const JSON_RPC_CODE_NAMES: Readonly<Record<number, string>> = {

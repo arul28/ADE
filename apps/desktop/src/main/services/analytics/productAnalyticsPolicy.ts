@@ -176,7 +176,7 @@ const STRING_PROPERTIES = new Set([
   "entry_point", "release_channel", "summary_kind", "reason", "last_command", "leg", "code",
   "escalation_reason", "handoff_step", "install_source", "trigger", "from_version", "to_version", "user_action",
   "tool_error_kind", "crash_reason", "count_bucket",
-  "action_domain", "error_code", "refusal_code", "brain_action", "expected_kind", "cause",
+  "action_domain", "error_code", "refusal_code", "brain_action", "expected_kind", "cause", "brain_frame",
   "kind", "severity", "emulator_count", "top_table", "ram_gb_bucket",
   "heap_mb_bucket", "heap_pct_bucket", "transcript_bucket", "chat_pane_bucket",
 ]);
@@ -617,7 +617,9 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   // answer known only by its text or code, or `unexpected`:
   // most brain errors carry no structured code, and without these two every
   // failure read as `unknown` with nothing to tell a bug from a user outcome.
-  ade_brain_action_failed: new Set(["action_domain", "error_code", "brain_action", "expected_kind"]),
+  // `brain_frame` is the brain's top frame of an uncoded failure, `function:line`
+  // of ADE's own code with no file name or path (`brainActionFailureFrame`).
+  ade_brain_action_failed: new Set(["action_domain", "error_code", "brain_action", "expected_kind", "brain_frame"]),
   // What ran short, how badly, how many Android emulators were up, whether a
   // developer's brain ran beside the installed one, and which of ADE's own
   // tables took the most writes in the five minutes before. Group names,
@@ -670,6 +672,11 @@ const ADE_ACTION_DOMAIN_ALLOWLIST: ReadonlySet<string> = new Set(ADE_ACTION_DOMA
  * even narrower charset, so nothing hyphenated can be scraped out of prose.
  */
 const ERROR_CODE_VALUE = /^[a-z][a-z0-9_-]{0,47}$/;
+/**
+ * A brain frame, `function:line` (`brainStackFrames`): an identifier, or
+ * `<anonymous>` for an unnamed function, never a path.
+ */
+const BRAIN_FRAME_VALUE = /^(?:<anonymous>|[A-Za-z_$][A-Za-z0-9_$.<>]{0,79}):\d{1,6}$/;
 
 /** Installed RAM as closed buckets (`ram_gb_bucket`): the event never carries the exact size. */
 export const RAM_GB_BUCKETS = ["le_8", "9_16", "17_32", "33_64", "gt_64"] as const;
@@ -968,6 +975,11 @@ function safeStringProperty(key: string, value: ProductAnalyticsPropertyValue): 
     return raw === "open" || isMeaningfulUsageAction(raw) || ANALYTICS_ONLY_ACTIONS.has(raw) ? raw : null;
   }
   if (key === "error_kind") return coarseErrorKind(value);
+  if (key === "brain_frame") {
+    if (typeof value !== "string" || value.length > 96) return null;
+    const frame = value.trim();
+    return BRAIN_FRAME_VALUE.test(frame) ? frame : null;
+  }
   if (key === "error_code") {
     if (typeof value !== "string" || value.length > 256) return null;
     const normalized = value.trim().toLowerCase();
