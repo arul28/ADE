@@ -9,6 +9,7 @@ import type { FirstRunResult } from "./FirstRunFlow";
 import { showFirstRunProjects } from "./firstRunActions";
 import { FirstRunStep, useFirstRunSteps, type FirstRunPhase, type FirstRunStepId } from "./FirstRunSteps";
 import "./launchGateGlass.css";
+import { captureOnboarding, type OnboardingAction } from "../../onboarding/onboardingAnalytics";
 
 type LaunchGateProps = { children: ReactNode };
 
@@ -34,45 +35,12 @@ function WebLaunchGate({ children }: LaunchGateProps) {
 
 type GateStep = FirstRunStepId | "sign-in";
 
-type OnboardingAction =
-  | "onboarding_welcome_shown"
-  | "onboarding_sign_in_shown"
-  | "onboarding_agents_shown"
-  | "onboarding_projects_shown"
-  | "onboarding_completed"
-  | "onboarding_skipped";
-
 const STEP_SHOWN: Record<GateStep, OnboardingAction> = {
   welcome: "onboarding_welcome_shown",
   "sign-in": "onboarding_sign_in_shown",
   agents: "onboarding_agents_shown",
   projects: "onboarding_projects_shown",
 };
-
-function onboardingOutcome(action: OnboardingAction): "opened" | "completed" | "cancelled" {
-  if (action === "onboarding_completed") return "completed";
-  return action === "onboarding_skipped" ? "cancelled" : "opened";
-}
-
-/**
- * One fact per first-run card, so the funnel says which card people leave on.
- * At most one of each a day per install; analytics never changes what the
- * gate does.
- */
-function captureOnboarding(action: OnboardingAction): void {
-  const reportFailed = () => console.warn("[onboarding] step could not be reported", action);
-  try {
-    void window.ade?.analytics?.capture({
-      event: "ade_feature_used",
-      properties: { feature: "onboarding", action, outcome: onboardingOutcome(action), source: "renderer_route" },
-      dedupeKey: `onboarding:${action}`,
-      minimumIntervalMs: 24 * 60 * 60_000,
-    }).catch(reportFailed);
-  } catch {
-    // Reporting must never block setup.
-    reportFailed();
-  }
-}
 
 /** What the gate shows: the welcome before sign-in, then sign-in until signed in, then the rest of setup. */
 function gateStep(checking: boolean, firstRun: FirstRunPhase, signedIn: boolean): GateStep | null {

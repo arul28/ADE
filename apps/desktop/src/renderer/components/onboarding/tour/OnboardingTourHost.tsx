@@ -46,6 +46,7 @@ import { TourCursorMotion, type Point } from "./tourCursor";
 import { TourFinishCard } from "./TourFinishCard";
 import { TOUR_WATCH_IGNORE_STREAMING_CONTENT, watchTourDom, type TourWatch } from "./tourWatch";
 import { useGoTo } from "../spotlight/useGoTo";
+import { captureOnboarding } from "../../../onboarding/onboardingAnalytics";
 import { useOnboardingSync } from "../../../onboarding/onboardingSync";
 import "./onboardingTour.css";
 
@@ -361,7 +362,14 @@ function TourRunner({ stepId }: { stepId: string | null }) {
 
   const firstChat = useFirstChatPrefill(!finishing && step.id === "first-chat");
 
-  const skip = useCallback(() => skipOnboarding(), []);
+  const skip = useCallback(() => {
+    skipOnboarding();
+    captureOnboarding("onboarding_tour_skipped");
+  }, []);
+  const done = useCallback(() => {
+    completeTour();
+    captureOnboarding("onboarding_tour_completed");
+  }, []);
   const backIndex = useMemo(() => {
     if (finishing) return null;
     // The nearest earlier step that would not skip itself right away.
@@ -401,7 +409,7 @@ function TourRunner({ stepId }: { stepId: string | null }) {
           <AdeTourCursorArt />
         </div>
         {finishing ? (
-          <TourFinishCard cursor={cursor} onReplay={() => moveTo(0, 1)} onDone={completeTour} />
+          <TourFinishCard cursor={cursor} onReplay={() => moveTo(0, 1)} onDone={done} />
         ) : null}
         {!finishing && shownAnchor && shownKey ? (
           <TourStepOverlay

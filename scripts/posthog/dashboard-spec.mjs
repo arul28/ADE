@@ -1063,6 +1063,22 @@ export const dashboardSpec = Object.freeze({
           }),
         ),
         insight(
+          "onboarding-tour-outcomes",
+          "In-project tour outcomes",
+          "How the guided tour inside a project ended each day: finished (its last card closed) or skipped (`ade_feature_used`, feature `onboarding`). Sent from the first release after 2026-11-18.",
+          trends({
+            series: [
+              ["onboarding_tour_completed", "Tour finished"],
+              ["onboarding_tour_skipped", "Tour skipped"],
+            ].map(([action, label]) => eventNode(EVENTS.FEATURE_USED, label, {
+              properties: [
+                eventProperty(PROPERTIES.FEATURE, "onboarding"),
+                eventProperty(PROPERTIES.ACTION, action),
+              ],
+            })),
+          }),
+        ),
+        insight(
           "desktop-sign-in-outcomes",
           "Desktop sign-in outcomes",
           "How each account sign-in attempt ended: completed, failed or cancelled (started is the denominator).",

@@ -1047,7 +1047,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `lanes` | `space_freed` | `completed`, `failed` (Free up space on an archived lane in Settings › Archive) | omitted; never the lane, its size, the machine, or the error |
 | `lanes` | `deleted_lane_restored` | `completed`, `failed` (Restore from the notice after a delete, or from Recently deleted; `failed` includes files that did not apply) | omitted; never the lane, branch, machine, or the error |
 | `star_prompt` | `star_prompt_shown`, `star_prompt_clicked`, `star_prompt_dismissed`, `repo_starred` | `prompt_first`, `prompt_second` (which showing of the pill) | omitted; never the GitHub account, a message count, or the machine |
-| `onboarding` | `onboarding_welcome_shown`, `onboarding_sign_in_shown`, `onboarding_agents_shown`, `onboarding_projects_shown`, `onboarding_completed`, `onboarding_skipped` | `opened` (a first-run card came on screen), `completed`, `cancelled` (skipped) | omitted; at most one of each a day per install; never the account, a provider, or a project |
+| `onboarding` | `onboarding_welcome_shown`, `onboarding_sign_in_shown`, `onboarding_agents_shown`, `onboarding_projects_shown`, `onboarding_completed`, `onboarding_skipped`, `onboarding_tour_completed`, `onboarding_tour_skipped` | `opened` (a first-run card came on screen), `completed` (setup, or the in-project tour's finish card), `cancelled` (skipped) | omitted; at most one of each a day per install; never the account, a provider, or a project |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
