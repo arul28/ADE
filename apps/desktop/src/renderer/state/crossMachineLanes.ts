@@ -90,7 +90,7 @@ import { cloudMachineResting } from "../../shared/adeCloud";
 import { cloudBoxForMachine } from "../components/remoteTargets/cloudMachineModel";
 import { readWebAccountMachineKeys } from "./webAccountMachineKeys";
 import { scheduleCloudSavedChatsRefresh, type SavedChatsContext } from "./cloudSavedChatsSync";
-import { adeCloudLaneComputerForMachine, adeCloudLaneComputersNow, machineLabelForMachine, subscribeAdeCloudLaneComputers, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
+import { adeCloudLaneComputersNow, isAdeCloudLaneComputerMachine, machineLabelForMachine, subscribeAdeCloudLaneComputers, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
 
 /** Coalescing window for burst-y event sources (lane lifecycle, session churn). */
 const REFRESH_COALESCE_MS = 400;
@@ -1651,13 +1651,15 @@ async function readMachine(
     // An ADE Cloud lane computer exists for its one lane: its main checkout is
     // only the clone the lane came from, so the lists leave it out.
     // A computer reached through the relay has the relay's host name, so its
-    // account key decides as well.
+    // account key decides as well. The lane lists decide again when they are
+    // built (`listedLanesOfMachine`): this read can come before the index knows
+    // the computer.
     const connection = runtime.connections.find((candidate) => candidate.target.id === targetId);
-    const cloudLaneComputer = adeCloudLaneComputerForMachine({
+    const cloudLaneComputer = isAdeCloudLaneComputerMachine({
       hostname: binding.hostname,
       machineKey: connection ? cloudKeyOfConnection(connection) : null,
       targetId,
-    }) != null;
+    });
     const decoded = decodeForeignLanes(result);
     const lanes = cloudLaneComputer ? decoded.filter((lane) => lane.laneType !== "primary") : decoded;
     return includeStatus ? lanes : withPreservedLaneStatus(machineId, lanes);

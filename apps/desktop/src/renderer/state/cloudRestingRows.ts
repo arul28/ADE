@@ -1,6 +1,13 @@
-import type { TerminalSessionSummary } from "../../shared/types";
+import type { LaneSummary, TerminalSessionSummary } from "../../shared/types";
+import { savedChatsMachineKey } from "../../shared/cloudSavedChats";
+import { machineIdOfSlot } from "../../shared/machineIdentity";
 import type { CrossMachineMachineLanes } from "./appStore";
-import { adeCloudLaneComputerForMachine, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
+import {
+  adeCloudLaneComputerForMachine,
+  isAdeCloudLaneComputerMachine,
+  type AdeCloudComputerId,
+  type AdeCloudLaneComputer,
+} from "./adeCloudLaneIndex";
 import { isCloudConnectionTarget, isSavedChatsMachineId } from "./cloudSavedChats";
 
 /**
@@ -63,6 +70,31 @@ export function machineIsCloudResting(
   if (entry.sessions.some((session) => session.cloudSavedCopy === true)) return true;
   const hostname = entry.binding?.kind === "remote" ? entry.binding.hostname ?? null : null;
   return adeCloudLaneComputerForMachine({ hostname, targetId: entry.machineId }, cloudLaneComputers) != null;
+}
+
+/**
+ * A machine's lanes as the lane lists show them. An ADE Cloud lane computer
+ * exists for its one lane, so its main checkout (only the clone the lane came
+ * from) is left out: connected, asleep (`cloud-saved:` slice, or a
+ * connection's slice that kept its last read), or read before the lane index
+ * knew it. Every other machine keeps its main checkout. Decided when the list
+ * is built, not when the lanes were read, so a slice read before the index
+ * filled, or kept while its computer sleeps, can't list it either.
+ *
+ * A React caller passes the index it subscribes to, so its memo follows it.
+ */
+export function listedLanesOfMachine(
+  entry: Pick<CrossMachineMachineLanes, "machineId" | "targetId" | "binding" | "lanes">,
+  cloudLaneComputers?: readonly AdeCloudLaneComputer[],
+  cloudComputers?: readonly AdeCloudComputerId[],
+): readonly LaneSummary[] {
+  if (!entry.lanes.some((lane) => lane.laneType === "primary")) return entry.lanes;
+  const laneComputer = isAdeCloudLaneComputerMachine({
+    hostname: entry.binding?.kind === "remote" ? entry.binding.hostname ?? null : null,
+    machineKey: savedChatsMachineKey(entry.machineId),
+    targetId: entry.targetId ?? machineIdOfSlot(entry.machineId),
+  }, cloudLaneComputers, cloudComputers);
+  return laneComputer ? entry.lanes.filter((lane) => lane.laneType !== "primary") : entry.lanes;
 }
 
 /**
