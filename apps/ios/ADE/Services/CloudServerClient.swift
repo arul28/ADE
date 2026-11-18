@@ -545,6 +545,68 @@ struct CloudServerClient {
     _ = try await send("DELETE", "cloud/chats/\(segment(machineKey))/\(segment(chatId))/messages/\(segment(messageId))")
   }
 
+  // MARK: Moves to the other kind (standard ↔ full computer)
+
+  private struct MoveList: Decodable { let moves: [CloudServerMove] }
+
+  /// Starts a move the account server runs (`POST /cloud/instances/:id/move`):
+  /// a new computer of the other kind, the old one's files copied over, the
+  /// old one deleted. The same `moveId` again answers the same move, so a
+  /// lost answer is safe to send again. A server older than the route answers
+  /// 404 (`.noAccess`): only ADE on a computer can move it then.
+  func startMove(instanceId: String, to kind: String, sizeId: String?, moveId: String) async throws -> CloudServerMove {
+    var payload: [String: Any] = ["moveId": moveId, "to": kind]
+    if let sizeId { payload["sizeId"] = sizeId }
+    let body = try JSONSerialization.data(withJSONObject: payload)
+    return try decode(
+      CloudServerMove.self,
+      from: try await send("POST", "cloud/instances/\(segment(instanceId))/move", body: body, timeout: 30, resendOnLostConnection: true)
+    )
+  }
+
+  /// One move (`GET /cloud/moves/:moveId`); `.noAccess` once the server keeps it no more.
+  func move(_ moveId: String) async throws -> CloudServerMove {
+    try decode(CloudServerMove.self, from: try await send("GET", "cloud/moves/\(segment(moveId))"))
+  }
+
+  /// The account's moves: running ones and those that ended in the last day.
+  func moves() async throws -> [CloudServerMove] {
+    try decode(MoveList.self, from: try await send("GET", "cloud/moves")).moves
+  }
+
+  /// Cancels a move before its copy starts (`DELETE /cloud/moves/:moveId`);
+  /// the server refuses it later, with its sentence.
+  func cancelMove(_ moveId: String) async throws {
+    _ = try await send("DELETE", "cloud/moves/\(segment(moveId))", timeout: 30)
+  }
+
+  /// Frees a computer on the account server (`POST /cloud/instances/:id/free`):
+  /// it pushes every lane's work, checks it again and deletes the computer,
+  /// keeping its lane, with no app open. Followed here until it ends (or 15
+  /// minutes). Nil from a server older than the route, so the caller runs it.
+  func freeOnServer(instanceId: String) async -> CloudComputerOutcome? {
+    var free: CloudServerFree
+    do {
+      let body = try JSONSerialization.data(withJSONObject: ["freeId": UUID().uuidString.lowercased()])
+      free = try decode(CloudServerFree.self, from: try await send("POST", "cloud/instances/\(segment(instanceId))/free", body: body, timeout: 30))
+    } catch Failure.noAccess {
+      // The computer was read just before: a 404 is a server with no such route.
+      return nil
+    } catch {
+      return CloudComputerOutcome(ok: false, message: cloudServerFailureMessage(error))
+    }
+    let deadline = Date().addingTimeInterval(15 * 60)
+    while !["done", "failed", "cancelled"].contains(free.state) {
+      if Date() > deadline || Task.isCancelled {
+        return CloudComputerOutcome(ok: false, message: "Freeing the computer is taking a while. ADE Cloud goes on with it; check again in a few minutes.")
+      }
+      try? await Task.sleep(nanoseconds: 2_000_000_000)
+      if let read = try? decode(CloudServerFree.self, from: try await send("GET", "cloud/frees/\(segment(free.freeId))")) { free = read }
+    }
+    if free.state == "done" { return CloudComputerOutcome(ok: true, message: free.message) }
+    return CloudComputerOutcome(ok: false, message: free.error ?? free.message)
+  }
+
   /// One path segment, with `/` encoded too. Every route file uses it.
   func segment(_ value: String) -> String {
     value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? value
@@ -632,6 +694,76 @@ func cloudServerFailure(status: Int, body: Data) -> CloudServerClient.Failure {
   }
   if status == 403 { return message.map { .refused(code: code ?? "forbidden", message: $0) } ?? .unauthorized }
   return .server(status, message: message)
+}
+
+/// A move of a computer to the other kind, as the account server runs it
+/// (`CloudMoveRecord`). `message` is the one sentence to show; a state this
+/// app doesn't know shows only that sentence and counts as still running.
+/// A free the account server runs (`CloudFreeRecord`).
+struct CloudServerFree: Decodable, Equatable {
+  let freeId: String
+  let instanceId: String
+  /// `checking`, `pushing`, `deleting`, `done`, `failed`, `cancelled`.
+  let state: String
+  let message: String
+  let error: String?
+  let laneKept: Bool?
+}
+
+struct CloudServerMove: Decodable, Equatable, Identifiable {
+  let moveId: String
+  let sourceInstanceId: String
+  let sourceName: String?
+  let targetInstanceId: String?
+  /// `standard` or `full`.
+  let to: String
+  let sizeId: String?
+  let state: String
+  let message: String
+  let approvalUrl: String?
+  let error: String?
+  let sourceDeleted: Bool?
+  let createdAt: Double?
+  let updatedAt: Double?
+
+  var id: String { moveId }
+
+  private enum CodingKeys: String, CodingKey {
+    case moveId, sourceInstanceId, sourceName, targetInstanceId, to, sizeId, state, message, approvalUrl, error, sourceDeleted, createdAt, updatedAt
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    moveId = try c.decode(String.self, forKey: .moveId)
+    sourceInstanceId = c.lenient(String.self, forKey: .sourceInstanceId) ?? ""
+    sourceName = c.lenient(String.self, forKey: .sourceName).flatMap { nonEmptyTrimmed($0) }
+    targetInstanceId = c.lenient(String.self, forKey: .targetInstanceId).flatMap { nonEmptyTrimmed($0) }
+    to = c.lenient(String.self, forKey: .to) ?? ""
+    sizeId = c.lenient(String.self, forKey: .sizeId).flatMap { nonEmptyTrimmed($0) }
+    state = c.lenient(String.self, forKey: .state) ?? ""
+    message = c.lenient(String.self, forKey: .message).flatMap { nonEmptyTrimmed($0) } ?? ""
+    approvalUrl = c.lenient(String.self, forKey: .approvalUrl).flatMap { nonEmptyTrimmed($0) }
+    error = c.lenient(String.self, forKey: .error).flatMap { nonEmptyTrimmed($0) }
+    sourceDeleted = c.lenient(Bool.self, forKey: .sourceDeleted)
+    createdAt = c.lenient(Double.self, forKey: .createdAt)
+    updatedAt = c.lenient(Double.self, forKey: .updatedAt)
+  }
+
+  /// Done, failed or cancelled: nothing more happens to it.
+  var isFinished: Bool { state == "done" || state == "failed" || state == "cancelled" }
+  /// The server still lets the person cancel it: its copy hasn't started.
+  var canCancel: Bool { state == "making" || state == "joining" || state == "needs_approval" }
+  /// The approval page, when the new computer waits for the person.
+  var approval: URL? {
+    guard state == "needs_approval", let approvalUrl, let url = URL(string: approvalUrl),
+          url.scheme?.lowercased() == "https" else { return nil }
+    return url
+  }
+  var toFull: Bool { to == "full" }
+  /// "a full computer", "a standard computer".
+  var kindWords: String { toFull ? "a full computer" : "a standard computer" }
+  /// Whether it moves this computer, from it or onto it.
+  func involves(_ instanceId: String) -> Bool { sourceInstanceId == instanceId || targetInstanceId == instanceId }
 }
 
 /// What `POST /cloud/instances/:id/exec` answered. An answer missing a part reads as a failed run.
@@ -813,7 +945,7 @@ extension CloudServerClient {
     return (!left.isEmpty, left, nil)
   }
 
-  enum AgentWork { case idle, busy, unknown }
+  enum AgentWork { case idle, busy, setup, unknown }
 
   /// Whether the agent's work keeps the computer busy, from its keep-awake
   /// facts (`agentWork`): asleep counts as idle; facts it can't read are unknown.
@@ -824,8 +956,11 @@ extension CloudServerClient {
           let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return .unknown }
     // A person watching a tool, or a timer due soon, is not the agent's work.
     let reasons = (state["reasons"] as? [Any] ?? []).compactMap { $0 as? String }
-    let busy = state["busy"] as? Bool == true && !reasons.allSatisfy { $0 == "in_use" || $0 == "schedule" }
-    return busy ? .busy : .idle
+    let working = reasons.filter { $0 != "in_use" && $0 != "schedule" }
+    guard state["busy"] as? Bool == true, !working.isEmpty else { return .idle }
+    // Only the lane's setup (a launch still cloning, or waiting for a provider sign-in) is not an agent's work.
+    let setup: Set<String> = ["setup", "lane_setup", "first_clone", "lane_launch"]
+    return working.allSatisfy { setup.contains($0) } ? .setup : .busy
   }
 
   /// Deletes a computer and waits until the server confirms it is gone (a 404
@@ -869,6 +1004,8 @@ extension CloudServerClient {
     guard let laneId = box.laneId, box.laneName != nil else {
       return fail("This computer wasn't made for one lane, so there is no lane to keep. Delete it, or keep it.")
     }
+    // ADE's server runs the free itself (it goes on with the app closed); an older server runs it from here.
+    if let onServer = await freeOnServer(instanceId: instanceId) { return onServer }
     // A running agent could write again after its lane was pushed.
     let work: AgentWork
     do {
@@ -876,6 +1013,7 @@ extension CloudServerClient {
     } catch {
       return fail(cloudServerFailureMessage(error))
     }
+    if work == .setup { return fail("This lane is still being set up. Finish signing in, or cancel the setup, then free the computer.") }
     if work == .busy { return fail("The agent is still working. Stop it or wait, then free the computer.") }
     if work == .unknown { return fail("ADE couldn't tell whether the agent is still working, so the computer stays. Try again in a moment.") }
     let ran = await runPushWork(instanceId: instanceId, check: false)
@@ -919,8 +1057,8 @@ extension CloudServerClient {
   /// `resize`): running turns stop and the chats' saved copy is written, then
   /// the computer restarts at the new CPU and memory. A computer that was
   /// awake and comes back asleep is woken, as the desktop's wait does. A
-  /// change to the other kind (standard ↔ full) is a move to a new computer,
-  /// which only ADE on a computer makes.
+  /// change to the other kind (standard ↔ full) is a move to a new computer
+  /// (`startMove`), never this.
   func changeSize(instanceId: String, to tier: CloudPhoneTier) async -> CloudComputerOutcome {
     func fail(_ message: String) -> CloudComputerOutcome { CloudComputerOutcome(ok: false, message: message) }
     let box: CloudServerInstance
@@ -983,9 +1121,9 @@ private func cloudWithoutStop(_ text: String) -> String {
   text.hasSuffix(".") ? String(text.dropLast()) : text
 }
 
-/// Why the phone doesn't move a computer to the other kind: a move makes a
-/// new computer, copies the old one's files over and pairs ADE with it, which
-/// only ADE on a computer does (`moveCloudMachine`).
+/// Why the phone can't move a computer to the other kind on an account
+/// server older than the move route (its POST answers 404): there only ADE
+/// on a computer makes the new computer and copies the files (`moveCloudMachine`).
 func cloudPhoneKindChangeReason(to tier: CloudPhoneTier) -> String {
   tier.full
     ? "Moving to a full computer makes a new computer; start it from ADE on a computer."

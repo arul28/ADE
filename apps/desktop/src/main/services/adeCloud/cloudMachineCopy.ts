@@ -51,6 +51,21 @@ import { CLOUD_FORMER_MACHINE_KEYS_METADATA, CLOUD_MACHINE_KEY_METADATA, formerM
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
 import { wakeThroughTransition } from "./cloudInstanceOps";
 import { cloudHoldCommand, cloudReleaseHoldCommand } from "./cloudSleep";
+import {
+  MOVE_EXIT_COMMAND,
+  MOVE_HOLD_MS,
+  MOVE_LOG_TAIL_COMMAND,
+  MOVE_SERVE_PORT,
+  MOVE_TRANSFER_TIMEOUT_MS,
+  MOVE_UNPAUSE_COMMAND,
+  PROJECTS_LIST_COMMAND,
+  moveArchiveUrl,
+  pauseAndServeHomeCommand,
+  readProjectRoots,
+  receiveHomeCommand,
+  registerProjectsCommand,
+} from "../../../../../account-directory/src/cloud/computerCommands";
+import type { CloudMoveRecord } from "../../../../../account-directory/src/cloud/contract";
 
 export type CloudCopyDeps = CloudMachineCreatorDeps & {
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
@@ -65,13 +80,8 @@ export type CloudCopyDeps = CloudMachineCreatorDeps & {
 /** A fork of a big disk answers 202 and finishes on its own; a warm VM took 167 s. */
 const FORK_READY_TIMEOUT_MS = 15 * 60_000;
 const POLL_MS = 3_000;
-/** Moving a home folder: a 730 MB lane copied in 33 s; this bounds a very large one. */
-const MOVE_TRANSFER_TIMEOUT_MS = 40 * 60_000;
-/** The port the old machine serves its home folder on, once, behind a short-lived signed URL. */
-const MOVE_SERVE_PORT = 7338;
-/** Holds on sleep (`cloudHoldCommand`); each expires on its own if ADE quits mid-way. */
+/** The copy's hold on sleep (`cloudHoldCommand`); it expires on its own if ADE quits mid-way. */
 const COPY_HOLD_MS = 20 * 60_000;
-const MOVE_HOLD_MS = 45 * 60_000;
 
 /**
  * Metadata a copy must not carry: it is a new machine, not the source's row.
@@ -210,186 +220,6 @@ export async function copyCloudMachine(
   return { ...result, copiedFrom: source.id, forkMs };
 }
 
-/**
- * The most agent history a move carries from ADE's own provider homes. Past
- * it, the oldest conversations stay behind, and those chats go on from ADE's
- * transcript (as every chat did before).
- */
-const MOVE_AGENT_HISTORY_MAX_BYTES = 1024 * 1024 * 1024;
-
-/**
- * Serves the home folder once, gzipped, to whoever has the signed URL; then
- * exits.
- *
- * `~/.ade` stays behind: it holds ADE's identity and every sign-in. But a chat
- * on one of ADE's own accounts (a Claude pass, an added account, a preset or
- * route) keeps its agent's conversation in that account's home under
- * `~/.ade/provider-homes`, and without it the agent can't resume its own
- * session on the new machine. So a second archive follows the first inside
- * the same gzip stream, with only those conversation files: Claude's
- * `projects/<cwd slug>/<session id>.jsonl` and the folder of the same name
- * beside it, and Codex's `rollout-*.jsonl` files under `sessions` and
- * `archived_sessions`. Nothing else in those homes (logins, settings) goes.
- * The home path is the same on both machines, so the cwd in each file and in
- * Claude's folder name stays correct. The second archive is made in full
- * before the stream starts, so a failure there leaves only the first.
- */
-function serveHomeCommand(port: number): string {
-  const script = `
-import glob, gzip, http.server, os, subprocess, tempfile, threading, zlib
-HOME = "/home/node"
-EXCLUDE = ["./.ade", "./.docker-data", "./.cache/ms-playwright", "*/.ade/secrets/sync-site-id", "*/.ade/sock"]
-HISTORY_MAX_BYTES = ${MOVE_AGENT_HISTORY_MAX_BYTES}
-
-def real_dir(path):
-    return os.path.isdir(path) and not os.path.islink(path)
-
-def real_file(path):
-    return os.path.isfile(path) and not os.path.islink(path)
-
-def tree(root):
-    """Every folder and file under root (root too), with the bytes of the files."""
-    entries, size = [root], 0
-    for dirpath, dirs, files in os.walk(root):
-        dirs[:] = [name for name in dirs if real_dir(os.path.join(dirpath, name))]
-        entries.extend(os.path.join(dirpath, name) for name in dirs)
-        for name in files:
-            path = os.path.join(dirpath, name)
-            if real_file(path):
-                entries.append(path)
-                size += os.path.getsize(path)
-    return entries, size
-
-def conversations():
-    """Each agent conversation in ADE's provider homes: (time, bytes, home, paths)."""
-    found = []
-    root = os.path.join(HOME, ".ade", "provider-homes")
-    homes = glob.glob(os.path.join(root, "*", "*")) + glob.glob(os.path.join(root, "credential", "*", "*"))
-    for home in homes:
-        if not real_dir(home):
-            continue
-        for transcript in glob.glob(os.path.join(home, "projects", "*", "*.jsonl")):
-            if not real_file(transcript):
-                continue
-            paths, size = [transcript], os.path.getsize(transcript)
-            beside = transcript[:-len(".jsonl")]
-            if real_dir(beside):
-                more, more_size = tree(beside)
-                paths += more
-                size += more_size
-            found.append((os.path.getmtime(transcript), size, home, paths))
-        for folder in ("sessions", "archived_sessions"):
-            for dirpath, dirs, files in os.walk(os.path.join(home, folder)):
-                dirs[:] = [name for name in dirs if real_dir(os.path.join(dirpath, name))]
-                for name in files:
-                    path = os.path.join(dirpath, name)
-                    if name.startswith("rollout-") and (name.endswith(".jsonl") or name.endswith(".jsonl.zst")) and real_file(path):
-                        found.append((os.path.getmtime(path), os.path.getsize(path), home, [path]))
-    return found
-
-def pack_history():
-    """A gzipped archive of the newest conversations that fit, or None."""
-    archive = None
-    try:
-        kept, total = [], 0
-        for _time, size, home, paths in sorted(conversations(), key=lambda item: item[0], reverse=True):
-            if total + size > HISTORY_MAX_BYTES:
-                continue
-            total += size
-            # Each folder from the home down, so a new folder gets the mode it had here.
-            for path in paths:
-                parent = os.path.dirname(path)
-                chain = []
-                while len(parent) >= len(home):
-                    chain.append(parent)
-                    parent = os.path.dirname(parent)
-                kept.extend(reversed(chain))
-                kept.append(path)
-        if not kept:
-            return None
-        seen, ordered = set(), []
-        for path in kept:
-            if path not in seen:
-                seen.add(path)
-                ordered.append("./" + os.path.relpath(path, HOME))
-        fd, archive = tempfile.mkstemp(prefix="ade-move-history-", suffix=".tar.gz")
-        os.close(fd)
-        listing = ("\\0".join(ordered) + "\\0").encode("utf-8", "surrogateescape")
-        done = subprocess.run(["tar", "-C", HOME, "--no-recursion", "-czf", archive, "--null", "-T", "-"], input=listing)
-        # 1 is "a file changed while it was read": the archive is still whole.
-        if done.returncode in (0, 1):
-            return archive
-    except Exception:
-        pass
-    if archive:
-        try:
-            os.unlink(archive)
-        except OSError:
-            pass
-    return None
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path.split("?")[0] != "/home.tar.gz":
-            self.send_response(404); self.end_headers(); return
-        history = pack_history()
-        self.send_response(200)
-        self.send_header("content-type", "application/gzip")
-        self.end_headers()
-        # One gzip stream around both archives, one after the other: the
-        # receiver's tar reads past the first one's end into the second.
-        packer = zlib.compressobj(6, zlib.DEFLATED, 31)
-        def send(chunk):
-            out = packer.compress(chunk)
-            if out:
-                self.wfile.write(out)
-        args = ["tar", "-C", HOME, "-cf", "-"] + ["--exclude=" + e for e in EXCLUDE] + ["."]
-        proc = subprocess.Popen(args, stdout=subprocess.PIPE)
-        for chunk in iter(lambda: proc.stdout.read(1 << 20), b""):
-            send(chunk)
-        proc.wait()
-        if history:
-            try:
-                with gzip.open(history, "rb") as handle:
-                    for chunk in iter(lambda: handle.read(1 << 20), b""):
-                        send(chunk)
-            finally:
-                os.unlink(history)
-        self.wfile.write(packer.flush())
-        threading.Thread(target=self.server.shutdown, daemon=True).start()
-    def log_message(self, *args):
-        pass
-http.server.ThreadingHTTPServer(("0.0.0.0", ${port}), Handler).serve_forever()
-`;
-  const encoded = Buffer.from(script, "utf8").toString("base64");
-  // Only the server goes to the background, every stream redirected: a
-  // backgrounded list that still held the exec call's output kept the call
-  // open for as long as the server ran.
-  return [
-    `printf %s '${encoded}' | base64 -d > /tmp/ade-move-serve.py`,
-    "nohup timeout 3600 python3 /tmp/ade-move-serve.py > /tmp/ade-move-serve.log 2>&1 < /dev/null &",
-    "sleep 1",
-    "echo started",
-  ].join("\n");
-}
-
-/**
- * Pulls the old machine's home folder into this one, in the background (a big
- * home outlasts one exec call); the exit code lands in a file. The signed URL
- * goes through a file so no shell ever re-quotes it. `--ignore-zeros` reads
- * on past the end of the first archive into the agent history after it
- * (`serveHomeCommand`).
- */
-function receiveHomeCommand(url: string): string {
-  const encoded = Buffer.from(url, "utf8").toString("base64");
-  return [
-    "rm -f /tmp/ade-move.exit /tmp/ade-move.log",
-    `printf %s '${encoded}' | base64 -d > /tmp/ade-move.url`,
-    `nohup sh -c 'curl -fsS --retry 3 "$(cat /tmp/ade-move.url)" | tar --ignore-zeros -xzf - -C /home/node; echo $? > /tmp/ade-move.exit; rm -f /tmp/ade-move.url' > /tmp/ade-move.log 2>&1 < /dev/null &`,
-    "echo started",
-  ].join("\n");
-}
-
 export type CloudMoveResult = CloudCreateMachineResult & {
   movedFrom: string;
   /** The projects registered on the new machine. */
@@ -399,29 +229,204 @@ export type CloudMoveResult = CloudCreateMachineResult & {
   sourceDeleted: boolean;
 };
 
+export type CloudMoveArgs = {
+  instanceId: string;
+  machineKey?: string | null;
+  to: CloudMachineKind;
+  shape?: CloudShapeId | null;
+  requestId?: string;
+  madeByChat?: string | null;
+  madeByAgent?: CloudAgentMaker | null;
+  /** An unattended agent's yes (the agent limits, no person's tap): the server moves only for a person, so it runs here. */
+  selfApprove?: boolean;
+};
+
+export type CloudMoveOptions = {
+  signal?: AbortSignal;
+  /** The copy is done and the new machine is whole: called before the old one is deleted, so a caller can save it first. */
+  onCopied?: (target: { instanceId: string; machineKey: string | null; name: string }) => void;
+  /** False: the caller already stopped the turns and saved the chats, so the move doesn't again. */
+  save?: boolean;
+  /** Called once ADE's server took the move: it goes on there with no app open. */
+  onServer?: () => void;
+};
+
 /**
  * Moves a machine to the other type (box ↔ VM), keeping its work: a new
  * machine, the old one's home folder streamed into it, the old one deleted.
  * A failure before the copy landed deletes the new machine and leaves the old
  * one as it was.
+ *
+ * ADE's server runs it when it can (`moveOnServer`), so it goes on with this
+ * app closed; an older server, or one whose computers can't run it yet, gets
+ * the move run from here as before.
  */
 export async function moveCloudMachine(
   deps: CloudCopyDeps,
-  args: { instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null; requestId?: string; madeByChat?: string | null; madeByAgent?: CloudAgentMaker | null },
+  args: CloudMoveArgs,
   onProgress: (progress: CloudCreateProgress) => void,
-  options: {
-    signal?: AbortSignal;
-    /** The copy is done and the new machine is whole: called before the old one is deleted, so a caller can save it first. */
-    onCopied?: (target: { instanceId: string; machineKey: string | null; name: string }) => void;
-  } = {},
+  options: CloudMoveOptions = {},
 ): Promise<CloudMoveResult> {
   if (!isCloudMachineKind(args.to)) throw new Error("Move it to a standard or a full computer.");
   const requestId = args.requestId ?? randomUUID();
+  const client = await deps.client();
+  if (!args.selfApprove) {
+    const served = await moveOnServer(deps, client, { ...args, requestId }, onProgress, options);
+    if (served) return served;
+  }
+  return await moveHere(deps, client, { ...args, requestId }, onProgress, options);
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** How often a server move is read while this app follows it. */
+const SERVER_MOVE_POLL_MS = 3_000;
+/** Reads that fail in a row before this app stops following (the move goes on there). */
+const SERVER_MOVE_READ_FAILURES = 40;
+
+/**
+ * The server's move (`POST /cloud/instances/:id/move`), followed to its end
+ * with the same progress lines as a move run here. Null when this server
+ * can't run one (an older one answers 404; `server_move_unavailable` until
+ * its computers can), so the caller runs it here.
+ */
+async function moveOnServer(
+  deps: CloudCopyDeps,
+  client: CloudProvider,
+  args: CloudMoveArgs & { requestId: string },
+  onProgress: (progress: CloudCreateProgress) => void,
+  options: CloudMoveOptions,
+): Promise<CloudMoveResult | null> {
+  if (!client.startMove || !client.readMove) return null;
+  const logger: CloudLogger = deps.logger ?? {};
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const shape = args.shape ? cloudShape(args.shape) : null;
+  const label = cloudKindLabel(args.to);
+  const start = async (moveId: string): Promise<CloudMoveRecord | null> => {
+    try {
+      return await client.startMove!(args.instanceId, {
+        moveId,
+        to: args.to === "vm" ? "full" : "standard",
+        ...(shape ? { resources: { cpu: shape.cpu, memoryGb: shape.memoryGb } } : {}),
+        // An agent's ask reaches here only after the person said yes on its card.
+        origin: "person",
+        timing: "now",
+        ...(options.save === false ? { save: false } : {}),
+      });
+    } catch (error) {
+      if (error instanceof CloudProviderError && (error.status === 404 || error.code === "server_move_unavailable")) {
+        logger.info?.("cloud.machine_move_here", { reason: error.code });
+        return null;
+      }
+      throw error;
+    }
+  };
+  // The move's id is the request's, so the same request (a restart, a Retry) follows the same move.
+  const first = await start(UUID.test(args.requestId) ? args.requestId : randomUUID());
+  if (!first) return null;
+  let record: CloudMoveRecord = first;
+  // A Retry of a move that ended without moving: a new one.
+  if (record.state === "failed" || record.state === "cancelled") {
+    const again = await start(randomUUID());
+    if (!again) return null;
+    record = again;
+  }
+  options.onServer?.();
+  const moveId = record.moveId;
+  const progress = (stage: CloudCreateProgress["stage"], message: string, instanceId?: string | null, approvalUrl?: string | null) =>
+    onProgress({ requestId: args.requestId, stage, message, ...(instanceId ? { instanceId } : {}), ...(approvalUrl ? { approvalUrl } : {}) });
+  let copying = false;
+  let copied = false;
+  let lastLine = "";
+  let failures = 0;
+  const copiedTarget = (from: CloudMoveRecord) => ({
+    instanceId: from.targetInstanceId!,
+    machineKey: from.targetMachineKey ?? null,
+    name: from.sourceName,
+  });
+  for (;;) {
+    if (options.signal?.aborted && record.cancellable && client.cancelMove) {
+      // Before the copy the server undoes it (now, or at its step's end); after, it goes on there to the end.
+      const current = record;
+      record = await client.cancelMove(moveId).catch((error: unknown): CloudMoveRecord => {
+        logger.warn?.("cloud.machine_move_cancel_failed", { moveId, error: getErrorMessage(error) });
+        return { ...current, cancellable: false };
+      });
+    }
+    const line = record.message;
+    if (record.state === "making") {
+      if (line !== lastLine) progress("creating", line);
+    } else if (record.state === "joining") {
+      if (line !== lastLine) progress("signing_in", line, record.targetInstanceId);
+    } else if (record.state === "needs_approval") {
+      if (line !== lastLine) progress("approve_elsewhere", line, record.targetInstanceId, record.approvalUrl);
+    } else if (record.state === "copying") {
+      // The first copy line names the target, as a move run here does: a caller marks the new computer made.
+      if (!copying) progress("joining", `Copying ${record.sourceName}'s files to the new ${label}…`, record.targetInstanceId);
+      else if (line !== lastLine) progress("joining", line, record.targetInstanceId);
+      copying = true;
+    } else if ((record.state === "finishing" || record.state === "done") && !copied && record.targetInstanceId) {
+      copied = true;
+      options.onCopied?.(copiedTarget(record));
+    }
+    lastLine = line;
+    if (record.state === "done") break;
+    if (record.state === "failed") throw new Error(record.error ?? record.message);
+    if (record.state === "cancelled") throw new CloudCreateCancelled(record.message || "The move was cancelled.");
+    await sleep(SERVER_MOVE_POLL_MS);
+    try {
+      record = await client.readMove(moveId);
+      failures = 0;
+    } catch (error) {
+      failures += 1;
+      if (error instanceof CloudProviderError && error.status === 404) throw new Error("ADE Cloud lost track of the move. Check the computer's card.");
+      if (failures >= SERVER_MOVE_READ_FAILURES) {
+        throw new Error(`ADE can't reach ADE Cloud to follow the move. It goes on there; check the computer's card. (${getErrorMessage(error)})`);
+      }
+    }
+  }
+  const sourceDeleted = record.sourceDeleted === true;
+  const sourceKey = args.machineKey ?? record.sourceMachineKey ?? null;
+  if (sourceDeleted) {
+    // Left behind, the old connection kept its chats pinned to a computer
+    // that no longer exists, and every send there failed.
+    try {
+      deps.forgetMachineConnections?.({ machineKey: sourceKey, instanceId: args.instanceId });
+    } catch (error) {
+      logger.warn?.("cloud.machine_move_connection_left", { error: getErrorMessage(error) });
+    }
+  }
+  const targetId = record.targetInstanceId!;
+  // Kept, the old computer keeps its name; the new one has the name the move gave it.
+  const name = sourceDeleted
+    ? record.sourceName
+    : await client.getInstance(targetId).then((instance) => instance.name ?? record.sourceName, () => record.sourceName);
+  logger.info?.("cloud.machine_moved", { sourceId: args.instanceId, instanceId: targetId, to: args.to, sourceDeleted, onServer: true });
+  return {
+    instanceId: targetId,
+    machineKey: record.targetMachineKey ?? null,
+    name,
+    joined: record.targetMachineKey != null,
+    renamed: sourceDeleted,
+    movedFrom: args.instanceId,
+    projects: record.projects ?? [],
+    transferMs: 0,
+    sourceDeleted,
+  };
+}
+
+/** The move run from this app, as before the server ran it. */
+async function moveHere(
+  deps: CloudCopyDeps,
+  client: CloudProvider,
+  args: CloudMoveArgs & { requestId: string },
+  onProgress: (progress: CloudCreateProgress) => void,
+  options: CloudMoveOptions,
+): Promise<CloudMoveResult> {
+  const { requestId } = args;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const logger: CloudLogger = deps.logger ?? {};
   const progress = (stage: CloudCreateProgress["stage"], message: string, instanceId?: string, approvalUrl?: string) =>
     onProgress({ requestId, stage, message, ...(instanceId ? { instanceId } : {}), ...(approvalUrl ? { approvalUrl } : {}) });
-  const client = await deps.client();
   const source = await client.getInstance(args.instanceId);
   const targetType = cloudInstanceType(args.to);
   if ((source.type ?? "default") === targetType) {
@@ -435,7 +440,7 @@ export async function moveCloudMachine(
     progress("creating", `Waking ${sourceName}…`);
     await wakeThroughTransition(client, source.id);
   }
-  const listed = await client.exec(source.id, "cd \"$HOME\" && ade projects list --json 2>/dev/null", { timeoutMs: 60_000 });
+  const listed = await client.exec(source.id, PROJECTS_LIST_COMMAND, { timeoutMs: 60_000 });
   const projectRoots = readProjectRoots(listed.stdout);
 
   // 1. The new machine, signed in, named for now as the move's target.
@@ -461,43 +466,28 @@ export async function moveCloudMachine(
     // 2. Quiet the old machine's ADE so its databases are copied whole: the
     //    entrypoint holds the brain while `brain.paused` exists.
     progress("joining", `Copying ${sourceName}'s files to the new ${cloudKindLabel(args.to)}…`, target.instanceId);
-    const paused = await client.exec(source.id, [
-      'touch "$ADE_HOME/brain.paused"',
-      'pkill -f "serve --socket $ADE_HOME/sock/ade.sock" || true',
-      "sleep 2",
-      serveHomeCommand(MOVE_SERVE_PORT),
-    ].join("\n"), { timeoutMs: 60_000 });
+    const paused = await client.exec(source.id, pauseAndServeHomeCommand(MOVE_SERVE_PORT), { timeoutMs: 60_000 });
     if (!/started/.test(paused.stdout)) throw new Error("The old machine didn't start handing its files over.");
     const signed = await client.signedUrl(source.id, { port: MOVE_SERVE_PORT, ttlSeconds: 3_600 });
-    const url = `${signed.url.split("?")[0]?.replace(/\/$/, "")}/home.tar.gz?${signed.url.split("?")[1] ?? ""}`;
     const started = Date.now();
     // The new machine's brain, idle during the copy, must not sleep it.
-    await client.exec(target.instanceId, `${cloudHoldCommand("move", MOVE_HOLD_MS)}\n${receiveHomeCommand(url)}`, { timeoutMs: 60_000 });
+    await client.exec(target.instanceId, `${cloudHoldCommand("move", MOVE_HOLD_MS)}\n${receiveHomeCommand(moveArchiveUrl(signed.url))}`, { timeoutMs: 60_000 });
     let exit: number | null = null;
     while (exit == null) {
       if (Date.now() - started > MOVE_TRANSFER_TIMEOUT_MS) throw new Error("Copying the files took too long.");
       await sleep(POLL_MS);
-      const read = await client.exec(target.instanceId, "cat /tmp/ade-move.exit 2>/dev/null", { timeoutMs: 30_000 }).catch(() => null);
+      const read = await client.exec(target.instanceId, MOVE_EXIT_COMMAND, { timeoutMs: 30_000 }).catch(() => null);
       const raw = read?.stdout.trim();
       if (raw) exit = Number(raw);
     }
     if (exit !== 0) {
-      const why = await client.exec(target.instanceId, "tail -n 3 /tmp/ade-move.log", { timeoutMs: 30_000 }).catch(() => null);
+      const why = await client.exec(target.instanceId, MOVE_LOG_TAIL_COMMAND, { timeoutMs: 30_000 }).catch(() => null);
       throw new Error(`copying the files failed (exit ${exit})${why?.stdout.trim() ? `: ${why.stdout.trim().slice(-300)}` : "."}`);
     }
     transferMs = Date.now() - started;
     logger.info?.("cloud.machine_move_copied", { sourceId: source.id, instanceId: target.instanceId, transferMs });
     // 3. Its projects, registered with the new machine's ADE.
-    if (projectRoots.length) {
-      // Each project's database still names the old machine as its sync host;
-      // the marker hands that role to this machine on first open (the same
-      // one the copied-home guard leaves; deviceRegistryService.ts).
-      const add = projectRoots.map((raw) => {
-        const root = raw.replace(/'/g, "");
-        return `mkdir -p '${root}/.ade/secrets' && printf moved > '${root}/.ade/secrets/sync-host-copied'; ade projects add '${root}' >/dev/null 2>&1 || echo "failed ${root}"`;
-      }).join("; ");
-      await client.exec(target.instanceId, add, { timeoutMs: 120_000 });
-    }
+    if (projectRoots.length) await client.exec(target.instanceId, registerProjectsCommand(projectRoots), { timeoutMs: 120_000 });
     // The move's work on the new machine is done: it may sleep when idle
     // again. The 45-minute time-out only covers an ADE that quit mid-move; a
     // failed move deletes the new machine, hold and all.
@@ -507,8 +497,7 @@ export async function moveCloudMachine(
     // The old machine is untouched but for the pause: let its ADE start again,
     // and take the half-made new one away.
     logger.warn?.("cloud.machine_move_failed", { sourceId: source.id, instanceId: target.instanceId, error: getErrorMessage(error) });
-    // The brackets keep pkill from matching this command's own shell.
-    await client.exec(source.id, 'pkill -f "python3 /tmp/ade-move-serve[.]py"; rm -f "$ADE_HOME/brain.paused"', { timeoutMs: 30_000 })
+    await client.exec(source.id, MOVE_UNPAUSE_COMMAND, { timeoutMs: 30_000 })
       // The entrypoint clears a pause two hours old, so a box this misses comes back on its own.
       .catch((unpause: unknown) => logger.warn?.("cloud.machine_move_unpause_failed", { sourceId: source.id, error: getErrorMessage(unpause) }));
     await deleteCloudInstanceConfirmed(client, target.instanceId, { logger, sleep });
@@ -532,7 +521,7 @@ export async function moveCloudMachine(
   }
   if (!sourceDeleted) {
     // The old box stays: let its ADE start again.
-    await client.exec(source.id, 'pkill -f "python3 /tmp/ade-move-serve[.]py"; rm -f "$ADE_HOME/brain.paused"', { timeoutMs: 30_000 })
+    await client.exec(source.id, MOVE_UNPAUSE_COMMAND, { timeoutMs: 30_000 })
       .catch((error: unknown) => logger.warn?.("cloud.machine_move_unpause_failed", { sourceId: source.id, error: getErrorMessage(error) }));
   }
   const sourceKey = args.machineKey ?? source.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null;
@@ -565,17 +554,4 @@ export async function moveCloudMachine(
     transferMs,
     sourceDeleted,
   };
-}
-
-function readProjectRoots(stdout: string): string[] {
-  try {
-    const parsed = JSON.parse(stdout) as unknown;
-    const list = Array.isArray(parsed) ? parsed : (parsed as { projects?: unknown })?.projects;
-    if (!Array.isArray(list)) return [];
-    return list
-      .map((entry) => (entry && typeof entry === "object" ? (entry as { rootPath?: unknown }).rootPath : null))
-      .filter((root): root is string => typeof root === "string" && root.startsWith("/home/node/"));
-  } catch {
-    return [];
-  }
 }

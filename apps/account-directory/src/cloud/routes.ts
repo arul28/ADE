@@ -13,6 +13,8 @@ import { routeReferrals } from "./referrals";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, rememberLaunchSetupDisk, routeLaunches, startServerLaunch, type LaunchRouteDeps } from "./launches";
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
+import { handleMoveStart, routeMoves, type MoveRouteDeps } from "./moves";
+import { handleFreeStart, routeFrees } from "./frees";
 import { serverGitCheck } from "./accountVault";
 import { routeAccountSignIns } from "./accountSignIns";
 import { routeAccountSecrets } from "./accountSecrets";
@@ -416,7 +418,7 @@ async function blockedNow(env: CloudEnv, userId: string): Promise<Response | nul
 }
 
 /** The instance actions that start, restart or wake the computer. */
-const WAKING_ACTIONS: ReadonlySet<string> = new Set(["POST start", "POST update", "POST resize"]);
+const WAKING_ACTIONS: ReadonlySet<string> = new Set(["POST start", "POST update", "POST resize", "POST move", "POST free"]);
 
 /** Writes the status from a provider answer, on change only. */
 async function recordStatus(env: CloudEnv, computer: ComputerRow, status: string, now: number, reason: string): Promise<void> {
@@ -1242,6 +1244,45 @@ async function handleList(env: CloudEnv, userId: string, provider: CloudProvider
   });
 }
 
+/**
+ * A server move's rules, asked before it starts (`handleMoveStart`): the same
+ * ones its create checks again when it makes the new computer
+ * (`createComputer` with `moveFromInstanceId`), so a move that can't run is
+ * refused at once and never makes anything. Null when it may start.
+ */
+async function moveRefusal(env: CloudEnv, source: ComputerRow, size: CloudSize, { now, waitUntil }: CloudRequestContext): Promise<Response | null> {
+  const userId = source.user_id;
+  const { account, outOfHours: empty } = await getAccountContext(env, userId, now);
+  const { refuse } = cloudActionTracker({ env, waitUntil, userId, plan: planIdOf(account), origin: "person", key: source.instance_id, refusedAction: "move", now });
+  const newWork = await newWorkRefusal(env, userId, "move", now, waitUntil);
+  if (newWork) return newWork;
+  if (empty) return refuse({ response: outOfHours(), refusal: "out_of_hours" });
+  if (await freeCapRefuses(env, account, now, waitUntil)) return refuse({ response: cantMakeComputer(), refusal: "owner_limit" });
+  if (source.moving_from != null || await env.DB.prepare("select 1 as busy from cloud_computers where moving_from = ? and deleted_at is null limit 1").bind(source.instance_id).first()) {
+    return fail("computer_busy", "This computer is in the middle of a move. Try again when the move is done.", 409);
+  }
+  if (readPlanCleanupChoiceIds(account).includes(source.instance_id)) {
+    return fail("computer_busy", "ADE is freeing this computer for your plan, so it can't move now.", 409);
+  }
+  const tooBig = tierRefusal(size, source.disk_gb, true);
+  if (tooBig) return refuse(tooBig);
+  // The old computer's disk carries over and isn't counted twice while the move runs.
+  const room = await diskRoom(env, account, await accountDiskGb(env, userId, source.instance_id) + source.disk_gb, now);
+  if (!room.ok) return refuse(room);
+  return null;
+}
+
+function moveDepsFor(env: CloudEnv, provider: CloudProvider | null, ctx: CloudRequestContext): MoveRouteDeps {
+  return {
+    provider,
+    now: ctx.now,
+    waitUntil: ctx.waitUntil,
+    // The step runs after this request: its own clock, and the free plan's GitHub rules settled as a launch's are.
+    createComputer: (userId, launchProvider, extras) => createComputerSettled(env, userId, launchProvider, extras, { now: Date.now(), waitUntil: ctx.waitUntil }),
+    refusal: (source, size) => moveRefusal(env, source, size, ctx),
+  };
+}
+
 const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, ctx: CloudRequestContext) => Promise<Response>> = {
   "POST sleep": (_request, env, computer, provider, { now }) => handleSleepLike(env, computer, provider, now, "user"),
   // The computer's own sleep. `backupReportId` names the backup report it made just before: it rests with those backups.
@@ -1293,6 +1334,18 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   },
   "POST resize": handleResize,
   "POST fork": handleFork,
+  // To the other kind (Standard ↔ Full), run here a step at a time (`moves.ts`).
+  "POST move": (request, env, computer, provider, ctx) => handleMoveStart(request, env, computer, moveDepsFor(env, provider, ctx)),
+  "POST free": (request, env, computer, provider, ctx) => handleFreeStart(request, env, computer, {
+    ...moveDepsFor(env, provider, ctx),
+    // A resting computer wakes to push its work: the same rules as a command's wake (hours, the awake cap).
+    wakeRefusal: async () => {
+      if (isMeteredStatus(computer.status)) return null;
+      const { blocked } = await wakeBlocker(env, computer.user_id, ctx.now);
+      if (blocked) return blocked.response;
+      return (await awakeRoom(env, computer, ctx.now, AWAKE_CAP_WAIT_MS))?.response ?? null;
+    },
+  }),
   "POST exec": handleExec,
   "POST backups": async (_request, _env, computer, provider) => json(await provider.createBackup(computer.instance_id)),
   "POST signed-url": async (request, _env, computer, provider) => {
@@ -1830,6 +1883,12 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
       createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, ctx),
     }));
   }
+  // A server move's record reads with no provider; a cancel undoes what the move made when one is there.
+  if (path === CLOUD_PATHS.moves || path.startsWith(`${CLOUD_PATHS.moves}/`)) {
+    return providerCall(() => routeMoves(request, path, env, caller.userId, moveDepsFor(env, provider, ctx)));
+  }
+  // A server free's record: rows only.
+  if (path.startsWith(`${CLOUD_PATHS.frees}/`)) return routeFrees(request, path, env, caller.userId);
   // The job's rows only; the minute cron does the work.
   if (path === CLOUD_PATHS.projectComputersDelete || path.startsWith(`${CLOUD_PATHS.projectComputersDelete}/`)) {
     return routeProjectComputersDelete(request, path, env, caller.userId, now);

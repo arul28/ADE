@@ -11,7 +11,7 @@ import { CloudMark } from "../remoteTargets/cloudBrand";
 import { refreshCloudMachines } from "../remoteTargets/useCloudMachines";
 import { CloudTierChangeDialog } from "./CloudTierChangeDialog";
 import { keepLaneComputer, sleepLaneComputer } from "./CloudLaneHeaderButton";
-import { cloudLaneChangesAvailable, cloudLaneComputerOfLane } from "./cloudLaneActions";
+import { cloudLaneChangesAvailable, cloudLaneComputerOfLane, cloudLaneMovesAvailable } from "./cloudLaneActions";
 import { CLOUD_MACHINE_STATE_TEXT } from "./CloudLaneConnectionRow";
 import { freeCloudLaneWithConfirm } from "./deleteCloudLane";
 import "./cloudLane.css";
@@ -86,7 +86,7 @@ export function CloudLaneComputerPanel({
             <button type="button" className="kit-btn" data-size="sm" onClick={() => void keepLaneComputer(computer.instanceId, laneName)}>Keep it</button>
           </ManageRow>
         ) : null}
-        {life ? (
+        {life || cloudLaneMovesAvailable() ? (
           <ManageRow icon={<Cpu size={14} />} title="Size" hint="More CPU and memory use hours faster.">
             <button type="button" className="kit-btn" data-size="sm" onClick={() => setSizing(true)}>Change size</button>
           </ManageRow>

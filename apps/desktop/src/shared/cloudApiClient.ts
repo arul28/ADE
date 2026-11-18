@@ -59,6 +59,7 @@ import {
   type CloudAutomationSummary,
   type CloudChatRow,
   type CloudChatTranscriptPage,
+  type CloudFreeRecord,
   type CloudInstance,
   type CloudLaunchJoinRequest,
   type CloudLaunchJoinResult,
@@ -70,6 +71,9 @@ import {
   type CloudLaunchStagesUpdate,
   type CloudLaunchStartRequest,
   type CloudModelCatalog,
+  type CloudMoveList,
+  type CloudMoveRecord,
+  type CloudMoveRequest,
   type CloudProjectComputersDeleteStarted,
   type CloudProjectComputersJob,
   type CloudProjectComputersPreview,
@@ -248,6 +252,29 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       request<{ status: string }>("POST", `${instancePath(instanceId)}/resize`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     deleteComputer: (instanceId: string, args: { who?: string | null; reason?: string | null } = {}) =>
       request<{ deleted: true }>("DELETE", instancePath(instanceId), { body: args }),
+    /** Runs a shell command on the computer; the server wakes a sleeping one for it (that uses hours). */
+    exec: (instanceId: string, command: string, timeoutMs: number) =>
+      request<{ exitCode: number; stdout: string; stderr: string }>("POST", `${instancePath(instanceId)}/exec`, {
+        body: { command, timeoutMs },
+        timeoutMs: timeoutMs + 15_000,
+      }),
+
+    /* ---- "Free the computer, keep the lane", run by the server (`frees.ts`) ---- */
+    /** Answers at once; the free goes on with no app open. 201 new, 200 the same `freeId` again; 404 on an older server. */
+    startFree: (instanceId: string, freeId: string) =>
+      request<CloudFreeRecord>("POST", `${instancePath(instanceId)}/free`, { body: { freeId } }),
+    free: (freeId: string) => request<CloudFreeRecord>("GET", `${CLOUD_PATHS.frees}/${encodeURIComponent(freeId)}`),
+
+    /* ---- A computer moved to the other kind, run by the server (`moves.ts`) ---- */
+
+    /** Answers at once; the move goes on with no app open. 404 on an older server, 409 `server_move_unavailable` while moves are off. */
+    startMove: (instanceId: string, move: CloudMoveRequest) =>
+      request<CloudMoveRecord>("POST", `${instancePath(instanceId)}/move`, { body: move }),
+    move: (moveId: string) => request<CloudMoveRecord>("GET", `${CLOUD_PATHS.moves}/${encodeURIComponent(moveId)}`),
+    /** Running moves, and those that ended in the last day; null on an older server. */
+    moves: async () => (await orNullOn404(() => request<CloudMoveList>("GET", CLOUD_PATHS.moves)))?.moves ?? null,
+    /** Only before the copy starts (409 `move_started` after). */
+    cancelMove: (moveId: string) => request<CloudMoveRecord>("DELETE", `${CLOUD_PATHS.moves}/${encodeURIComponent(moveId)}`),
 
     /* ---- Provider sign-ins on a computer ---- */
     startSignIn: (instanceId: string, provider: string) =>
@@ -307,6 +334,8 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
         throw error;
       }
     },
+    deleteSavedChat: (machineKey: string, chatId: string) =>
+      request<{ deleted?: boolean }>("DELETE", `${CLOUD_PATHS.chats}/${encodeURIComponent(machineKey)}/${encodeURIComponent(chatId)}`),
 
     /* ---- ADE without a computer: reads (never wake) ---- */
     /** One project's whole ADE Cloud view. Null from an older server: read the separate lists as before. */

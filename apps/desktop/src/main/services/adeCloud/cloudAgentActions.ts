@@ -127,7 +127,7 @@ type CloudMadeBy = { madeByChat?: string | null; madeByAgent?: CloudAgentMaker |
 export type CloudDesktopBridge = {
   create(args: CloudCreateMachineArgs & CloudMadeBy): Promise<CloudCreateMachineResult>;
   copy(args: { instanceId: string; name?: string | null; shape?: CloudShapeId | null } & CloudMadeBy): Promise<CloudCreateMachineResult & { copiedFrom: string; forkMs: number }>;
-  move(args: { instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null } & CloudMadeBy): Promise<CloudMoveResult>;
+  move(args: { instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null; selfApprove?: boolean } & CloudMadeBy): Promise<CloudMoveResult>;
 };
 
 export type CloudChatApprovals = {

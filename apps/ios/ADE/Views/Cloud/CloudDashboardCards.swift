@@ -35,6 +35,10 @@ struct CloudDashboardScreen: View {
             CloudPlanMomentCard(moment: moment) { self.moment = nil }
           }
           CloudNotices(store: store)
+          // A move of a computer to the other kind, while it runs (and its reason once it failed).
+          ForEach(store.shownMoves) { move in
+            CloudMoveCard(store: store, move: move)
+          }
           CloudLanesCard(store: store, pushes: pushes)
           CloudSavedLaneWorkCard(store: store)
           if let account = store.account, account.catalog != nil {

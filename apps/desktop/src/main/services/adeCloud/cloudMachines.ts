@@ -38,27 +38,12 @@ type Logger = {
 /** The metadata key ADE writes once a box joins the account: its ADE machine key. */
 export { CLOUD_MACHINE_KEY_METADATA } from "../../../shared/cloudMachineOfInstance";
 
-/**
- * The machine keys of the computers a move replaced, oldest first, joined by
- * commas. A lane's delete takes their saved chats too. A copy does not carry
- * it: a copy's lane has its own chats.
- */
-export const CLOUD_FORMER_MACHINE_KEYS_METADATA = "ade_former_machine_keys";
-
-/** A move keeps at most this many former keys, so the value stays short. */
-const FORMER_MACHINE_KEYS_KEPT = 16;
-
-/** The former machine keys a computer's metadata lists (`CLOUD_FORMER_MACHINE_KEYS_METADATA`). */
-export function formerMachineKeysOf(metadata: Record<string, string> | null | undefined): string[] {
-  return (metadata?.[CLOUD_FORMER_MACHINE_KEYS_METADATA] ?? "").split(",").map((key) => key.trim()).filter(Boolean);
-}
-
-/** The value a move writes on the new computer: the old one's former keys, then its own key. */
-export function formerMachineKeysAfterMove(source: Record<string, string>, sourceKey: string | null): string {
-  const keys = formerMachineKeysOf(source);
-  if (sourceKey) keys.push(sourceKey);
-  return keys.slice(-FORMER_MACHINE_KEYS_KEPT).join(",");
-}
+/** The machine keys of the computers a move replaced: one copy, shared with the server's move. */
+export {
+  CLOUD_FORMER_MACHINE_KEYS_METADATA,
+  formerMachineKeysAfterMove,
+  formerMachineKeysOf,
+} from "../../../../../account-directory/src/cloud/computerCommands";
 
 /** Who a read of the account's computers was asked for, and when (`startRead`). */
 export type CloudRead = { accountId: string | null; startedAtMs: number };

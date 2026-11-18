@@ -721,9 +721,6 @@ function laneMenuActions(lane: DashLane, args: {
   }
   if (life) {
     actions.push({ key: "delete", label: lane.noLane ? "Delete computer" : "Delete lane", icon: <Trash size={13} />, onSelect: args.onDelete, disabled: args.busy, danger: true });
-  } else if (isWebClientMode()) {
-    // ADE Web: say where these are instead of leaving the person to look.
-    actions.push({ key: "desktop", label: "Size, free and delete: in the ADE desktop app", icon: <Desktop size={13} />, onSelect: () => {}, disabled: true });
   }
   return actions;
 }

@@ -32,6 +32,12 @@
  *   PUT    /cloud/instances/:id/name           { ok: true }
  *   PUT    /cloud/instances/:id/metadata       { ok: true }
  *   POST   /cloud/instances/:id/exec           { exitCode, stdout, stderr }
+ *   POST   /cloud/instances/:id/move           CloudMoveRecord   (CloudMoveRequest; 201 new, 200 the same move again or the move of this computer already running)
+ *   POST   /cloud/instances/:id/free           CloudFreeRecord   ({ freeId }: push every lane's work, then delete the computer and keep its lane; 201 new, 200 the same id again)
+ *   GET    /cloud/frees/:free                  CloudFreeRecord
+ *   GET    /cloud/moves                        CloudMoveList   (moves still running, and those that ended in the last day)
+ *   GET    /cloud/moves/:move                  CloudMoveRecord
+ *   DELETE /cloud/moves/:move                  CloudMoveRecord   (cancel; only before the copy starts, 409 `move_started` after)
  *   POST   /cloud/billing/checkout             CloudCheckoutResult   409 `already_paid`, `cleanup_does_not_fit`, `cleanup_changed`, `cleanup_running`
  *   POST   /cloud/billing/plan-cleanup         CloudAccountState   ({ planId, push, instanceIds }) 409 `nothing_to_free`, `cleanup_does_not_fit`, `cleanup_changed`, `cleanup_running`
  *   POST   /cloud/billing/portal               { url }   409 `no_billing`
@@ -45,7 +51,7 @@
  *   DELETE /cloud/chats/:machine/lanes/:lane            { deleted }
  *   GET    /cloud/lanes/without-computer                { lanes: CloudLaneWithoutComputer[] }
  *   DELETE /cloud/lanes/without-computer/:lane          { forgotten }
- *   POST   /cloud/launches                              CloudLaunchRecord   (start: CloudServerLaunchRequest; 201 new, 200 the same launch again)
+ *   POST   /cloud/launches                              CloudLaunchRecord   (start: CloudServerLaunchRequest, or CloudMachineLaunchRequest for a computer with nothing on it; 201 new, 200 the same launch again)
  *   PUT    /cloud/launches/:launch/files/:file          { fileId, sizeBytes }   (raw body, before the start)
  *   GET    /cloud/launches/:launch                      CloudLaunchRecord   (the caller, and the computer once it signed in)
  *   PUT    /cloud/launches/:launch/stages               CloudLaunchRecord   (from the computer: CloudLaunchStagesUpdate)
@@ -183,6 +189,9 @@ export const CLOUD_PATHS = {
   referralsRedeem: "/cloud/referrals/redeem",
   /** The server launcher (`launches.ts`): a lane on a new computer for a caller with no computer. */
   launches: "/cloud/launches",
+  /** A computer moved to the other kind by the server (`moves.ts`): `GET` the list, `GET`/`DELETE` `/:move`. Started with `POST /cloud/instances/:id/move`. */
+  moves: "/cloud/moves",
+  frees: "/cloud/frees",
   /** The account vault's ADE Cloud sign-ins, for the web (`accountSignIns.ts`): status only, never a value. */
   signIns: "/cloud/sign-ins",
   /** Models per provider for a client with no computer (`models.ts`). */
@@ -1747,7 +1756,7 @@ export const CLOUD_LAUNCH_MAX_PROMPT_CHARS = 100_000;
  * `launch.kind`: a server or computer that predates it runs the lane alone
  * instead of refusing the launch.
  */
-export type CloudLaunchKind = "chat" | "lane";
+export type CloudLaunchKind = "chat" | "lane" | "machine";
 /**
  * The most an ADE app's full launch args (`CloudServerLaunchRequest.launch`)
  * may weigh, as JSON. The whole start is one request body of at most 256 KB,
@@ -1824,7 +1833,8 @@ export function cloudAutoSizeRefusalSentence(reason: CloudAutoSizeRefusal): stri
 
 export type CloudServerLaunchRequest = {
   launchId: string;
-  kind: CloudLaunchKind;
+  /** A computer with nothing on it is its own request (`CloudMachineLaunchRequest`). */
+  kind: Exclude<CloudLaunchKind, "machine">;
   sizeId: CloudTierId;
   /** How `sizeId` was chosen (`CloudLaunchSizeChoice`); left out is `picked`. */
   sizeChoice?: CloudLaunchSizeChoice;
@@ -1961,6 +1971,7 @@ export const CLOUD_LAUNCH_MAX_STAGES = 16;
 export type CloudLaunchRecord = {
   launchId: string;
   state: CloudLaunchState;
+  /** `machine`: a computer that only joins the account (`CloudMachineLaunchRequest`); its `request` is null and `machine` says what it is. */
   kind: CloudLaunchKind | null;
   /** The size its computer is now: Medium once ADE moved a default Small up (`autoSize`); `request.sizeId` keeps what was asked. */
   sizeId: CloudTierId | null;
@@ -1981,9 +1992,144 @@ export type CloudLaunchRecord = {
   error: string | null;
   /** While `waiting_for_sign_in`: the provider sign-in the launch waits on. Absent from an older server. */
   signIn?: CloudLaunchSignIn | null;
+  /** A `machine` launch's computer; null for any other kind. Absent from an older server. */
+  machine?: CloudMachineLaunchFacts | null;
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
+};
+
+/**
+ * `POST /cloud/launches` with `kind: "machine"`: a new computer that only
+ * joins the account (no project, no lane, no chat), from a person on the web
+ * or the phone, under the same limits as any new computer. Its computer signs
+ * in and reports `done` with the `computer` and `join` stages; it never reads
+ * a repository. The launch never shows in `GET /cloud/launches?active=1`
+ * (a build that knows only chats and lanes reads that list). Refused with
+ * 409 `machine_launch_unavailable` while ADE Cloud's computers can't run one
+ * yet (an older ADE on the image).
+ */
+export type CloudMachineLaunchRequest = {
+  launchId: string;
+  kind: "machine";
+  /** Left out: Small. A Full computer is `large` or `xlarge` (`CloudTierId`). */
+  sizeId?: CloudTierId;
+  /** Left out: "ADE computer". */
+  name?: string;
+  /** The app's update track; left out is chosen as for any launch. */
+  channel?: CloudUpdateChannel;
+};
+
+/** What a `machine` launch made. */
+export type CloudMachineLaunchFacts = {
+  type: "default" | "vm";
+  /** The computer's name when it was made. */
+  name: string;
+  /** The computer a move made this one for (`CloudMoveRecord`); null for a new computer. */
+  movedFrom: string | null;
+};
+
+/* ---- A computer moved to the other kind, run by the server ---- */
+
+/** Standard (`default`) or Full (`vm`), as a person names them. */
+export type CloudMoveKind = "standard" | "full";
+
+/**
+ * `POST /cloud/instances/:id/move`. `moveId` is a UUID and idempotent: the
+ * same id answers the same move. A person's choice only: an agent, an
+ * automation or ADE MCP asking is refused (403 `person_only`); a person's
+ * approval of an agent's request is the person's (`origin: "person"`).
+ */
+export type CloudMoveRequest = {
+  moveId: string;
+  to: CloudMoveKind;
+  /** The new computer's size, of the new kind. Left out: the same CPU and memory as now (Small when that kind has no such size). */
+  sizeId?: CloudTierId;
+  /** Instead of `sizeId`: the new kind's CPU and memory, for a size outside the four (a desktop's 2 CPU, 4 GB full computer). */
+  resources?: { cpu: number; memoryGb: number };
+  /** Who asks; left out is the person. */
+  origin?: "person" | "agent" | "automation" | "mcp";
+  /**
+   * `now` (the default) stops a running turn and saves the chats right away;
+   * `idle` waits up to a day for the agent to finish first.
+   */
+  timing?: "now" | "idle";
+  /** False: the caller saved the chats itself just before, so the move doesn't stop them again. Left out is true. */
+  save?: boolean;
+};
+
+/**
+ * - `making`: waiting for the agent (with `timing: "idle"`) or making the new computer.
+ * - `joining`: the new computer signs in to the account.
+ * - `needs_approval`: its sign-in stopped on a page a person must confirm; open `approvalUrl`.
+ * - `copying`: the old computer's files are copied into the new one (it is paused meanwhile).
+ * - `finishing`: projects registered, the old computer deleted, the new one renamed.
+ * - `done`, `failed`, `cancelled`: over. A failure before the old computer was
+ *   deleted leaves it as it was and deletes the new one.
+ */
+export type CloudMoveState = "making" | "joining" | "needs_approval" | "copying" | "finishing" | "done" | "failed" | "cancelled";
+
+export type CloudMoveRecord = {
+  moveId: string;
+  sourceInstanceId: string;
+  /** The computer's name when the move began; the new computer takes it at the end. */
+  sourceName: string;
+  targetInstanceId: string | null;
+  to: CloudMoveKind;
+  /** The new computer's size; null when it isn't one of the four sizes. */
+  sizeId: CloudTierId | null;
+  state: CloudMoveState;
+  /** One plain sentence for the UI. */
+  message: string;
+  approvalUrl: string | null;
+  /** One plain sentence when it failed. */
+  error: string | null;
+  /** Once done: whether the old computer is gone (false: it was kept, asleep; delete it from its card). Null before. */
+  sourceDeleted: boolean | null;
+  /** The new computer's account machine key, once it signed in. */
+  targetMachineKey?: string | null;
+  /** The old computer's account machine key when the move began. */
+  sourceMachineKey?: string | null;
+  /** The projects registered on the new computer, once the copy is in. */
+  projects?: string[];
+  /** Whether a cancel is still possible (before the copy starts). */
+  cancellable?: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/** `GET /cloud/moves`: newest first, at most 20. */
+export type CloudMoveList = { moves: CloudMoveRecord[] };
+
+/* ---- A computer freed (its lane kept), run by the server ---- */
+
+/**
+ * - `checking`: woken if it rests (uses hours), and nothing may be running on it.
+ * - `pushing`: every lane's work is committed and pushed, then read once more.
+ * - `deleting`: the lane is kept and the computer deleted.
+ * - `done`, `failed`, `cancelled`: over. A failure deletes nothing.
+ */
+export type CloudFreeState = "checking" | "pushing" | "deleting" | "done" | "failed" | "cancelled";
+
+export type CloudFreeRecord = {
+  freeId: string;
+  instanceId: string;
+  /** The computer's name when it began. */
+  name: string;
+  laneId: string | null;
+  laneName: string | null;
+  /** The branch the lane goes on from (the push names it). */
+  branchRef: string | null;
+  state: CloudFreeState;
+  /** One plain sentence for the UI. */
+  message: string;
+  /** One plain sentence when it failed. */
+  error: string | null;
+  /** Once done: whether ADE Cloud kept the lane (its next message makes a new computer on the branch). Null before. */
+  laneKept: boolean | null;
+  cancellable: boolean;
+  createdAt: number;
+  updatedAt: number;
 };
 
 /**

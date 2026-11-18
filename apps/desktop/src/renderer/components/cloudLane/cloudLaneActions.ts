@@ -16,7 +16,6 @@ import { rootAppStoreApi } from "../../state/appStore";
 import { adeCloudLaneComputerForMachine, forgetCloudLaneComputer, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { resolveAdeCloudLaneBinding } from "../chat/adeCloudLaneBinding";
 import { isAdeAvailable } from "../../lib/adeAvailability";
-import { isWebClientMode } from "../../lib/webClientMode";
 
 /**
  * What ADE does to a cloud lane's computer, from every place that shows one
@@ -29,7 +28,9 @@ import { isWebClientMode } from "../../lib/webClientMode";
  * Clear caches runs ON the lane's computer, so it resolves that computer's
  * binding and passes it as the pin.
  *
- * Each one is checked for: the web app and an older preload lack them.
+ * ADE Web answers each one through the account server with its own account
+ * token (`webclient/adapter/cloudLaneLifeWeb.ts`), with no computer of the
+ * person's. Each one is checked for: an older preload lacks them.
  */
 
 export const CLOUD_LANE_LIFE_UNAVAILABLE = "Do this in the ADE desktop app. This window can't change ADE Cloud lanes.";
@@ -52,12 +53,18 @@ export function cloudLaneLifeAvailable(): boolean {
 
 /**
  * Whether this window can change a cloud lane's computer: delete it, free it,
- * change its size. ADE Web's `laneLife` answers only the account reads (the
- * lanes kept without a computer, forget one); the rest runs in the desktop
- * app, so a web page offers none of them.
+ * change its size in place. The desktop and ADE Web both can.
  */
 export function cloudLaneChangesAvailable(): boolean {
-  return cloudLaneLifeAvailable() && !isWebClientMode();
+  return cloudLaneLifeAvailable();
+}
+
+/**
+ * Whether this window can move a lane's computer to the other kind (Standard
+ * ↔ Full). ADE's server runs a move; every window that has `laneLife` offers it.
+ */
+export function cloudLaneMovesAvailable(): boolean {
+  return cloudLaneLifeAvailable();
 }
 
 /** Whether the computer holds work that isn't on GitHub (null: the check couldn't run). */

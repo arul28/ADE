@@ -30,15 +30,17 @@ import {
   type CloudLaunchSizeChoice,
   type CloudLaunchStageStatus,
   type CloudLaunchState,
+  type CloudMachineLaunchFacts,
   type CloudServerLaunchRequest,
   type CloudTierId,
+  type CloudUpdateChannel,
   CLOUD_REMOTE_SIGN_IN_KINDS,
   cloudRemoteSignInOf,
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
-import { WAKE_PORT, cloudSizeForTier } from "./plans";
+import { WAKE_PORT, cloudSizeForTier, type CloudSize } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
-import { LAUNCH_COMPUTER_DELETED, deleteComputer, logCloud, ownedComputer, parseJsonColumn, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
+import { LAUNCH_COMPUTER_DELETED, deleteComputer, logCloud, ownedComputer, parseJsonColumn, readSetting, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome } from "./createOutcome";
 import { launchChannel, readUpdateChannel, readUpdateTargets } from "./updates";
 import { markKeepLaneStatement } from "./lanesWithoutComputer";
@@ -382,14 +384,15 @@ export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
   return {
     launchId: row.launch_id,
     state: neverJoined || retryStopped ? "failed" : retrying ? "making" : row.state as CloudLaunchState,
-    kind: row.kind === "chat" || row.kind === "lane" ? row.kind : null,
+    kind: row.kind === "chat" || row.kind === "lane" || row.kind === "machine" ? row.kind : null,
     sizeId: (row.size_id as CloudTierId | null) ?? null,
     autoSize: autoSizeOf(row),
     projectOrigin: row.project_origin,
     laneId: row.lane_id,
     laneName: row.lane_name,
     instanceId: retrying ? null : row.instance_id,
-    request: parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" }),
+    // A computer with nothing on it has no lane's facts: an app that reads `request` sees none.
+    request: row.kind === "machine" ? null : parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" }),
     approval: !neverJoined && row.state === "needs_approval" && row.approval_url && row.join_user_code
       ? { url: row.approval_url, userCode: row.join_user_code }
       : null,
@@ -397,9 +400,21 @@ export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
     sessionId: row.session_id,
     error: neverJoined ? JOIN_NEVER_FINISHED : retryStopped ? RETRY_STOPPED : row.error,
     signIn: row.state === "waiting_for_sign_in" ? signInOfRow(row) : null,
+    machine: row.kind === "machine" ? machineFactsOf(row) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     expiresAt: row.expires_at,
+  };
+}
+
+/** A `machine` launch's facts, kept in its `request_json`. */
+function machineFactsOf(row: LaunchRow): CloudMachineLaunchFacts | null {
+  const raw = parseJsonColumn<Record<string, unknown> | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" });
+  if (!raw) return null;
+  return {
+    type: raw.type === "vm" ? "vm" : "default",
+    name: typeof raw.name === "string" ? raw.name : "ADE computer",
+    movedFrom: typeof raw.movedFrom === "string" ? raw.movedFrom : null,
   };
 }
 
@@ -577,7 +592,7 @@ export async function activeContinueLaunch(env: CloudEnv, userId: string, laneId
   `).bind(userId, laneId, chatId).first<LaunchRow>();
 }
 
-async function readLaunch(env: CloudEnv, launchId: string): Promise<LaunchRow | null> {
+export async function readLaunch(env: CloudEnv, launchId: string): Promise<LaunchRow | null> {
   return await env.DB.prepare("select * from cloud_launches where launch_id = ?").bind(launchId).first<LaunchRow>();
 }
 
@@ -618,6 +633,7 @@ const computerNameOf = (laneName: string): string => laneName.replace(/\s+/g, " 
 async function handleStart(request: Request, env: CloudEnv, userId: string, deps: LaunchRouteDeps): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  if (body.kind === "machine") return await handleMachineStart(env, userId, body, deps);
   // One of the account's projects, named by id (the web, the phone): its GitHub origin.
   const project = body.project && typeof body.project === "object" ? body.project as Record<string, unknown> : null;
   if (project?.accountProjectId != null) {
@@ -925,6 +941,149 @@ export async function startServerLaunch(
   return json(recordOf(after, now), outcome.kind === "made" ? 201 : 200);
 }
 
+/* ---- A computer with nothing on it (`kind: "machine"`) ---- */
+
+/**
+ * The server setting that turns `machine` launches on: the ADE version that
+ * runs them (`cloudBootLaunch.ts` signs in and stops). Unset (the default),
+ * every `machine` launch, and so every server move, is refused with
+ * `machine_launch_unavailable`, and an ADE app falls back to its own way.
+ * Set, it is the new computer's `ADE_MIN_VERSION`: the image's entrypoint
+ * installs it before the brain's first start, so an image whose own ADE
+ * predates `machine` never reads the launch.
+ */
+export const MACHINE_LAUNCH_MIN_VERSION_SETTING = "machine_launch_min_version";
+/** The same shape as a client's `ADE_MIN_VERSION` (`CLIENT_ENV` in routes.ts). */
+const ADE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/;
+
+/** The ADE version a `machine` launch's computer installs, or null while they're off. */
+export async function machineLaunchMinVersion(env: CloudEnv): Promise<string | null> {
+  const value = (await readSetting(env, MACHINE_LAUNCH_MIN_VERSION_SETTING))?.trim() ?? "";
+  return ADE_VERSION.test(value) ? value : null;
+}
+
+export const MACHINE_LAUNCH_UNAVAILABLE = "machine_launch_unavailable";
+const machineLaunchUnavailable = () =>
+  fail(MACHINE_LAUNCH_UNAVAILABLE, "Making a computer from here needs the next ADE update. Try again after it ships.", 409);
+
+/** A `machine` launch to start: from `POST /cloud/launches`, or a move's new computer (`moves.ts`). */
+export type MachineLaunchInput = {
+  launchId: string;
+  size: CloudSize;
+  name: string;
+  /** The app's update track, as asked; left out is chosen as for any launch (`launchChannel`). */
+  channel: CloudUpdateChannel | null;
+  /** A move: the computer this one replaces. Its disk carries over, under the plan's limits as a move. */
+  moveFromInstanceId?: string | null;
+  /** More metadata for the computer (a move's lane facts, `ade_moved_from`). */
+  metadata?: Record<string, string>;
+};
+
+/** `POST /cloud/launches` with `kind: "machine"`: a person's new computer, from the web or the phone. */
+async function handleMachineStart(env: CloudEnv, userId: string, body: Record<string, unknown>, deps: LaunchRouteDeps): Promise<Response> {
+  const launchId = typeof body.launchId === "string" ? body.launchId.trim().toLowerCase() : "";
+  if (!UUID.test(launchId)) return badRequest("A launch needs a launch id (a UUID).");
+  const size = body.sizeId == null ? cloudSizeForTier("small") : cloudSizeForTier(body.sizeId);
+  if (!size) return badRequest("That size isn't one ADE Cloud offers.");
+  const madeBy = body.madeBy && typeof body.madeBy === "object" ? body.madeBy as Record<string, unknown> : null;
+  if (madeBy && madeBy.kind !== "person") return fail("person_only", "Only you can make a new computer this way. Ask in ADE.", 403);
+  if (body.name != null && !shortString(body.name, 60)) return badRequest("That name isn't valid.");
+  return await startMachineLaunch(env, userId, {
+    launchId,
+    size,
+    name: shortString(body.name, 60) ?? "ADE computer",
+    channel: readUpdateChannel(body.channel),
+  }, deps);
+}
+
+/**
+ * Starts a `machine` launch: the same one create path, join code and records
+ * as a lane's (`startServerLaunch`), with no project, lane or chat. 201 for a
+ * computer this call made, 200 for the same launch again, or the refusal. The
+ * computer signs in, writes its machine key, and reports `done`.
+ */
+export async function startMachineLaunch(env: CloudEnv, userId: string, input: MachineLaunchInput, deps: LaunchRouteDeps): Promise<Response> {
+  const { now } = deps;
+  const { launchId, size } = input;
+  const existing = await readLaunch(env, launchId);
+  if (existing && (existing.user_id !== userId || existing.kind !== "machine")) return badRequest("That launch id can't be used.");
+  // The same launch again answers what it is; a start whose create didn't finish goes on into the create's replay.
+  if (existing && !(existing.state === "making" && !existing.instance_id)) return json(recordOf(existing, now), 200);
+  const minVersion = await machineLaunchMinVersion(env);
+  if (!minVersion) return machineLaunchUnavailable();
+  if (!existing) {
+    const refusal = await deps.refuseNewLaunch?.();
+    if (refusal) return refusal;
+  }
+  if (!deps.provider) return fail("unavailable", "ADE Cloud can't make a computer right now. Try again soon.", 503);
+  if (!env.CLOUD_LAUNCH_JOIN_KEY?.trim()) {
+    reportCloudFailure("cloud.launch_join_key_missing");
+    return fail("unavailable", "ADE Cloud can't make a computer right now. Try again soon.", 503);
+  }
+  let salt = existing?.join_salt ?? newJoinSalt();
+  if (!existing) {
+    const facts = { launchId, kind: "machine", sizeId: size.tier, type: size.type, name: input.name, movedFrom: input.moveFromInstanceId ?? null };
+    const firstHash = await sha256Hex((await joinCodeOf(env, launchId, salt))!);
+    const claimed = await env.DB.prepare(`
+      insert into cloud_launches (launch_id, user_id, state, kind, size_id, request_json, join_salt, join_hash, created_at, updated_at, expires_at)
+      values (?, ?, 'making', 'machine', ?, ?, ?, ?, ?, ?, ?) on conflict (launch_id) do nothing
+    `).bind(launchId, userId, size.tier, JSON.stringify(facts), salt, firstHash, now, now, now + CLOUD_LAUNCH_RECORD_TTL_MS).run();
+    if ((claimed.meta?.changes ?? 0) !== 1) {
+      // Another start of the same id got in first: answer it, or go on into its create's replay.
+      const row = await readLaunch(env, launchId);
+      if (!row || row.user_id !== userId || row.kind !== "machine") return badRequest("That launch id can't be used.");
+      if (!(row.state === "making" && !row.instance_id)) return json(recordOf(row, now), 200);
+      salt = row.join_salt ?? salt;
+    }
+  }
+  const joinCode = (await joinCodeOf(env, launchId, salt))!;
+  const joinHash = await sha256Hex(joinCode);
+  const joinExpiresAt = now + CLOUD_LAUNCH_JOIN_TTL_MS;
+  const outcome = await deps.createComputer(userId, deps.provider, {
+    body: {
+      name: computerNameOf(input.name),
+      type: size.type,
+      resources: { cpu: size.cpu, memory: size.memoryGb },
+      metadata: {
+        ...input.metadata,
+        [CLOUD_LAUNCH_METADATA.launchId]: launchId,
+        created_by: "ade",
+        // The same id as the launch: a repeated start finds the computer it made.
+        ade_request_id: launchId,
+      },
+      publicPorts: [{ port: WAKE_PORT, label: "ADE wake" }],
+      channel: launchChannel(await readUpdateTargets(env), input.channel),
+      ...(input.moveFromInstanceId ? { moveFromInstanceId: input.moveFromInstanceId } : {}),
+    },
+    // The version that knows `machine`, installed before the first brain start.
+    serverEnv: { [CLOUD_LAUNCH_ENV.launchId]: launchId, [CLOUD_LAUNCH_ENV.join]: joinCode, ADE_MIN_VERSION: minVersion },
+    onMade: (instance) => [
+      env.DB.prepare(`
+        update cloud_launches set instance_id = ?, join_hash = ?, join_expires_at = ?, join_used_at = null, join_rejoins = 0, join_user_code = null,
+          state = case when state = 'making' then 'joining' else state end, updated_at = ?
+        where launch_id = ?
+      `).bind(instance.id, joinHash, joinExpiresAt, now, launchId),
+    ],
+  });
+  if (outcome.kind === "replayed") {
+    await env.DB.prepare(`
+      update cloud_launches set instance_id = coalesce(instance_id, ?), join_expires_at = coalesce(join_expires_at, ?),
+        state = case when state = 'making' then 'joining' else state end, updated_at = ?
+      where launch_id = ?
+    `).bind(outcome.instance.id, joinExpiresAt, now, launchId).run();
+  } else if (outcome.kind !== "made") {
+    // Refused (hours, disk, the move's own rules): nothing was made, and the same start may be sent again.
+    if (outcome.kind === "refused") {
+      await env.DB.prepare("delete from cloud_launches where launch_id = ? and state = 'making' and instance_id is null").bind(launchId).run();
+    }
+    return createAnswerOf(outcome);
+  }
+  const after = (await readLaunch(env, launchId))!;
+  if (after.state === "cancelled" && after.instance_id) await deleteLaunchComputer(env, deps.provider, after, deps.now);
+  logCloud("cloud.launch_started", { userId, launchId, instanceId: after.instance_id, launchKind: "machine", replay: outcome.kind === "replayed" });
+  return json(recordOf(after, now), outcome.kind === "made" ? 201 : 200);
+}
+
 /* ---- Files ---- */
 
 async function handlePutFile(request: Request, env: CloudEnv, userId: string, launchId: string, fileId: string, now: number): Promise<Response> {
@@ -1165,6 +1324,9 @@ async function handleActiveList(env: CloudEnv, userId: string, now: number): Pro
   const rows = (await env.DB.prepare(`
     select * from cloud_launches
     where user_id = ? and state not in ('draft', 'done', 'cancelled') and (state <> 'failed' or updated_at > ?)
+      -- A computer with nothing on it is followed by its own caller (a move, the phone's new computer), never listed:
+      -- an older app reads every row here as a chat or a lane.
+      and coalesce(kind, '') <> 'machine'
       -- A launch still "in progress" on a deleted computer is not (one left from before the delete closed it).
       -- A failure stays for its window with its error and Retry; a Retry in flight stays too.
       and (state in ('failed', 'retrying')

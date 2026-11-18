@@ -50,14 +50,8 @@ function handOverWakeUrlCommand(instanceId: string, url: string): string {
   ].join(" && ");
 }
 
-/** Shell: keeps the computer awake for `reason` (`holdCloudBusy` in cloudKeepAwake.ts); expires by itself. */
-export function cloudHoldCommand(reason: string, ttlMs: number): string {
-  return `d="$ADE_HOME/cloud/holds"; mkdir -p "$d"; printf '{"reason":"${reason}","until":%s}' "$(( $(date +%s%3N) + ${Math.round(ttlMs)} ))" > "$d/${reason}.json"`;
-}
-
-export function cloudReleaseHoldCommand(reason: string): string {
-  return `rm -f "$ADE_HOME/cloud/holds/${reason}.json"`;
-}
+/** Shell holds on sleep (`holdCloudBusy` in cloudKeepAwake.ts): one copy, shared with the server's move. */
+export { cloudHoldCommand, cloudReleaseHoldCommand } from "../../../../../account-directory/src/cloud/computerCommands";
 
 export type CloudEnableSleepResult =
   /** The provider's timer is on at its floor (`CLOUD_BACKSTOP_SLEEP_MINUTES`); the box's brain sleeps it sooner. */

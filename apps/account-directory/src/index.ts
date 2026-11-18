@@ -5,6 +5,7 @@ import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
 import { expireCloudLaunches, failUnjoinedLaunches } from "./cloud/launches";
 import { runProjectComputerDeletes } from "./cloud/projectComputers";
+import { runCloudMoves } from "./cloud/moves";
 import { sweepStaleBackupUploads } from "./cloud/laneBackups";
 import { runPlanCleanupPicks } from "./cloud/planCleanup";
 import { runIdleCleanup } from "./cloud/idleCleanup";
@@ -243,6 +244,17 @@ export default Sentry.withSentry(sentryOptions, {
             provider,
             // The free plan's GitHub rules are settled first, as a launch's request settles them.
             createComputer: (userId, launchProvider, extras) => createComputerSettled(env, userId, launchProvider, extras, { now: Date.now(), waitUntil }),
+          });
+        }),
+        // The server's own jobs (a computer moved to the other kind): one or
+        // two short steps each, a few a tick. One indexed read when none is due.
+        settle("cloud_jobs", async () => {
+          const key = env.AGENT37_API_KEY?.trim();
+          if (!key) return;
+          const waitUntil = (promise: Promise<unknown>) => ctx.waitUntil(promise);
+          await runCloudMoves(env, {
+            provider: createCloudProvider(key),
+            createComputer: (userId, jobProvider, extras) => createComputerSettled(env, userId, jobProvider, extras, { now: Date.now(), waitUntil }),
           });
         }),
         // "Delete the project's cloud computers" jobs: a few computers a tick.
