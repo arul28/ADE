@@ -61,8 +61,13 @@ export const MCP_APP_LIMITS = {
   /** Longest text `ui/message` may put in the prompt box. */
   maxMessageChars: 4_000,
   maxUrlChars: 2_048,
-  /** Origins kept per CSP list. */
-  maxCspDomains: 24,
+  /**
+   * Origins kept per CSP list. Generous on purpose: an origin past the cap is
+   * dropped, and a dropped origin is a blocked script or image. Higgsfield's
+   * pages declare more than 40 (media CDNs first); a cap of 24 cut the list
+   * and the page never ran.
+   */
+  maxCspDomains: 128,
   minHeight: 80,
   maxHeight: 800,
 } as const;

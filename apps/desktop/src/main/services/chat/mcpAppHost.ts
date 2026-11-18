@@ -143,6 +143,29 @@ function previewArguments(args: Record<string, unknown>): string {
   return text.length > 1_200 ? `${text.slice(0, 1_200)}\n… (${text.length - 1_200} more characters)` : text;
 }
 
+/** How many entries of one declared origin list ADE did not keep (bad shape, or past the cap). */
+function droppedCount(declared: unknown, kept: readonly string[]): number {
+  return Array.isArray(declared) ? Math.max(0, declared.length - kept.length) : 0;
+}
+
+/**
+ * Origins the page's own `<script src>` and `<link href>` tags load from that
+ * its policy does not allow. Diagnostics only: such a page is blocked from its
+ * own code and never answers, and this is the line that says why.
+ */
+function undeclaredPageOrigins(html: string, resourceDomains: readonly string[]): string[] {
+  const allowed = (origin: string) => resourceDomains.some((entry) => entry === origin
+    || (entry.startsWith("https://*.") && origin.endsWith(entry.slice("https://*".length))));
+  const out = new Set<string>();
+  const tag = /<(?:script|link)\b[^>]*?\b(?:src|href)\s*=\s*["']?(https:\/\/[a-z0-9.-]+(?::\d+)?)/gi;
+  for (const match of html.slice(0, 200_000).matchAll(tag)) {
+    const origin = match[1]!.toLowerCase();
+    if (!allowed(origin)) out.add(origin);
+    if (out.size >= 8) break;
+  }
+  return [...out];
+}
+
 /** A provider error as a refusal. "Not running" stays the one plain sentence it is. */
 function failure(error: unknown, what: string): McpAppRequestResult {
   const text = errorText(error);
@@ -287,6 +310,15 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
       connectDomains: csp.connectDomains,
       resourceDomains: csp.resourceDomains,
     });
+    const declared = asRecord(ui?.csp);
+    const gaps = {
+      droppedConnectDomains: droppedCount(declared?.connectDomains, csp.connectDomains),
+      droppedResourceDomains: droppedCount(declared?.resourceDomains, csp.resourceDomains),
+      undeclaredPageOrigins: undeclaredPageOrigins(html, csp.resourceDomains),
+    };
+    if (gaps.droppedConnectDomains || gaps.droppedResourceDomains || gaps.undeclaredPageOrigins.length) {
+      deps.log("warn", "agent_chat.mcp_app_csp_gaps", { sessionId, server, resourceUri, ...gaps });
+    }
     const title = descriptor?.title?.trim() || toolName;
     deps.emitCard(sessionId, {
       cardId: mcpAppCardId(itemId),

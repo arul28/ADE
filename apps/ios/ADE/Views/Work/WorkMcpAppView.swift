@@ -352,7 +352,7 @@ final class WorkMcpAppController: NSObject, ObservableObject {
     initializeTimer?.invalidate()
     initializeTimer = timer(after: WorkMcpAppLimits.initializeTimeout) { controller in
       controller.initializeTimer = nil
-      if !controller.initialized { controller.notice = "This app has not started." }
+      if !controller.initialized { controller.notice = "The preview did not load. The tool call itself finished." }
     }
   }
 

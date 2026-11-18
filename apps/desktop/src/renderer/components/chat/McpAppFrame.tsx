@@ -18,6 +18,7 @@ import {
   type McpAppFrameMessage,
   type McpAppGetResult,
   type McpAppRequestResult,
+  type McpAppToolResult,
 } from "../../../shared/mcpApp";
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
@@ -68,7 +69,10 @@ import { withChatPin } from "./chatMachinePin";
 
 /** Requests one frame may have with the brain at once; the brain has its own cap. */
 const MAX_FORWARDED_REQUESTS = 8;
-/** A page that has not said `ui/initialize` by now is not going to. */
+/**
+ * A page that has not finished the handshake by now is not going to (its
+ * policy blocked its own code, say). The row then folds to the tool's result.
+ */
 const INITIALIZE_TIMEOUT_MS = 10_000;
 const DEFAULT_HEIGHT = 220;
 
@@ -95,6 +99,25 @@ function rememberApp(key: string, entry: { app: McpAppDocument; url: string | nu
     const oldest = appCache.keys().next();
     if (oldest.done) break;
     appCache.delete(oldest.value);
+  }
+}
+
+/*
+ * Apps whose page did not answer, by chat and tool call. A row that scrolls
+ * back stays folded instead of drawing an empty frame for another ten
+ * seconds; "Reload preview" takes it off this list.
+ */
+const STALLED_CAPACITY = 64;
+const stalledApps = new Set<string>();
+
+function rememberStalled(key: string | null): void {
+  if (!key) return;
+  stalledApps.delete(key);
+  stalledApps.add(key);
+  while (stalledApps.size > STALLED_CAPACITY) {
+    const oldest = stalledApps.values().next();
+    if (oldest.done) break;
+    stalledApps.delete(oldest.value);
   }
 }
 
@@ -267,6 +290,102 @@ function answerAppRequest(message: Extract<McpAppFrameMessage, { kind: "request"
   }
 }
 
+/** Longest result text the folded row shows; the full result is in the tool call row. */
+const FALLBACK_TEXT_CHARS = 1_500;
+const FALLBACK_MAX_LINKS = 4;
+
+/**
+ * What the folded row shows of a tool's stored result: its text (JSON laid
+ * out), cut short, and the first few web links in it.
+ */
+function mcpAppResultPreview(result: McpAppToolResult | null): { text: string; links: string[] } {
+  if (!result) return { text: "", links: [] };
+  const parts: string[] = [];
+  const links = new Set<string>();
+  const addLink = (value: unknown) => {
+    if (links.size >= FALLBACK_MAX_LINKS || typeof value !== "string") return;
+    const url = readMcpAppOpenLinkUrl({ url: value.replace(/[.,;:]+$/, "") });
+    if (url) links.add(url);
+  };
+  for (const block of result.content) {
+    if (!block || typeof block !== "object") continue;
+    const record = block as Record<string, unknown>;
+    if (record.type === "text" && typeof record.text === "string") parts.push(record.text);
+    else if (record.type === "resource_link") addLink(record.uri);
+  }
+  let text = parts.join("\n").trim();
+  for (const match of text.matchAll(/https?:\/\/[^\s"'<>()[\]{}\\]+/g)) addLink(match[0]);
+  if (text.length <= 20_000 && /^[[{]/.test(text)) {
+    try { text = JSON.stringify(JSON.parse(text), null, 2); } catch { /* not JSON: shown as it came */ }
+  }
+  if (text.length > FALLBACK_TEXT_CHARS) text = `${text.slice(0, FALLBACK_TEXT_CHARS)}\n…`;
+  return { text, links: [...links] };
+}
+
+/**
+ * The row an app folds to when its page did not answer: one line that says
+ * the preview did not load (the tool itself ran; this is never a tool
+ * failure), the tool's result, and "Reload preview", which loads the page
+ * again and never runs the tool.
+ */
+function McpAppResultFallback({ app, server, pin, onReload }: {
+  app: McpAppDocument;
+  server: string;
+  pin: RuntimePin;
+  onReload: () => void;
+}) {
+  const { text, links } = useMemo(() => mcpAppResultPreview(app.toolResult), [app.toolResult]);
+  const outcome = app.toolResult?.isError ? "The tool call returned an error." : "The tool call finished.";
+  return (
+    <div
+      className="min-w-0 rounded-md px-2.5 py-1.5 text-[11px]"
+      style={{ border: `1px solid ${COLORS.borderMuted}`, color: COLORS.textMuted }}
+      data-testid="chat-mcp-app-stalled"
+    >
+      <div className="flex min-w-0 items-center gap-1.5">
+        <WarningCircle size={11} weight="bold" className="shrink-0" style={{ color: COLORS.warning }} />
+        <span className="min-w-0 flex-1 truncate" title={`The page from ${server} did not answer ADE, so its preview is not shown. ${outcome}`}>
+          Preview from {server} did not load. {outcome}
+        </span>
+        <button
+          type="button"
+          className="shrink-0 underline"
+          style={{ color: COLORS.textSecondary }}
+          title="Load the preview page again. The tool is not run again."
+          onClick={onReload}
+          data-testid="chat-mcp-app-reload"
+        >
+          Reload preview
+        </button>
+      </div>
+      {text ? (
+        <pre
+          className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-snug"
+          style={{ color: COLORS.textSecondary }}
+        >
+          {text}
+        </pre>
+      ) : null}
+      {links.length ? (
+        <div className="mt-1 flex min-w-0 flex-wrap gap-x-3 gap-y-0.5">
+          {links.map((url) => (
+            <button
+              key={url}
+              type="button"
+              className="min-w-0 max-w-full truncate underline"
+              style={{ color: COLORS.accent }}
+              title={url}
+              onClick={() => openUrlInAdeBrowser(url, { runtimePin: pin })}
+            >
+              {url.replace(/^https?:\/\//, "")}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function McpAppCard({ card }: { card: AdeCardPayload }) {
   const itemId = mcpAppItemIdFromCardId(card.cardId);
   const { sessionId, pin } = useChatRuntimeScope();
@@ -276,8 +395,8 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [height, setHeight] = useState(() => knownSceneHeight(heightKey) ?? DEFAULT_HEIGHT);
-  /** The page loaded and never started the handshake. */
-  const [stalled, setStalled] = useState(false);
+  /** The page loaded and never finished the handshake. Latched until "Reload preview". */
+  const [stalled, setStalled] = useState(() => (cacheKey ? stalledApps.has(cacheKey) : false));
   /** Requests this frame has with the brain. The frame stays up while one is out. */
   const [forwarded, setForwarded] = useState(0);
   const forwardedRef = useRef(0);
@@ -300,7 +419,9 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
   const { load, reload } = useMcpAppDocument(sessionId, itemId, pin, wanted);
 
   const app = load.status === "ready" ? load.app : null;
-  const src = load.status === "ready" && wantFrame ? load.url : null;
+  // A page that did not answer is not mounted again by itself: the row shows
+  // the tool's result until the reader asks for the preview again.
+  const src = load.status === "ready" && wantFrame && !stalled ? load.url : null;
   const appRef = useRef<McpAppDocument | null>(null);
   appRef.current = app;
   /** Bumped per mounted document, so an answer for the last one is never posted to the next. */
@@ -488,17 +609,25 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
     };
   }, [initialized, post]);
 
-  // A page that never starts the handshake: say so instead of a silent box.
+  // A page that never finishes the handshake: fold to the tool's result
+  // instead of leaving an empty frame.
   useEffect(() => {
-    if (!src || initialized) { setStalled(false); return; }
-    const timer = window.setTimeout(() => setStalled(true), INITIALIZE_TIMEOUT_MS);
+    if (!src || initialized) return;
+    const timer = window.setTimeout(() => {
+      rememberStalled(cacheKey);
+      setStalled(true);
+    }, INITIALIZE_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
-  }, [src, initialized]);
+  }, [src, initialized, cacheKey]);
 
-  const retry = useCallback(() => {
+  // Loads the page again: reads the stored app and mounts a fresh frame. It
+  // never runs the tool again. The tool already ran (it may have cost money),
+  // and its result is stored with the app.
+  const reloadPreview = useCallback(() => {
+    if (cacheKey) stalledApps.delete(cacheKey);
     setStalled(false);
     reload();
-  }, [reload]);
+  }, [cacheKey, reload]);
 
   const network = useMemo(() => {
     if (!app) return [];
@@ -509,7 +638,7 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
   const server = card.subtitle?.trim() || app?.server || "an MCP server";
 
   return (
-    <div ref={wrapperRef} className="my-3 w-screen max-w-full" data-testid="chat-mcp-app" data-mcp-app-status={src ? (initialized ? "running" : "loading") : load.status}>
+    <div ref={wrapperRef} className="my-3 w-screen max-w-full" data-testid="chat-mcp-app" data-mcp-app-status={stalled && app ? "stalled" : src ? (initialized ? "running" : "loading") : load.status}>
       {/* Always shown: what this is and whose page it is. A page can draw anything. */}
       <div className="mb-1 flex min-w-0 items-center gap-1.5 text-[11px]" style={{ color: COLORS.textMuted }}>
         <AppWindow size={12} weight="bold" style={{ color: COLORS.accent }} />
@@ -543,22 +672,10 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
           </span>
         ))}
       </div>
-      {/* The page is up and has not started: the frame stays, with the way to try again above it. */}
       {stalled && load.status !== "unavailable" ? (
-        <div className="mb-1.5" data-testid="chat-mcp-app-stalled">
-          <Banner
-            layout="inline"
-            model={{
-              id: `mcp-app-stalled-${cacheKey ?? "anon"}`,
-              tone: "warning",
-              title: `${title} has not started`,
-              detail: `The page from ${server} loaded and has not answered ADE.`,
-              actions: [{ label: "Retry", onClick: retry }],
-            }}
-          />
-        </div>
-      ) : null}
-      {load.status === "unavailable" ? (
+        // Folded: the stored app (and with it the result) may still be on its way in.
+        app ? <McpAppResultFallback app={app} server={server} pin={pin} onReload={reloadPreview} /> : null
+      ) : load.status === "unavailable" ? (
         load.reason === MCP_APP_SESSION_NOT_RUNNING ? (
           // Not a failure: the chat has stopped, and trying again changes nothing.
           <div className="flex items-center gap-1.5 text-[11px]" style={{ color: COLORS.textMuted }} data-testid="chat-mcp-app-unavailable">
@@ -574,7 +691,7 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
                 tone: "warning",
                 title: `${title} could not be shown`,
                 detail: load.reason,
-                actions: [{ label: "Retry", onClick: retry }],
+                actions: [{ label: "Reload preview", onClick: reloadPreview }],
               }}
             />
           </div>
