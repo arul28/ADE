@@ -58,7 +58,7 @@ import {
   type CloudInstance,
   type CloudPlanId,
 } from "./contract";
-import { overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
+import { commandWith, overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
 import { deleteBackupsForLane, deleteBackupsWithComputer, markRestedWithBackups, routeLaneBackups } from "./laneBackups";
 import { freeCapRefuses } from "./costReport";
 import { ACCOUNT_BLOCKED_MESSAGE, accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusal } from "./blocks";
@@ -965,8 +965,32 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
   return await finish;
 }
 
+const PREPARE_FOR_SLEEP_COMMAND = commandWith(CLOUD_COMPUTER_COMMANDS.prepareForSleep);
+/** The 20 s prepare, the wait for ADE to answer, and room for the exec itself. */
+const PREPARE_FOR_SLEEP_TIMEOUT_MS = 60_000;
+
+/**
+ * The person's Sleep of an awake computer: its ADE first stops the running
+ * turns and saves the chats (`prepare-stop --chats-only`). A sleep freezes
+ * the computer, so a turn it cuts would else read Done in its saved copy
+ * while it sleeps; now it reads Stopped. Best effort: the sleep goes ahead
+ * whatever the prepare says. A computer that is not awake is not woken.
+ */
+async function prepareForPersonSleep(provider: CloudProvider, computer: ComputerRow): Promise<void> {
+  try {
+    const instance = await provider.getInstance(computer.instance_id);
+    if (!isMeteredStatus(instance.status)) return;
+    const result = await provider.exec(computer.instance_id, PREPARE_FOR_SLEEP_COMMAND, PREPARE_FOR_SLEEP_TIMEOUT_MS);
+    logCloud("cloud.sleep_prepared", { instanceId: computer.instance_id, exitCode: result.exitCode });
+  } catch (error) {
+    logCloud("cloud.sleep_prepare_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+  }
+}
+
 async function handleSleepLike(env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number, reason: string, backupReportId: string | null = null): Promise<Response> {
   const { blocked } = await wakeBlocker(env, computer.user_id, now);
+  // Only the person's Sleep: the computer's own idle sleep comes when nothing runs.
+  if (reason === "user") await prepareForPersonSleep(provider, computer);
   try {
     // While wakes are refused a sleeping computer would still wake on any request, so it stops instead.
     const status = blocked ? await provider.stopInstance(computer.instance_id) : await provider.sleepInstance(computer.instance_id);

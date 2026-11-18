@@ -16,7 +16,7 @@ import type {
   AgentChatSessionSummary,
   AgentChatUpdateSessionArgs,
 } from "../../shared/types/chat";
-import { savedChatsMachineKey, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
+import { SAVED_CHAT_STOPPED_STATUS, savedChatsMachineKey, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import { REMOTE_TARGET_NOT_FOUND_MESSAGE } from "../../shared/types/remoteRuntime";
 import type { LaneSummary } from "../../shared/types/lanes";
 import type { OpenProjectBinding } from "../../shared/types/core";
@@ -141,7 +141,10 @@ export function savedChatSession(row: CloudSavedChatRow): TerminalSessionSummary
     goal: null,
     toolType: (row.toolType ?? "claude-chat") as TerminalSessionSummary["toolType"],
     title: row.title ?? "Saved chat",
-    status: "completed",
+    // Its computer stopped the running turn to sleep, stop or be deleted: the
+    // row reads Stopped (the stopped phase), as that turn reads in the chat,
+    // not Done.
+    status: row.status === SAVED_CHAT_STOPPED_STATUS ? "disposed" : "completed",
     startedAt: activity,
     endedAt: activity,
     exitCode: null,

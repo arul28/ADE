@@ -301,6 +301,24 @@ describe("createAgentChatService", () => {
       service.forceDisposeAll();
     });
 
+    // An ADE Cloud computer the server deletes next: a turn started now is lost with it.
+    it("a host that refuses new turns refuses a send and a steer with its sentence, until the refusal ends", async () => {
+      const sentence = "This ADE Cloud computer is being removed.";
+      let refusal: string | null = sentence;
+      const { service } = createService({ turnStartRefusal: () => refusal });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      mockState.codexRequestPayloads = [];
+
+      await expect(service.sendMessage({ sessionId: session.id, text: "Start new work." })).rejects.toThrow(sentence);
+      await expect(service.steer({ sessionId: session.id, text: "Squeeze in more." })).rejects.toThrow(sentence);
+      expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/start" || p.method === "turn/steer")).toBe(false);
+
+      refusal = null;
+      await service.sendMessage({ sessionId: session.id, text: "Start new work." });
+      await vi.waitFor(() => expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/start")).toBe(true));
+      service.forceDisposeAll();
+    });
+
     it("does not steer /compact on an active Codex chat", async () => {
       const { service } = createService();
       const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
