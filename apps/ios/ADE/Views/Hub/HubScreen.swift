@@ -739,6 +739,24 @@ struct HubScreen: View {
     // must not move the phone to that machine later.
     pendingHubChatOpen = nil
     guard let owner = preferredFleetOwner(project.id) else {
+      if focusedMachineLeftAccount(cardId: project.id) {
+        // Its machine left the account (a deleted ADE Cloud lane): open a
+        // connected computer's copy, else the project's account view, else
+        // any other copy; never the gone machine ("ADE Cloud is offline").
+        let others = (fleetMerge.projectLocations[project.id] ?? []).filter { $0.machineKey != syncService.focusedMachineKey }
+        if let live = others.first(where: { machineFleet.machine(for: $0.machineKey)?.state == .live }) {
+          openFleetCopy(live.project, onMachine: live.machineKey, cardId: project.id)
+          return
+        }
+        if let accountId = accountJoin.accountIdByCardId[project.id] {
+          syncService.openAccountProjectScope(accountId)
+          return
+        }
+        if let copy = others.first {
+          openFleetCopy(copy.project, onMachine: copy.machineKey, cardId: project.id)
+          return
+        }
+      }
       syncService.selectProject(project)
       return
     }
@@ -750,6 +768,23 @@ struct HubScreen: View {
   /// connected computer first, then one that is connecting, then an ADE
   /// Cloud computer (opening it wakes it, which costs money, so only when no
   /// connected copy can serve), then the rest. Ties keep the card's own order.
+  /// A card on the focused machine, when the account no longer has that
+  /// machine (an ADE Cloud lane deleted with its computer): an unconnected
+  /// focus the phone can't reach again.
+  private func focusedMachineLeftAccount(cardId: String) -> Bool {
+    let account = AccountService.shared
+    guard fleetMerge.projectOwners[cardId] == nil,
+          syncService.connectionState != .connected,
+          let focusedKey = syncService.focusedMachineKey,
+          account.machinesState == .loaded, !account.machines.isEmpty,
+          account.machine(forFleetKey: focusedKey) == nil
+    else { return false }
+    // A sleeping ADE Cloud computer is still the account's.
+    guard syncService.isCloudFleetKey(focusedKey) else { return true }
+    return syncService.cloudServerReadFinished
+      && (syncService.cloudServerInstance(fleetKey: focusedKey)?.isGone ?? true)
+  }
+
   private func preferredFleetOwner(_ cardId: String) -> HubRemoteOwner? {
     guard let owner = fleetMerge.projectOwners[cardId] else { return nil }
     let candidates = [owner] + (fleetMerge.projectLocations[cardId] ?? []).filter { $0.machineKey != owner.machineKey }

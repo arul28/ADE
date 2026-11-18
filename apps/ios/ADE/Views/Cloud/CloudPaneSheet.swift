@@ -485,11 +485,22 @@ final class CloudPaneStore: ObservableObject {
 
 /// A computer as the dashboard draws it, from the account server's row.
 /// Nil for a row with no id.
+/// The account server's computer status in the brain list's words
+/// (`computerStateOf` on the server): "sleeping" read as "Needs a look".
+func cloudPhoneMachineState(serverStatus status: String) -> String {
+  switch status {
+  case "running", "restarting": return "running"
+  case "sleeping": return "asleep"
+  case "waking", "provisioning", "updating": return "starting"
+  default: return status
+  }
+}
+
 func cloudPhoneMachine(from instance: CloudServerInstance) -> CloudPhoneMachine? {
   var object: [String: Any] = [
     "instanceId": instance.id,
     // A computer saving its work for the idle cleanup is on its way down.
-    "state": instance.idleSaving ? "stopping" : instance.status,
+    "state": instance.idleSaving ? "stopping" : cloudPhoneMachineState(serverStatus: instance.status),
   ]
   if let name = instance.name { object["name"] = name }
   if let machineKey = instance.machineKey { object["machineKey"] = machineKey }
