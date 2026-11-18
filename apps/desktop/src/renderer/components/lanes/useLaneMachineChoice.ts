@@ -231,7 +231,7 @@ export function useLaneMachineChoice(open: boolean) {
   );
   const adeCloud = useAdeCloudLaneTarget(open, repoOriginUrl);
   // "Start on": the default place for new work in this repository.
-  const { defaultChoice: startOnChoice } = useActiveStartOn(open);
+  const { choices: startOnChoices, defaultChoice: startOnChoice } = useActiveStartOn(open);
   const startOnMachineId = startOnChoice?.kind === "copy"
     ? startOnChoice.copy.machineId
     : startOnChoice?.kind === "cloud"
@@ -239,9 +239,14 @@ export function useLaneMachineChoice(open: boolean) {
       : null;
   // ADE Cloud stays the pick only while it can be picked.
   const adeCloudPicked = pickedMachineId === ADE_CLOUD_MACHINE_ID && adeCloud.offered && !adeCloud.unavailableReason;
+  // No copy is online and ADE Cloud is offered: ADE Cloud takes the lane, also
+  // when "Start on" lists cloning to a computer first (that needs a clone).
+  const startOnCloud = startOnChoice?.kind !== "copy"
+    && startOnChoices.some((choice) => choice.kind === "cloud" && choice.available)
+    && adeCloud.offered
+    && !adeCloud.unavailableReason;
   // The picked machine while it is still eligible. With exactly one eligible
   // machine (once the snapshot has answered) there is nothing to ask.
-  const startOnCloud = startOnMachineId === ADE_CLOUD_MACHINE_ID && adeCloud.offered && !adeCloud.unavailableReason;
   const selectedMachineId = adeCloudPicked
     ? ADE_CLOUD_MACHINE_ID
     : pickedMachineId && eligibleMachineIds.includes(pickedMachineId)

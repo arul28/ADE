@@ -10,7 +10,7 @@ import {
   type ChatLaunchLocalRecord,
 } from "../../../state/chatLaunchStore";
 import { ipcErrorMessage } from "../../../lib/format";
-import { requirePin } from "../../../lib/requirePin";
+import { isAccountAnsweredPin } from "../../../../shared/adeCloud/binding";
 import { confirmDialog } from "../../ui/dialog/confirm";
 import { startChatLaunch, type StartChatLaunchOutcome } from "./chatLaunchActions";
 
@@ -85,24 +85,28 @@ export function adeCloudCapacityProblem(account: CloudAccountState | null): stri
  * "Push this branch?" before an ADE Cloud lane that starts from a branch the
  * person picked: the new computer clones from GitHub, so a branch only on
  * this computer (or its unpushed commits) would be missing there. Asks the
- * tab's own machine (no pin: the project's checkout is there), offers one
- * push, then answers whether the launch may go. The default start (the
- * saved base branch on GitHub) needs no read.
+ * copy the branch was picked from, offers one push, then answers whether the
+ * launch may go. The default start (the saved base branch on GitHub) needs
+ * no read.
+ *
+ * With no copy to ask (`pin` null: none is online; or ADE Cloud itself, whose
+ * reads the account answers), there is no unpushed work this side can see:
+ * the launch goes with the branch as GitHub has it, and the new computer says
+ * so if GitHub has no such branch (its lane step fails with git's answer).
  */
 export async function adeCloudStartBranchReady(
   laneConfig: ChatLaunchLaneConfig | null,
   /** The copy whose branch was picked. Null: no computer with the project is online. */
   pin: OpenProjectBinding | null,
 ): Promise<{ go: true } | { go: false; error: string | null }> {
-  if (!laneConfig) return { go: true };
+  if (!laneConfig || !pin || isAccountAnsweredPin(pin)) return { go: true };
   const args: CloudStartBranchArgs | null = laneConfig.mode === "existing"
     ? (laneConfig.branchRef ? { branchRef: laneConfig.branchRef } : null)
     : laneConfig.start && laneConfig.start.from !== "default" ? { start: laneConfig.start } : null;
   const lanes = window.ade?.lanes;
   if (!args || !lanes?.cloudStartBranch || !lanes.pushCloudStartBranch) return { go: true };
   try {
-    const branchPin = requirePin(pin);
-    const check = await lanes.cloudStartBranch(args, branchPin);
+    const check = await lanes.cloudStartBranch(args, pin);
     if (!check.push || !check.branch) return { go: true };
     const why = check.onRemote
       ? `${check.unpushedCommits === 1 ? "1 commit" : `${check.unpushedCommits} commits`} on ${check.branch} aren't on GitHub yet.`
@@ -113,7 +117,7 @@ export async function adeCloudStartBranchReady(
       confirmLabel: "Push and start",
     });
     if (!push) return { go: false, error: null };
-    const after = await lanes.pushCloudStartBranch(args, branchPin);
+    const after = await lanes.pushCloudStartBranch(args, pin);
     return after.push
       ? { go: false, error: `${check.branch} still isn't on GitHub. Push it, then send again.` }
       : { go: true };

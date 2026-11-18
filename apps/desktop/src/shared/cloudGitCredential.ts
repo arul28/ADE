@@ -29,8 +29,12 @@ export type CloudGitPreflight =
   | { ok: true; via: AccountGitCredentialSource | "public"; warning?: undefined }
   /** ADE couldn't tell (GitHub didn't answer): the launch goes on, and `warning` says what may happen. */
   | { ok: true; via: "unknown"; warning: string }
-  /** A private repository and no credential that follows the account: refused before anything is made. */
-  | { ok: false; reason: "none" | "unreadable"; message: string };
+  /**
+   * A private repository and no credential that follows the account: refused
+   * before anything is made. A vault this computer couldn't read is never a
+   * refusal (the new computer reads the account's vault itself).
+   */
+  | { ok: false; reason: "none"; message: string };
 
 /** The way out a refusal names. */
 export const CONNECT_GITHUB_HINT = "Connect GitHub in Settings › GitHub so your sign-in follows your ADE account, then send again.";

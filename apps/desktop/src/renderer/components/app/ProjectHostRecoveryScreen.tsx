@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Check, CircleNotch, Desktop, Warning } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { isAdeCloudBinding } from "../../../shared/adeCloud/binding";
+import { repositoryTabCanUseAdeCloud } from "../../../shared/repositoryTab";
+import { captureError } from "../../../shared/sentry/capture";
 import { projectHostBlockedReason } from "../../../shared/syncHostRecoveryUi";
 import type {
   SyncHostRecoveryStepId,
@@ -15,6 +18,13 @@ import {
 } from "../../components/app/errorSurfaceKit";
 import type { ProjectHostRecoveryState } from "../../webclient/sync/projectHostRecoveryStore";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
+import { CloudMark } from "../remoteTargets/cloudBrand";
+import { originUrlForBinding } from "../lanes/laneMachines";
+import { useAppStore } from "../../state/appStore";
+import { adeCloudProjectForTabId } from "../../state/adeCloudTabs";
+import { accountCloudLaunchesAvailable } from "../../state/accountCloudLaunches";
+import { adeCloudDoBlock, useAdeCloudAccess, useAdeCloudEnabled } from "../../state/cloudAccess";
+import { useActiveRepositoryTab } from "../../state/repositoryScope";
 import {
   getProjectHostRecoveryState,
   recoverProjectHost,
@@ -68,10 +78,46 @@ const BLOCKED_COPY = {
   unidentified: "ADE can't safely stop the other runtime from here, so stop it on that computer.",
 } as const;
 
+/**
+ * "Continue on ADE Cloud": the way out while this project's computer can't
+ * serve it. ADE Cloud needs no computer of the person's own (the account
+ * server starts its lanes), so the project opens there, on its Work page.
+ * Null when ADE Cloud can't take it: signed out or blocked, no sign-in in
+ * this browser, a folder with no GitHub repository, or ADE Cloud already.
+ */
+function useContinueOnAdeCloud(): (() => void) | null {
+  const navigate = useNavigate();
+  const binding = useAppStore((state) => state.projectBinding);
+  const repositoryTab = useActiveRepositoryTab();
+  const cloudEnabled = useAdeCloudEnabled();
+  const access = useAdeCloudAccess();
+  const offered = cloudEnabled
+    && adeCloudDoBlock(access) == null
+    && accountCloudLaunchesAvailable()
+    && repositoryTab != null
+    && repositoryTabCanUseAdeCloud(repositoryTab)
+    && !isAdeCloudBinding(binding);
+  const continueOnAdeCloud = useCallback(() => {
+    if (!repositoryTab) return;
+    const project = adeCloudProjectForTabId(repositoryTab.id, repositoryTab.displayName);
+    void useAppStore.getState().openAdeCloudProject({
+      ...project,
+      gitOriginUrl: project.gitOriginUrl ?? originUrlForBinding(binding),
+      iconDataUrl: project.iconDataUrl ?? repositoryTab.iconDataUrl,
+    }).then(() => navigate("/work")).catch((error: unknown) => {
+      captureError(error, { fingerprint: ["project-host-recovery", "continue-on-ade-cloud"], level: "warning", handled: true });
+    });
+  }, [binding, navigate, repositoryTab]);
+  return offered ? continueOnAdeCloud : null;
+}
+
 export function ProjectHostRecoveryScreen() {
   const navigate = useNavigate();
   const { phase, snapshot, recovery } = useProjectHostRecovery();
   const [busy, setBusy] = useState(false);
+  const continueOnAdeCloud = useContinueOnAdeCloud();
+  // ADE Cloud has no project host of its own: nothing here speaks for it.
+  const onAdeCloud = useAppStore((state) => isAdeCloudBinding(state.projectBinding));
 
   const onFix = useCallback(async () => {
     setBusy(true);
@@ -91,7 +137,7 @@ export function ProjectHostRecoveryScreen() {
     }
   }, []);
 
-  if (phase === "ready" || phase === "retrying" || !snapshot) return null;
+  if (phase === "ready" || phase === "retrying" || !snapshot || onAdeCloud) return null;
 
   const recovering = phase === "recovering" || busy || recovery?.status === "running" || recovery?.status === "restarting";
   const conflict = snapshot.conflict;
@@ -158,6 +204,13 @@ export function ProjectHostRecoveryScreen() {
               <Desktop size={14} weight="bold" />
               Switch Mac
             </button>
+            {/* ADE Cloud needs no computer of the person's own: work goes on there. */}
+            {continueOnAdeCloud ? (
+              <button type="button" className={ERROR_GHOST_BUTTON} onClick={continueOnAdeCloud}>
+                <CloudMark size={13} brand bold />
+                Continue on ADE Cloud
+              </button>
+            ) : null}
           </div>
           <TechnicalDetailsFold text={technical} className="mt-4" />
         </ErrorSurfaceCard>
