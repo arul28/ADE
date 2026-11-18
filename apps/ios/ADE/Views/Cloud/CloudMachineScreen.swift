@@ -674,14 +674,16 @@ struct CloudLaneDeleteSheet: View {
 
   private func delete() async {
     guard !deleting else { return }
+    // Set before the client read, which can wait on a token refresh: a
+    // second tap or a Cancel meanwhile does nothing.
+    deleting = true
+    defer { deleting = false }
     let actions = CloudLaneActions.shared
     guard let client = await syncService.cloudServerClient() else {
       ADEHaptics.error()
       actions.toast = ADEToastMessage(text: "Couldn't delete \(target.laneName)", kind: .failure, detail: "Sign in to ADE, then try again.")
       return
     }
-    deleting = true
-    defer { deleting = false }
     do {
       try await client.deleteInstance(target.instanceId)
     } catch CloudServerClient.Failure.noAccess {

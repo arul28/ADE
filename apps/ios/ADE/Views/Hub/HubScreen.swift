@@ -460,7 +460,7 @@ struct HubScreen: View {
         authorization = AccountService.shared.currentPairingAuthorization
       }
       guard let authorization else { return }
-      hubAutoConnectLog.notice("hub_auto_connect start machine=\(machine.displayName, privacy: .public)")
+      hubAutoConnectLog.notice("hub_auto_connect start machine=\(machine.displayName, privacy: .private)")
       HubScreen.autoConnectAttempted = true
       // Its own task: this one is keyed on the connection state, which the
       // connect itself changes, and that would cancel the connect.
@@ -782,7 +782,7 @@ struct HubScreen: View {
     guard fleetMerge.projectOwners[cardId] == nil,
           syncService.connectionState != .connected,
           let focusedKey = syncService.focusedMachineKey,
-          account.machinesState == .loaded, !account.machines.isEmpty,
+          account.machinesState == .loaded,
           account.machine(forFleetKey: focusedKey) == nil
     else { return false }
     // A sleeping ADE Cloud computer is still the account's.

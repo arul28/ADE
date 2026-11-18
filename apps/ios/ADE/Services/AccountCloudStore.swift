@@ -181,9 +181,12 @@ final class AccountCloudStore: ObservableObject {
     var attachments: [[String: Any]] = []
     if !files.isEmpty {
       if files.count > CloudQueuedFile.maxCount { return .failed("Send at most \(CloudQueuedFile.maxCount) files at once.") }
+      // Every size is checked before the first upload: a refused batch leaves nothing behind.
+      if let big = files.first(where: { $0.data.count > CloudQueuedFile.maxBytes }) { return .failed("\(big.name) is over 25 MB.") }
       let launchId = UUID().uuidString.lowercased()
       for (index, file) in files.enumerated() {
-        if file.data.count > CloudQueuedFile.maxBytes { return .failed("\(file.name) is over 25 MB.") }
+        // Signed out or another account meanwhile: send nothing more for it.
+        guard generation == accountGeneration else { return .failed("The account changed. Send the message again.") }
         let fileId = "f\(index)-\(launchId.prefix(8))"
         do {
           let size = try await client.uploadLaunchFile(launchId: launchId, fileId: fileId, data: file.data, contentType: file.contentType)
@@ -193,6 +196,7 @@ final class AccountCloudStore: ObservableObject {
         }
       }
     }
+    guard generation == accountGeneration else { return .failed("The account changed. Send the message again.") }
     do {
       let result = try await client.queueMessage(machineKey: machineKey, chatId: chatId, messageId: messageId, text: text, attachments: attachments)
       guard generation == accountGeneration else { return .failed("The account changed. Send the message again.") }
