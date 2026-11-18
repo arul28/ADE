@@ -748,30 +748,25 @@ extension SyncService {
       resolveCloudMachineKeys()
     }
     machineFleet?.cloudServerChanged()
-    leaveDeletedFocusedCloudComputer()
   }
 
-  @MainActor private enum DeletedFocusedCloudComputer { static var left: Set<String> = [] }
-
   /// The project open on this phone was on an ADE Cloud computer the account
-  /// has since deleted (its lane was deleted, here or on another device). A
-  /// cold start restored it with its cached lanes, which read as if it were
-  /// only offline: show the Hub instead, where the project opens elsewhere.
-  /// An offline computer of the person's own is never left this way.
-  func leaveDeletedFocusedCloudComputer() {
+  /// has since deleted (its lane was deleted, here or on another device):
+  /// `resolveCloudMachineKeys` saw it leave the saved cloud computers, and the
+  /// loaded account list no longer has it. A cold start restored it with its
+  /// cached lanes, which read as if it were only offline: show the Hub
+  /// instead, where the project opens elsewhere. An offline computer of the
+  /// person's own is never left this way (it was never a cloud computer).
+  func leaveDeletedFocusedCloudComputer(dropped: Set<String>) {
     let account = AccountService.shared
-    guard !projectHubPresented,
+    guard let focusedKey = focusedMachineKey,
+          dropped.contains(focusedKey),
+          !projectHubPresented,
           activeAccountProjectId == nil,
           connectionState != .connected,
-          cloudServerReadFinished,
-          let focusedKey = focusedMachineKey,
           account.machinesState == .loaded,
-          account.machine(forFleetKey: focusedKey) == nil,
-          cloudServerInstance(fleetKey: focusedKey) == nil,
-          CloudLaneComputerLabels.label(machineKey: account.accountMachineKey(forFleetKey: focusedKey), hostName: hostName) != nil
+          account.machine(forFleetKey: focusedKey) == nil
     else { return }
-    // Once per computer per launch: a person who opens it again stays.
-    guard DeletedFocusedCloudComputer.left.insert(focusedKey).inserted else { return }
     cloudServerLog.notice("cloud_server focused_computer=deleted action=show_hub")
     showProjectHub()
   }

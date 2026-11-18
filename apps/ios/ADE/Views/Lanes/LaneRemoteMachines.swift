@@ -31,6 +31,9 @@ final class LaneRemoteMachinesModel: ObservableObject {
   static let readTimeoutNanoseconds: UInt64 = 8_000_000_000
 
   @Published private(set) var machines: [MachineLanes] = []
+  /// Whether a refresh has published since the last reset: an empty
+  /// `machines` before it means "not read yet", not "no lanes".
+  @Published private(set) var hasRead = false
   /// The last successful read of each machine: shown while a read runs or
   /// after it fails.
   /// Keyed by `laneRemoteReadKey`: a read belongs to one machine's checkout.
@@ -108,12 +111,14 @@ final class LaneRemoteMachinesModel: ObservableObject {
       ))
     }
     if next != machines { machines = next }
+    if !hasRead { hasRead = true }
   }
 
   func reset() {
     generation &+= 1
     lastRead = [:]
     if !machines.isEmpty { machines = [] }
+    if hasRead { hasRead = false }
   }
 }
 

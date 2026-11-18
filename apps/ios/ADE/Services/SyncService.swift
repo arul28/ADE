@@ -30662,7 +30662,9 @@ extension SyncService {
             let deviceId = machine.deviceId, !deviceId.isEmpty else { return nil }
       return HiddenMachineStore.fleetKey(deviceId: deviceId)
     }
+    let dropped = cloudMachineFleetKeys.subtracting(keys)
     cloudMachineFleetKeys = Set(keys)
+    if !dropped.isEmpty { leaveDeletedFocusedCloudComputer(dropped: dropped) }
   }
 }
 
