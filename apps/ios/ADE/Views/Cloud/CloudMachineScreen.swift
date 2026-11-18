@@ -879,6 +879,9 @@ struct CloudLaneDeleteSheet: View {
         cloudLaneDeleteLog.notice("cloud_lane delete account_row=left error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
       }
     }
+    // The server may have taken the row off already: read the list again so
+    // this phone's copy drops it either way.
+    await account.loadMachines()
     // The chats go after the computer, so a last saved part can't bring one back.
     var chatsLeft = false
     if let machineKey = target.accountMachineKey {
