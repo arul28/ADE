@@ -35,6 +35,10 @@
  *   POST   /cloud/instances/:id/move           CloudMoveRecord   (CloudMoveRequest; 201 new, 200 the same move again or the move of this computer already running)
  *   POST   /cloud/instances/:id/free           CloudFreeRecord   ({ freeId }: push every lane's work, then delete the computer and keep its lane; 201 new, 200 the same id again)
  *   GET    /cloud/frees/:free                  CloudFreeRecord
+ *   POST   /cloud/instances/:id/copy           CloudCopyRecord   (CloudCopyRequest; 201 new, 200 the same id again; 409 `server_copy_unavailable` while copies are off, `copy_needs_update` for a computer on an older ADE)
+ *   GET    /cloud/copies                       CloudCopyList   (copies still running, and those that ended in the last day)
+ *   GET    /cloud/copies/:copy                 CloudCopyRecord
+ *   DELETE /cloud/copies/:copy                 CloudCopyRecord   (cancel, which deletes the copy; only before it signed in, 409 `copy_signed_in` after)
  *   GET    /cloud/moves                        CloudMoveList   (moves still running, and those that ended in the last day)
  *   GET    /cloud/moves/:move                  CloudMoveRecord
  *   DELETE /cloud/moves/:move                  CloudMoveRecord   (cancel; only before the copy starts, 409 `move_started` after)
@@ -192,6 +196,8 @@ export const CLOUD_PATHS = {
   /** A computer moved to the other kind by the server (`moves.ts`): `GET` the list, `GET`/`DELETE` `/:move`. Started with `POST /cloud/instances/:id/move`. */
   moves: "/cloud/moves",
   frees: "/cloud/frees",
+  /** A computer copied into a new one by the server (`copies.ts`): `GET` the list, `GET`/`DELETE` `/:copy`. Started with `POST /cloud/instances/:id/copy`. */
+  copies: "/cloud/copies",
   /** The account vault's ADE Cloud sign-ins, for the web (`accountSignIns.ts`): status only, never a value. */
   signIns: "/cloud/sign-ins",
   /** Models per provider for a client with no computer (`models.ts`). */
@@ -1738,6 +1744,15 @@ export type AccountLaneIndexRow = AccountLaneIndexEntry & {
  * and SHA-256.
  */
 export const CLOUD_LAUNCH_ENV = { launchId: "ADE_LAUNCH_ID", join: "ADE_LAUNCH_JOIN" } as const;
+/**
+ * The same two values for a computer that can't be given env: a server copy's
+ * fork (`copies.ts`) gets them in this file under `$ADE_HOME`,
+ * `{ "launchId", "join" }`, mode 600, written by the server over exec just
+ * before its brain restarts. The brain deletes it as it reads it, so the code
+ * then lives only in its memory, as the env's does; the file wins over the env
+ * (a fork can carry its original's spent env).
+ */
+export const CLOUD_LAUNCH_JOIN_FILE = "cloud/launch-join.json";
 /** The computer names itself on the join (its `ADE_CLOUD_INSTANCE_ID`); the server checks that it names the launch's computer in the provider's own record. A name, not a proof. */
 export const CLOUD_INSTANCE_HEADER = "x-ade-instance";
 /** The computer's metadata names the launch that made it. */
@@ -2131,6 +2146,66 @@ export type CloudFreeRecord = {
   createdAt: number;
   updatedAt: number;
 };
+
+/* ---- A computer copied into a new one, run by the server ---- */
+
+/**
+ * `POST /cloud/instances/:id/copy`: a new computer with the same files (a
+ * warm copy: repos, lanes, installed dependencies), signed in as a new
+ * computer of the account. `copyId` is a UUID and idempotent: the same id
+ * answers the same copy. A copy is of the same kind as the original (Move
+ * changes the kind). An agent may ask (it makes a computer, so the agent
+ * limits its client checks apply, and the copy counts as the agent's).
+ */
+export type CloudCopyRequest = {
+  copyId: string;
+  /** The copy's name; left out is "<name> copy". */
+  name?: string;
+  /** The copy's size, of the original's kind. Left out: the original's CPU and memory. */
+  sizeId?: CloudTierId;
+  /** Instead of `sizeId`: CPU and memory outside the four sizes (a desktop's own shapes). */
+  resources?: { cpu: number; memoryGb: number };
+  /** Who asks; left out is the person. */
+  origin?: "person" | "agent" | "automation" | "mcp";
+  /** The agent's chat, for an agent's copy (`ade_made_by_chat`). */
+  madeByChat?: string;
+};
+
+/**
+ * - `copying`: the original is held awake (when it is) and ADE Cloud copies its disk.
+ * - `joining`: the copy signs in to the account as a new computer.
+ * - `needs_approval`: its sign-in stopped on a page a person must confirm; open `approvalUrl`.
+ * - `done`, `failed`, `cancelled`: over. A failure or a cancel deletes the copy; the original is never changed.
+ */
+export type CloudCopyState = "copying" | "joining" | "needs_approval" | "done" | "failed" | "cancelled";
+
+export type CloudCopyRecord = {
+  copyId: string;
+  sourceInstanceId: string;
+  /** The original's name when the copy began. */
+  sourceName: string;
+  /** The copy's name. */
+  name: string;
+  /** The copy, once ADE Cloud made it. */
+  targetInstanceId: string | null;
+  /** The copy's size; null when it isn't one of the four sizes. */
+  sizeId: CloudTierId | null;
+  state: CloudCopyState;
+  /** One plain sentence for the UI. */
+  message: string;
+  approvalUrl: string | null;
+  /** One plain sentence when it failed. */
+  error: string | null;
+  /** The copy's account machine key, once it signed in. */
+  targetMachineKey: string | null;
+  /** Whether a cancel is still possible (until the copy signed in). */
+  cancellable: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/** `GET /cloud/copies`: newest first, at most 20 (running, and those that ended in the last day). */
+export type CloudCopyList = { copies: CloudCopyRecord[] };
 
 /**
  * What a launch waiting on a provider sign-in shows (`waiting_for_sign_in`).

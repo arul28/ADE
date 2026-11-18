@@ -7,7 +7,8 @@
  *
  * Plain functions with no imports, so the Worker, Node and the browser can
  * all load it. Nothing here is a secret but a signed URL handed to
- * `receiveHomeCommand`, which never reaches a log.
+ * `receiveHomeCommand` and a copy's join code handed to
+ * `handCopyJoinCommand`, which never reach a log.
  */
 
 /** The port the old computer serves its home folder on, once, behind a short-lived signed URL. */
@@ -431,4 +432,59 @@ export function readPushWorkTally(stdout: string): { pushed: number; failed: num
   } catch {
     return null;
   }
+}
+
+/* ---- A copy: a new computer with the original's disk ---- */
+
+/**
+ * Metadata a copy must not carry: it is a new computer, not the original's
+ * row. Its account key and former keys, who made the original, the request
+ * and launch that made it, a move it came from (a copy of a moved computer
+ * replaces nothing), and the old ready machines' keys (removed in Cloud 5; an
+ * older ADE elsewhere would still take a copy that carried them as a
+ * project's ready machine).
+ */
+const COPY_DROPPED_METADATA: ReadonlySet<string> = new Set([
+  CLOUD_MACHINE_KEY_METADATA,
+  CLOUD_FORMER_MACHINE_KEYS_METADATA,
+  "ade_made_by_chat",
+  "ade_made_by_agent",
+  "ade_request_id",
+  "ade_launch_id",
+  "ade_moved_from",
+  "ade_move_id",
+  "ade_ready_for", "ade_ready", "ade_ready_name", "ade_ready_path", "ade_ready_lane",
+  "ade_ready_claimed_at", "ade_ready_claim", "ade_ready_by", "ade_ready_ade",
+]);
+
+/** A copy's metadata: the original's (its lane facts and the rest) without what names the original, then `extra`. */
+export function copiedComputerMetadata(source: Record<string, string>, extra: Record<string, string>): Record<string, string> {
+  const metadata: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (!COPY_DROPPED_METADATA.has(key)) metadata[key] = value;
+  }
+  return { ...metadata, created_by: "ade", ...extra };
+}
+
+/**
+ * Hands a server copy's fork its sign-in (`copies.ts`). The fork can't be
+ * given env, so its launch id and join code go into `CLOUD_LAUNCH_JOIN_FILE`
+ * (mode 600, through base64 so no shell re-quotes the code), the original's
+ * copied sign-in files and the copy's own hold come off, and its brain
+ * restarts (the entrypoint loop starts it again), so the new brain reads the
+ * file, deletes it, and signs in. pkill's pattern is expanded and the
+ * command's own shell holds it unexpanded, so pkill never matches itself.
+ * Prints `handed`. The command holds the code: never logged, never kept.
+ */
+export function handCopyJoinCommand(launchId: string, joinCode: string): string {
+  const file = JSON.stringify({ launchId, join: joinCode });
+  return [
+    "umask 077",
+    'd="$ADE_HOME/cloud"; mkdir -p "$d"',
+    `printf %s '${base64Of(file)}' | base64 -d > "$d/launch-join.json.tmp" && chmod 600 "$d/launch-join.json.tmp" && mv -f "$d/launch-join.json.tmp" "$d/launch-join.json" || exit 1`,
+    'rm -f "$ADE_HOME/logs/cloud-sign-in.log" "$ADE_HOME/logs/cloud-sign-in.pid" "$ADE_HOME/brain.paused"',
+    cloudReleaseHoldCommand("copy"),
+    'pkill -f "serve --socket $ADE_HOME/sock/ade.sock" || true',
+    "echo handed",
+  ].join("\n");
 }

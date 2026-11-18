@@ -71,6 +71,9 @@ import {
   type CloudLaunchStagesUpdate,
   type CloudLaunchStartRequest,
   type CloudModelCatalog,
+  type CloudCopyList,
+  type CloudCopyRecord,
+  type CloudCopyRequest,
   type CloudMoveList,
   type CloudMoveRecord,
   type CloudMoveRequest,
@@ -275,6 +278,17 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     moves: async () => (await orNullOn404(() => request<CloudMoveList>("GET", CLOUD_PATHS.moves)))?.moves ?? null,
     /** Only before the copy starts (409 `move_started` after). */
     cancelMove: (moveId: string) => request<CloudMoveRecord>("DELETE", `${CLOUD_PATHS.moves}/${encodeURIComponent(moveId)}`),
+
+    /* ---- A computer copied, run by the server (`copies.ts`) ---- */
+
+    /** Answers at once; the copy goes on with no app open. 404 on an older server, 409 `server_copy_unavailable` while copies are off. */
+    startCopy: (instanceId: string, copy: CloudCopyRequest) =>
+      request<CloudCopyRecord>("POST", `${instancePath(instanceId)}/copy`, { body: copy }),
+    copy: (copyId: string) => request<CloudCopyRecord>("GET", `${CLOUD_PATHS.copies}/${encodeURIComponent(copyId)}`),
+    /** Running copies, and those that ended in the last day; null on an older server. */
+    copies: async () => (await orNullOn404(() => request<CloudCopyList>("GET", CLOUD_PATHS.copies)))?.copies ?? null,
+    /** Only before the copy signs in (409 `copy_signed_in` after). */
+    cancelCopy: (copyId: string) => request<CloudCopyRecord>("DELETE", `${CLOUD_PATHS.copies}/${encodeURIComponent(copyId)}`),
 
     /* ---- Provider sign-ins on a computer ---- */
     startSignIn: (instanceId: string, provider: string) =>

@@ -1,5 +1,5 @@
 import { runCloudWakes } from "./cloudWake";
-import { createComputerSettled, handleCloudRequest, isCloudRequest } from "./cloud/routes";
+import { createComputerSettled, forkComputerSettled, handleCloudRequest, isCloudRequest } from "./cloud/routes";
 import { noteAutomationLaunchProgress, runCloudAutomations } from "./cloud/automations";
 import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
@@ -246,8 +246,8 @@ export default Sentry.withSentry(sentryOptions, {
             createComputer: (userId, launchProvider, extras) => createComputerSettled(env, userId, launchProvider, extras, { now: Date.now(), waitUntil }),
           });
         }),
-        // The server's own jobs (a computer moved to the other kind): one or
-        // two short steps each, a few a tick. One indexed read when none is due.
+        // The server's own jobs (a computer moved to the other kind, freed or
+        // copied): one or two short steps each, a few a tick. One indexed read when none is due.
         settle("cloud_jobs", async () => {
           const key = env.AGENT37_API_KEY?.trim();
           if (!key) return;
@@ -255,6 +255,7 @@ export default Sentry.withSentry(sentryOptions, {
           await runCloudMoves(env, {
             provider: createCloudProvider(key),
             createComputer: (userId, jobProvider, extras) => createComputerSettled(env, userId, jobProvider, extras, { now: Date.now(), waitUntil }),
+            forkComputer: (source, jobProvider, extras) => forkComputerSettled(env, source, jobProvider, extras, { now: Date.now(), waitUntil }),
           });
         }),
         // "Delete the project's cloud computers" jobs: a few computers a tick.

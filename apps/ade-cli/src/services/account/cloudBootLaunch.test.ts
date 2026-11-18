@@ -4,10 +4,56 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CloudApiError, type CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
 import type { CloudLaunchStagesUpdate } from "../../../../account-directory/src/cloud/contract";
-import { runCloudBootLaunch, type CloudBootLaunchDeps } from "./cloudBootLaunch";
+import { runCloudBootLaunch, takeCloudLaunch, type CloudBootLaunchDeps } from "./cloudBootLaunch";
 
 const logger = { info: () => {}, warn: () => {} };
 const LAUNCH = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
+
+/**
+ * A server copy's fork gets its launch in a one-time file (it can't be given
+ * env), and may carry its original's spent env launch. Each call is one brain
+ * start; the entrypoint hands every start the same env again.
+ */
+describe("takeCloudLaunch: a server copy's join file", () => {
+  const SPENT = "7f6e5d4c-3b2a-4190-8f7e-6d5c4b3a2910";
+  const NEWER = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f";
+  let adeDir: string;
+  const joinFile = () => path.join(adeDir, "cloud", "launch-join.json");
+  const spentEnv = (): NodeJS.ProcessEnv => ({ ADE_LAUNCH_ID: SPENT, ADE_LAUNCH_JOIN: "spent-code", PATH: "/usr/bin" });
+  const hand = (body: string) => {
+    fs.mkdirSync(path.dirname(joinFile()), { recursive: true });
+    fs.writeFileSync(joinFile(), body, { mode: 0o600 });
+  };
+
+  beforeEach(() => {
+    adeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-join-file-"));
+  });
+  afterEach(() => fs.rmSync(adeDir, { recursive: true, force: true }));
+
+  it("reads the file once and deletes it; it wins over the copied env, whose launch every later start leaves alone", async () => {
+    hand(JSON.stringify({ launchId: LAUNCH.toUpperCase(), join: "copy-code" }));
+    const env = spentEnv();
+
+    expect(takeCloudLaunch(adeDir, logger, env)).toEqual({ launchId: LAUNCH, joinCode: "copy-code" });
+    expect(fs.existsSync(joinFile())).toBe(false);
+    expect(env).toEqual({ PATH: "/usr/bin" });
+
+    // The restarts after: the same spent env, no file.
+    expect(takeCloudLaunch(adeDir, logger, spentEnv())).toBeNull();
+    expect(takeCloudLaunch(adeDir, logger, spentEnv())).toBeNull();
+    // A launch the env names anew is still taken.
+    expect(takeCloudLaunch(adeDir, logger, { ADE_LAUNCH_ID: NEWER, ADE_LAUNCH_JOIN: "newer-code" })).toEqual({ launchId: NEWER, joinCode: "newer-code" });
+  });
+
+  it.each([
+    ["no file", null],
+    ["a damaged file", "{\"launchId\": \"not-a-launch\", \"join\""],
+  ])("with %s the env's launch is taken, and the file is gone", async (_label, body) => {
+    if (body != null) hand(body);
+    expect(takeCloudLaunch(adeDir, logger, spentEnv())).toEqual({ launchId: SPENT, joinCode: "spent-code" });
+    expect(fs.existsSync(joinFile())).toBe(false);
+  });
+});
 
 /**
  * A `machine` launch (a move's new computer, a new one from the phone): the

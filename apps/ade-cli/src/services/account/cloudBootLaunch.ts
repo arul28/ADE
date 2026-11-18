@@ -33,8 +33,9 @@
  * Never a password and never a provider sign-in: the person's own account
  * approves the computer, and their providers come from the account vault.
  * The join code leaves this process's env as soon as it is read, so nothing
- * this brain starts inherits it. A state file lets a restart go on where the
- * last boot stopped.
+ * this brain starts inherits it. A server copy's fork, which can't be given
+ * env, gets the two values in a one-time file instead (`takeCloudLaunch`).
+ * A state file lets a restart go on where the last boot stopped.
  */
 
 import fs from "node:fs";
@@ -51,6 +52,7 @@ import {
   cloudChatMessageSettingsOf,
   CLOUD_AUTOMATION_RUN_STAGE,
   CLOUD_LAUNCH_ENV,
+  CLOUD_LAUNCH_JOIN_FILE,
   CLOUD_LAUNCH_MAX_STAGES,
 } from "../../../../account-directory/src/cloud/contract";
 import type { CloudProvider } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
@@ -272,12 +274,86 @@ function writeState(file: string, state: BootState): void {
 }
 
 /** The two env values, taken out of this process's env so nothing it starts inherits the code. */
-export function takeCloudLaunchEnv(env: NodeJS.ProcessEnv = process.env): { launchId: string; joinCode: string | null } | null {
+function takeCloudLaunchEnv(env: NodeJS.ProcessEnv = process.env): { launchId: string; joinCode: string | null } | null {
   const launchId = env[CLOUD_LAUNCH_ENV.launchId]?.trim().toLowerCase() ?? "";
   const joinCode = env[CLOUD_LAUNCH_ENV.join]?.trim() || null;
   delete env[CLOUD_LAUNCH_ENV.join];
   delete env[CLOUD_LAUNCH_ENV.launchId];
   return isUuid(launchId) ? { launchId, joinCode } : null;
+}
+
+/** The env launch a join file replaced (`takeCloudLaunch`), under `$ADE_HOME`: left alone at every later start. */
+const REPLACED_ENV_LAUNCH_FILE = "cloud/launch-env-replaced";
+
+/** The join file's two values; the file is gone once this returns, read or not. */
+function takeCloudLaunchJoinFile(adeDir: string, logger: Logger): { launchId: string; joinCode: string } | null {
+  const file = path.join(adeDir, CLOUD_LAUNCH_JOIN_FILE);
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") logger.warn("cloud_boot_launch.join_file_unreadable", { error: errorText(error) });
+    return null;
+  }
+  // Gone before anything else: the code lives on only in this process's memory.
+  try {
+    fs.rmSync(file, { force: true });
+  } catch (error) {
+    logger.warn("cloud_boot_launch.join_file_left", { error: errorText(error) });
+  }
+  try {
+    const parsed = JSON.parse(text) as { launchId?: unknown; join?: unknown };
+    const launchId = typeof parsed.launchId === "string" ? parsed.launchId.trim().toLowerCase() : "";
+    const joinCode = typeof parsed.join === "string" ? parsed.join.trim() : "";
+    if (isUuid(launchId) && joinCode) return { launchId, joinCode };
+  } catch {
+    // Read as unreadable below; the text holds the code, so it is never logged.
+  }
+  logger.warn("cloud_boot_launch.join_file_unreadable", { error: "not a launch" });
+  return null;
+}
+
+function readReplacedEnvLaunch(adeDir: string): string | null {
+  try {
+    return fs.readFileSync(path.join(adeDir, REPLACED_ENV_LAUNCH_FILE), "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The server launch this computer runs at brain start: the join file a
+ * server copy handed it (`CLOUD_LAUNCH_JOIN_FILE`), else its env's
+ * (`takeCloudLaunchEnv`; those leave this process's env either way).
+ *
+ * - The file is deleted as it is read, so the code then lives only in this
+ *   process's memory, as the env's does.
+ * - The file wins over the env: a copy's fork can carry its original's env,
+ *   whose launch is spent and names the original. That env launch is noted
+ *   and left alone at every later start, so a restart after the join never
+ *   takes it up (its code would be refused anyway: it names another computer).
+ */
+export function takeCloudLaunch(adeDir: string, logger: Logger, env: NodeJS.ProcessEnv = process.env): { launchId: string; joinCode: string | null } | null {
+  const fromEnv = takeCloudLaunchEnv(env);
+  const fromFile = takeCloudLaunchJoinFile(adeDir, logger);
+  if (fromFile) {
+    if (fromEnv && fromEnv.launchId !== fromFile.launchId) {
+      try {
+        const noted = path.join(adeDir, REPLACED_ENV_LAUNCH_FILE);
+        fs.mkdirSync(path.dirname(noted), { recursive: true });
+        fs.writeFileSync(noted, `${fromEnv.launchId}\n`, { mode: 0o600 });
+      } catch (error) {
+        logger.warn("cloud_boot_launch.env_launch_note_failed", { error: errorText(error) });
+      }
+    }
+    logger.info("cloud_boot_launch.join_file_read", { launchId: fromFile.launchId, replacedEnvLaunch: fromEnv?.launchId ?? null });
+    return fromFile;
+  }
+  if (fromEnv && readReplacedEnvLaunch(adeDir) === fromEnv.launchId) {
+    logger.info("cloud_boot_launch.env_launch_replaced", { launchId: fromEnv.launchId });
+    return null;
+  }
+  return fromEnv;
 }
 
 const doneStage = (id: string, detail: string | null = null): CloudLaunchStage => ({ id, status: "done", detail });

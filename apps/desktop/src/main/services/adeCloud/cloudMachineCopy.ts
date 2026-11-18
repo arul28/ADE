@@ -20,7 +20,10 @@
  * handoff (`ade chat move`), which already carries a lane's commits and
  * uncommitted work to any machine on the account.
  *
- * Both run in the desktop: signing the new machine in uses the approval window.
+ * ADE's server runs both when it can (`copyOnServer`, `moveOnServer`), so
+ * they go on with no app open and need no computer of the person's own; an
+ * older server, or one whose computers can't run them yet, gets them run from
+ * here, where signing the new machine in uses the approval window.
  */
 
 import { randomUUID } from "node:crypto";
@@ -36,7 +39,7 @@ import {
   type CloudMachineKind,
   type CloudShapeId,
 } from "../../../shared/adeCloud";
-import { CLOUD_MADE_BY_AGENT_METADATA, CLOUD_MADE_BY_CHAT_METADATA, cloudMadeByMetadata, type CloudAgentMaker } from "../../../shared/adeCloud";
+import { cloudMadeByMetadata, type CloudAgentMaker } from "../../../shared/adeCloud";
 import { CLOUD_LANE_METADATA_KEYS } from "../../../shared/cloudLaneLaunch";
 import { getErrorMessage } from "../shared/utils";
 import { CloudProviderError, type CloudProvider, type CloudInstance, type CloudLogger } from "./cloudProvider";
@@ -59,13 +62,14 @@ import {
   MOVE_TRANSFER_TIMEOUT_MS,
   MOVE_UNPAUSE_COMMAND,
   PROJECTS_LIST_COMMAND,
+  copiedComputerMetadata,
   moveArchiveUrl,
   pauseAndServeHomeCommand,
   readProjectRoots,
   receiveHomeCommand,
   registerProjectsCommand,
 } from "../../../../../account-directory/src/cloud/computerCommands";
-import type { CloudMoveRecord } from "../../../../../account-directory/src/cloud/contract";
+import type { CloudCopyRecord, CloudCopyRequest, CloudMoveRecord } from "../../../../../account-directory/src/cloud/contract";
 
 export type CloudCopyDeps = CloudMachineCreatorDeps & {
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
@@ -82,30 +86,6 @@ const FORK_READY_TIMEOUT_MS = 15 * 60_000;
 const POLL_MS = 3_000;
 /** The copy's hold on sleep (`cloudHoldCommand`); it expires on its own if ADE quits mid-way. */
 const COPY_HOLD_MS = 20 * 60_000;
-
-/**
- * Metadata a copy must not carry: it is a new machine, not the source's row.
- * The `ade_ready*` keys are the old ready machines' (removed in Cloud 5): an
- * older ADE on another computer would still take a copy that carried them as
- * a project's ready machine.
- */
-const NOT_COPIED_METADATA = new Set<string>([
-  CLOUD_MACHINE_KEY_METADATA,
-  CLOUD_FORMER_MACHINE_KEYS_METADATA,
-  CLOUD_MADE_BY_CHAT_METADATA,
-  CLOUD_MADE_BY_AGENT_METADATA,
-  "ade_request_id",
-  "ade_ready_for", "ade_ready", "ade_ready_name", "ade_ready_path", "ade_ready_lane",
-  "ade_ready_claimed_at", "ade_ready_claim", "ade_ready_by", "ade_ready_ade",
-]);
-
-function copyMetadata(source: CloudInstance, requestId: string, extra: Record<string, string>): Record<string, string> {
-  const metadata: Record<string, string> = {};
-  for (const [key, value] of Object.entries(source.metadata)) {
-    if (!NOT_COPIED_METADATA.has(key)) metadata[key] = value;
-  }
-  return { ...metadata, ...extra, created_by: "ade", ade_request_id: requestId };
-}
 
 /** The lane facts a computer carries (`CLOUD_LANE_METADATA_KEYS`), for the computer that replaces it. */
 function laneMetadataOf(source: CloudInstance): Record<string, string> {
@@ -129,22 +109,169 @@ async function waitForRunning(client: CloudProvider, instanceId: string, signal:
   }
 }
 
+export type CloudCopyArgs = {
+  instanceId: string;
+  name?: string | null;
+  shape?: CloudShapeId | null;
+  requestId?: string;
+  madeByChat?: string | null;
+  madeByAgent?: CloudAgentMaker | null;
+};
+
+export type CloudCopyResult = CloudCreateMachineResult & { copiedFrom: string; forkMs: number };
+
 /**
  * Copies a cloud machine into a new one with the same files, signed in as
  * a new machine of the account. A copy that never signs in is deleted.
+ *
+ * ADE's server runs it when it can (`copyOnServer`), so it goes on with this
+ * app closed; an older server, or one whose computers can't read their
+ * sign-in file yet, gets the copy run from here as before.
  */
 export async function copyCloudMachine(
   deps: CloudCopyDeps,
-  args: { instanceId: string; name?: string | null; shape?: CloudShapeId | null; requestId?: string; madeByChat?: string | null; madeByAgent?: CloudAgentMaker | null },
+  args: CloudCopyArgs,
   onProgress: (progress: CloudCreateProgress) => void,
   options: { signal?: AbortSignal } = {},
-): Promise<CloudCreateMachineResult & { copiedFrom: string; forkMs: number }> {
+): Promise<CloudCopyResult> {
   const requestId = args.requestId ?? randomUUID();
+  const client = await deps.client();
+  const served = await copyOnServer(deps, client, { ...args, requestId }, onProgress, options);
+  if (served) return served;
+  return await copyHere(deps, client, { ...args, requestId }, onProgress, options);
+}
+
+/** The server's answers that mean "run the copy from here": copies off, or a computer on an older ADE (an older server answers 404). */
+const COPY_HERE_CODES = new Set(["server_copy_unavailable", "copy_needs_update"]);
+/** An agent maker, as the server names a copy's origin. */
+const COPY_ORIGIN: Record<CloudAgentMaker, NonNullable<CloudCopyRequest["origin"]>> = { chat: "agent", automation: "automation", mcp: "mcp" };
+
+/**
+ * The server's copy (`POST /cloud/instances/:id/copy`), followed to its end
+ * with the same progress stages as a copy run here. Null when this server
+ * can't run one, so the caller runs it here.
+ */
+async function copyOnServer(
+  deps: CloudCopyDeps,
+  client: CloudProvider,
+  args: CloudCopyArgs & { requestId: string },
+  onProgress: (progress: CloudCreateProgress) => void,
+  options: { signal?: AbortSignal },
+): Promise<CloudCopyResult | null> {
+  if (!client.startCopy || !client.readCopy) return null;
+  const logger: CloudLogger = deps.logger ?? {};
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const shape = args.shape ? cloudShape(args.shape) : null;
+  if (args.shape && !shape) throw new Error("Pick a size.");
+  const name = args.name?.trim() ? normalizeCloudMachineName(args.name.trim()) : null;
+  const start = async (copyId: string): Promise<CloudCopyRecord | null> => {
+    try {
+      return await client.startCopy!(args.instanceId, {
+        copyId,
+        ...(name ? { name } : {}),
+        ...(shape ? { resources: { cpu: shape.cpu, memoryGb: shape.memoryGb } } : {}),
+        // An agent's copy keeps its maker, so the agent limits hold as for one made here.
+        origin: args.madeByAgent ? COPY_ORIGIN[args.madeByAgent] : "person",
+        ...(args.madeByChat ? { madeByChat: args.madeByChat } : {}),
+      });
+    } catch (error) {
+      if (error instanceof CloudProviderError && (error.status === 404 || COPY_HERE_CODES.has(error.code ?? ""))) {
+        logger.info?.("cloud.machine_copy_here", { reason: error.code });
+        return null;
+      }
+      throw error;
+    }
+  };
+  // The copy's id is the request's, so the same request (a restart, a Retry) follows the same copy.
+  const first = await start(UUID.test(args.requestId) ? args.requestId : randomUUID());
+  if (!first) return null;
+  let record: CloudCopyRecord = first;
+  // A Retry of a copy that ended without one: a new one.
+  if (record.state === "failed" || record.state === "cancelled") {
+    const again = await start(randomUUID());
+    if (!again) return null;
+    record = again;
+  }
+  const copyId = record.copyId;
+  const progress = (stage: CloudCreateProgress["stage"], message: string, instanceId?: string | null, approvalUrl?: string | null) =>
+    onProgress({ requestId: args.requestId, stage, message, ...(instanceId ? { instanceId } : {}), ...(approvalUrl ? { approvalUrl } : {}) });
+  const startedAt = Date.now();
+  let forkMs = 0;
+  let lastLine = "";
+  let handedUrl: string | null = null;
+  let failures = 0;
+  for (;;) {
+    if (options.signal?.aborted && record.cancellable && client.cancelCopy) {
+      // Before the copy signs in the server deletes it (now, or at its step's end); after, it is a whole computer.
+      const current = record;
+      record = await client.cancelCopy(copyId).catch((error: unknown): CloudCopyRecord => {
+        logger.warn?.("cloud.machine_copy_cancel_failed", { copyId, error: getErrorMessage(error) });
+        return { ...current, cancellable: false };
+      });
+    }
+    const line = record.message;
+    if (record.state === "copying") {
+      if (line !== lastLine) progress("creating", line, record.targetInstanceId);
+    } else if (record.state === "joining") {
+      if (!forkMs) forkMs = Date.now() - startedAt;
+      if (line !== lastLine) progress("signing_in", line, record.targetInstanceId);
+    } else if (record.state === "needs_approval") {
+      if (line !== lastLine) progress("approve_elsewhere", line, record.targetInstanceId, record.approvalUrl);
+      // With no window here (a brain on its own), the link goes to the person, once per link.
+      if (record.approvalUrl && record.approvalUrl !== handedUrl && !deps.approveInWindow && deps.handOffApproval) {
+        handedUrl = record.approvalUrl;
+        let userCode = "";
+        try {
+          userCode = new URL(record.approvalUrl).searchParams.get("user_code") ?? "";
+        } catch {
+          // A link with no code still opens the approval page.
+        }
+        deps.handOffApproval({ url: record.approvalUrl, userCode, name: record.name });
+      }
+    }
+    lastLine = line;
+    if (record.state === "done") break;
+    if (record.state === "failed") throw new Error(record.error ?? record.message);
+    if (record.state === "cancelled") throw new CloudCreateCancelled(record.message || "The copy was cancelled.");
+    await sleep(SERVER_MOVE_POLL_MS);
+    try {
+      record = await client.readCopy(copyId);
+      failures = 0;
+    } catch (error) {
+      failures += 1;
+      if (error instanceof CloudProviderError && error.status === 404) throw new Error("ADE Cloud lost track of the copy. Check your computers list.");
+      if (failures >= SERVER_MOVE_READ_FAILURES) {
+        throw new Error(`ADE can't reach ADE Cloud to follow the copy. It goes on there; check your computers list. (${getErrorMessage(error)})`);
+      }
+    }
+  }
+  const targetId = record.targetInstanceId!;
+  logger.info?.("cloud.machine_copied", { sourceId: args.instanceId, instanceId: targetId, onServer: true });
+  return {
+    instanceId: targetId,
+    machineKey: record.targetMachineKey ?? null,
+    name: record.name,
+    joined: record.targetMachineKey != null,
+    // The server named the machine row and the computer before it said done.
+    renamed: true,
+    copiedFrom: args.instanceId,
+    forkMs: forkMs || Date.now() - startedAt,
+  };
+}
+
+/** The copy run from this app, as before the server ran it. */
+async function copyHere(
+  deps: CloudCopyDeps,
+  client: CloudProvider,
+  args: CloudCopyArgs & { requestId: string },
+  onProgress: (progress: CloudCreateProgress) => void,
+  options: { signal?: AbortSignal },
+): Promise<CloudCopyResult> {
+  const { requestId } = args;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const logger: CloudLogger = deps.logger ?? {};
   const progress = (stage: CloudCreateProgress["stage"], message: string, instanceId?: string, approvalUrl?: string) =>
     onProgress({ requestId, stage, message, ...(instanceId ? { instanceId } : {}), ...(approvalUrl ? { approvalUrl } : {}) });
-  const client = await deps.client();
   const directory = deps.directoryBaseUrl();
   if (!directory) throw new Error("ADE's account service isn't configured on this computer, so it can't sign the copy in.");
   if (!(await deps.getAccountToken())) throw new Error("Sign in to ADE on this computer first. The copy joins your account.");
@@ -175,9 +302,10 @@ export async function copyCloudMachine(
       fork = await client.forkInstance(source.id, {
         name,
         ...(shape ? { resources: { cpu: shape.cpu, memory: shape.memoryGb } } : {}),
-        metadata: copyMetadata(source, requestId, {
+        metadata: copiedComputerMetadata(source.metadata, {
           ade_copied_from: source.id,
           ...cloudMadeByMetadata(args),
+          ade_request_id: requestId,
         }),
       }, options.signal);
     } catch (error) {

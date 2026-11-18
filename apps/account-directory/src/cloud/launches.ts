@@ -1084,6 +1084,73 @@ export async function startMachineLaunch(env: CloudEnv, userId: string, input: M
   return json(recordOf(after, now), outcome.kind === "made" ? 201 : 200);
 }
 
+/* ---- A server copy's sign-in (`copies.ts`) ---- */
+
+/**
+ * A server copy's fork joins as a `machine` launch's computer does, with the
+ * same code rules (single use, 30 minutes, only its hash kept, bound to the
+ * fork's instance id), but the provider's fork takes no env. So the launch
+ * row is made before the fork (its id goes in the fork's metadata), bound to
+ * the fork once it is made (`bindCopyLaunchStatement`), and its 30 minutes
+ * start only when the server hands the fork its code (`openCopyLaunchJoin`).
+ * Until then a join finds no window open. False when the launch id is
+ * another account's or another kind's, or the join key isn't set.
+ */
+export async function prepareCopyLaunch(
+  env: CloudEnv,
+  userId: string,
+  launchId: string,
+  facts: { sizeId: CloudTierId | null; type: "default" | "vm"; name: string; copiedFrom: string },
+  now: number,
+): Promise<boolean> {
+  const existing = await readLaunch(env, launchId);
+  if (existing) return existing.user_id === userId && existing.kind === "machine";
+  const salt = newJoinSalt();
+  const code = await joinCodeOf(env, launchId, salt);
+  if (!code) {
+    reportCloudFailure("cloud.launch_join_key_missing");
+    return false;
+  }
+  const request = { launchId, kind: "machine", sizeId: facts.sizeId, type: facts.type, name: facts.name, movedFrom: null, copiedFrom: facts.copiedFrom };
+  await env.DB.prepare(`
+    insert into cloud_launches (launch_id, user_id, state, kind, size_id, request_json, join_salt, join_hash, created_at, updated_at, expires_at)
+    values (?, ?, 'making', 'machine', ?, ?, ?, ?, ?, ?, ?) on conflict (launch_id) do nothing
+  `).bind(launchId, userId, facts.sizeId, JSON.stringify(request), salt, await sha256Hex(code), now, now, now + CLOUD_LAUNCH_RECORD_TTL_MS).run();
+  const row = await readLaunch(env, launchId);
+  return row?.user_id === userId && row.kind === "machine";
+}
+
+/** Binds a copy's launch to its fork, in the batch that adopts the fork (a launch already bound keeps its computer). */
+export function bindCopyLaunchStatement(env: CloudEnv, launchId: string, instanceId: string, now: number): D1PreparedStatement {
+  return env.DB.prepare("update cloud_launches set instance_id = ?, updated_at = ? where launch_id = ? and instance_id is null").bind(instanceId, now, launchId);
+}
+
+/**
+ * Opens a copy's join for its fork and works its code out again from the
+ * kept salt (the code itself is never stored), for the one exec that hands
+ * it over. The window opens once: handing the code again (a brain that lost
+ * it) keeps the first 30 minutes. `signed_in` once the fork reported its
+ * launch done; `closed` for a launch that ended or names another computer.
+ */
+export async function openCopyLaunchJoin(
+  env: CloudEnv,
+  launchId: string,
+  instanceId: string,
+  now: number,
+): Promise<{ kind: "code"; code: string } | { kind: "signed_in" } | { kind: "closed" }> {
+  const row = await readLaunch(env, launchId);
+  if (!row || (row.instance_id != null && row.instance_id !== instanceId)) return { kind: "closed" };
+  if (row.state === "done") return { kind: "signed_in" };
+  const opened = await env.DB.prepare(`
+    update cloud_launches set instance_id = coalesce(instance_id, ?), state = case when state = 'making' then 'joining' else state end,
+      join_expires_at = coalesce(join_expires_at, ?), updated_at = ?
+    where launch_id = ? and coalesce(instance_id, ?) = ? and state in ('making', 'joining', 'needs_approval')
+  `).bind(instanceId, now + CLOUD_LAUNCH_JOIN_TTL_MS, now, launchId, instanceId, instanceId).run();
+  const code = row.join_salt ? await joinCodeOf(env, launchId, row.join_salt) : null;
+  if ((opened.meta?.changes ?? 0) !== 1 || !code) return { kind: "closed" };
+  return { kind: "code", code };
+}
+
 /* ---- Files ---- */
 
 async function handlePutFile(request: Request, env: CloudEnv, userId: string, launchId: string, fileId: string, now: number): Promise<Response> {

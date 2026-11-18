@@ -15,6 +15,7 @@ import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, rememberLau
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
 import { handleMoveStart, routeMoves, type MoveRouteDeps } from "./moves";
 import { handleFreeStart, routeFrees } from "./frees";
+import { handleCopyStart, routeCopies, type CopyRouteDeps } from "./copies";
 import { serverGitCheck } from "./accountVault";
 import { routeAccountSignIns } from "./accountSignIns";
 import { routeAccountSecrets } from "./accountSecrets";
@@ -734,48 +735,91 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   }
 }
 
-async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, { now, waitUntil }: CloudRequestContext): Promise<Response> {
-  const body = await readJson(request);
-  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+/** A copy's size, disk and room on the account, worked out once its rules said yes (`planFork`). */
+type ForkPlan = {
+  account: AccountRow;
+  size: CloudSize;
+  diskGb: number;
+  capGb: number;
+  track: ReturnType<typeof cloudActionTracker>["track"];
+  refuse: ReturnType<typeof cloudActionTracker>["refuse"];
+};
+
+/**
+ * A copy's rules (the owner's switch, hours, limits, size, disk), for the copy
+ * route and the server copy (`copies.ts`) alike, so a server copy is refused
+ * at its start for exactly what would refuse its fork.
+ */
+async function planFork(
+  env: CloudEnv,
+  computer: ComputerRow,
+  body: Record<string, unknown>,
+  metadataIn: Record<string, string>,
+  { now, waitUntil }: CloudRequestContext,
+): Promise<{ ok: true; plan: ForkPlan } | { ok: false; response: Response }> {
+  const no = (response: Response) => ({ ok: false as const, response });
   const { account, computers, outOfHours: empty } = await getAccountContext(env, computer.user_id, now);
-  const metadataIn = stringMap(body.metadata, MAX_METADATA_ENTRIES);
-  if (!metadataIn) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  // A repeat of a copy this account asked for gets that computer, before any
-  // limit, as a repeated create does.
-  if (metadataIn.ade_request_id) {
-    const replay = await replayRequest(env, provider, computer.user_id, metadataIn.ade_request_id, now);
-    if (replay) return createAnswerOf(replay);
-  }
   const { track, refuse } = cloudActionTracker({
     env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: originOf(metadataIn), key: computer.instance_id, refusedAction: "copy", now,
   });
   const newWork = await newWorkRefusal(env, computer.user_id, "copy", now, waitUntil);
-  if (newWork) return newWork;
-  if (empty) return refuse({ response: outOfHours(), refusal: "out_of_hours" });
-  if (await freeCapRefuses(env, account, now, waitUntil)) return refuse({ response: cantMakeComputer(), refusal: "owner_limit" });
+  if (newWork) return no(newWork);
+  if (empty) return no(refuse({ response: outOfHours(), refusal: "out_of_hours" }));
+  if (await freeCapRefuses(env, account, now, waitUntil)) return no(refuse({ response: cantMakeComputer(), refusal: "owner_limit" }));
   const over = overPlanLimits(env, account, computers);
-  if (over) return refuse(over);
+  if (over) return no(refuse(over));
 
   const resources = body.resources && typeof body.resources === "object" ? body.resources as Record<string, unknown> : null;
   const size = resources
     ? cloudSizeFor(computer.type, resources.cpu, resources.memory)
     : cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
-  if (!size) return badRequest("That size isn't one ADE Cloud offers.");
+  if (!size) return no(badRequest("That size isn't one ADE Cloud offers."));
   const requestedDisk = typeof resources?.disk === "number" ? resources.disk : computer.disk_gb;
-  if (!Number.isInteger(requestedDisk)) return badRequest("That disk size isn't valid.");
-  if (requestedDisk < computer.disk_gb) return badRequest("A copy's disk can't be smaller than the original's.");
-  if (requestedDisk !== computer.disk_gb && requestedDisk % DISK_STEP_GB !== 0) return badDiskStep();
+  if (!Number.isInteger(requestedDisk)) return no(badRequest("That disk size isn't valid."));
+  if (requestedDisk < computer.disk_gb) return no(badRequest("A copy's disk can't be smaller than the original's."));
+  if (requestedDisk !== computer.disk_gb && requestedDisk % DISK_STEP_GB !== 0) return no(badDiskStep());
   const tooBig = tierRefusal(size, requestedDisk, requestedDisk === computer.disk_gb);
-  if (tooBig) return refuse(tooBig);
+  if (tooBig) return no(refuse(tooBig));
   const room = await diskRoom(env, account, await accountDiskGb(env, computer.user_id) + requestedDisk, now);
-  if (!room.ok) return refuse(room);
+  if (!room.ok) return no(refuse(room));
+  return { ok: true, plan: { account, size, diskGb: requestedDisk, capGb: room.capGb, track, refuse } };
+}
+
+/** Why a copy of `computer` with this fork body would be refused now, or null when it may go ahead (the server copy's start). */
+export async function forkRefusal(env: CloudEnv, computer: ComputerRow, body: Record<string, unknown>, ctx: CloudRequestContext): Promise<Response | null> {
+  const metadataIn = stringMap(body.metadata, MAX_METADATA_ENTRIES);
+  if (!metadataIn) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  const planned = await planFork(env, computer, body, metadataIn, ctx);
+  return planned.ok ? null : planned.response;
+}
+
+/**
+ * The one way a computer is copied (`POST /cloud/instances/:id/fork` and the
+ * server copy): the same replay, rules, reservation, billing and metadata as
+ * a create. `extras.onMade`'s statements land in the fork's adoption batch.
+ */
+export async function forkComputer(env: CloudEnv, computer: ComputerRow, provider: CloudProvider, extras: Pick<CreateComputerExtras, "body" | "onMade">, ctx: CloudRequestContext): Promise<CreateComputerOutcome> {
+  const refused = (response: Response): CreateComputerOutcome => ({ kind: "refused", response });
+  const { body } = extras;
+  const { now } = ctx;
+  const metadataIn = stringMap(body.metadata, MAX_METADATA_ENTRIES);
+  if (!metadataIn) return refused(badRequest(UNREADABLE_REQUEST_MESSAGE));
+  // A repeat of a copy this account asked for gets that computer, before any
+  // limit, as a repeated create does.
+  if (metadataIn.ade_request_id) {
+    const replay = await replayRequest(env, provider, computer.user_id, metadataIn.ade_request_id, now);
+    if (replay) return replay;
+  }
+  const planned = await planFork(env, computer, body, metadataIn, ctx);
+  if (!planned.ok) return refused(planned.response);
+  const { account, size, diskGb, capGb, track, refuse } = planned.plan;
 
   const { metadata, requestId } = withRequestId(metadataIn);
   const name = computerName(body.name);
   const reservation = await reserveComputer(env, account, {
     size,
-    diskGb: requestedDisk,
-    capGb: room.capGb,
+    diskGb,
+    capGb,
     moveFromInstanceId: null,
     name: name ?? computer.name,
     requestId,
@@ -786,26 +830,39 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
     now,
   });
   if (!reservation.ok) {
-    if ("replay" in reservation) return createAnswerOf(await replayRequest(env, provider, computer.user_id, requestId, now) ?? { kind: "in_progress" });
-    return reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response;
+    if ("replay" in reservation) return await replayRequest(env, provider, computer.user_id, requestId, now) ?? { kind: "in_progress" };
+    return refused(reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response);
   }
   try {
     const instance = await provider.forkInstance(computer.instance_id, {
       ...(name ? { name } : {}),
-      resources: { cpu: size.cpu, memory: size.memoryGb, disk: requestedDisk },
+      resources: { cpu: size.cpu, memory: size.memoryGb, disk: diskGb },
       metadata,
     });
     await env.DB.batch([
       ...adoptionStatements(env, { pendingId: reservation.pendingId, instance, machineKey: metadata.ade_machine_key ?? null, now: Date.now(), reason: "copy" }),
       diskDayStatement(env, account, now),
+      ...(extras.onMade?.(instance) ?? []),
     ]);
     await enforceBlockAfterCreate(env, provider, computer.user_id, instance.id, Date.now());
     track({ action: "copy", tier: tierOf(size) });
-    return json(instance, 201);
+    return { kind: "made", instance, answer: instance };
   } catch (error) {
     if (providerMadeNothing(error)) await releasePending(env, reservation.pendingId);
     throw error;
   }
+}
+
+/** `forkComputer` for a step nobody's request runs (the minute cron's server copy): the free plan's GitHub rules are settled first, as `createComputerSettled` does. */
+export async function forkComputerSettled(env: CloudEnv, computer: ComputerRow, provider: CloudProvider, extras: Pick<CreateComputerExtras, "body" | "onMade">, ctx: CloudRequestContext): Promise<CreateComputerOutcome> {
+  await settleFreePlanGithub(env, await loadAccount(env, computer.user_id, ctx.now), ctx);
+  return forkComputer(env, computer, provider, extras, ctx);
+}
+
+async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, ctx: CloudRequestContext): Promise<Response> {
+  const body = await readJson(request);
+  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  return createAnswerOf(await forkComputer(env, computer, provider, { body }, ctx));
 }
 
 /**
@@ -1279,8 +1336,14 @@ function moveDepsFor(env: CloudEnv, provider: CloudProvider | null, ctx: CloudRe
     waitUntil: ctx.waitUntil,
     // The step runs after this request: its own clock, and the free plan's GitHub rules settled as a launch's are.
     createComputer: (userId, launchProvider, extras) => createComputerSettled(env, userId, launchProvider, extras, { now: Date.now(), waitUntil: ctx.waitUntil }),
+    forkComputer: (source, jobProvider, extras) => forkComputerSettled(env, source, jobProvider, extras, { now: Date.now(), waitUntil: ctx.waitUntil }),
     refusal: (source, size) => moveRefusal(env, source, size, ctx),
   };
+}
+
+/** A server copy's deps: a move's, with the copy's own rules (a fork's). */
+function copyDepsFor(env: CloudEnv, provider: CloudProvider | null, ctx: CloudRequestContext): CopyRouteDeps {
+  return { ...moveDepsFor(env, provider, ctx), refusal: (source, forkBody) => forkRefusal(env, source, forkBody, ctx) };
 }
 
 const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, ctx: CloudRequestContext) => Promise<Response>> = {
@@ -1334,6 +1397,8 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   },
   "POST resize": handleResize,
   "POST fork": handleFork,
+  // A copy run here a step at a time, signed in with no app open (`copies.ts`).
+  "POST copy": (request, env, computer, provider, ctx) => handleCopyStart(request, env, computer, copyDepsFor(env, provider, ctx)),
   // To the other kind (Standard ↔ Full), run here a step at a time (`moves.ts`).
   "POST move": (request, env, computer, provider, ctx) => handleMoveStart(request, env, computer, moveDepsFor(env, provider, ctx)),
   "POST free": (request, env, computer, provider, ctx) => handleFreeStart(request, env, computer, {
@@ -1564,7 +1629,7 @@ function freePlanMomentOf(method: string, path: string): "read" | "use" | null {
   // A phone start settles them in `phones.ts`, once its access is known.
   if (path === CLOUD_PATHS.instances) return "use";
   const action = instanceRouteOf(path)?.action;
-  return action === "start" || action === "fork" ? "use" : null;
+  return action === "start" || action === "fork" || action === "copy" ? "use" : null;
 }
 
 /**
@@ -1889,6 +1954,10 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   }
   // A server free's record; a watched one runs its due step after the answer.
   if (path.startsWith(`${CLOUD_PATHS.frees}/`)) return providerCall(() => routeFrees(request, path, env, caller.userId, moveDepsFor(env, provider, ctx)));
+  // A server copy's record reads with no provider; a watched one runs its due step after the answer, and a cancel deletes the copy.
+  if (path === CLOUD_PATHS.copies || path.startsWith(`${CLOUD_PATHS.copies}/`)) {
+    return providerCall(() => routeCopies(request, path, env, caller.userId, moveDepsFor(env, provider, ctx)));
+  }
   // The job's rows only; the minute cron does the work.
   if (path === CLOUD_PATHS.projectComputersDelete || path.startsWith(`${CLOUD_PATHS.projectComputersDelete}/`)) {
     return routeProjectComputersDelete(request, path, env, caller.userId, now);
