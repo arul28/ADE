@@ -50747,16 +50747,17 @@ export function createAgentChatService(args: {
           _rootPath: projectRoot,
         };
       } catch {
-        throw new Error(`Image URL attachment must be an http(s) URL: ${rawPath}`);
+        throw new AdeExpectedError(`Image URL attachment must be an http(s) URL: ${rawPath}`, "user");
       }
     }
     const isAbsolute = path.isAbsolute(rawPath);
     const located = resolveLocalAttachmentPath(managed, rawPath);
     if (!located) {
-      throw new Error(
+      throw new AdeExpectedError(
         isAbsolute
           ? `Attachment path must stay within the project root or the chat's working directory: ${rawPath}`
           : `Attachment path must stay within the active lane: ${rawPath}`,
+        "user",
       );
     }
     return {
