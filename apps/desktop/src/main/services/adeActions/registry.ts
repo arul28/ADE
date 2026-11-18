@@ -74,7 +74,7 @@ import type {
 } from "../../../shared/types/agentCliLogin";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import { noteProviderLoginChanged } from "../ai/providerLoginChanged";
-import { buildHarnessLaunchEnv, listHarnessRouteCatalog } from "../chat/harnessRouteCatalog";
+import { buildHarnessLaunchEnv, listHarnessRouteCatalog, probeOpenCodeKeyModelsInBackground } from "../chat/harnessRouteCatalog";
 import { testHarnessRoute } from "../chat/harnessRouteTest";
 import { resolveHarnessPresetForLaunch } from "../chat/harnessPresetLaunch";
 import { prepareHarnessLaunch } from "../chat/harnessLaunchPrepare";
@@ -3040,6 +3040,12 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     // sign-in, a one-token live check, and the terminal launcher's env.
     listHarnessRoutes: (args?: { harness?: unknown }) => {
       const catalog = listHarnessRouteCatalog();
+      // A key for OpenCode Go or Zen that came through the account has no models here yet.
+      probeOpenCodeKeyModelsInBackground({
+        projectRoot: runtime.projectRoot,
+        projectConfig: runtime.projectConfigService.get().effective,
+        logger: runtime.logger,
+      });
       // Echo a valid filter so a text formatter (`ade harness routes
       // --harness claude`) can show just that harness; the catalog itself is
       // harness-independent.
@@ -4712,6 +4718,7 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
 function savedChatReads(credentials: CloudAccessDeps): {
   saved_chats_list: (args?: unknown) => Promise<CloudSavedChatList | null>;
   saved_chats_read: (args?: unknown) => Promise<CloudSavedChatPage | null>;
+  saved_chat_machine: (args?: unknown) => Promise<{ machineKey: string; projectId: string | null; projectRoot: string | null } | null>;
 } {
   const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
   const count = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), 500) : undefined);
@@ -4740,6 +4747,26 @@ function savedChatReads(credentials: CloudAccessDeps): {
         before: typeof request.before === "number" && Number.isFinite(request.before) ? request.before : null,
         limit: count(request.limit),
       });
+    },
+    /**
+     * Which of `machineKeys` (asleep ADE Cloud computers) saved `chatId`, and
+     * its project there, from the account's copy: it wakes nothing. The CLI
+     * then sends a `--machine` call to that computer, which wakes it. Only
+     * where the chat is, never its messages. Null: none of them saved it.
+     */
+    saved_chat_machine: async (args) => {
+      const request = input(args);
+      const chatId = text(request.chatId);
+      const machineKeys = Array.isArray(request.machineKeys)
+        ? request.machineKeys.map(text).filter((key): key is string => key !== null).slice(0, 20)
+        : [];
+      const server = cloudServerFor(credentials);
+      if (!server || !chatId || !machineKeys.length) return null;
+      for (const machineKey of machineKeys) {
+        const page = await server.readSavedChat({ machineKey, chatId, limit: 1 }).catch(() => null);
+        if (page) return { machineKey, projectId: page.chat.projectId ?? null, projectRoot: page.chat.projectRoot ?? null };
+      }
+      return null;
     },
   };
 }

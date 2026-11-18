@@ -7,6 +7,7 @@ import {
   type CloudLaunchRecord,
   type CloudLaunchStartRequest,
 } from "../../shared/accountCloudLaunches";
+import type { CloudLaunchAttachment } from "../../../../account-directory/src/cloud/contract";
 import { normalizeGitRemoteIdentity } from "../../shared/crossMachineHandoff";
 import { forwardSignalToSentry } from "../../shared/sentry/logBridge";
 import { createBackoffPoller, type BackoffPoller } from "../lib/backoffPoller";
@@ -371,7 +372,50 @@ export type StartAccountCloudChat = {
   lane?: CloudLaunchStartRequest["lane"];
   /** The launch as the app set it up (`cloudLaunchAppArgs`), for `CloudServerLaunchRequest.launch`. */
   launch?: CloudLaunchStartRequest["launch"] | null;
+  /** Files of the first message: each is read and sent to the server before the start names it. */
+  files?: AccountCloudLaunchFile[];
 };
+
+/** A file of a launch's first message: its name, and how to read its bytes (from the tab's machine). */
+export type AccountCloudLaunchFile = { name: string; read: () => Promise<{ bytes: Uint8Array; contentType: string }> };
+
+/** Files not sent yet, by launch: a Retry sends them before it starts again. In this tab only. */
+const unsentFiles = new Map<string, AccountCloudLaunchFile[]>();
+
+/** Sends each file, then names them all on the start request. Throws a sentence that names the file. */
+async function sendLaunchFiles(launchId: string, files: readonly AccountCloudLaunchFile[]): Promise<CloudLaunchAttachment[]> {
+  const upload = bridge()?.uploadFile;
+  if (!upload) throw new Error("This ADE can't send files to ADE Cloud with a first message. Send the message without them.");
+  const sent: CloudLaunchAttachment[] = [];
+  for (const [index, file] of files.entries()) {
+    try {
+      const { bytes, contentType } = await file.read();
+      const fileId = `f${index}-${launchId.slice(0, 8)}`;
+      const uploaded = await upload(launchId, fileId, bytes, contentType);
+      sent.push({ fileId, name: file.name, contentType, sizeBytes: uploaded.sizeBytes });
+    } catch (error) {
+      const reason = (error instanceof Error ? error.message : String(error)).replace(/[.\s]+$/, "");
+      throw new Error(`ADE couldn't send ${file.name} to ADE Cloud: ${reason}. Retry to send it again.`);
+    }
+  }
+  return sent;
+}
+
+/** The request with its files sent; null (and the entry's error) when one couldn't go. */
+async function withSentFiles(launchId: string, request: CloudLaunchStartRequest): Promise<CloudLaunchStartRequest | null> {
+  const files = unsentFiles.get(launchId);
+  if (!files?.length || !request.chat) return request;
+  try {
+    const attachments = await sendLaunchFiles(launchId, files);
+    unsentFiles.delete(launchId);
+    const next: CloudLaunchStartRequest = { ...request, chat: { ...request.chat, attachments } };
+    patchEntry(launchId, { request: next });
+    return next;
+  } catch (error) {
+    patchEntry(launchId, { startError: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+}
 
 /**
  * Starts a chat on a new ADE Cloud computer: the first message makes the
@@ -418,7 +462,9 @@ export async function startAccountCloudChat(input: StartAccountCloudChat): Promi
     updatedAt: now,
   };
   setEntries([{ launchId, record: null, messages: [firstMessage], startError: null, request, startedHere: true, origin: input.origin }, ...snapshot.entries]);
-  await runStart(launchId, request);
+  if (input.files?.length) unsentFiles.set(launchId, input.files);
+  const ready = await withSentFiles(launchId, request);
+  if (ready) await runStart(launchId, ready);
   return launchId;
 }
 
@@ -442,7 +488,8 @@ export async function retryAccountCloudLaunch(launchId: string): Promise<void> {
   const request = entry?.request ?? entry?.record?.request ?? null;
   if (!entry || !request) return;
   patchEntry(launchId, { startError: null, record: entry.record ? { ...entry.record, state: "making", error: null } : null });
-  await runStart(launchId, request, entry.record != null);
+  const ready = await withSentFiles(launchId, request);
+  if (ready) await runStart(launchId, ready, entry.record != null);
 }
 
 /** Queues a message for a launch whose chat doesn't exist yet. */

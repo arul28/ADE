@@ -8360,6 +8360,10 @@ export function createPrService({
     // A merge is a GitHub API call. It never needed a local row, so this
     // resolves a synthetic `gh:owner/repo#num` id too. Only the *local*
     // bookkeeping below stays conditional on `row`.
+    // An action caller can send no arguments; a merge needs to know which PR.
+    if (typeof args?.prId !== "string" || !args.prId.trim()) {
+      throw new AdeExpectedError("invalid_argument: pr.land needs a prId.", "user");
+    }
     const target = resolvePrTarget(args.prId);
     const { repo, prNumber, row } = target;
 

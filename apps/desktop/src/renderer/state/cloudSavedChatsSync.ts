@@ -4,6 +4,7 @@
  * every 30 s, never a poll. Transcripts are read only when a chat is opened.
  */
 
+import { ADE_CLOUD_NAME } from "../../shared/adeCloudMachine";
 import { findMachineProject, remoteProjectBindingKey } from "../../shared/projectIdentity";
 import type { CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import type { CloudProjectOverview } from "../../../../account-directory/src/cloud/contract";
@@ -258,7 +259,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     const cloud = watchedCloudMachines();
     // A list whose computers the server did not give (`computersUnread`) says nothing about them.
     const cloudBoxes = cloud?.state === "ok" && !cloud.computersUnread ? cloud.machines : null;
-    const machineFacts = new Map<string, { connection: RemoteRuntimeConnectionStatus | null; gone: boolean; name: string | null }>();
+    const machineFacts = new Map<string, { connection: RemoteRuntimeConnectionStatus | null; gone: boolean; name: string | null; laneComputer: boolean }>();
     for (const [machineKey, rows] of byMachine) {
       const connection = connectionFor(context.connections, machineKey, rows[0]!.instanceId);
       const box = cloudBoxes ? cloudBoxForMachine(cloudBoxes, { machineKey, hostname: rows[0]!.instanceId }) : null;
@@ -276,7 +277,9 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       const gone = goneMachineKeys.has(machineKey.toLowerCase())
         || (told?.state === "deleted" && !box)
         || (cloudBoxes != null ? !box : !told && !connection && cloudLaneIndexFresh() && !laneComputer);
-      machineFacts.set(machineKey, { connection, gone, name: box?.name ?? laneComputer?.laneName ?? null });
+      // A lane's own computer reads as ADE Cloud, asleep or awake, as the live
+      // list names it; its connection keeps the lane name it was made with.
+      machineFacts.set(machineKey, { connection, gone, name: laneComputer ? ADE_CLOUD_NAME : box?.name ?? null, laneComputer: laneComputer != null });
     }
     const cloudTargets = new Map<string, string>();
     for (const [machineKey, facts] of machineFacts) {
@@ -316,7 +319,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     // Machines whose own saved chats show (the lane fallback below is for the rest).
     const showsSavedChats = new Set<string>();
     for (const [machineKey, machineRows] of byMachine) {
-      const { connection, gone, name } = machineFacts.get(machineKey)!;
+      const { connection, gone, name, laneComputer } = machineFacts.get(machineKey)!;
       const rows = machineRows.filter((row) => {
         const owner = ownerByChatId.get(row.chatId);
         return owner ? owner.machineKey === machineKey : gone;
@@ -349,14 +352,25 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       const machineId = connection?.target.id ?? `${SAVED_CHATS_MACHINE_PREFIX}${machineKey}`;
       const previous = store.crossMachineLanesByMachineId[machineId] ?? null;
       if (!connection) keptSyntheticIds.add(machineId);
-      const machineName = connection?.target.name ?? name ?? (gone ? "Deleted computer" : previous?.machineName ?? "ADE Cloud");
+      const machineName = (laneComputer ? name : null) ?? connection?.target.name ?? name ?? (gone ? "Deleted computer" : previous?.machineName ?? "ADE Cloud");
       const binding = previous?.binding
         ?? (connection ? realBinding(connection, first) : null)
         ?? savedBinding(machineId, first, machineName);
-      const sessions = rows.map(savedChatSession);
+      // A chat saves its lane's name as it was when the chat started. A lane
+      // renamed since (the launch names it first, the person later) shows by
+      // the name the account's lane index has now.
+      const laneNow = new Map(adeCloudLaneComputersNow().map((computer) => [computer.laneId, computer.laneName] as const));
+      const current = (row: RoutedSavedChatRow): RoutedSavedChatRow => {
+        const name = row.laneId ? laneNow.get(row.laneId)?.trim() : null;
+        return name && name !== row.laneName ? { ...row, laneName: name } : row;
+      };
+      const sessions = rows.map((row) => savedChatSession(current(row)));
       const known = new Set(previous?.lanes.map((lane) => lane.id) ?? []);
-      const lanes = [...(previous?.lanes ?? [])];
-      for (const row of rows) {
+      const lanes = (previous?.lanes ?? []).map((lane) => {
+        const name = laneNow.get(lane.id)?.trim();
+        return name && name !== lane.name ? { ...lane, name } : lane;
+      });
+      for (const row of rows.map(current)) {
         const lane = savedChatLane(row);
         if (!known.has(lane.id)) {
           known.add(lane.id);

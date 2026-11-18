@@ -8,6 +8,8 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
+import { useHarnessPresets } from "../../settings/harnesses/useHarnessPresets";
+import { harnessPresetMatchesQuery } from "../../../../shared/harnessPresets";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { MagnifyingGlass } from "@phosphor-icons/react";
 import {
@@ -482,6 +484,15 @@ export const ModelPickerContent = memo(function ModelPickerContent({
 
   const searchActive = query.trim().length > 0;
   const harnessesActive = listsHarnessPresets && selection === "harnesses";
+  // Search covers the model catalog only. Saved custom providers that match
+  // are named beside the count, one click from their own tab.
+  const { presets: harnessPresets } = useHarnessPresets();
+  const matchingCustomCount = useMemo(
+    () => (listsHarnessPresets && searchActive && !harnessesActive
+      ? harnessPresets.filter((preset) => harnessPresetMatchesQuery(preset, query)).length
+      : 0),
+    [harnessPresets, harnessesActive, listsHarnessPresets, query, searchActive],
+  );
 
   // The Custom tab searches its own lists (saved providers and what the Run-in
   // harness can reach): the box in front of you filters the list you are
@@ -1150,6 +1161,16 @@ export const ModelPickerContent = memo(function ModelPickerContent({
             data-model-picker-panel-label="true"
           >
             <span className="truncate">{panelLabel}</span>
+            {matchingCustomCount > 0 ? (
+              <button
+                type="button"
+                data-model-picker-custom-matches="true"
+                onClick={() => handleSelectRail("harnesses")}
+                className="ml-2 shrink-0 rounded px-1 text-violet-300/85 hover:bg-violet-500/[0.10] hover:text-violet-200"
+              >
+                {matchingCustomCount === 1 ? "1 custom provider matches" : `${matchingCustomCount} custom providers match`}
+              </button>
+            ) : null}
           </div>
 
 	          {providerTabs.length > 1 ? (

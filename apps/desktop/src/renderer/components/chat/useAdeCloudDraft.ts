@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MutableRefObject } from "react";
 import { captureError } from "../../../shared/sentry/capture";
 import {
   cloudCatalogOf,
@@ -22,7 +22,7 @@ import { pickCloudDefaultTier } from "../../lib/cloudDefaultTier";
 import { useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { useCloudMachines } from "../remoteTargets/useCloudMachines";
 import type { NewLaneDraftConfig } from "../lanes/CreateLaneDialogHost";
-import { originUrlForBinding } from "../lanes/laneMachines";
+import { originUrlForBinding, projectOriginMemoryVersion, subscribeProjectOriginMemory } from "../lanes/laneMachines";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { ADE_CLOUD_FREE_SPACE_ANCHOR, ADE_CLOUD_PLAN_ANCHOR, adeCloudSettingsRoute } from "../settings/settingsHash";
 import { isAutoCreateLaneOptionId } from "../terminals/LaneCombobox";
@@ -290,6 +290,10 @@ export function useAdeCloudComposer(input: {
     if (laneId && draft.lanesKnown && !selectedLane) setLaneId(null);
   }, [draft.lanesKnown, laneId, selectedLane, setLaneId]);
   const newLane = mode && !selectedLane;
+  // The origin of a local tab comes from the recent projects read, which can
+  // land after this renders (a project just cloned or opened): read it again
+  // when that memory changes, or "no GitHub origin" stays on Send.
+  useSyncExternalStore(subscribeProjectOriginMemory, projectOriginMemoryVersion, projectOriginMemoryVersion);
   const originUrl = originUrlForBinding(input.tabBinding);
   // Can a new computer clone this repository with the account's credentials?
   // Asked before Send (account-level, no pin), once per repository, so a

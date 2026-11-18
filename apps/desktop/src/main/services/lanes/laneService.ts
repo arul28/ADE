@@ -7729,7 +7729,7 @@ export function createLaneService({
 
         const preview = await previewBranchSwitch(args);
         if (preview.dirty) {
-          throw new Error("This lane has uncommitted changes. Commit or stash them before switching branches.");
+          throw new AdeExpectedError("This lane has uncommitted changes. Commit or stash them before switching branches.", "user");
         }
         if (preview.duplicateLaneId) {
           throw new Error(`Branch '${preview.targetBranchRef}' is already active in lane '${preview.duplicateLaneName ?? preview.duplicateLaneId}'.`);

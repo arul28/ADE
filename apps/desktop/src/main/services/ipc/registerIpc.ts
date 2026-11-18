@@ -210,6 +210,7 @@ import { armDeadline } from "../../../shared/deadlineTimer";
 import { noteRendererMemory } from "../../rendererMemoryLedger";
 import {
   brainActionErrorCode,
+  brainActionFailureFrame,
   createMachineRegisterRefusalObserver,
 } from "../analytics/reliabilityTelemetry";
 import { projectSecretScopeForRoot, type createProjectSecretService } from "../secrets/projectSecretService";
@@ -929,7 +930,7 @@ import {
   logoutCursorSdk,
 } from "../ai/cursorSdkAuth";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
-import { listHarnessRouteCatalog } from "../chat/harnessRouteCatalog";
+import { listHarnessRouteCatalog, probeOpenCodeKeyModelsInBackground } from "../chat/harnessRouteCatalog";
 import { testHarnessRoute } from "../chat/harnessRouteTest";
 import type { HarnessRouteCatalog, HarnessRouteTestResult } from "../../../shared/harnessRoutes";
 import type { createTestService } from "../tests/testService";
@@ -2706,6 +2707,7 @@ export function registerIpc({
               // `expected`, so `unexpected` means what Sentry would also report.
               const expectedKind = expectedErrorKind(error)
                 ?? (isExpectedOutcome(error) || isExpectedFailure(error) ? "expected" : "unexpected");
+              const brainFrame = brainActionFailureFrame(error);
               productAnalyticsService?.captureInternal({
                 event: "ade_brain_action_failed",
                 surface: "desktop",
@@ -2722,6 +2724,7 @@ export function registerIpc({
                   ...(brainAction ? { brain_action: brainAction } : {}),
                   error_code: errorCode,
                   expected_kind: expectedKind,
+                  ...(brainFrame ? { brain_frame: brainFrame } : {}),
                 },
               });
             } catch {
@@ -5012,11 +5015,14 @@ export function registerIpc({
         || ctx.projectScaffoldService.getDefaultParentDir(listLocalRecentProjectSummaries());
       let result: CloneProjectResult;
       try {
+        // A folder that already holds a complete checkout of this repository is
+        // the answer, as for a clone on another machine; any other folder there
+        // is still refused.
         result = await ctx.projectScaffoldService.cloneRepository({
           url,
           parentDir,
           ...(name ? { name } : {}),
-        });
+        }, { reuseExistingCheckout: true });
       } catch (error) {
         return surfaceCodedError(error);
       }
@@ -6417,7 +6423,17 @@ export function registerIpc({
     cancelCursorSdkLogin();
   });
 
-  handle(IPC.aiListHarnessRoutes, async (): Promise<HarnessRouteCatalog> => listHarnessRouteCatalog());
+  handle(IPC.aiListHarnessRoutes, async (): Promise<HarnessRouteCatalog> => {
+    const catalog = listHarnessRouteCatalog();
+    // A key for OpenCode Go or Zen that came through the account has no models here yet.
+    try {
+      const deps = buildOpenCodeAuthDeps();
+      probeOpenCodeKeyModelsInBackground({ projectRoot: deps.projectRoot, projectConfig: deps.projectConfig, logger: deps.logger });
+    } catch {
+      // No project open: the next read with one tries again.
+    }
+    return catalog;
+  });
 
   handle(
     IPC.aiTestHarnessRoute,

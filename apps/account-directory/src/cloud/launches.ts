@@ -40,6 +40,7 @@ import { WAKE_PORT, cloudSizeForTier } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import { LAUNCH_COMPUTER_DELETED, deleteComputer, logCloud, ownedComputer, parseJsonColumn, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome } from "./createOutcome";
+import { launchChannel, readUpdateChannel, readUpdateTargets } from "./updates";
 import type { ServerGitCheck } from "./accountVault";
 import {
   LAUNCH_MESSAGE_ID,
@@ -310,11 +311,9 @@ export function parseLaunchRequest(body: Record<string, unknown>): ParsedLaunchR
     : madeByRaw?.kind === "agent" && agent
       ? { kind: "agent", agent, chatSessionId: shortString(madeByRaw.chatSessionId, 200) }
       : { kind: "person" };
-  // Left out (the web and the phone send none): beta. A server launch needs the
-  // computer's launch boot (`cloudBootLaunch`), and the stable image's runtime
-  // (v1.2.129) predates it, so a stable computer never joins. An app on stable
-  // that asks for stable keeps it; move this default back once stable has it.
-  const channel = body.channel === "stable" ? "stable" : "beta";
+  // What the app asked for; left out (the web and the phone send none) is
+  // decided when the computer is made, from the stable image (`launchChannel`).
+  const channel = readUpdateChannel(body.channel);
   const sizeChoice: CloudLaunchSizeChoice | null = body.sizeChoice === "default" || body.sizeChoice === "capped" || body.sizeChoice === "picked"
     ? body.sizeChoice
     : sizeOmitted ? "default" : null;
@@ -353,7 +352,7 @@ export function parseLaunchRequest(body: Record<string, unknown>): ParsedLaunchR
     },
     ...(chat ? { chat } : {}),
     madeBy,
-    channel,
+    ...(channel ? { channel } : {}),
     ...(launch ? { launch } : {}),
     ...(continueChat ? { continueChat } : {}),
   };
@@ -814,7 +813,7 @@ export async function startServerLaunch(
       resources: { cpu: size.cpu, memory: size.memoryGb },
       metadata,
       publicPorts: [{ port: WAKE_PORT, label: "ADE wake" }],
-      channel: parsed.channel ?? "beta",
+      channel: launchChannel(await readUpdateTargets(env), parsed.channel),
     },
     serverEnv: { [CLOUD_LAUNCH_ENV.launchId]: launchId, [CLOUD_LAUNCH_ENV.join]: joinCode },
     // A computer this call made: its join window opens with the adoption, in

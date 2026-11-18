@@ -1605,6 +1605,13 @@ function AppNavigationBridge() {
       const inviteCode = target.inviteCode?.trim();
       if (inviteCode) params.set("invite", inviteCode);
       const search = params.toString();
+      // As the Settings button does: leave the new-tab page (it holds Home in
+      // front), and with no project open, show Settings on its own. Without
+      // this, a link to Settings (the Usage menu's "Open ADE Cloud") changed
+      // the URL and Home stayed on screen.
+      const shell = useAppStore.getState();
+      shell.cancelNewTab();
+      if (!shell.project?.rootPath) shell.setStandaloneSettingsOpen(true);
       navigate({
         pathname: "/settings",
         search: search ? `?${search}` : "",

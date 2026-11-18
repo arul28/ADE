@@ -187,6 +187,26 @@ describe("EncryptedFileCredentialStore", () => {
     }
   });
 
+  it("never makes a deleted project's folder again, on a read, a delete or a write", async () => {
+    const projectRoot = path.join(tempDir, "deleted-project");
+    const store = new EncryptedFileCredentialStore({
+      secretsDir: path.join(projectRoot, ".ade", "secrets"),
+      projectRoot,
+      credentialChangePollIntervalMs: null,
+    });
+
+    expect(store.getSync("linear.token.v1")).toBeNull();
+    expect(store.getLastReadState()).toBe("missing");
+    store.deleteSync("linear.token.v1");
+    await store.delete("linear.token.v1");
+    store.onDidChange(() => undefined)();
+    expect(() => store.setSync("linear.token.v1", "lin_secret")).toThrow(/isn't there/);
+    await expect(store.set("linear.token.v1", "lin_secret")).rejects.toMatchObject({ code: "project_data_missing" });
+    expect(() => store.updateSync((values) => { values.a = "b"; })).toThrow(/isn't there/);
+
+    expect(fs.existsSync(projectRoot)).toBe(false);
+  });
+
   it.runIf(process.platform === "win32")(
     "resolves Windows DPAPI PowerShell through kernel SystemRoot despite poisoned environment paths",
     () => {

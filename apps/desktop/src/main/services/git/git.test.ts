@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { gitOwnershipMessage } from "../../../../../ade-cli/src/services/projects/gitOwnership";
 import { isExpectedOutcome } from "../../../shared/sentry/expectedFailure";
 import { describeUnsavedWorktreeWork, readWorktreeDirty, UNCOMMITTED_CHANGES_REASON } from "./worktreeState";
+import { adeScaffoldFileContents } from "../../../shared/adeLayout";
 import {
   branchNameFromHeadRef,
   formatGitExecutionError,
@@ -548,6 +549,28 @@ describe("describeUnsavedWorktreeWork", () => {
     expect(git(lane, ["status", "--porcelain"])).toBe("");
     expect(await describeUnsavedWorktreeWork(lane)).toBe(UNCOMMITTED_CHANGES_REASON);
     expect(await readWorktreeDirty(lane)).toBe(true);
+  });
+
+  it("leaves out ADE's own .ade scaffold as written, and nothing else under .ade", async () => {
+    const repo = initRepo("ade-git-unsaved-scaffold-");
+    // What ADE writes when it opens a project that never committed `.ade/`.
+    for (const [relativePath, content] of adeScaffoldFileContents()) {
+      const file = path.join(repo, ".ade", ...relativePath.split("/"));
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, content, "utf8");
+    }
+    expect(git(repo, ["status", "--porcelain"])).not.toBe("");
+    expect(await describeUnsavedWorktreeWork(repo)).toBeNull();
+
+    // A person's own skill under .ade is work.
+    fs.writeFileSync(path.join(repo, ".ade", "skills", "deploy.md"), "# deploy\n", "utf8");
+    expect(await describeUnsavedWorktreeWork(repo)).toBe(UNCOMMITTED_CHANGES_REASON);
+    fs.rmSync(path.join(repo, ".ade", "skills", "deploy.md"));
+    expect(await describeUnsavedWorktreeWork(repo)).toBeNull();
+
+    // So is a scaffold file a person edited.
+    fs.appendFileSync(path.join(repo, ".ade", ".gitignore"), "!notes/\n", "utf8");
+    expect(await describeUnsavedWorktreeWork(repo)).toBe(UNCOMMITTED_CHANGES_REASON);
   });
 
   it("checks every submodule for commits no remote has, past an empty uninitialized one", async () => {

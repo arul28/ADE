@@ -170,7 +170,8 @@ export type CloudKeepAwakeOptions = {
   /** Sends the next timer to ADE's account server (it wakes the machine then). Rejects when it couldn't. */
   sendTimedWake?: (wake: CloudTimedWake) => Promise<void>;
   /** Asks ADE's server to sleep this machine now (three minutes idle). Rejects when it couldn't; the provider's timer is the backstop. */
-  requestIdleSleep?: (instanceId: string) => Promise<void>;
+  /** `backupReportId`: the save just before said every lane is saved; the computer rests with it. */
+  requestIdleSleep?: (instanceId: string, extras?: { backupReportId: string | null }) => Promise<void>;
   /** Grows the disk if it's near full (it restarts the machine). True when it did, so sleep waits for the restart. */
   growDiskIfNeeded?: (stillIdle: () => boolean | Promise<boolean>) => Promise<boolean>;
   /**
@@ -198,11 +199,12 @@ export type CloudKeepAwakeOptions = {
   reportUse?: (lastWorkAt: number | null, stillIdle: () => boolean) => Promise<void>;
   /**
    * Saves what a client reads while the machine rests (`cloudRestSave.ts`:
-   * the chats' last parts, shell and CLI copies, Git summaries). Runs at the
-   * idle moment, before `reportUse`; it stops early once someone uses the
-   * machine, and a failure never holds the sleep back.
+   * the lane backups, the chats' last parts, shell and CLI copies, Git
+   * summaries). Runs at the idle moment, before `reportUse`; it stops early
+   * once someone uses the machine, and a failure never holds the sleep back.
+   * Answers the backup report id when every lane is saved, for the sleep.
    */
-  saveForRest?: (stillIdle: () => boolean) => Promise<void>;
+  saveForRest?: (stillIdle: () => boolean) => Promise<string | null | void>;
   /**
    * The machine woke from a sleep (or the brain's checks stopped for a long
    * gap). Called once per wake, at the first check after it. Never throws.
@@ -401,18 +403,22 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         return;
       }
       if (!waitingOnPerson && await options.growDiskIfNeeded?.(() => !usedSinceTick)) return;
-      await options.saveForRest?.(() => !usedSinceTick).catch((error: unknown) => {
+      const backupReportId = await options.saveForRest?.(() => !usedSinceTick).catch((error: unknown) => {
         options.logger?.warn("cloud.idle_rest_save_failed", { error: error instanceof Error ? error.message : String(error) });
-      });
+        return null;
+      }) ?? null;
       await options.reportUse?.(lastWorkAt, () => !usedSinceTick).catch((error: unknown) => {
         options.logger?.warn("cloud.idle_use_report_failed", { error: error instanceof Error ? error.message : String(error) });
       });
-      // Work noted while the disk check ran wins: sleep waits for the next idle stretch.
-      if (usedSinceTick) {
+      // Work noted while the save ran wins: sleep waits for the next idle stretch.
+      // Busy is read again too: work that started during the save may not be in it.
+      const busyAfterSave = usedSinceTick ? true : await options.readBusy().then((busy) => busy.busy, () => true);
+      if (usedSinceTick || busyAfterSave) {
         askedToSleep = false;
         return;
       }
-      await options.requestIdleSleep(instanceId);
+      // The report counts only for a sleep with no use since it: `usedSinceTick` is false here.
+      await options.requestIdleSleep(instanceId, { backupReportId });
       options.logger?.info("cloud.idle_sleep_requested", { idleMs: at - lastBusyAt });
     } catch (error) {
       // The provider's own timer still sleeps it a couple of minutes later.

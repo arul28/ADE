@@ -122,9 +122,9 @@ struct CloudDiskParts: View {
 }
 
 /// What the phone can do with a computer: open its work, sleep or wake it,
-/// and delete a computer that holds no lane. A lane's size, freeing its
-/// computer and deleting the lane run the desktop's lane steps (its work is
-/// pushed first), so they stay in the ADE desktop app.
+/// delete a computer that holds no lane, and download the lane's saved work.
+/// A lane's size, freeing its computer and deleting the lane run the
+/// desktop's lane steps, so they stay in the ADE desktop app.
 struct CloudMachineControls: View {
   @ObservedObject var store: CloudPaneStore
   let machine: CloudPhoneMachine
@@ -167,9 +167,12 @@ struct CloudMachineControls: View {
           }
         }
       }
+      if let lane = machine.lane {
+        CloudSavedWorkRow(store: store, laneId: lane.laneId)
+      }
       Text(machine.noLane
         ? "Deleting it removes everything on its disk for good."
-        : "Change its size, free its computer or delete the lane in the ADE desktop app: ADE pushes the lane's work first.")
+        : "Change its size, free its computer or delete the lane in the ADE desktop app.")
         .font(.system(size: 12))
         .foregroundStyle(ADEColor.textMuted)
         .fixedSize(horizontal: false, vertical: true)
@@ -178,6 +181,72 @@ struct CloudMachineControls: View {
       Button("Delete it", role: .destructive) { Task { await store.run("delete", on: machine) } }
     } message: {
       Text("Everything on its disk is gone for good: repos, lanes, and any work not pushed.")
+    }
+  }
+}
+
+/// "Get this lane's work" on the phone: the lane's saved work at rest, as a
+/// patch to share or save (`laneBackups.ts`). It needs no wake and no hours,
+/// so it works at 0 hours. One read when it shows; nothing shows with no saved work.
+struct CloudSavedWorkRow: View {
+  @ObservedObject var store: CloudPaneStore
+  let laneId: String
+  @State private var backup: CloudLaneBackupRow?
+  @State private var file: URL?
+  @State private var loading = false
+  @State private var failure: String?
+
+  var body: some View {
+    Group {
+      if let backup {
+        VStack(alignment: .leading, spacing: 6) {
+          Text(backup.sentence)
+            .font(.system(size: 12))
+            .foregroundStyle(ADEColor.textMuted)
+            .fixedSize(horizontal: false, vertical: true)
+          if let file {
+            ShareLink(item: file) { Label("Share the patch", systemImage: "square.and.arrow.up") }
+              .buttonStyle(ADEKitButtonStyle())
+          } else if backup.patchParts > 0 {
+            Button {
+              Task { await download(backup) }
+            } label: {
+              Label(loading ? "Downloading…" : "Download saved work", systemImage: "arrow.down.doc")
+            }
+            .buttonStyle(ADEKitButtonStyle())
+            .disabled(loading)
+          }
+          if let failure {
+            Text(failure).font(.system(size: 12)).foregroundStyle(ADEColor.textMuted)
+          }
+        }
+      }
+    }
+    .task(id: laneId) { await load() }
+    // The downloaded patch is a copy of the person's code: it leaves the phone with the row.
+    .onDisappear {
+      if let file { try? FileManager.default.removeItem(at: file) }
+      file = nil
+    }
+  }
+
+  private func load() async {
+    guard let client = await store.syncService.cloudServerClient() else { return }
+    backup = (try? await client.laneBackups(laneId: laneId))?.filter { $0.laneId == laneId }.max { $0.savedAt < $1.savedAt }
+  }
+
+  private func download(_ backup: CloudLaneBackupRow) async {
+    guard let client = await store.syncService.cloudServerClient() else {
+      failure = "Sign in to ADE to download this lane's work."
+      return
+    }
+    loading = true
+    defer { loading = false }
+    do {
+      file = try await client.laneBackupPatchFile(backup)
+      failure = nil
+    } catch {
+      failure = "ADE couldn't download this lane's work. Try again in a moment."
     }
   }
 }

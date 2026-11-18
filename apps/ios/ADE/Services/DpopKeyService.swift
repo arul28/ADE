@@ -101,6 +101,16 @@ final class DpopKeyService {
     ]
   }
 
+  /// `buildProof` off the caller's thread. A Secure Enclave key signs in the
+  /// enclave over XPC, so a cached key can still wait for an answer: on the
+  /// main thread a slow one held the app until the watchdog ended it
+  /// (ADE-IOS-2R). Call this from an async context that would sign next.
+  func buildProofOffMain(deviceId: String, secret: String) async -> [String: Any]? {
+    await Task.detached(priority: .userInitiated) { [self] in
+      buildProof(deviceId: deviceId, secret: secret)
+    }.value
+  }
+
   /// Builds a fresh proof over the exact host-issued Relay reauthorization
   /// challenge. The bearer token is only returned to callers alongside this
   /// device-key signature; callers must not send it if this method fails.

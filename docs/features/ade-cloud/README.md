@@ -98,7 +98,8 @@ are in `apps/account-directory/src/cloud/contract.ts`.
 | Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
 | The disk measure and Clear caches on a cloud computer | `cloudDiskUsage.ts` |
 | Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`, `apps/ade-cli/src/services/power/cloudIgnoredFiles.ts` |
-| Idle cleanup (warn, save, delete unused computers) | `apps/account-directory/src/cloud/idleCleanup.ts`, `planCleanup.ts` (`pushAllWork`, `saveForRest`), `apps/desktop/src/renderer/components/settings/cloudDashboard/CloudIdleCleanupNotice.tsx` |
+| Idle cleanup (warn, save, delete unused computers) | `apps/account-directory/src/cloud/idleCleanup.ts`, `planCleanup.ts` (`saveBeforeDelete`), `apps/desktop/src/renderer/components/settings/cloudDashboard/CloudIdleCleanupNotice.tsx` |
+| Lane backups at rest (save, report, restore, download) | `apps/account-directory/src/cloud/laneBackups.ts`, `apps/ade-cli/src/services/cloudChats/cloudLaneBackup.ts`, `apps/desktop/src/main/services/lanes/cloudLaneRestoreHook.ts`, `apps/desktop/src/main/services/adeCloud/cloudLaneBackupIpc.ts`, `apps/desktop/src/renderer/components/cloudLane/CloudLaneSavedWork.tsx`, `apps/ios/ADE/Views/Cloud/CloudMachineScreen.swift` (`CloudSavedWorkRow`) |
 | CLI status read (`ade cloud status`) | `apps/ade-cli/src/cliCloudStatus.ts` |
 | The launch card in chat (its step rows share one parts module with the lane job card) | `apps/desktop/src/renderer/components/chat/launch/adeCloudLaunch.ts`, `apps/desktop/src/renderer/components/chat/launch/stepCardParts.tsx` |
 | The dashboard in Settings › ADE Cloud, and the lane pieces (cities, job card, tier change, lanes without a computer) | `apps/desktop/src/renderer/components/settings/cloudDashboard/*`, `apps/desktop/src/renderer/components/cloudLane/*` |
@@ -191,6 +192,7 @@ are in
 | Saved chats | `chats.ts` |
 | CLI and shell copies (a shell keeps its last 5,000 lines) | `sessionCopies.ts` |
 | Git summaries saved at rest | `gitSummaries.ts` |
+| Lane backups: each lane's work not on GitHub (a patch to download) | `laneBackups.ts` |
 | One project's overview | `projectOverview.ts` |
 | The account lane index (name, branch, machine, PR; only for mentions) | `accountLanes/routes.ts` |
 | The CTO account copy | `ctoCopy.ts` |
@@ -204,7 +206,8 @@ are in
 - The computer writes the copies before it rests (`cloudRestSave.ts` in
   `apps/ade-cli/src/services/cloudChats/`): at its idle step, in
   `ade cloud prepare-stop` and in `ade cloud save-for-rest`. An unchanged
-  copy is not sent again. The text is redacted first.
+  copy is not sent again. The text is redacted first. The same save makes
+  the lane backups first ([Lane backups at rest](#lane-backups-at-rest)).
 - A saved CLI or shell copy opens read-only. The person's own computers that
   are offline are hidden in Work, Lanes and the welcome page.
 
@@ -351,9 +354,9 @@ them in `catalog`, so no client keeps its own copy (`cloudCatalogOf` in
     passes the limit.
 - **Free plan over its disk:** a free account (a cancelled plan rolls to it;
   `past_due` does not) with more than 12 GB keeps its computers, stopped. A
-  wake, command, update or new timed wake answers 402 `over_plan_disk`,
-  except the short "Push all work to GitHub" wake. Booked timed wakes are
-  deleted. A delete always works.
+  wake, command, update or new timed wake answers 402 `over_plan_disk`; no
+  wake is free. The lanes' work reads from their backups with no wake
+  ("Get this lane's work"). Booked timed wakes are deleted. A delete always works.
 - **Timed wake-ups cancelled:** when the server deletes an account's timed
   wakes (0 hours, or the free plan over its disk), the person gets one email
   a period, and the account carries `timedWakesCancelled`.
@@ -380,7 +383,7 @@ its own, and there is no grace period. Extra disk counts as fitting. A
 - **In ADE:** a move down that leaves too much disk
   (`downgradePreviews.plus` / `.pro`) opens `CloudPlanLimitsDialog.tsx`: "I'll
   clean up myself" (lists the oldest computers that would be enough), or "Let
-  ADE handle it" (a "Push all work to GitHub first" switch, on by default, and
+  ADE handle it" (a "Save each lane's work first" switch, on by default, and
   the computers to free). The checkout carries the pick (`cleanup`,
   `CloudPlanCleanupPick`). The server checks that the pick fits before Stripe
   is asked (409 `cleanup_does_not_fit`, `cleanup_changed`,
@@ -393,10 +396,10 @@ its own, and there is no grace period. Extra disk counts as fitting. A
   what goes", `POST /cloud/billing/plan-cleanup`). A cancel that waits for the
   period end gets the email and the notice with the date.
 - **Freeing one computer** keeps its lane (reason `plan_limit`) and chats.
-  With push on, the computer runs `prepare-stop` and `push-work` in a free
-  15-minute wake, and a `work-state` read must find nothing left; a computer
-  whose work can't all be pushed stays, and the person is told. With push off
-  (a second confirm), it saves its chats and goes. Afterwards an email names
+  With the switch on (`push` in the contract), a computer goes only when
+  every lane's work is saved (see [Lane backups at rest](#lane-backups-at-rest)):
+  never woken, nothing pushed. One whose lanes are not all saved stays, and
+  the person is told. With the switch off (a second confirm), it goes as it is. Afterwards an email names
   each computer and its branch, and the account carries `planCleanupDone`
   for 14 days. The phone shows the notices and sends the person to the
   desktop to pick.
@@ -425,30 +428,28 @@ since the latest of `last_awake_at` (or creation), `hours_restored_at` and
   (`cloud.idle_cleanup_email_failed`) and blocks nothing. A send the Worker
   can not make (no `RESEND_API_KEY`, no `CLERK_SECRET_KEY`, no address) logs
   `cloud.email_skipped`.
-- **Save first.** In a free wake, the computer's own ADE runs four steps
-  (`pushAllWork` and `saveForRest` in `planCleanup.ts`):
-  1. Prepare: stop the agents and save the chats (`ade cloud prepare-stop`).
-  2. Push: commit with "saved by ADE before cleanup"
-     (`ade cloud push-work --message`) and push each lane's own branch (never
-     force; ignored files stay out).
-  3. Save for rest: `ade cloud save-for-rest --capsules --json` saves the CLI
-     and shell copies, Git summaries and fork capsules. It is best effort: an
-     older image logs `cloud.save_for_rest_unavailable`, and the cleanup goes
-     on.
-  4. Check: a `work-state` read must find nothing left.
-- **Held.** If the save fails, the computer stays (`idle_held_at`,
-  `idle_held_reason`). One email and a notice say why and when ADE tries again
-  (`held.retryAt`); Sentry gets `cloud.idle_cleanup_push_refused` or
-  `cloud.idle_cleanup_save_failed`. Each failure in a row doubles the wait (1
-  to 14 days, `idle_held_count`). A failure after the save (`idle_failed_at`)
-  waits 1 hour to 1 day.
+- **No wake, no push.** The computer is deleted as it rests, only when it
+  rested with every lane's work saved (`saveBeforeDelete` in
+  `planCleanup.ts`, [Lane backups at rest](#lane-backups-at-rest)). ADE never
+  starts it to save, and never commits or pushes. The delete claim
+  (`claimDelete`) also needs `backup_rest_at`, so a start during the run calls
+  the delete off.
+- **Held.** If a lane is not saved, the computer stays as it is
+  (`idle_held_at`, `idle_held_reason`: "ADE couldn't save this lane's work."
+  and the lanes' reasons). One email and a notice say why and when ADE reads
+  again (`held.retryAt`); Sentry gets `cloud.idle_cleanup_not_saved` or
+  `cloud.idle_cleanup_save_failed`. The read is a D1 read, never a wake: the
+  computer's next real use saves it when it rests. Each read in a row that
+  finds it not saved doubles the wait (1 to 14 days, `idle_held_count`). A
+  failure after the save (`idle_failed_at`) waits 1 hour to 1 day.
 - **Came back during the save.** Keep it, hours back, a booked wake, a start,
   command or sign-in through the server (`last_awake_at`), or a use the
   computer reports with `POST /cloud/instances/:id/use` (`last_active_at`)
-  stops the delete. A computer the person started stays awake; any other goes
-  back to rest. Once the delete runs, `/use` answers 409 `computer_deleting`.
+  stops the delete, and a start clears `backup_rest_at` too. Once the delete
+  runs, `/use` answers 409 `computer_deleting`.
 - **The lane stays** as a lane without a computer (reason `idle_cleanup`),
-  with its chats. The next message makes a new computer from the branch.
+  with its chats and its backup. The next message makes a new computer from
+  the branch, and that computer puts the lane's saved work back.
 - **Ignored files.** At its idle step, the computer reports what git ignores
   in its lanes (`ignored` on `POST /cloud/instances/:id/disk-usage`,
   `cloudIgnoredFiles.ts`): up to 10 paths, likely precious ones (`.env`, local
@@ -461,6 +462,93 @@ since the latest of `last_awake_at` (or creation), `hours_restored_at` and
 - **Once per step:** every warning, email and delete is claimed with a
   conditional update (`idle_claimed_at`), and each step writes a row to
   `cloud_idle_cleanup_log`.
+
+### Lane backups at rest
+
+Server `laneBackups.ts` (migration 0044), computer `cloudLaneBackup.ts`. Every
+wake is use, and ADE never pushes on its own, so a computer saves each lane's
+work that is not on GitHub before it rests, and a cleanup deletes it later
+with no wake.
+
+- **What.** For each lane on the computer (archived ones and the main
+  checkout too): the commits GitHub has in no branch, and a snapshot commit
+  of the uncommitted work (staged, unstaged, untracked files git does not
+  ignore), made in a private copy of the index. It is one `git bundle` (the
+  exact restore) and one `git diff --binary` patch (the download). Nothing is
+  pushed, the snapshot is on no branch, and the temporary ref goes at once.
+- **What GitHub has** (`readGithubBase`): the branch heads `git ls-remote`
+  reads from GitHub at the save, not this clone's `origin/*` refs. A branch
+  GitHub deleted (a squash merge) leaves its ref here, and a backup that
+  left its commits out could not be restored. The set is in the
+  fingerprint, so a change on GitHub makes the next save upload. When GitHub
+  can't be reached, only its default branch counts. A restore that lacks a
+  commit the backup builds on fetches `origin`, then that commit by id
+  (`ensureBundleBase`).
+- **When.** In every rest save (`cloudRestSave.ts`, before the copies): the
+  idle step (90 s budget), `prepare-stop` (so the 0-hours stop too) and
+  `save-for-rest`. Same work as the last backup (HEAD and the working-tree
+  tree): nothing is sent. A lane whose work is all on GitHub deletes its
+  backup.
+- **The report.** After each save, `POST /cloud/backups/report` names every
+  lane: `clean`, `saved`, `unchanged`, `failed` or `too_large`. It is
+  `current` only when the save read every project and every lane is clean or
+  has its backup on the server with the same fingerprint.
+- **Rest with it.** The computer's own sleep request names the report
+  (`POST .../idle {backupReportId}`), and only after a save with no use since.
+  The 0-hours stop names the report its prepare-stop made. Then
+  `backup_rest_at` is set. Any start clears it (`clearBackupRestStatement`).
+  The provider's own 5-minute sleep sets nothing, so such a computer is kept.
+- **Cleanups.** Idle, plan, project delete and automation run end all use
+  `saveBeforeDelete`: a resting computer goes only with `backup_rest_at`; an
+  awake one is saved in place (`prepare-stop`, `save-for-rest --capsules`)
+  and goes when that report is current. Else it stays with "ADE couldn't save
+  this lane's work." An image older than lane backups never reports, so it
+  stays until its next real wake updates it.
+- **Freeze before a delete.** Every cleanup but the idle one runs
+  `prepare-stop --for-delete` on an awake computer
+  (`CLOUD_COMPUTER_COMMANDS.prepareForDelete`). From the start of that
+  prepare, the computer refuses new chat turns (send, steer, rerun,
+  recovery; a scheduled wake waits), new terminals and agent CLIs, and remote
+  work, with "This ADE Cloud computer is being removed. …"
+  (`cloudDeleteFreeze.ts`). So nothing is written after the save and lost
+  with the delete. The freeze ends when the prepare is not confirmed, when
+  the server keeps the computer (`ade cloud unfreeze`, `unfreezeComputer`),
+  or after 10 minutes. The idle cleanup keeps its own rule: a person's use
+  calls its delete off (`/use`).
+- **Restore.** A lane launch on a cloud computer (`chatLaunchService.ts`,
+  `cloudLaneRestoreHook.ts`): a branch never pushed is made locally from the
+  backup and imported with `publishUpstream: false`; once the lane exists,
+  the newest backup of the lane from another machine is applied
+  (`applyHandoffGitBundle`) if the lane lacks it. A lane with its own
+  uncommitted work, commits past the backup, or a branch that went another
+  way is left as it is; the launch card says so and the backup stays. The
+  uncommitted work comes back as unstaged changes: the backup does not keep
+  which files were staged.
+- **Lifetime.** A backup goes when a newer one of the lane replaces it, when
+  the lane's work is on GitHub (the computer that restored it deletes it),
+  with the lane (a delete with no `keepLane`, or Forget lane), with the
+  account, and when the person deletes it (`POST .../forget`, any app, the
+  web too; refused while a computer still holds that machine key). A
+  project delete keeps it: it is the lane's only copy. "Restored" names the
+  backup by fingerprint, so a newer one is never marked by mistake. An
+  upload nobody commits in 30 minutes loses its parts (the minute cron's
+  sweep), and each part must fit the size the upload declared for its kind.
+- **Get this lane's work** (`CloudLaneSavedWork.tsx`, iPhone
+  `CloudSavedWorkRow`): on a lane without a computer and on a computer that
+  can't wake (0 hours, over the plan's disk). Download patch everywhere; on
+  the desktop, "Open in a new lane here" puts the work on a new
+  `ade-saved/...` branch of a clone on this computer (the uncommitted part as
+  its last commit) and makes a lane of it, with no push. Settings › ADE
+  Cloud lists, under "Saved lane work", the saved work no lane row shows
+  (a deleted project's lanes), with Delete in its ⋯ menu.
+- **Security.** Sealed with the account's key, the additional data naming
+  user, machine key, lane, upload, kind and part. Encryption at rest, not
+  end-to-end: the server can open it to give it back. Only a computer with
+  that machine key writes; a browser reads only the list and the patch;
+  another account gets 404. Ignored files (`.env` when ignored) stay out;
+  untracked files git does not ignore go in, as the person's work. Git LFS
+  files and submodule changes can't travel: that lane fails its backup and
+  the computer is kept. Caps: 50 MB a lane, 1 GB an account.
 
 ### Disk grows
 
@@ -986,9 +1074,9 @@ Cloud"). The server keeps the rule (`cloud_automations`, migration 0030,
     rule's runs an hour (default 6), the rule pauses.
   - A 503 from ADE Cloud leaves the run starting for up to an hour. A chat
     that stops for input fails the run ("The agent asked for input").
-  - When the chat ends, the cron saves its chats, pushes its work and deletes
-    the computer, keeping the lane without a computer (unless the rule keeps
-    its computer).
+  - When the chat ends, the cron saves its chats and each lane's backup on the
+    awake computer (nothing is pushed) and deletes the computer, keeping the
+    lane without a computer (unless the rule keeps its computer).
   - A run that can't start fails before anything is made. The person hears
     through a push (the push relay's `POST /directory/accounts/<id>/notify`)
     and, at most once a day per rule, an email.
@@ -1003,8 +1091,9 @@ Cloud"). The server keeps the rule (`cloud_automations`, migration 0030,
   providers can do this is `CLOUD_REMOTE_SIGN_IN` in `contract.ts`.
 - `POST /cloud/projects/computers/delete { origin, dryRun: true }` lists a
   project's computers (at most 50, `truncated`). `{ origin, instanceIds }`
-  starts a cron job on those computers: wake, push every lane's work
-  (`pushAllWork`), delete. A computer whose push failed is kept with why. The
+  starts a cron job on those computers: check that every lane is saved
+  (`saveBeforeDelete`: no wake, nothing pushed), delete. A computer whose
+  lanes are not all saved is kept with why. The
   answer's `accepted` and `skipped` say which it took.
 - The typed client for all of these is
   `apps/desktop/src/shared/cloudApiClient.ts` (fetch only). Every `/cloud/*`
@@ -1017,8 +1106,9 @@ Each call is account level: it names a computer of the account, never a pin.
 
 - **Work check.** `ade cloud push-work --check --json` on the computer lists
   the lanes with uncommitted changes or commits no remote has
-  (`laneService.readUnsavedWork`, uncached). It changes nothing and uses the
-  free `push_work` wake. The check and a push first run one
+  (`laneService.readUnsavedWork`, uncached). It changes nothing. A resting
+  computer is woken for it like any wake: the person's click is use, and at 0
+  hours it is refused (the lanes' backups still read). The check and a push first run one
   `git fetch --all --prune` per project (60 s). Commits already in the
   remote's base branch (`git merge-tree` changes nothing) count as saved. A
   lane that can't be read, or a fetch that fails, reads `failed`, never
@@ -1126,10 +1216,9 @@ channel's image, only when nothing runs (`apps/account-directory/src/cloud/updat
   follows its original.
 - **When.** Idle: before it sleeps, the keep-awake loop asks
   `GET /cloud/instances/:id/update-check`; a computer behind calls
-  `POST .../update` (`reason: "idle"`) instead. Asleep: the minute cron updates
-  up to three computers a tick that slept 10 minutes or more, unless the
-  account is out of hours or over its disk, or the computer is in cold storage
-  or a move.
+  `POST .../update` (`reason: "idle"`) instead. A resting computer is never
+  woken to update: it updates at the idle step after its next real wake.
+  (Older rows may still read `reason: "asleep"`.)
 - **Only a tested image.** Automatic updates go only to `auto_update_<channel>`
   (`off` stops them). A person's "Update this computer" (`ade cloud update`)
   goes to the channel's image; one update runs at a time
@@ -1140,9 +1229,9 @@ channel's image, only when nothing runs (`apps/account-directory/src/cloud/updat
   to `previous_template` and marks the image failed for it
   (`update_state`, `update_error`, `update_failed_template`); a newer image
   clears it. A failed rollback is not retried.
-- **Hours.** An automatic update or rollback uses the free push-work window
-  (`free_wake_started_at`, `free_wake_until`) until the boot report. Asleep,
-  it does not reset the idle cleanup's clock. A person's update is metered.
+- **Hours.** An automatic update or rollback of an awake, idle computer uses
+  a free window (`free_wake_started_at`, `free_wake_until`) until the boot
+  report: the restart is ADE's, not use. A person's update is metered.
 - **What people see.** Where other machines have an Update button, a cloud
   computer shows "Updates itself when idle", "Updating…", or "Update failed:
   <why>." with Retry. `ade cloud status` gives each computer's
@@ -1203,7 +1292,17 @@ One busy list, `decideCloudBusy` in
 - Copy and move hold a computer awake only while they run (time-outs of 20 and
   45 minutes cover an ADE that quit mid-way).
 - `ade cloud prepare-stop --timeout 40` (before a stop at 0 hours) interrupts
-  chat turns and agent CLIs and writes the saved chat copy.
+  chat turns and agent CLIs, writes the saved chat copy, and saves each lane's
+  backup (`backups` in its `--json` result).
+- **The person's Sleep** of an awake computer first runs
+  `prepare-stop --timeout 20 --chats-only` (`prepareForPersonSleep` in
+  `routes.ts`): the running turns stop and the chats are saved, then the
+  computer sleeps whatever the prepare says.
+- **A turn stopped for a rest reads Stopped.** Each chat whose turn a
+  prepare-stop interrupts is marked (`noteCloudChatStoppedForRest`). Its saved
+  row then has status `interrupted` (`SAVED_CHAT_STOPPED_STATUS`), and the
+  saved Work row reads Stopped, as the turn reads in the chat, not Done. The
+  next turn end that is not an interrupt removes the mark.
 
 ### A resting computer in the clients
 
@@ -1230,8 +1329,8 @@ One busy list, `decideCloudBusy` in
   (`useChatMachineWake.tsx`). A deleted computer's proof says so with no
   button. A tool panel (`CloudToolGate`, `terminals/cloudToolGate.tsx`) wakes
   the computer on a person's click through `cloud.machineAction`; a restored
-  tab shows Wake; at 0 hours it offers Push all work to GitHub
-  (`cloud.pushAllWork`). A connect from ADE Web to an asleep computer wakes
+  tab shows Wake; at 0 hours or over the plan's disk it shows the lane's
+  saved work instead (`CloudLaneSavedWork`, no wake). A connect from ADE Web to an asleep computer wakes
   it first, then retries the connect for up to two minutes.
 - **A send caught by a sleep** is retried once after the wake: chat
   `sendMessage` carries a `clientSendId` (`isRetriableAfterSleep`), and the

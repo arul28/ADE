@@ -17,6 +17,7 @@ import { isWindowsPlatform } from "../../lib/platform";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { confirmDialog } from "../ui/dialog";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
+import { showToast } from "./toast/toastStore";
 import {
   ERROR_BODY,
   ERROR_DISCLOSURE_CARET,
@@ -59,6 +60,8 @@ const WATCHED_STATES: ReadonlySet<DiagnosisState> = new Set([
   // The person may put the folder back by hand; open the project when they do.
   "data_missing",
   "data_replaced",
+  // The person may put the .git folder back; open the project when they do.
+  "not_git_repository",
 ]);
 
 /** What a person does to put a deleted or moved .ade folder back by hand. */
@@ -81,11 +84,14 @@ function putBackSteps(windows: boolean): readonly string[] {
 function DataRecoveryChoices({
   restore,
   startFresh,
+  remove,
   manualSteps,
   watching,
 }: {
   restore: { label: string; onClick: () => void } | null;
   startFresh: { label: string; onClick: () => void; primary?: boolean } | null;
+  /** Takes the project off this computer's recent projects: for a folder that is gone or is no longer a repository. */
+  remove?: { label: string; onClick: () => void } | null;
   manualSteps: readonly string[] | null;
   watching: boolean;
 }) {
@@ -106,6 +112,11 @@ function DataRecoveryChoices({
             className={startFresh.primary ? ERROR_PRIMARY_BUTTON : ERROR_SECONDARY_BUTTON}
           >
             {startFresh.label}
+          </button>
+        ) : null}
+        {remove ? (
+          <button type="button" onClick={remove.onClick} className={ERROR_SECONDARY_BUTTON}>
+            {remove.label}
           </button>
         ) : null}
       </div>
@@ -498,6 +509,25 @@ export function ProjectRecoveryScreen() {
     }
   }, [rootPath]);
 
+  // A project whose folder is gone, or is no longer a repository, can leave
+  // this computer's recent projects from here. Then Home shows.
+  const removeFromRecents = useCallback(() => {
+    const forget = window.ade?.project?.forgetRecent;
+    if (!rootPath || !isAdeAvailable(forget)) return;
+    void forget(rootPath)
+      .then(() => {
+        clearProjectTransitionError();
+        showToast({ tone: "success", title: "Removed from recent projects", message: projectLabel(rootPath) });
+      })
+      .catch((error: unknown) => {
+        showToast({
+          tone: "error",
+          title: "ADE couldn't remove this project",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }, [rootPath, clearProjectTransitionError]);
+
   const restoreData = useCallback(() => {
     const restore = window.ade?.recovery?.restoreProjectData;
     if (!rootPath || !isAdeAvailable(restore)) return;
@@ -569,7 +599,8 @@ export function ProjectRecoveryScreen() {
   const storageRelevant = state === "disk_full" || state === "insufficient_headroom";
   const dataMissing = state === "data_missing";
   const dataReplaced = state === "data_replaced";
-  const dataState = dataMissing || dataReplaced;
+  const notGitRepository = state === "not_git_repository";
+  const dataState = dataMissing || dataReplaced || notGitRepository;
   const restoreAvailable = dataMissing && diagnosis?.restoreAvailable === true
     && isAdeAvailable(window.ade?.recovery?.restoreProjectData);
   // The project folder itself is gone: nothing to restore into or start in.
@@ -578,6 +609,8 @@ export function ProjectRecoveryScreen() {
   const startFreshAvailable = Boolean(diagnosis) && !projectFolderMissing
     && isAdeAvailable(window.ade?.recovery?.startFresh);
   const restartAvailable = canRestartAde();
+  const removeAvailable = (projectFolderMissing || notGitRepository)
+    && isAdeAvailable(window.ade?.project?.forgetRecent);
 
   const technicalText = [
     diagnosis?.technicalDetail,
@@ -693,14 +726,19 @@ export function ProjectRecoveryScreen() {
 
           {dataState && !isRepairing && !isSuccess ? (
             <DataRecoveryChoices
-              restore={restoreAvailable ? { label: isFailure ? "Try again" : "Restore from Trash", onClick: restoreData } : null}
-              startFresh={startFreshAvailable
+              restore={restoreAvailable
+                ? { label: isFailure ? "Try again" : "Restore from Trash", onClick: restoreData }
+                : notGitRepository && rootPath
+                  ? { label: "Try again", onClick: reopenProject }
+                  : null}
+              remove={removeAvailable ? { label: "Remove from recent projects", onClick: removeFromRecents } : null}
+              startFresh={!notGitRepository && startFreshAvailable
                 ? dataReplaced
                   ? { label: "Use this copy", onClick: reopenWithCurrentData, primary: true }
                   : { label: "Start fresh", onClick: () => void startFresh() }
                 : null}
               manualSteps={dataMissing && !restoreAvailable && !projectFolderMissing ? putBackSteps(isWindowsPlatform()) : null}
-              watching={dataMissing && !isFailure}
+              watching={(dataMissing || notGitRepository) && !isFailure}
             />
           ) : null}
 

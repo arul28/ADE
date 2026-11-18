@@ -312,6 +312,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.cloudMachineAction:
     // A wake, then every lane's commit and push on the computer.
     case IPC.cloudPushAllWork:
+    // Up to 50 MB of a lane's saved work, read and written; the save dialog waits on the person.
+    case IPC.cloudLaneBackupSavePatch:
+    case IPC.cloudLaneBackupToBranch:
       return CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS;
     case IPC.cloudListMachines:
       return CLOUD_LIST_MACHINES_IPC_TIMEOUT_MS;

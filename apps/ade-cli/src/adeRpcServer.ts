@@ -3404,7 +3404,7 @@ async function prepareRemoteWorkShell(
     // this long, and the spawn never says so (it hung the brain).
     const tooLong = process.platform === "win32" ? windowsCommandLineOverLimitMessage(runOnce.command, runOnce.args) : null;
     if (tooLong) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, tooLong, { code: "command_too_long" });
-    launch = { command: runOnce.command, args: runOnce.args, ...(runOnce.env ? { env: runOnce.env } : {}) };
+    launch = { command: runOnce.command, args: runOnce.args, env: runOnce.env };
   }
   const cols = typeof ptyArgs.cols === "number" ? ptyArgs.cols : 120;
   const rows = typeof ptyArgs.rows === "number" ? ptyArgs.rows : 36;

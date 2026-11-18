@@ -134,6 +134,40 @@ async function resolveCommit(cwd: string, ref: string): Promise<string | null> {
   return result.exitCode === 0 ? result.stdout.trim() || null : null;
 }
 
+/** The commits a bundle builds on (its prerequisites), read from its header. */
+export function bundlePrerequisites(content: Buffer): string[] {
+  const end = content.indexOf("\n\n");
+  if (end < 0) return [];
+  return content.subarray(0, end).toString("utf8").split("\n")
+    .filter((line) => line.startsWith("-"))
+    .map((line) => line.slice(1).split(" ")[0] ?? "")
+    .filter((sha) => SHA_PATTERN.test(sha));
+}
+
+/**
+ * Makes sure this clone has the commits the bundle at `bundlePath` builds on:
+ * a `fetch origin` first, then a fetch of each missing one by id (GitHub
+ * still serves a commit that a pull request reaches after its branch was
+ * deleted). True when the bundle verifies. `gitPrefix` carries hardening
+ * options (`-c core.hooksPath=...`) onto every call.
+ */
+export async function ensureBundleBase(args: { cwd: string; bundlePath: string; content: Buffer; env?: NodeJS.ProcessEnv; gitPrefix?: string[] }): Promise<boolean> {
+  const { cwd, bundlePath } = args;
+  const prefix = args.gitPrefix ?? [];
+  const envOpt = args.env ? { env: args.env } : {};
+  const verified = () => gitOk(cwd, [...prefix, "bundle", "verify", "--quiet", bundlePath], args.env);
+  if (await verified()) return true;
+  await runGitWithGithubAuthFallback([...prefix, "fetch", "--quiet", "--no-recurse-submodules", "origin"], { cwd, timeoutMs: GIT_TIMEOUT_MS, ...envOpt });
+  if (await verified()) return true;
+  const wanted = bundlePrerequisites(args.content);
+  if (wanted.length === 0) return false;
+  const checked = await runGit(["cat-file", "--batch-check"], { cwd, timeoutMs: 30_000, stdin: `${wanted.join("\n")}\n`, ...envOpt });
+  const missing = checked.stdout.split("\n").filter((line) => line.endsWith(" missing")).map((line) => line.split(" ")[0]!).filter((sha) => SHA_PATTERN.test(sha));
+  if (missing.length === 0) return false;
+  await runGitWithGithubAuthFallback([...prefix, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "origin", ...missing.slice(0, 200)], { cwd, timeoutMs: GIT_TIMEOUT_MS, ...envOpt });
+  return await verified();
+}
+
 /** 0 = ancestor, 1 = not an ancestor, null = undecidable (object missing). */
 async function isAncestor(cwd: string, ancestor: string, descendant: string): Promise<boolean | null> {
   const result = await runGit(["merge-base", "--is-ancestor", ancestor, descendant], { cwd, timeoutMs: 30_000 });
@@ -166,7 +200,7 @@ export async function readHandoffWorkingTreeSha(args: { worktreePath: string }):
 }
 
 /** Refuses before hashing when untracked files are clearly too big to carry. */
-async function precheckUntrackedSize(cwd: string): Promise<void> {
+export async function precheckUntrackedSize(cwd: string): Promise<void> {
   const listed = await runGit(["ls-files", "--others", "--exclude-standard", "-z"], {
     cwd,
     timeoutMs: 30_000,
@@ -217,14 +251,21 @@ function rawChangedPaths(raw: string): string[] {
  * they sit in the uncommitted snapshot or in a commit origin doesn't have yet.
  * Returns the snapshot's changed paths.
  */
-async function refuseUnportablePaths(cwd: string, tip: string, snapshot: string | null): Promise<string[]> {
+export async function refuseUnportablePaths(cwd: string, tip: string, snapshot: string | null, githubShas?: readonly string[]): Promise<string[]> {
   const snapshotPaths = snapshot
     ? rawChangedPaths(await gitOut(cwd, ["diff", "--raw", "--no-renames", "-z", tip, snapshot]))
     : [];
-  const carried = await runGitOrThrow(
-    ["log", "--raw", "-z", "--no-renames", "--format=", tip, "--not", "--remotes=origin"],
-    { cwd, timeoutMs: GIT_TIMEOUT_MS, maxOutputBytes: 64 * 1024 * 1024 },
-  );
+  // The commits the bundle carries: past origin's refs here, or past the
+  // commits GitHub holds (`githubShas`, a lane backup) when the caller has them.
+  const carried = githubShas
+    ? await runGitOrThrow(
+        ["log", "--raw", "-z", "--no-renames", "--format=", "--stdin"],
+        { cwd, timeoutMs: GIT_TIMEOUT_MS, maxOutputBytes: 64 * 1024 * 1024, stdin: `${[tip, ...githubShas.map((sha) => `^${sha}`)].join("\n")}\n` },
+      )
+    : await runGitOrThrow(
+        ["log", "--raw", "-z", "--no-renames", "--format=", tip, "--not", "--remotes=origin"],
+        { cwd, timeoutMs: GIT_TIMEOUT_MS, maxOutputBytes: 64 * 1024 * 1024 },
+      );
   const commitPaths = rawChangedPaths(carried);
   const checked = [...new Set([...snapshotPaths, ...commitPaths])];
   if (checked.length) {
@@ -458,17 +499,10 @@ export async function applyHandoffGitBundle(args: {
     fs.writeFileSync(bundlePath, content);
 
     // The bundle builds on commits origin has; fetch them when missing here.
-    if (!(await gitOk(projectRoot, g(["bundle", "verify", bundlePath])))) {
-      await runGitWithGithubAuthFallback(g(["fetch", "--quiet", "--no-recurse-submodules", "origin"]), {
-        cwd: projectRoot,
-        timeoutMs: GIT_TIMEOUT_MS,
-        ...(args.fetchEnv ? { env: args.fetchEnv } : {}),
-      });
-      if (!(await gitOk(projectRoot, g(["bundle", "verify", bundlePath])))) {
-        throw new Error(
-          "This machine lacks the commits the handed-off changes build on, even after fetching origin. Push the branch on the source machine, then hand off again.",
-        );
-      }
+    if (!(await ensureBundleBase({ cwd: projectRoot, bundlePath, content, gitPrefix: hardening, ...(args.fetchEnv ? { env: args.fetchEnv } : {}) }))) {
+      throw new Error(
+        "This machine lacks the commits the handed-off changes build on, even after fetching origin. Push the branch on the source machine, then hand off again.",
+      );
     }
     const heads = (await gitOut(projectRoot, g(["bundle", "list-heads", bundlePath])))
       .split(/\r?\n/)

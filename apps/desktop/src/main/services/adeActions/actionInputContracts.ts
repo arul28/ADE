@@ -290,6 +290,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { machine: string (name, id or machine key) }",
       example: "ade cloud sleep \"android vm\"",
     },
+    saved_chat_machine: {
+      description: "Which of the given asleep ADE Cloud computers saved a chat, and its project there, from the account's copy. It wakes nothing and returns no messages. Null: none of them.",
+      input: "object { chatId: string, machineKeys: string[] (at most 20) }",
+      example: "ade actions run cloud.saved_chat_machine --input-json '{\"chatId\":\"chat-1\",\"machineKeys\":[\"m-1\"]}' --json",
+    },
     wake: {
       description: "Wake an asleep ADE Cloud machine (about a second; ADE on it is online a few seconds later). The server refuses it at 0 hours. A --machine call to an asleep machine wakes it on its own.",
       input: "object { machine: string }",

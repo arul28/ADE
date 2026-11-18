@@ -472,7 +472,8 @@ export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): bo
  * items (cloudVaultItems.ts).
  */
 export const ADE_ACTION_MACHINE_SCOPED = {
-  cloud: ["access", "status", "list", "hours", "limits", "sleep", "wake", "referral", "invite_redeem", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
+  // `saved_chat_machine`: which asleep computer saved a chat (`ade chat send` to it).
+  cloud: ["access", "status", "list", "hours", "limits", "sleep", "wake", "referral", "invite_redeem", "cloud_sign_in_status", "saved_chat_machine", ...CLOUD_SIGN_IN_WRITES],
   account_vault: ["get", "set", "remove"],
   // The account's sign-ins, from a window with no project here (`providerLogins.call`).
   provider_logins: PROVIDER_LOGIN_ACTIONS,
@@ -1223,6 +1224,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     // sizes, agent limits, canStartLane); no key, no wake, no spend.
     "access", "status", "list", "hours", "create", "sleep", "wake", "resize", "update",
     "copy", "move", "delete", "make_status", "limits", "set_limits",
+    // Which asleep computer saved a chat, and its project there: no wake, no messages.
+    "saved_chat_machine",
     // A new lane on its own new computer (`ade chat create --machine cloud`).
     "lane_launch", "lane_launch_status", "lane_launch_cancel",
     // An agent asks the person for a tier change: a card in its chat; it changes nothing.
