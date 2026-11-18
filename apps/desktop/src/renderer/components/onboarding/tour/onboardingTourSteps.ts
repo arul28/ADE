@@ -4,7 +4,8 @@ import { anchorShown, findVisibleAnchor, isAnchorVisible } from "./anchorGeometr
  * The guided tour, in order. It runs inside a project, the first time one is
  * open (the screens before that explain themselves), on the desktop and in
  * ADE Web alike, once per account. Six cards at most: what to type, how the
- * agent runs, where it runs, the first send, where chats live, and the tools.
+ * agent runs, where it runs, where chats live, the first send (or opening a
+ * chat, for someone who has some), and the tools.
  * Everything else is in ADE Tips.
  *
  * Each step points at a real control, marked with
@@ -130,9 +131,20 @@ export const TOUR_STEPS: readonly TourStepDef[] = [
     where: "a new chat",
   },
   {
+    id: "sidebar",
+    number: 4,
+    anchors: ["session-list"],
+    title: "Every chat, in one list",
+    line: "Chats, CLIs and terminals from every lane and machine, ADE Cloud included. A dot means one needs you.",
+    advance: "next",
+    place: ["right", "below"],
+    goTo: "work",
+    where: "Work",
+  },
+  {
     // Only for someone with no chats yet; the host fills the composer in when it can.
     id: "first-chat",
-    number: 4,
+    number: 5,
     anchors: ["composer"],
     title: "Send your first chat",
     line: "Pick a model and press Send. Nothing runs until you do.",
@@ -145,20 +157,9 @@ export const TOUR_STEPS: readonly TourStepDef[] = [
     skipIf: () => anchorShown("session-row"),
   },
   {
-    id: "sidebar",
-    number: 5,
-    anchors: ["session-list"],
-    title: "Every chat, in one list",
-    line: "Chats, CLIs and terminals from every lane and machine, ADE Cloud included. A dot means one needs you.",
-    advance: "next",
-    place: ["right", "below"],
-    goTo: "work",
-    where: "Work",
-  },
-  {
     // People who had chats before the tour land on a new chat: open one first.
     id: "open-chat",
-    number: 6,
+    number: 5,
     anchors: ["session-row"],
     title: "Open a chat",
     line: "A chat picks up where it left off.",

@@ -19,7 +19,7 @@ import { useGoTo } from "../../onboarding/spotlight/useGoTo";
  * It asks for the corner a while into a project session, so the project
  * settles first and a situational suggestion with a real signal gets it
  * first, then again whenever the next tip is allowed (`nextTipCardAt`: up to
- * three a day, two hours apart). The rest of the rules are `claimTipCard`'s.
+ * two a week, two days apart, within the shared unasked budget). The rest of the rules are `claimTipCard`'s.
  * Test mode asks after a few seconds.
  *
  * Cost: one pending timer while a project is open; nothing renders until a tip shows.

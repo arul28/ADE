@@ -35,8 +35,9 @@ import { markUnaskedShown, nextUnaskedAt, subscribeUnaskedBudget } from "./unask
  * days); a suggestion answers a real signal, so it is not held back, but it
  * spends the budget.
  *
- * Per computer, like the rest of onboarding: this renderer's localStorage,
- * never synced. Only ids, signal keys and times are stored.
+ * Stored per computer in this renderer's localStorage; only the tips already
+ * offered or tried follow the account (`onboardingSync.ts`). Only ids, signal
+ * keys and times are stored.
  */
 
 export const SUGGESTIONS_STORAGE_KEY = "ade.suggestions.v1";
@@ -394,6 +395,16 @@ export function adoptDoneTipIds(tipIds: readonly string[]): void {
   const known = new Set(done);
   const added = tipIds.filter((id) => !known.has(id));
   if (added.length) updateTips({ done: [...done, ...added] });
+}
+
+/** Another account signed in here: its tips replace the ones this computer held for the last one. */
+export function replaceDoneTipIds(tipIds: readonly string[]): void {
+  updateTips({ done: [...new Set(tipIds)] });
+}
+
+/** Tells the listener when the tips offered or tried may have changed. */
+export function subscribeTipProgress(listener: () => void): () => void {
+  return store.subscribe(listener);
 }
 
 /**

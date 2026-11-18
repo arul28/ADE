@@ -1390,11 +1390,12 @@ It runs once per computer and is stored in global app state
 (`welcomeVideo.completedAt` / `dismissedAt`), so a computer set up before it
 existed never sees it. It runs on, and reads, the computer ADE opens on.
 
-ADE Web shows only the welcome card, and only to an account created after
-2026-11-16 that has not started onboarding anywhere (`webWelcomeDue` in
+ADE Web shows only the welcome card, and only to an account created on or after
+2026-11-18 that has not started onboarding anywhere (`webWelcomeDue` in
 `FirstRunSteps.tsx` reads the account's `onboarding.progress` first; if it
 cannot, no card). **Get started** marks onboarding started; **Skip the tour**
-skips it on every device.
+skips it on every device; Escape only closes the card. It waits while the
+shared-lane page (`/shared`) is open.
 
 1. **Welcome.** One card on the gate's glass: headline, one sentence, provider
    marks, **Get started** and **Skip setup**. Skipping setup still leaves the
@@ -1451,9 +1452,10 @@ skips it on every device.
    control, a ring settles and a card explains it, six cards ("N of 6"): the
    prompt box, its permission/model/effort controls, where it runs (the Run on
    menu: this computer, another computer or ADE Cloud, with the lane picker
-   beside it: main checkout or a new lane), the first chat, the chats list,
+   beside it: main checkout or a new lane), the chats list, the first chat,
    and the Tools pane. A person who already has chats gets **Open a chat**
-   instead of the first chat; the Tools step is skipped when the pane is open.
+   instead of the first chat (both are card 5); the Tools step is skipped
+   when the pane is open.
    - With no chats, the step is **Send your first chat**: a new chat in the
      main checkout with "In one sentence, what is this project?" on a cheap
      runnable model (Haiku, Luna or Composer when connected, else the cheapest
@@ -1561,7 +1563,11 @@ tour done, hint answers, tips already offered, and the last unasked showing.
 brain's copy once per account first), merges (later times win, the earlier
 start, tips join; "Show me around again" sets `resetAt`, which drops older
 tour and hint answers everywhere), adopts the result locally and writes back
-only when the account lacked something. The desktop goes through its brain,
+only when the account lacked something. What a computer held before its
+first account signed in belongs to that account; when another account signs
+in there, its copy replaces the computer's. The shared pass loop is
+`renderer/lib/accountSettingSync.ts` (also used by What's new seen pages); a
+desktop brain pull counts only when `accountSettings.sync` reports `ready`. The desktop goes through its brain,
 ADE Web through the account relay. Signed out or offline, the local copy
 decides. No polling.
 

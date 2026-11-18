@@ -1,7 +1,9 @@
 import { useEffect, useRef } from "react";
+import { useLocation } from "react-router-dom";
 import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useAppStore } from "../../state/appStore";
+import { LANE_SHARE_GUEST_ROUTE } from "../laneShare/guest/laneShareGuestRoute";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { DIALOG_SELECTOR, MODAL_DIALOG_SELECTOR } from "../ui/overlayState";
 import { GateBackdrop } from "./GateBackdrop";
@@ -55,7 +57,9 @@ export function OnboardingBootstrap() {
     skipAgents: remoteTab,
     onFinish: web ? undefined : showFirstRunProjects,
   });
-  const { phase, restart, skip } = steps;
+  const { phase, restart, dismiss } = steps;
+  // Someone opening a lane shared with them came for that lane: the welcome waits until they leave its page.
+  const onSharedLanePage = useLocation().pathname.startsWith(LANE_SHARE_GUEST_ROUTE);
   const gateRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -68,19 +72,19 @@ export function OnboardingBootstrap() {
     return () => window.removeEventListener(ADE_WELCOME_VIDEO_REPLAY_EVENT, replay);
   }, [restart, web]);
 
-  const open = phase === "welcome" || phase === "agents" || phase === "projects";
+  const open = !onSharedLanePage && (phase === "welcome" || phase === "agents" || phase === "projects");
 
-  // Escape skips setup, as the welcome card's Skip does.
+  // Escape closes setup; unlike the Skip link it never skips the tour.
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       if (escapeBelongsToInnerLayer(event, gateRef.current)) return;
-      skip();
+      dismiss();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, skip]);
+  }, [open, dismiss]);
 
   if (!open) return null;
 

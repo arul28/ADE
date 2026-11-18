@@ -29,7 +29,7 @@ const FirstRunWelcome = lazy(() => import("./FirstRunFlow").then((module) => ({ 
  */
 
 /** Accounts made from this day on get the welcome in ADE Web; older ones already know ADE. */
-const WEB_WELCOME_SINCE = Date.UTC(2026, 10, 16);
+const WEB_WELCOME_SINCE = Date.UTC(2026, 10, 18);
 
 /** Whether ADE Web should welcome this account: new, and onboarding not started on any copy. */
 async function webWelcomeDue(): Promise<boolean> {
@@ -59,6 +59,8 @@ export type FirstRunSteps = {
   /** Continue (or Skip) on the agents card. */
   agentsDone: () => void;
   skip: () => void;
+  /** Escape: closes setup like Skip, but never skips the tour (one stray key must not turn it off on every device). */
+  dismiss: () => void;
   finish: (result: FirstRunResult) => void;
 };
 
@@ -116,15 +118,17 @@ export function useFirstRunSteps({
   const restart = useCallback(() => setPhase("welcome"), []);
   const agentsDone = useCallback(() => setPhase("projects"), []);
 
-  const skip = useCallback(() => {
-    // Setup only: the tour still waits for the first project, with its own
-    // Skip. With no setup to skip (ADE Web), the link skips the tour.
-    if (welcomeOnly) skipOnboarding();
+  const close = useCallback((skipTour: boolean) => {
+    if (skipTour) skipOnboarding();
     else markOnboardingStarted();
     setPhase("done");
     void window.ade.app.markWelcomeVideoSeen("dismissed").catch(() => undefined);
     onSkip?.();
-  }, [onSkip, welcomeOnly]);
+  }, [onSkip]);
+  // Setup only: the tour still waits for the first project, with its own
+  // Skip. With no setup to skip (ADE Web), the link skips the tour.
+  const skip = useCallback(() => close(welcomeOnly), [close, welcomeOnly]);
+  const dismiss = useCallback(() => close(false), [close]);
 
   const finish = useCallback((result: FirstRunResult) => {
     setPhase("done");
@@ -137,7 +141,7 @@ export function useFirstRunSteps({
     else setPhase(skipAgents ? "projects" : "agents");
   }, [finish, skipAgents, welcomeOnly]);
 
-  return { phase, welcomeOnly, restart, start, agentsDone, skip, finish };
+  return { phase, welcomeOnly, restart, start, agentsDone, skip, dismiss, finish };
 }
 
 /** One first-run card on the gate's glass. Give it `key={step}` so each step mounts fresh. */

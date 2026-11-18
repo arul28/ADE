@@ -18,9 +18,9 @@ import { createLocalStore, finiteNumber } from "./localStore";
  */
 
 /** A little under a day, so a daily habit is not missed by minutes. */
-export const UNASKED_GAP_MS = 20 * 3_600_000;
+const UNASKED_GAP_MS = 20 * 3_600_000;
 /** A new account sees nothing unasked for this long. */
-export const NEW_ACCOUNT_QUIET_MS = 3 * 24 * 3_600_000;
+const NEW_ACCOUNT_QUIET_MS = 3 * 24 * 3_600_000;
 
 const lastShownStore = createLocalStore({
   key: "ade.unasked.lastShownAt.v1",
@@ -36,10 +36,6 @@ export function setUnaskedAccountCreatedAt(createdAt: number | null): void {
   accountCreatedAt = createdAt;
 }
 
-export function getUnaskedAccountCreatedAt(): number | null {
-  return accountCreatedAt;
-}
-
 export function lastUnaskedAt(): number {
   return lastShownStore.get();
 }
@@ -47,6 +43,11 @@ export function lastUnaskedAt(): number {
 /** Takes a later showing from another computer or ADE Web. */
 export function adoptLastUnaskedAt(at: number | undefined): void {
   if (at !== undefined && at > lastShownStore.get()) lastShownStore.set(at);
+}
+
+/** Another account signed in here: its last showing replaces this computer's. */
+export function replaceLastUnaskedAt(at: number | undefined): void {
+  lastShownStore.set(at ?? 0);
 }
 
 /** The earliest time something unasked may show (0: now). */

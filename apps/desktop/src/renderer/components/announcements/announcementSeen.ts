@@ -45,7 +45,7 @@ function parseSeen(stored: unknown): SeenMap {
 }
 
 const seenStore = createLocalStore({ key: ANNOUNCEMENTS_SEEN_STORAGE_KEY, event: "ade:announcements-seen", parse: parseSeen });
-const lastShownStore = createLocalStore({
+const announcementsLastShownStore = createLocalStore({
   key: LAST_SHOWN_STORAGE_KEY,
   event: "ade:announcements-last-shown",
   parse: (stored) => finiteNumber(stored) ?? 0,
@@ -96,7 +96,7 @@ export function allAnnouncements(): AnnouncementPageDef[] {
 /** Whether a project may show pages now: none were shown in the last day (after an update counts). */
 export function inProjectShowingAllowed(now = Date.now()): boolean {
   // The shared budget too: nothing else unasked showed today, and the account is past its quiet first days.
-  return now - lastShownStore.get() >= IN_PROJECT_GAP_MS && unaskedAllowed(now);
+  return now - announcementsLastShownStore.get() >= IN_PROJECT_GAP_MS && unaskedAllowed(now);
 }
 
 export function markAnnouncementSeen(page: AnnouncementPageDef, now = Date.now()): void {
@@ -107,7 +107,7 @@ export function markAnnouncementSeen(page: AnnouncementPageDef, now = Date.now()
 
 /** Called when a showing opens by itself (not from Help): the next one waits a week, and it spends the day's unasked budget. */
 export function markShowing(now = Date.now()): void {
-  lastShownStore.set(now);
+  announcementsLastShownStore.set(now);
   markUnaskedShown(now);
 }
 

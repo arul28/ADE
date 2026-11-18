@@ -987,6 +987,7 @@ import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
 import { captureAutomationTestAnalytics, captureGhAccountSharingAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
+  AccountSettingsPullState,
   AccountSettingsResult,
   AccountSettingsWriteOptions,
 } from "../../../shared/types/accountSettings";
@@ -12954,7 +12955,8 @@ export function registerIpc({
 
   handle(
     IPC.accountSettingsSync,
-    async (): Promise<AccountSettingsResult<null>> => await accountSettingsSyncService.sync(),
+    // The value says whether the pull reached the account (`ready`); callers that only need "done" read `ok`.
+    async (): Promise<AccountSettingsResult<AccountSettingsPullState>> => await accountSettingsSyncService.syncStatus(),
   );
 
   const vaultBridgeOptions = {

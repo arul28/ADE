@@ -231,6 +231,12 @@ export function onboardingProgressRecord(progress: OnboardingProgress = readOnbo
  * elsewhere ends it here; a hint answered elsewhere stops here. Writes only
  * when something changed.
  */
+/** Another account signed in here: its record replaces what this computer held for the last one. */
+export function replaceOnboardingProgressRecord(record: OnboardingProgressRecord): void {
+  writeOnboardingProgress({ tour: {}, hints: {} });
+  adoptOnboardingProgressRecord(record);
+}
+
 export function adoptOnboardingProgressRecord(merged: OnboardingProgressRecord): void {
   const current = readOnboardingProgress();
   let next: OnboardingProgress = current;

@@ -425,7 +425,6 @@ function TourRunner({ stepId }: { stepId: string | null }) {
         {!finishing && view.kind === "waiting" ? (
           <TourPill
             step={step}
-            index={index}
             seen={seenRef.current.has(step.id)}
             outOfView={outOfView != null}
             onShowMe={outOfView || step.goTo ? showMe : null}
@@ -619,14 +618,12 @@ function caretOffset(card: { x: number; y: number; side: string }, ring: Box): n
 
 function TourPill({
   step,
-  index,
   seen,
   outOfView,
   onShowMe,
   onSkip,
 }: {
   step: TourStepDef;
-  index: number;
   /** The step's card showed before: the user stepped away from it. */
   seen: boolean;
   /** The control is on this page but clipped or scrolled out of view. */

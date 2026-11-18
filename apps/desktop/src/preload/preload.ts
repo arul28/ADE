@@ -639,6 +639,7 @@ import type {
   AdeAccountSyncHostStartResult,
   AdeAccountSessionRepairResult,
   AccountSettingRow,
+  AccountSettingsPullState,
   AccountSettingsResult,
   McpRegistryCheck,
   McpRegistryContext,
@@ -14448,7 +14449,7 @@ const adeBridge = {
       args: { scope: string; key: string } & AccountSettingsWriteOptions,
     ): Promise<AccountSettingsResult<null>> =>
       ipcRenderer.invoke(IPC.accountSettingsRemove, args),
-    sync: (): Promise<AccountSettingsResult<null>> =>
+    sync: (): Promise<AccountSettingsResult<AccountSettingsPullState>> =>
       ipcRenderer.invoke(IPC.accountSettingsSync),
     onChanged: (cb: () => void): (() => void) =>
       remoteAccountSettingsChangedFanout.subscribe(() => cb()),

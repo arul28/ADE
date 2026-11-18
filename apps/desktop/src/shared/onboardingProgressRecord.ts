@@ -38,7 +38,7 @@ const MAX_ID_LENGTH = 128;
 /** Before ADE had onboarding; an earlier time is not one this wrote. */
 const EARLIEST_MS = Date.UTC(2024, 0, 1);
 
-function time(value: unknown, now: number): number | undefined {
+function validTime(value: unknown, now: number): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   // A clock a little ahead is fine; a time far in the future would pin a field forever.
   if (value < EARLIEST_MS || value > now + 24 * 3_600_000) return undefined;
@@ -49,32 +49,37 @@ function validId(id: unknown): id is string {
   return typeof id === "string" && id.length > 0 && id.length <= MAX_ID_LENGTH;
 }
 
-function record(value: unknown): Record<string, unknown> | null {
+/** A hint answer with the times it holds; undefined when it holds none. */
+function hintAnswer(doneAt: number | undefined, dismissedAt: number | undefined): OnboardingHintAnswer | undefined {
+  if (doneAt === undefined && dismissedAt === undefined) return undefined;
+  return {
+    ...(doneAt !== undefined ? { doneAt } : {}),
+    ...(dismissedAt !== undefined ? { dismissedAt } : {}),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
 /** The valid part of a stored or remote value. */
 export function normalizeOnboardingProgressRecord(value: unknown, now = Date.now()): OnboardingProgressRecord {
-  const raw = record(value);
+  const raw = asRecord(value);
   if (!raw) return {};
   const out: OnboardingProgressRecord = {};
   for (const field of ["resetAt", "startedAt", "skippedAt", "tourDoneAt", "lastUnaskedAt"] as const) {
-    const at = time(raw[field], now);
+    const at = validTime(raw[field], now);
     if (at !== undefined) out[field] = at;
   }
   const hints: Record<string, OnboardingHintAnswer> = {};
   let hintCount = 0;
-  for (const [id, entry] of Object.entries(record(raw.hints) ?? {})) {
+  for (const [id, entry] of Object.entries(asRecord(raw.hints) ?? {})) {
     if (hintCount >= MAX_HINTS) break;
-    const answer = record(entry);
+    const answer = asRecord(entry);
     if (!validId(id) || !answer) continue;
-    const doneAt = time(answer.doneAt, now);
-    const dismissedAt = time(answer.dismissedAt, now);
-    if (doneAt === undefined && dismissedAt === undefined) continue;
-    hints[id] = {
-      ...(doneAt !== undefined ? { doneAt } : {}),
-      ...(dismissedAt !== undefined ? { dismissedAt } : {}),
-    };
+    const kept = hintAnswer(validTime(answer.doneAt, now), validTime(answer.dismissedAt, now));
+    if (!kept) continue;
+    hints[id] = kept;
     hintCount += 1;
   }
   if (hintCount) out.hints = hints;
@@ -102,13 +107,8 @@ function dropBeforeReset(value: OnboardingProgressRecord): OnboardingProgressRec
   if (out.hints) {
     const hints: Record<string, OnboardingHintAnswer> = {};
     for (const [id, answer] of Object.entries(out.hints)) {
-      const doneAt = keep(answer.doneAt);
-      const dismissedAt = keep(answer.dismissedAt);
-      if (doneAt === undefined && dismissedAt === undefined) continue;
-      hints[id] = {
-        ...(doneAt !== undefined ? { doneAt } : {}),
-        ...(dismissedAt !== undefined ? { dismissedAt } : {}),
-      };
+      const kept = hintAnswer(keep(answer.doneAt), keep(answer.dismissedAt));
+      if (kept) hints[id] = kept;
     }
     out.hints = Object.keys(hints).length ? hints : undefined;
   }
@@ -116,11 +116,7 @@ function dropBeforeReset(value: OnboardingProgressRecord): OnboardingProgressRec
 }
 
 function compact(value: OnboardingProgressRecord): OnboardingProgressRecord {
-  const out: OnboardingProgressRecord = {};
-  for (const [key, field] of Object.entries(value) as [keyof OnboardingProgressRecord, unknown][]) {
-    if (field !== undefined) (out as Record<string, unknown>)[key] = field;
-  }
-  return out;
+  return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined)) as OnboardingProgressRecord;
 }
 
 /**
@@ -136,10 +132,8 @@ export function mergeOnboardingProgressRecords(
   for (const [id, answer] of Object.entries(right.hints ?? {})) {
     const current = hints[id];
     if (!current && Object.keys(hints).length >= MAX_HINTS) continue;
-    hints[id] = compact({
-      doneAt: later(current?.doneAt, answer.doneAt),
-      dismissedAt: later(current?.dismissedAt, answer.dismissedAt),
-    } as OnboardingProgressRecord) as OnboardingHintAnswer;
+    const merged = hintAnswer(later(current?.doneAt, answer.doneAt), later(current?.dismissedAt, answer.dismissedAt));
+    if (merged) hints[id] = merged;
   }
   const tips = [...new Set([...(left.tipsDone ?? []), ...(right.tipsDone ?? [])])].slice(0, MAX_TIPS);
   const resetAt = later(left.resetAt, right.resetAt);

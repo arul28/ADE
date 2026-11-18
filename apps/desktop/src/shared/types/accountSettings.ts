@@ -31,5 +31,8 @@ export type AccountSettingRow = {
  */
 export type AccountSettingsResult<T> = AccountStoreResult<T>;
 
+/** What `accountSettings.sync` reports: the pull reached the account (`ready`), or not; null from an older brain. */
+export type AccountSettingsPullState = "ready" | "unavailable" | "failed" | null;
+
 /** Owner fence accepted by settings mutations crossing the desktop/runtime boundary. */
 export type AccountSettingsWriteOptions = AccountStoreWriteOptions;
