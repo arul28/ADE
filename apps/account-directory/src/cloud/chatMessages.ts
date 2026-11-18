@@ -6,6 +6,7 @@ import {
   CLOUD_CHAT_MESSAGES_OPEN_PER_ACCOUNT,
   CLOUD_CHAT_MESSAGES_OPEN_PER_CHAT,
   CLOUD_CHAT_MESSAGES_PER_MINUTE,
+  CLOUD_LAUNCH_DRAFT_TTL_MS,
   cloudChatMessageSettingsOf,
   type CloudChatMessageAddResult,
   type CloudChatMessageAttachment,
@@ -20,7 +21,7 @@ import {
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
 import { addLaunchMessage, cancelLaunchMessageStatement, LAUNCH_MESSAGE_ID, launchMessageOf } from "./launchMessages";
-import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
+import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, r2KeyOf, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
 import { openJson, sealJson, userKeys, type UserKeys } from "./seal";
 import { logCloud, type CloudEnv, type ComputerRow } from "./store";
 import { copyRow, openSummary, type CopyRow } from "./chats";
@@ -331,6 +332,43 @@ async function attachmentsUploaded(env: CloudEnv, userId: string, attachments: C
   return null;
 }
 
+/**
+ * A message's files stay as long as the message can wait: the drafts they were
+ * uploaded to live a day from the upload, and a message queued late in that
+ * day would lose its files before its computer reads them.
+ */
+async function keepDraftFiles(env: CloudEnv, userId: string, attachments: CloudChatMessageAttachment[], now: number): Promise<void> {
+  const launchIds = [...new Set(attachments.map((file) => file.launchId))];
+  if (!launchIds.length) return;
+  await env.DB.batch(launchIds.map((launchId) => env.DB.prepare(`
+    update cloud_launches set expires_at = max(expires_at, ?) where launch_id = ? and user_id = ? and state = 'draft'
+  `).bind(now + CLOUD_CHAT_MESSAGE_TTL_MS, launchId, userId)));
+}
+
+/**
+ * A message that starts a new computer brings its files to that launch: the
+ * start reads them under its own id. The new id gets a draft row first, so a
+ * start that is refused (or answered by another launch) leaves files the cron
+ * removes with the draft.
+ */
+async function copyFilesToLaunch(env: CloudEnv, userId: string, attachments: CloudChatMessageAttachment[], launchId: string, now: number): Promise<string | null> {
+  if (!attachments.length) return null;
+  const bucket = env.CLOUD_CHATS;
+  if (!bucket) return "ADE Cloud can't keep files right now. Send without them.";
+  await env.DB.prepare(`
+    insert into cloud_launches (launch_id, user_id, state, created_at, updated_at, expires_at)
+    values (?, ?, 'draft', ?, ?, ?) on conflict (launch_id) do nothing
+  `).bind(launchId, userId, now, now, now + CLOUD_LAUNCH_DRAFT_TTL_MS).run();
+  for (const file of attachments) {
+    const object = await bucket.get(r2KeyOf(userId, file.launchId, file.fileId));
+    if (!object) return `Upload "${file.name}" first, then send the message.`;
+    await bucket.put(r2KeyOf(userId, launchId, file.fileId), await object.arrayBuffer(), {
+      httpMetadata: { contentType: object.httpMetadata?.contentType ?? "application/octet-stream" },
+    });
+  }
+  return null;
+}
+
 /** The per-chat and per-account caps, and the minute rate limit. A response when the send is refused. */
 async function capsRefusal(env: CloudEnv, userId: string, chat: QueueTarget, now: number): Promise<Response | null> {
   const counts = await env.DB.prepare(`
@@ -432,6 +470,7 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
   if (capped) return capped;
   const missingFile = await attachmentsUploaded(env, userId, attachments);
   if (missingFile) return badRequest(missingFile);
+  await keepDraftFiles(env, userId, attachments, now);
   if (!deps.wake) return fail("unavailable", "ADE Cloud can't wake computers right now. Try again soon.", 503);
 
   const input: SendInput = { messageId, text, attachments, provider, modelId, settings };
@@ -506,6 +545,8 @@ async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, 
       ...(input.settings && chat.kind !== "cli" ? { settings: input.settings } : {}),
     },
   };
+  const filesMissing = await copyFilesToLaunch(env, userId, input.attachments, parsed.launchId, now);
+  if (filesMissing) return badRequest(filesMissing);
   const started = await deps.wake!.startLaunch(parsed);
   if (started.status !== 200 && started.status !== 201) return started;
   const record = await started.clone().json() as CloudLaunchRecord;
