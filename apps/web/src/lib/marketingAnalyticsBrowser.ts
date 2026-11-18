@@ -43,7 +43,9 @@ declare global {
 function isAutomatedBrowser(): boolean {
   if (typeof navigator === "undefined") return false;
   if (navigator.webdriver === true) return true;
-  return /(?:\b(?:bot|crawler|spider|slurp|headless)\b|HeadlessChrome|facebookexternalhit|TelegramBot|Slackbot|Discordbot|LinkedInBot|Applebot|Embedly|Pinterestbot|redditbot)/i.test(
+  // `bot` is a suffix (`bingbot`, `Googlebot`), not its own word. A leading
+  // boundary would miss both, and would also match `bottom`.
+  return /(?:(?:bot|crawler|spider|slurp|headless)\b|HeadlessChrome|facebookexternalhit|TelegramBot|Slackbot|Discordbot|LinkedInBot|Applebot|bingbot|Embedly|Pinterestbot|redditbot)/i.test(
     navigator.userAgent,
   );
 }

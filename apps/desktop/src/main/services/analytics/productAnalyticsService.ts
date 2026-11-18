@@ -7,6 +7,7 @@ import { safeJsonParse, writeTextAtomic } from "../shared/utils";
 import { doNotTrackRequested, isTruthyEnvFlag } from "../../../shared/doNotTrack";
 import {
   isAutomatedTelemetryEnvironment,
+  isDevelopmentTelemetryRuntime,
   telemetryEnvironment,
 } from "../../../shared/telemetryEnvironment";
 import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
@@ -730,9 +731,10 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   const isInternalEvent = (): boolean =>
     isTeamInstall()
     || isAutomatedTelemetryEnvironment()
-    || args.runtimeMode === "desktop_development"
-    || isTruthyEnvFlag(process.env.ADE_DEV_BRAIN)
-    || releaseChannel === "development";
+    || isDevelopmentTelemetryRuntime({
+      runtimeMode: args.runtimeMode,
+      releaseChannel,
+    });
   const telemetryProperties = (): Record<string, unknown> => ({
     is_internal: isInternalEvent(),
     release_channel: releaseChannel,
@@ -984,6 +986,9 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
           event: "$identify",
           properties: {
             $anon_distinct_id: anonymousId,
+            // On the event, not on the person. A development sign-in is
+            // internal here and still does not raise the person flag.
+            ...telemetryProperties(),
             $set: {
               plan: "free",
               platform: process.platform,

@@ -675,8 +675,11 @@ adds an event.
   raises the person flag only for the team install, and only ever raises it.
   A development sign-in does not mark the account: the flag is never lowered,
   so the person filter would then hide that account's later production use.
-  iOS sets the event property only for Apple's review farm (below). A workflow
-  does not send, so it never needs the flag.
+  iOS sets the event property for Apple's review farm (below) and for a debug
+  or simulator run that opted in with `ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT=1`.
+  `$identify` carries the same event properties beside `$set`, so a development
+  sign-in is tagged without marking the account. A workflow does not send, so
+  it never needs the flag.
 - `environment` — `production` (stable), `beta`, `alpha`, `development`, or
   `ci`. The same value Sentry uses. Real installs send the first four;
   `ci` is what a workflow would send if capture were not already off.

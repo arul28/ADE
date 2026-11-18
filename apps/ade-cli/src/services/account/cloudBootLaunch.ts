@@ -1089,6 +1089,11 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
         };
       },
       afterJoin: async () => {
+        // The poll reports `signed_in` itself. A sign-in that landed another
+        // way (the poll expired, or this computer was already signed in)
+        // still has to identify, or the launch's first events stay anonymous.
+        const status = account.getStatus();
+        if (status.signedIn) host.onAccountSignedIn?.(status);
         const client = await host.cloudClient();
         if (!client) return;
         await enableCloudSleep(client, cloudInstanceId, { logger });

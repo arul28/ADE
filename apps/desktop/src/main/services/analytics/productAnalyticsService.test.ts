@@ -139,6 +139,9 @@ describe("productAnalyticsService", () => {
       ok: true,
       value: { surface: "cli" },
     });
+    // This case is a non-development send. The suite's default `NODE_ENV` is
+    // development, and that now marks the event internal.
+    vi.stubEnv("NODE_ENV", "production");
     const harness = makeHarness();
     const result = harness.service.capture({
       event: "ade_feature_used",
@@ -1372,8 +1375,27 @@ describe("productAnalyticsService", () => {
     const identify = harness.messages.find((message) => message.event === "$identify") as
       | { properties: { $set: Record<string, unknown> } }
       | undefined;
+    expect(identify?.properties).toMatchObject({ is_internal: true, environment: "development" });
     expect(identify?.properties.$set).not.toHaveProperty("is_internal");
     fs.rmSync(harness.root, { recursive: true, force: true });
+
+    // `NODE_ENV=development` with the opt-in is a development send even when
+    // the build has no release channel. The person stays unmarked.
+    const byNodeEnv = makeHarness();
+    expect(byNodeEnv.service.capture({ event: "ade_app_opened", surface: "desktop" })).toEqual({
+      accepted: true,
+      reason: "accepted",
+    });
+    expect(byNodeEnv.messages[0]).toMatchObject({
+      properties: { is_internal: true, environment: "development" },
+    });
+    byNodeEnv.service.identifyAccount("clerk_user_real_2");
+    const nodeIdentify = byNodeEnv.messages.find((message) => message.event === "$identify") as
+      | { properties: { $set: Record<string, unknown> } & Record<string, unknown> }
+      | undefined;
+    expect(nodeIdentify?.properties).toMatchObject({ is_internal: true, environment: "development" });
+    expect(nodeIdentify?.properties.$set).not.toHaveProperty("is_internal");
+    fs.rmSync(byNodeEnv.root, { recursive: true, force: true });
   });
 
   it("is inert in development unless analytics is explicitly enabled", () => {

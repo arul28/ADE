@@ -370,8 +370,9 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
   }
 
   /// Added to every event this sink sends: which surface, app and build sent
-  /// it. `is_internal` is set only for Apple's review farm (see
-  /// `ADEAnalyticsReviewContext`); a person's phone has no team-install marker.
+  /// it. `is_internal` is set for Apple's review farm and for a debug or
+  /// simulator run that was explicitly allowed to send. A person's phone has
+  /// no team-install marker, and iOS never writes a person profile.
   private static func commonProperties(interactive: Bool) -> [String: Any] {
     var properties: [String: Any] = [
       "surface": "mobile",
@@ -391,13 +392,32 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       properties["review_context"] = review.rawValue
       properties["is_internal"] = true
     }
+    if sendsAsDevelopment {
+      properties["is_internal"] = true
+    }
     return properties
   }
 
-  /// Same words as desktop Sentry: stable is `production`.
+  /// A debug or simulator run that opted in. The test host does not, so its
+  /// fixtures stay a normal install. The flag is on the event only.
+  private static var sendsAsDevelopment: Bool {
+    #if DEBUG || targetEnvironment(simulator)
+    return isTruthyFlag(ProcessInfo.processInfo.environment["ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT"])
+    #else
+    return false
+    #endif
+  }
+
+  /// Same words as desktop Sentry: stable is `production`, and a simulator
+  /// is `development` even for a Release build. A shipped phone keeps its
+  /// channel.
   private static var telemetryEnvironment: String {
+    #if targetEnvironment(simulator)
+    return "development"
+    #else
     let channel = distribution.releaseChannel
     return channel == "stable" ? "production" : channel
+    #endif
   }
 
   func captureException(properties: [String: Any]) {
@@ -928,7 +948,10 @@ final class ProductAnalytics {
       projectToken = environment["ADE_POSTHOG_DEV_TOKEN"] ?? projectToken
     }
     #endif
-    postHogSink.configure(projectToken: projectToken, host: host, enabled: isEnabled)
+    // The test host launches the app, and `isOptedOut` stays false there so
+    // the suite can assert the default-on policy against a fake sink. The
+    // production sink stays off, or that launch would send.
+    postHogSink.configure(projectToken: projectToken, host: host, enabled: isEnabled && !Self.isRunningTests)
   }
 
   /// The project token and ingestion host session replay may use: present
