@@ -203,6 +203,19 @@ export const CLOUD_PATHS = {
   backups: "/cloud/backups",
   /** The account lane index of every machine (`accountLanes/`): not under `/cloud`, so a blocked account's brains keep it. */
   accountLanes: "/account/lanes",
+  /**
+   * The ADE Cloud iPhone (`phones.ts`): `GET` its `CloudPhoneState`; `POST`
+   * `{ device? }` starts the account's phone or answers its live one
+   * (`CloudPhoneStart`); `DELETE` stops it. `/token` and `/view` (`POST`)
+   * hand out a fresh phone token and a view link for the live phone.
+   */
+  phone: "/cloud/phone",
+  phoneToken: "/cloud/phone/token",
+  phoneView: "/cloud/phone/view",
+  /** `POST { enabled, monthlyLimitUsd? }`: extra iPhone minutes on a paid plan (`CloudAccountState.phone.extra`). */
+  billingExtraPhone: "/cloud/billing/extra-phone",
+  /** NoMac's signed webhook (`phones.ts`): phone ready and ended, credit low. Not an account route. */
+  nomacWebhook: "/cloud/nomac/webhook",
 } as const;
 
 /** `/cloud/chats/:machine/:chat/messages[/:msg]`: the person's queue for an existing cloud chat. */
@@ -497,8 +510,10 @@ export type CloudPlanFacts = {
   includedMilli: number;
   diskGb: number;
   priceUsd: number;
-  /** Minutes of the phone simulator a month. Shown on the plan table; nothing meters them yet. Older servers leave it out. */
+  /** ADE Cloud iPhone minutes a month (`phones.ts`). Older servers leave it out. */
   phoneMinutes?: number;
+  /** What one iPhone minute past the plan costs, in cents; null on the free plan, where the phone stops. Older servers leave it out. */
+  extraPhoneMinuteCents?: number | null;
   /** What one hour past the plan costs, in cents; null on the free plan, where work stops. Older servers leave it out (`CloudCatalog.extraHourCents`). */
   extraHourCents?: number | null;
   /**
@@ -589,6 +604,8 @@ export type CloudAccountState = {
   extraHours: { available: boolean; enabled: boolean; usedMilli: number };
   /** Absent from older servers and while extra disk isn't set up. `usedCents` is this period's billable extra disk so far. */
   extraDisk?: { available: boolean; state: CloudExtraDiskState; monthlyLimitCents: number | null; usedCents: number };
+  /** The ADE Cloud iPhone: access, this period's minutes and extra minutes. Older servers leave it out. */
+  phone?: CloudAccountPhone;
   /**
    * Disk all computers hold at one time. `limitGb` is the plan's disk; null
    * only from servers before plans, where each free computer has its own.
@@ -2506,3 +2523,85 @@ export type CloudEventWakesResult = { topics: string[] };
 export type CloudEventWakeInternalRequest = { topic: string };
 /** `subscribed: false`: no computer listens; the relay may skip this topic for a while. */
 export type CloudEventWakeInternalResult = { subscribed: boolean; woken: number };
+
+/* ---- The ADE Cloud iPhone (`phones.ts`) ---- */
+
+/** The phone models a cloud iPhone can be (NoMac's device names). */
+export const CLOUD_PHONE_DEVICES = ["iphone", "iphone-pro-max", "ipad"] as const;
+export type CloudPhoneDevice = (typeof CLOUD_PHONE_DEVICES)[number];
+
+/**
+ * Who may use the ADE Cloud iPhone. `on`: the owner added this account to the
+ * beta. `soon`: everyone else (the app says "coming soon"). `off`: the server
+ * has no phone provider set up.
+ */
+export type CloudPhoneAccess = "on" | "soon" | "off";
+
+/** The plan's phone minutes this period. `left` never goes below 0. */
+export type CloudPhoneMinutes = { included: number; used: number; left: number };
+
+/** A cloud iPhone as ADE shows it: never a NoMac credential. */
+export type CloudPhoneSummary = {
+  id: string;
+  /** `starting` covers NoMac's queued and starting; `ended` its stopping, stopped and failed. */
+  state: "starting" | "ready" | "ended";
+  device: CloudPhoneDevice | string;
+  /** When it became ready (ms), or null while it starts. */
+  readyAt: number | null;
+  /** Until when the start waits in line for a free phone (ms), while it does. */
+  queueUntil: number | null;
+  /** Why it ended (`stopped`, `idle`, `time_limit`, `spend_cap`, …), once it has. */
+  endReason: string | null;
+  /** A sentence about its coming stop (its last 15 minutes), or null. */
+  stopNotice: string | null;
+};
+
+/** `GET /cloud/phone`. */
+export type CloudPhoneState = {
+  access: CloudPhoneAccess;
+  /** Null when access is not `on`. */
+  minutes: CloudPhoneMinutes | null;
+  /** The account's live phone, or null. */
+  phone: CloudPhoneSummary | null;
+};
+
+/** A token for one phone, for the brain that drives it. It cannot start, list or stop phones. */
+export type CloudPhoneToken = { token: string; expiresAt: number };
+
+/** `POST /cloud/phone` and `POST /cloud/phone/token`. */
+export type CloudPhoneStart = {
+  phone: CloudPhoneSummary;
+  /** True when the account's live phone answered instead of a new one. */
+  reused: boolean;
+  token: CloudPhoneToken;
+  minutes: CloudPhoneMinutes;
+  /** NoMac's REST base for the phone's tools (`…/api/v1/simulator`). */
+  apiBase: string;
+};
+
+/** `POST /cloud/phone/view` `{ control? }`: a link that shows the live phone, for this account only. */
+export type CloudPhoneView = { url: string; expiresAt: number; control: boolean };
+
+/** Where an account's iPhone minutes stand this period, for the warnings and the meter. */
+export type CloudPhoneMinutesState = "none" | "warn80" | "zero";
+
+/** `CloudAccountState.phone`. */
+export type CloudAccountPhone = {
+  access: CloudPhoneAccess;
+  /** The plan's minutes this period; null when access is not `on`. */
+  minutes: CloudPhoneMinutes | null;
+  state: CloudPhoneMinutesState;
+  /**
+   * Extra minutes past the plan (paid plans only): `available` false on the
+   * free plan or while the server doesn't sell them. `monthlyLimitCents` null
+   * is no limit. `usedMinutes` and `usedCents` are this period's so far.
+   */
+  extra: {
+    available: boolean;
+    enabled: boolean;
+    centsPerMinute: number | null;
+    monthlyLimitCents: number | null;
+    usedMinutes: number;
+    usedCents: number;
+  };
+};

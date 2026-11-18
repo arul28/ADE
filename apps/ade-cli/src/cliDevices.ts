@@ -221,6 +221,10 @@ export async function withChatDeviceChoice(parsed: ParsedCli): Promise<ParsedCli
   }
   const choice = sources[kind];
   if (!choice) return parsed;
+  if (choice.kind === "cloud") {
+    process.stderr.write("· ios@cloud (this chat's device: the ADE Cloud iPhone; ade devices use ios@here for this machine)\n");
+    return { ...parsed, command: [CLOUD_IPHONE_COMMAND, ...parsed.command.slice(1)] };
+  }
   process.stderr.write(`· ${formatDeviceId({ kind, source: { kind: "machine", machine: deviceIdMachineSource({ name: choice.machineName, key: choice.machineKey }) } })} (this chat's device; ade devices use ${kind}@here for this machine)\n`);
   const end = parsed.command.indexOf("--");
   const command = end >= 0
@@ -302,7 +306,7 @@ type DeviceEntry = {
   id: string;
   kind: DeviceKind;
   what: string;
-  source: "here" | "machine";
+  source: "here" | "machine" | "cloud";
   machine: string;
   machineKey: string | null;
   state: string;
@@ -556,15 +560,16 @@ async function listDevices(options: GlobalOptions, only: DeviceKind | null): Pro
     });
   });
 
-  const [here, ...there] = await Promise.all([hereRows, ...machineRows]);
+  const [here, cloudRows, ...there] = await Promise.all([hereRows, cloudIphoneRows(options, only), ...machineRows]);
   const chosen = await choicePromise;
-  const devices = [...here!, ...there.flat()].map((row) => {
+  const devices = [...here!, ...there.flat(), ...cloudRows!].map((row) => {
     const choice = row.kind ? chosen?.[row.kind] : undefined;
-    const picked = row.kind != null && (choice ? row.machineKey === choice.machineKey && row.source === "machine" : row.source === "here");
+    const picked = row.kind != null && (choice
+      ? choice.kind === "cloud" ? row.source === "cloud" : row.machineKey === choice.machineKey && row.source === "machine"
+      : row.source === "here");
     // Marked only when the choice was read: an older brain keeps none.
     return chat && chosen && picked ? { ...row, chosen: true } : row;
   });
-  // The ADE Cloud iPhone joins the list once an account has it; none does yet.
   return { devices, notes, chosen };
 }
 
@@ -616,7 +621,17 @@ async function useDevice(options: GlobalOptions, typed: string): Promise<{ value
   const single = thisMachineOnly(options);
   if (source.kind === "cloud") {
     const id = formatDeviceId(parsed.id);
-    throw new CliToolError(kind === "ios" ? ADE_CLOUD_IPHONE_UNAVAILABLE : `ADE Cloud has no ${DEVICE_KIND_NOUN[kind]}; ${id} is not a device.`, { id });
+    if (kind !== "ios") throw new CliToolError(`ADE Cloud has no ${DEVICE_KIND_NOUN[kind]}; ${id} is not a device.`, { id });
+    const status = await readCloudIphoneStatus(single);
+    if (!status.ok || status.access !== "on") {
+      throw new CliToolError(status.ok ? status.reason ?? ADE_CLOUD_IPHONE_UNAVAILABLE : `${ADE_CLOUD_IPHONE_UNAVAILABLE} (${firstSentence(status.error)})`, { id });
+    }
+    const sources = await chatDeviceAction(single, "setDeviceSource", { kind, source: { kind: "cloud" } });
+    const minutes = status.minutes ? ` ${status.minutes.left} of your plan's ${status.minutes.included} minutes are left this period.` : "";
+    return {
+      value: { ok: true, id, sources },
+      text: `This chat's iPhone is the ADE Cloud iPhone from now on: ade apple … drives it with no other flag.${minutes} ade devices use ios@here brings it back.`,
+    };
   }
   let target: RosterMachine | null = null;
   if (source.kind === "machine") {
@@ -655,12 +670,15 @@ async function currentDevices(options: GlobalOptions): Promise<{ value: JsonObje
     ["kind", "device", "since"],
     DEVICE_KINDS.map((kind) => {
       const choice = sources[kind];
-      const id = formatDeviceId({ kind, source: choice ? { kind: "machine", machine: deviceIdMachineSource({ name: choice.machineName, key: choice.machineKey }) } : { kind: "here" } });
+      const id = formatDeviceId({
+        kind,
+        source: !choice ? { kind: "here" } : choice.kind === "cloud" ? { kind: "cloud" } : { kind: "machine", machine: deviceIdMachineSource({ name: choice.machineName, key: choice.machineKey }) },
+      });
       return [kind, id, choice ? new Date(choice.chosenAt).toLocaleString() : ""];
     }),
     "This chat's devices",
   );
-  return { value: { chat: owner.chat, sources }, text: `${table}\nChange one: ade devices use <kind>@<machine|here>.\n` };
+  return { value: { chat: owner.chat, sources }, text: `${table}\nChange one: ade devices use <kind>@<machine|here>, or ios@cloud for the ADE Cloud iPhone.\n` };
 }
 
 export async function runDevicesCommand(parsed: ParsedCli): Promise<{ output: string; exitCode: number }> {
@@ -690,4 +708,54 @@ export async function runDevicesCommand(parsed: ParsedCli): Promise<{ output: st
   }
   const value = await listDevices(options, only);
   return { output: print(value, formatDevicesList(value)), exitCode: 0 };
+}
+
+
+/* ── the ADE Cloud iPhone ──────────────────────────────────────────────── */
+
+/** The primary a cloud-iPhone `ade apple …` is rewritten to (`cliCloudIphone.ts` runs it). */
+export const CLOUD_IPHONE_COMMAND = "__cloud-iphone";
+
+type CloudIphoneStatusRead =
+  | { ok: true; access: string; reason: string | null; minutes: { included: number; used: number; left: number } | null; phoneState: string | null }
+  | { ok: false; error: string };
+
+/** `cloud_phone.getStatus` on this machine's brain (the account's cloud iPhone). */
+export async function readCloudIphoneStatus(options: GlobalOptions): Promise<CloudIphoneStatusRead> {
+  const plan: CliPlan & { kind: "execute" } = {
+    kind: "execute",
+    label: "cloud iPhone status",
+    steps: [actionStep("result", "cloud_phone", "getStatus", {})],
+    needsLiveRuntime: "the ADE Cloud iPhone",
+    shapeResult: (values) => values.result,
+  };
+  try {
+    const value = unwrapActionEnvelope(await executePlan(plan, { ...thisMachineOnly(options), timeoutMs: Math.min(options.timeoutMs, 20_000) }));
+    if (!isRecord(value)) return { ok: false, error: "no status in the answer" };
+    const minutes = isRecord(value.minutes) && typeof value.minutes.left === "number"
+      ? { included: Number(value.minutes.included) || 0, used: Number(value.minutes.used) || 0, left: value.minutes.left }
+      : null;
+    const phone = isRecord(value.phone) ? value.phone : null;
+    return { ok: true, access: asString(value.access) ?? "off", reason: asString(value.reason), minutes, phoneState: asString(phone?.state) };
+  } catch (error) {
+    return { ok: false, error: errorText(error) };
+  }
+}
+
+/** The `ios@cloud` row, when the account has the ADE Cloud iPhone (never for another kind). */
+async function cloudIphoneRows(options: GlobalOptions, only: DeviceKind | null): Promise<DeviceEntry[]> {
+  if (only && only !== "ios") return [];
+  const status = await readCloudIphoneStatus(options);
+  if (!status.ok || status.access !== "on") return [];
+  const minutes = status.minutes ? ` · ${status.minutes.left} of ${status.minutes.included} min left` : "";
+  return [{
+    id: formatDeviceId({ kind: "ios", source: { kind: "cloud" } }),
+    kind: "ios",
+    what: `ADE Cloud iPhone${minutes}`,
+    source: "cloud",
+    machine: "ADE Cloud",
+    machineKey: null,
+    state: status.phoneState === "ready" ? "on" : status.phoneState === "starting" ? "starting" : "off",
+    needs: status.minutes && status.minutes.left <= 0 ? "no minutes left this period" : null,
+  }];
 }

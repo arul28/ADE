@@ -144,7 +144,8 @@ export async function setChatDeviceSource(args: {
   sessionId: string;
   pin: OpenProjectBinding | null;
   kind: DeviceKind;
-  machine: { key: string; name: string } | null;
+  /** Another machine, `"cloud"` for the ADE Cloud iPhone, or null for the chat's own machine. */
+  machine: { key: string; name: string } | "cloud" | null;
 }): Promise<boolean> {
   const { set } = apiOf();
   const entry = ensureEntry(args.sessionId, args.pin);
@@ -154,7 +155,9 @@ export async function setChatDeviceSource(args: {
   }
   const previous = entry.sources;
   const next: ChatDeviceSources = { ...(previous ?? {}) };
-  if (args.machine) {
+  if (args.machine === "cloud") {
+    next[args.kind] = { kind: "cloud", chosenAt: new Date().toISOString() };
+  } else if (args.machine) {
     next[args.kind] = { kind: "machine", machineKey: args.machine.key, machineName: args.machine.name, chosenAt: new Date().toISOString() };
   } else {
     delete next[args.kind];
@@ -167,9 +170,11 @@ export async function setChatDeviceSource(args: {
     const answer = await set({
       sessionId: args.sessionId,
       kind: args.kind,
-      source: args.machine
-        ? { kind: "machine", machineKey: args.machine.key, machineName: args.machine.name }
-        : { kind: "here" },
+      source: args.machine === "cloud"
+        ? { kind: "cloud" }
+        : args.machine
+          ? { kind: "machine", machineKey: args.machine.key, machineName: args.machine.name }
+          : { kind: "here" },
     }, args.pin);
     // The newest switch's answer is the brain's choice now, even over a read that came back
     // meanwhile; a read still out is from before it, so it no longer lands. A newer switch

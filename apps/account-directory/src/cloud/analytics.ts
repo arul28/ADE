@@ -326,3 +326,45 @@ export function captureCloudSafety(env: AnalyticsEnv, waitUntil: CloudWaitUntil,
     });
   })());
 }
+
+/* ---- The ADE Cloud iPhone (`phones.ts`) ---- */
+
+/**
+ * - `started`: a new phone started (`extra`: on extra minutes, the plan's were used up).
+ * - `ended`: NoMac said a phone ended (`reason`: `stopped`, `idle`, `time_limit`, `spend_cap`, ...; `billedMinutes`).
+ * - `refused`: a start was refused (`reason`: `phone_minutes_out`, `phone_extra_limit`, `phone_free_held`, `paused`).
+ */
+export type CloudPhoneEvent = {
+  step: "started" | "ended" | "refused";
+  plan: CloudPlanId;
+  device?: string;
+  reason?: string;
+  minutesLeft?: number;
+  extra?: boolean;
+  billedMinutes?: number;
+};
+
+/** One `ade_cloud_phone` per account, step and phone (hashed into the uuid, never sent); a refusal one per reason and hour. */
+export function captureCloudPhone(env: CloudEnv, waitUntil: CloudWaitUntil, userId: string, event: CloudPhoneEvent, key: string, now: number): void {
+  if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
+  const bucket = event.step === "refused" ? Math.floor(now / HOUR_MS) * HOUR_MS : 0;
+  hold(waitUntil, (async () => {
+    await send(env, {
+      event: "ade_cloud_phone",
+      distinct_id: await accountDistinctId(userId),
+      uuid: await uuidFromSeed(`ade-cloud-phone-v1:${userId}:${event.step}:${key}:${bucket}`),
+      timestamp: new Date(now).toISOString(),
+      properties: {
+        client: "account",
+        step: event.step,
+        plan: event.plan,
+        ...(event.device ? { device: event.device } : {}),
+        ...(event.reason ? { reason: event.reason } : {}),
+        ...(event.minutesLeft != null ? { minutes_left: event.minutesLeft } : {}),
+        ...(event.extra != null ? { extra: event.extra } : {}),
+        ...(event.billedMinutes != null ? { billed_minutes: event.billedMinutes } : {}),
+        $geoip_disable: true,
+      },
+    });
+  })());
+}

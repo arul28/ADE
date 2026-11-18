@@ -411,6 +411,7 @@ export function createWebCloudNamespace(
     openFreeUnlock: () => billing.openFreeUnlock(),
     setExtraHours: (enabled) => billing.setExtraHours(enabled),
     setExtraDisk: (choice) => billing.setExtraDisk(choice),
+    setExtraPhoneMinutes: (choice) => billing.setExtraPhoneMinutes(choice),
     pickPlanCleanup: (input) => billing.pickPlanCleanup(input),
   };
 }

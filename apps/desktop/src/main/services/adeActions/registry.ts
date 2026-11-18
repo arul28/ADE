@@ -321,6 +321,7 @@ import { buildIntegrationConnectAdapters } from "../integrations/integrationConn
 import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
 import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
 import { ADE_CLOUD_HOME_UNAVAILABLE } from "../../../shared/automationCloud";
+import { CloudPhoneError, createCloudPhoneService, type CloudPhoneService } from "../adeCloud/cloudPhoneService";
 import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudServerFor, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
 import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import type { CloudSignInVaults } from "../adeCloud/cloudSignInStore";
@@ -4543,6 +4544,91 @@ function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnT
   return cloudLaneLaunchHost;
 }
 
+/**
+ * The ADE Cloud iPhone (`cloud_phone`): one per brain process, since every
+ * runtime of a brain is the same account and NoMac keeps one phone per account.
+ */
+let cloudPhoneServiceSingleton: CloudPhoneService | null = null;
+function cloudPhoneServiceFor(runtime: AccountDomainRuntime): CloudPhoneService {
+  if (cloudPhoneServiceSingleton) return cloudPhoneServiceSingleton;
+  const credentials = cloudAccessDeps(runtime);
+  cloudPhoneServiceSingleton = createCloudPhoneService({
+    provider: () => getCloudProvider(credentials),
+    whyNoProvider: () => cloudNoProviderSentence(credentials),
+    logger: runtime.logger,
+  });
+  return cloudPhoneServiceSingleton;
+}
+
+/**
+ * The `cloud_phone` domain for one project runtime: the brain's one phone,
+ * with captures filed to THIS project's proof drawer.
+ */
+function cloudPhoneDomainFor(runtime: AdeRuntime): CloudPhoneService {
+  const service = cloudPhoneServiceFor(runtime);
+  const broker = runtime.computerUseArtifactBrokerService;
+  const proof = broker ? { ingest: (request: Parameters<typeof broker.ingest>[0]) => broker.ingest(request), projectRoot: runtime.projectRoot ?? null } : null;
+  const guard = cloudPhoneAgentGuard(runtime);
+  const guarded = <A, R>(run: (args: A) => Promise<R>) => async (args: A): Promise<R> => {
+    await guard(args);
+    return await run(args);
+  };
+  return {
+    ...service,
+    start: guarded(service.start),
+    look: guarded(service.look),
+    act: guarded(service.act),
+    launch: guarded(service.launch),
+    installApp: guarded(service.installApp),
+    control: guarded(service.control),
+    logs: guarded(service.logs),
+    runTests: guarded(service.runTests),
+    screenshot: guarded((args) => service.screenshot(args, proof)),
+    record: guarded((args) => service.record(args, proof)),
+  };
+}
+
+/**
+ * The phone spends the plan's iPhone minutes (and extra minutes, which cost
+ * money), so an agent nobody watches (a full-auto chat, an automation run, an
+ * app on ADE MCP) uses it only when the person lets such agents spend
+ * (`unattendedSpend`, the same switch as hours); a chat in plan mode never.
+ * A person, and an attended chat, go ahead: the phone stops at the plan's
+ * minutes unless the person turned extra minutes on. Who is asking is the
+ * `approval` the RPC server stamped (`adeRpcServer.ts`), never the caller's word.
+ */
+function cloudPhoneAgentGuard(runtime: AccountDomainRuntime): (args: unknown) => Promise<void> {
+  const limits = createCloudAgentLimitsStore({
+    vault: () => (runtime.accountAuthService?.getStatus().signedIn === true && runtime.accountVaultStore
+      ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_AGENT_LIMITS_VAULT_KEY)
+      : null),
+    machineStore: () => cloudMachineStore(),
+    logger: runtime.logger,
+  });
+  const chats = runtime.agentChatService ?? null;
+  return async (args) => {
+    const approval = args && typeof args === "object" && !Array.isArray(args) ? (args as { approval?: unknown }).approval : null;
+    const stamp = approval && typeof approval === "object" ? approval as { by?: unknown; chatSessionId?: unknown; viaAdeMcp?: unknown; automation?: unknown } : null;
+    if (!stamp || stamp.by === "person") return;
+    const chatSessionId = typeof stamp.chatSessionId === "string" && stamp.chatSessionId.trim() ? stamp.chatSessionId.trim() : null;
+    const level = chatSessionId ? chats?.getPermissionCeiling?.({ actor: { kind: "agent", chatSessionId } }) ?? null : null;
+    if (level === "plan") throw new CloudPhoneError("This chat is in plan mode, so it doesn't use the ADE Cloud iPhone.", "declined");
+    const automation = stamp.automation === true
+      || (chatSessionId && chats ? Boolean((await chats.getSessionSummary(chatSessionId).catch(() => null))?.automationRunId) : false);
+    if (stamp.viaAdeMcp !== true && !automation && level !== "full-auto") return;
+    const allowed = await limits.read().then((read) => read.unattendedSpend, (error: unknown) => {
+      runtime.logger.warn("cloud_phone.agent_limits_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      return false;
+    });
+    if (!allowed) {
+      throw new CloudPhoneError(
+        "Agents nobody watches (full-auto chats, automations, ADE MCP apps) may not use the ADE Cloud iPhone: your settings say they ask before anything that uses hours or iPhone minutes. The person can change it in Settings › Integrations › ADE Cloud › What agents may do.",
+        "declined",
+      );
+    }
+  };
+}
+
 /** At a brain's start: picks up the ADE Cloud lane launches a quit left, when there are any. */
 export function resumeCloudLaneLaunches(runtime: AccountDomainRuntime): void {
   if (!hasCloudLaneLaunchRecords(cloudLaneLaunchRecordsDir(resolveMachineAdeLayout().adeDir), runtime.logger)) return;
@@ -5023,6 +5109,7 @@ export function getAdeActionDomainServices(
       : null,
     integration_connect: buildIntegrationConnectDomainService(runtime),
     cloud: buildCloudDomainService(runtime),
+    cloud_phone: toService(cloudPhoneDomainFor(runtime)),
     mcp_registry: buildMcpRegistryDomainService(runtime),
     account_settings: buildAccountSettingsDomainService(runtime),
     account_vault: buildAccountVaultDomainService(runtime),

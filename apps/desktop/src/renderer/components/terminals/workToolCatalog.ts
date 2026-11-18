@@ -5,7 +5,7 @@ import { compareTextInsensitive } from "../../../shared/formatting";
 import { remoteMachineHostPlatform } from "../../../shared/machineIdentity";
 import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
 import { isRemoteWorkCopyUse, type RemoteWorkCopyUse, type RemoteWorkDeviceFlag } from "../../../shared/chatRemoteWork";
-import type { ToolMachine } from "./useToolMachines";
+import { ADE_CLOUD_TOOL_MACHINE, type ToolMachine } from "./useToolMachines";
 import type { RemoteDeviceProbe } from "./useRemoteDeviceProbes";
 import type { ToolActivityTool } from "./useChatToolActivity";
 import type { WorkSidebarTab } from "../../state/appStore";
@@ -96,13 +96,14 @@ export function machinesForKind(
   machines: readonly ToolMachine[],
   chosen: ToolMachine | null,
 ): ToolMachine[] {
-  const able = machines.filter((machine) => deviceKindRunsOnPlatform(kind, machine.platform)
+  // ADE Cloud has only the iPhone.
+  const able = machines.filter((machine) => (machine.isCloudIphone ? kind === "ios" : deviceKindRunsOnPlatform(kind, machine.platform))
     && (machine.online || Boolean(chosen && sameMachineKey(chosen.key, machine.key))));
   if (chosen && !chosen.isChat && !able.some((machine) => sameMachineKey(machine.key, chosen.key))) able.unshift(chosen);
   // One order every time the tool opens: the chat's own machine first, then
-  // this computer, then the rest by name. The directory's order moves as
-  // machines report in, and the row moved with it.
-  const rank = (machine: ToolMachine) => (machine.isChat ? 0 : machine.isViewer ? 1 : 2);
+  // this computer, then the rest by name, ADE Cloud last. The directory's
+  // order moves as machines report in, and the row moved with it.
+  const rank = (machine: ToolMachine) => (machine.isChat ? 0 : machine.isViewer ? 1 : machine.isCloudIphone ? 3 : 2);
   return able
     .map((machine, index) => ({ machine, index }))
     .sort((a, b) => rank(a.machine) - rank(b.machine)
@@ -120,6 +121,7 @@ export function chosenMachineFor(
   machines: readonly ToolMachine[],
 ): ToolMachine | null {
   const choice = sources?.[kind];
+  if (choice?.kind === "cloud") return ADE_CLOUD_TOOL_MACHINE;
   if (choice) {
     const listed = machines.find((machine) => sameMachineKey(machine.key, choice.machineKey));
     if (listed) return listed;
@@ -266,7 +268,7 @@ export function leftoverMachines(
   activeMachineKeys: readonly string[],
   cleaned: ReadonlySet<string>,
 ): LeftoverMachine[] {
-  const inUse = (key: string) => Object.values(sources ?? {}).some((choice) => choice && sameMachineKey(choice.machineKey, key))
+  const inUse = (key: string) => Object.values(sources ?? {}).some((choice) => choice?.kind === "machine" && sameMachineKey(choice.machineKey, key))
     || activeMachineKeys.some((active) => sameMachineKey(active, key));
   const out: LeftoverMachine[] = [];
   for (const use of remoteWork ?? []) {

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { H264StreamView } from "../device/H264StreamView";
 import { h264SourceForUrl, isWebCodecsAvailable } from "../device/h264StreamPlayer";
 import { cn } from "../ui/cn";
@@ -40,6 +40,13 @@ export type AppleDeviceStageProps = {
   streamUrl: string | null;
   /** Bearer token for the reader's `Authorization` header. */
   streamToken: string | null;
+  /**
+   * A picture someone else already draws (the ADE Cloud iPhone, painted in
+   * main and decoded by `useCloudPhoneFrames`), used instead of a stream.
+   * The stage shows that canvas in flat mode and samples it in 3D, the same
+   * as its own decoder's.
+   */
+  screenSource?: { canvas: HTMLCanvasElement | null; pixelSize: { width: number; height: number } | null } | undefined;
   reconnectNonce: number;
   mode: AppleStageMode;
   /**
@@ -131,6 +138,7 @@ const PARKED_CANVAS_STYLE = {
 export function AppleDeviceStage({
   streamUrl,
   streamToken,
+  screenSource,
   reconnectNonce,
   mode,
   viewNonce,
@@ -158,8 +166,10 @@ export function AppleDeviceStage({
 }: AppleDeviceStageProps) {
   // Settings › Apple devices › Realistic body. Off: the 3D view draws the bare screen.
   const realisticBody = useAppStore((s) => s.appleDevice.realisticBody);
-  const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
-  const [screenPixelSize, setScreenPixelSize] = useState<{ width: number; height: number } | null>(null);
+  const [decoderCanvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
+  const [decodedPixelSize, setScreenPixelSize] = useState<{ width: number; height: number } | null>(null);
+  const canvas = screenSource ? screenSource.canvas : decoderCanvas;
+  const screenPixelSize = screenSource ? screenSource.pixelSize : decodedPixelSize;
   const [geometry, setGeometry] = useState<DeviceGeometry | null>(null);
 
   const handleDimensions = useCallback((size: { width: number; height: number }) => {
@@ -218,6 +228,8 @@ export function AppleDeviceStage({
             onCanvas={setCanvas}
             className={flat ? "ring-1 ring-inset ring-fg/[0.06]" : undefined}
           />
+        ) : screenSource ? (
+          <ExternalScreenCanvas canvas={screenSource.canvas} className={flat ? "ring-1 ring-inset ring-fg/[0.06]" : undefined} />
         ) : null}
       </div>
 
@@ -263,6 +275,26 @@ export function AppleDeviceStage({
       {children}
     </div>
   );
+}
+
+/**
+ * Puts a canvas drawn elsewhere into the screen box: the same place, size and
+ * parking the stage's own decoder canvas gets, so flat and 3D read it alike.
+ */
+function ExternalScreenCanvas({ canvas, className }: { canvas: HTMLCanvasElement | null; className?: string | undefined }) {
+  const host = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = host.current;
+    if (!element || !canvas) return undefined;
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    canvas.style.display = "block";
+    element.appendChild(canvas);
+    return () => {
+      if (canvas.parentElement === element) element.removeChild(canvas);
+    };
+  }, [canvas]);
+  return <div ref={host} className={cn("h-full w-full", className)} />;
 }
 
 export { isWebCodecsAvailable };

@@ -1229,6 +1229,7 @@ export const IPC = {
   cloudSetExtraHours: "ade.cloud.setExtraHours",
   cloudOpenCheckout: "ade.cloud.openCheckout",
   cloudSetExtraDisk: "ade.cloud.setExtraDisk",
+  cloudSetExtraPhoneMinutes: "ade.cloud.setExtraPhoneMinutes",
   cloudPickPlanCleanup: "ade.cloud.pickPlanCleanup",
   /** Enters a friend's invite (a link or a code) for this account (`CloudInviteRedeemOutcome`). Account level: no pin. */
   cloudRedeemInvite: "ade.cloud.redeemInvite",
@@ -1273,6 +1274,24 @@ export const IPC = {
   cloudSignInSaveKey: "ade.cloud.cloudSignInSaveKey",
   cloudSignInRemove: "ade.cloud.cloudSignInRemove",
   cloudSignInChanged: "cloud:cloudSignInChanged",
+
+  /**
+   * The ADE Cloud iPhone's live view (`cloudPhoneViewHost.ts`). Desktop-only:
+   * an offscreen window in this process paints NoMac's control page, and its
+   * cropped frames come back over `cloudPhoneViewFrame`. No pin: the view is a
+   * window on this computer, not a lane on another machine.
+   */
+  cloudPhoneViewOpen: "ade.cloudPhoneView.open",
+  cloudPhoneViewClose: "ade.cloudPhoneView.close",
+  cloudPhoneViewInput: "ade.cloudPhoneView.input",
+  cloudPhoneViewScroll: "ade.cloudPhoneView.scroll",
+  cloudPhoneViewKey: "ade.cloudPhoneView.key",
+  cloudPhoneViewHome: "ade.cloudPhoneView.home",
+  cloudPhoneViewSetHidden: "ade.cloudPhoneView.setHidden",
+  /** One painted phone frame (`CloudPhoneViewFrame`), to the renderer that opened the view. */
+  cloudPhoneViewFrame: "ade.cloudPhoneView.frame",
+  /** A view's lifecycle (`CloudPhoneViewStateEvent`), to the renderer that opened it. */
+  cloudPhoneViewState: "ade.cloudPhoneView.state",
 
   /**
    * The account settings store, reached through the brain's `account_settings`

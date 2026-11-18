@@ -604,6 +604,13 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "updateArtifactReview",
     ],
   },
+  // The ADE Cloud iPhone (`cloudPhoneService`): every action but the status
+  // read can start a phone, which spends the plan's minutes, so all are writes.
+  cloud_phone: {
+    live: "all",
+    read: ["getStatus"],
+    write: ["start", "stop", "look", "act", "screenshot", "launch", "installApp", "control", "logs", "record", "runTests", "view"],
+  },
   ios_simulator: {
     live: "all",
     read: [

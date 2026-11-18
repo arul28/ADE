@@ -249,6 +249,13 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "providerLogins.setCloudAll",
   "providerLogins.setCloudBalance",
   "providerLogins.remove",
+  // The ADE Cloud iPhone's pane on the phone and in ADE Web, through the
+  // chat's brain. Optional so an older brain simply omits the pane.
+  "cloudPhone.status",
+  "cloudPhone.view",
+  "cloudPhone.start",
+  "cloudPhone.stop",
+  "cloudPhone.screenshot",
   "ai.cursorCloudResolveLane",
   "ai.cursorCloudPullIntoLane",
   "ai.cursorCloudStopRun",

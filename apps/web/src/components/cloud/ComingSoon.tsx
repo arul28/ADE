@@ -1,7 +1,15 @@
 import { Smartphone } from "lucide-react";
 import { AppleMark } from "../home/marks";
 import { cn } from "../../lib/cn";
-import { PRICING_PLANS, formatCount } from "../../lib/cloudPricing";
+import { PRICING_PLANS, formatCents, formatCount } from "../../lib/cloudPricing";
+
+/** "2.5¢ a minute" for the paid plans that sell extra iPhone minutes. */
+const EXTRA_PHONE_MINUTE_LINE = (() => {
+  const paid = PRICING_PLANS.filter((plan) => plan.extraPhoneMinuteCents != null);
+  if (!paid.length) return null;
+  const prices = [...new Set(paid.map((plan) => formatCents(plan.extraPhoneMinuteCents ?? 0)))];
+  return `${prices.join(" or ")} a minute past your plan`;
+})();
 
 const ITEMS = [
   {
@@ -65,6 +73,7 @@ export function ComingSoon({ compact, className }: { compact?: boolean; classNam
             <p className="mt-4 text-[13px] text-white/45">
               Plans will include minutes on a phone in the cloud:{" "}
               {PRICING_PLANS.map((plan) => `${formatCount(plan.phoneMinutes)} on ${plan.name}`).join(", ")}.
+              {EXTRA_PHONE_MINUTE_LINE ? ` Then ${EXTRA_PHONE_MINUTE_LINE}, billed after use.` : null}
             </p>
           ) : null}
         </div>

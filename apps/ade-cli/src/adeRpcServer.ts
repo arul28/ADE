@@ -4224,6 +4224,9 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
  * stamps who is asking on them (see runTool), and each asks for approval
  * unless a person's own client is asking.
  */
+/** The ADE Cloud iPhone's actions that run (and so spend) its minutes: the phone checks who is asking (`cloudPhoneAgentGuard`). */
+const CLOUD_PHONE_SPEND_ACTIONS = new Set(["start", "look", "act", "screenshot", "launch", "installApp", "control", "logs", "record", "runTests"]);
+
 const CLOUD_APPROVED_ACTIONS = new Set([
   "create", "resize", "update", "copy", "move", "delete", "set_limits",
   "lane_launch", "lane_launch_cancel",
@@ -7098,9 +7101,9 @@ async function runTool(args: {
       const { config: _ignoredDraftConfig, ...testArgs } = rawObjectArgs;
       scopedObjectArgs = testArgs;
     }
-    if (domain === "cloud" && CLOUD_APPROVED_ACTIONS.has(action)) {
+    if ((domain === "cloud" && CLOUD_APPROVED_ACTIONS.has(action)) || (domain === "cloud_phone" && CLOUD_PHONE_SPEND_ACTIONS.has(action))) {
       if (argsList || hasScalarArg) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `cloud.${action} requires object arguments.`);
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${domain}.${action} requires object arguments.`);
       }
       // Who may say yes to spending or deleting: a person's own client (the
       // desktop, the CTO thread) already decided; anyone else is an agent and

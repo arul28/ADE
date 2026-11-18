@@ -79,19 +79,27 @@ export function setupStartDiskGb(
 }
 
 /**
- * The plans (the owner's table of 2026-11-13). Disk is what the account has
+ * What one ADE Cloud iPhone minute past a paid plan costs, in cents (owner,
+ * 2026-11-17). NoMac charges ADE 1.5 cents a minute (`NOMAC_MICROS_PER_MINUTE`
+ * in `phones.ts`); the free plan has no extra minutes and stops instead.
+ */
+export const EXTRA_PHONE_MINUTE_CENTS = 2.5;
+
+/**
+ * The plans (the owner's table of 2026-11-13; iPhone minutes of 2026-11-17). Disk is what the account has
  * at one time, shared by all its computers; hours and phone minutes are a
  * month's. There is no limit on how many computers an account has: only a
  * hidden safety cap on how many are awake at once (`AWAKE_COMPUTER_CAP`),
- * never shown as a plan limit. Phone minutes are shown on the plan table
- * only: nothing meters them yet. `extraHourCents` is what an hour past the
- * plan costs; null on the free plan, where work stops instead.
+ * never shown as a plan limit. Phone minutes are the ADE Cloud iPhone's
+ * (`phones.ts` meters them). `extraHourCents` and `extraPhoneMinuteCents`
+ * are what an hour or a minute past the plan costs; null on the free plan,
+ * where work stops instead.
  */
 export const CLOUD_PLANS: Readonly<Record<CloudPlanId, CloudPlanTerms>> = {
-  free: { label: "Free", includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 20, extraHourCents: null },
-  plus: { label: "Plus", includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 30, extraHourCents: 2 },
-  pro: { label: "Pro", includedMilli: 1_600_000, diskGb: 80, priceUsd: 20, phoneMinutes: 160, extraHourCents: 1.5 },
-  max: { label: "Max", includedMilli: 5_000_000, diskGb: 175, priceUsd: 50, phoneMinutes: 500, extraHourCents: 1.2 },
+  free: { label: "Free", includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 60, extraHourCents: null, extraPhoneMinuteCents: null },
+  plus: { label: "Plus", includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 80, extraHourCents: 2, extraPhoneMinuteCents: EXTRA_PHONE_MINUTE_CENTS },
+  pro: { label: "Pro", includedMilli: 1_600_000, diskGb: 80, priceUsd: 20, phoneMinutes: 300, extraHourCents: 1.5, extraPhoneMinuteCents: EXTRA_PHONE_MINUTE_CENTS },
+  max: { label: "Max", includedMilli: 5_000_000, diskGb: 175, priceUsd: 50, phoneMinutes: 800, extraHourCents: 1.2, extraPhoneMinuteCents: EXTRA_PHONE_MINUTE_CENTS },
 };
 
 /** A plan as `CLOUD_PLANS` holds it, with its name on this server's own pages; the catalog adds what older builds read. */

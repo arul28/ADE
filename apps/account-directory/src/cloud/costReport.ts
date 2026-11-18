@@ -150,10 +150,13 @@ export async function refreshCostEstimate(env: CloudEnv, awake: ComputerRow[], n
     select (select coalesce(sum(cost_micros), 0) from cloud_computer_days where day >= ?) as compute,
       (select coalesce(sum(free_cost_micros), 0) from cloud_computer_days where day >= ?) as free_compute,
       (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day >= ?) as gb_days,
-      (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day >= ? and free = 1) as free_gb_days
-  `).bind(monthStart, monthStart, monthStart, monthStart).first<{ compute: number; free_compute: number; gb_days: number; free_gb_days: number }>();
-  let micros = (row?.compute ?? 0) + (row?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY;
-  let freeMicros = (row?.free_compute ?? 0) + (row?.free_gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY;
+      (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day >= ? and free = 1) as free_gb_days,
+      (select coalesce(sum(cost_micros), 0) from cloud_phones where created_at >= ?) as phones,
+      (select coalesce(sum(cost_micros), 0) from cloud_phones where created_at >= ? and free = 1) as free_phones
+  `).bind(monthStart, monthStart, monthStart, monthStart, monthStartMs, monthStartMs).first<{ compute: number; free_compute: number; gb_days: number; free_gb_days: number; phones: number; free_phones: number }>();
+  // The ADE Cloud iPhone's NoMac cost counts too, and free-plan phones toward the free-use cap.
+  let micros = (row?.compute ?? 0) + (row?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (row?.phones ?? 0);
+  let freeMicros = (row?.free_compute ?? 0) + (row?.free_gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (row?.free_phones ?? 0);
   // The stretches running now count as free unless their account is on paid rules now.
   const running = awake.filter((computer) => computer.awake_since != null && computer.awake_since <= now);
   const paid = running.length

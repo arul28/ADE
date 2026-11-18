@@ -642,6 +642,22 @@ export function registerCloudIpc(args: {
     return account;
   });
 
+  // Account-level: extra iPhone minutes are the account's phone, so no pin. An
+  // older server has no such route: it says so in a plain sentence.
+  ipcMain.handle(IPC.cloudSetExtraPhoneMinutes, async (event, arg: { enabled?: unknown; monthlyLimitUsd?: unknown }): Promise<CloudAccountState | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetExtraPhoneMinutes)) return null;
+    const limit = arg?.monthlyLimitUsd;
+    const choice = arg?.enabled === true
+      ? { enabled: true as const, monthlyLimitUsd: typeof limit === "number" && Number.isInteger(limit) ? limit : null }
+      : { enabled: false as const };
+    const provider = await requireCloudProvider(credentials);
+    if (!provider.setExtraPhoneMinutes) throw new Error("This ADE Cloud doesn't sell extra iPhone minutes yet.");
+    const account = await billingCall(async () => await provider.setExtraPhoneMinutes!(choice));
+    logger.info("cloud.extra_phone_minutes_set", { enabled: choice.enabled });
+    sendToAllWindows(IPC.cloudStatusChanged);
+    return account;
+  });
+
   /**
    * Opens Stripe's checkout for a plan in the person's browser. On a paid
    * account asking for its other plan, the server changes the plan itself

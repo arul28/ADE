@@ -1,3 +1,4 @@
+import { CloudIphonePanel } from "../apple/CloudIphonePanel";
 import { Suspense, createElement, lazy, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { LaneDiffMode } from "../../../shared/types";
 import type { BrowserTabMentionTarget } from "../../../shared/browserTabMention";
@@ -478,6 +479,8 @@ function hasDecodedFrame(canvas: HTMLCanvasElement): boolean {
 function WorkIosTool(props: WorkToolPanelProps) {
   const { toolContext } = props;
   const driverChat = useDriverChat(props);
+  // The ADE Cloud iPhone (`ios@cloud`): the account's phone, driven through the chat's brain.
+  if (props.deviceMachines.ios?.isCloudIphone) return <CloudIphonePanel pin={props.runtimePin} sessionId={props.panelSessionId ?? null} laneId={props.laneId ?? null} />;
   const target = chosenRemoteTarget(props, "ios");
   if (target && !target.use) return <StartOn {...props} kind="ios" machine={target.machine} />;
   if (!target && !toolContext.supportsIosSimulator) {

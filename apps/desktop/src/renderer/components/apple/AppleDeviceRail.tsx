@@ -91,21 +91,26 @@ export type AppleDeviceRailProps = {
    * helper cannot press it, so the service refuses it, and a control that can
    * only fail is worse than no control.
    */
-  onHardwareButton: (name: AppleHardwareButtonName) => void;
+  onHardwareButton?: ((name: AppleHardwareButtonName) => void) | undefined;
   /** §V2: rotate TO a named orientation. The blind cycle is gone. */
-  onOrientation: (orientation: AppleDeviceOrientation) => void;
+  onOrientation?: ((orientation: AppleDeviceOrientation) => void) | undefined;
   onScreenshot: () => void;
   /** Open the Render sheet (3D stills and video). Absent hides it. */
   onRender?: (() => void) | undefined;
   rendering?: boolean;
-  onToggleTools: () => void;
-  onToggleInspect: () => void;
+  /**
+   * Absent hides the control: a device that cannot do it (the ADE Cloud
+   * iPhone has no hardware keys, rotation, inspector, drawer, mini player or
+   * second device of its kind here) shows no button that can only fail.
+   */
+  onToggleTools?: (() => void) | undefined;
+  onToggleInspect?: (() => void) | undefined;
   /** §A2: ONE button. It switches to the other view and shows which is on. */
   onMode: (mode: "flat" | "3d") => void;
   onResetView: () => void;
   onToggleRecording: () => void;
-  onFloat: () => void;
-  onSwitchDevice: () => void;
+  onFloat?: (() => void) | undefined;
+  onSwitchDevice?: (() => void) | undefined;
   onPowerOff: () => void;
   /**
    * The tool's own chrome, drawn in the pill above More.
@@ -193,6 +198,7 @@ export function AppleDeviceRail({
         * list keeps the rail legible. `shake` is not here — the helper cannot
         * press it and the service refuses it.
         */}
+      {onHardwareButton ? (
       <RailMenu
         label="Hardware buttons"
         disabled={hardwareDisabled}
@@ -220,6 +226,7 @@ export function AppleDeviceRail({
           App switcher
         </DropdownMenu.Item>
       </RailMenu>
+      ) : null}
       {/*
         * The foldable device's posture. Only a device that reports
         * fold/dual-screen support reaches this menu; the presets jump the
@@ -289,7 +296,7 @@ export function AppleDeviceRail({
         * way not to find it. Its glyph turns with the device, its name says
         * the orientation out loud, and its menu names all four.
         */}
-      {orientationInDock ? null : (
+      {orientationInDock || !onOrientation ? null : (
         <RailMenu
           label={orientationPending
             ? "Rotating device"
@@ -311,6 +318,7 @@ export function AppleDeviceRail({
 
       {compact ? null : (
         <>
+          {onToggleInspect ? (
           <RailButton
             label="Inspect elements"
             description={inspecting ? "Stop inspecting" : "Inspect elements"}
@@ -319,6 +327,7 @@ export function AppleDeviceRail({
           >
             <Crosshair size={16} />
           </RailButton>
+          ) : null}
           <RailButton
             label={screenshotPending ? "Capturing screenshot" : "Save screenshot"}
             disabled={screenshotPending}
@@ -363,9 +372,11 @@ export function AppleDeviceRail({
 
       <RailDivider />
 
-      <RailButton label="Device tools" pressed={toolsOpen} onClick={onToggleTools}>
-        <SlidersHorizontal size={16} />
-      </RailButton>
+      {onToggleTools ? (
+        <RailButton label="Device tools" pressed={toolsOpen} onClick={onToggleTools}>
+          <SlidersHorizontal size={16} />
+        </RailButton>
+      ) : null}
 
       {extraControls}
 
@@ -379,14 +390,18 @@ export function AppleDeviceRail({
             Reset view
           </DropdownMenu.Item>
         ) : null}
-        <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onFloat}>
-          <PictureInPicture size={14} />
-          Float over chat
-        </DropdownMenu.Item>
-        <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onSwitchDevice}>
-          <DeviceMobile size={14} />
-          Switch device…
-        </DropdownMenu.Item>
+        {onFloat ? (
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onFloat}>
+            <PictureInPicture size={14} />
+            Float over chat
+          </DropdownMenu.Item>
+        ) : null}
+        {onSwitchDevice ? (
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onSwitchDevice}>
+            <DeviceMobile size={14} />
+            Switch device…
+          </DropdownMenu.Item>
+        ) : null}
         <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
         <DropdownMenu.Item
           className={cn(MENU_ITEM_CLASS, "text-[var(--color-error)]")}

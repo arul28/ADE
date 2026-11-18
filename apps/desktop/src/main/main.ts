@@ -1,3 +1,4 @@
+import { closeAllCloudPhoneViews } from "./services/adeCloud/registerCloudPhoneViewIpc";
 import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { createLocalPasswordsAccess, registerBrowserTabPasswordsIpc } from "./services/passwords/localPasswordsBridge";
 import { createMessagesIntegrationService } from "./services/messagesIntegration/messagesIntegrationService";
@@ -4191,6 +4192,8 @@ app.whenReady().then(async () => {
     },
   });
   app.on("will-quit", () => openProjectDataWatch.dispose());
+  // The ADE Cloud iPhone's offscreen views (registerCloudPhoneViewIpc).
+  app.on("will-quit", () => closeAllCloudPhoneViews());
   // The one recovery service for this machine. It owns `restartServiceAndWait`,
   // the verified restart sequence behind the Repair button, and the post-update
   // transaction below reuses it rather than growing a second restart path.

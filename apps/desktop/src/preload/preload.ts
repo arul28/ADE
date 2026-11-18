@@ -108,6 +108,12 @@ import type { AdeCloudBridge } from "../shared/adeCloud/chatQueue";
 import type { AdeCloudAccountCallFn } from "../shared/adeCloud/accountCalls";
 import { markExpected } from "../shared/expectedError";
 import { savedChatsMachineKey } from "../shared/cloudSavedChats";
+import type {
+  CloudPhoneViewFrame,
+  CloudPhoneViewPreloadApi,
+  CloudPhoneViewStateEvent,
+} from "../shared/types/cloudPhoneView";
+import type { CloudPhoneStatusView, CloudPhoneViewLink } from "../shared/cloudPhone";
 import { IPC } from "../shared/ipc";
 import type { CloudLaneLaunchCallRequest, CloudLaneLaunchCallResult, CloudLaneLaunchMethod } from "../shared/cloudLaneLaunch";
 import { normalizeGitRemoteIdentity } from "../shared/crossMachineHandoff";
@@ -5324,6 +5330,12 @@ const macDesktopEventFanout = createIpcEventFanout<MacDesktopEventPayload>(
 );
 const androidEmulatorEventFanout = createIpcEventFanout<AndroidEmulatorEvent>(
   IPC.androidEmulatorEvent,
+);
+const cloudPhoneViewFrameFanout = createIpcEventFanout<CloudPhoneViewFrame>(
+  IPC.cloudPhoneViewFrame,
+);
+const cloudPhoneViewStateFanout = createIpcEventFanout<CloudPhoneViewStateEvent>(
+  IPC.cloudPhoneViewState,
 );
 const appControlEventFanout = createIpcEventFanout<AppControlEventPayload>(
   IPC.appControlEvent,
@@ -11408,6 +11420,22 @@ const adeBridge = {
     resolveStreamUrl: resolveAndroidEmulatorStreamUrl,
     onEvent: subscribeAndroidEmulatorEvents,
   }),
+  /**
+   * The ADE Cloud iPhone, drawn by an offscreen page in this app's main
+   * process. Desktop-only: a browser has no `cloudPhoneView`, and its callers
+   * fall back to a flat iframe (`useCloudPhoneFrames`).
+   */
+  cloudPhoneView: {
+    open: (args) => ipcRenderer.invoke(IPC.cloudPhoneViewOpen, args),
+    close: (args) => ipcRenderer.invoke(IPC.cloudPhoneViewClose, args),
+    input: (args) => ipcRenderer.invoke(IPC.cloudPhoneViewInput, args),
+    scroll: (args) => ipcRenderer.invoke(IPC.cloudPhoneViewScroll, args),
+    key: (args) => ipcRenderer.invoke(IPC.cloudPhoneViewKey, args),
+    home: (args) => ipcRenderer.invoke(IPC.cloudPhoneViewHome, args),
+    setHidden: (args) => ipcRenderer.invoke(IPC.cloudPhoneViewSetHidden, args),
+    onFrame: cloudPhoneViewFrameFanout,
+    onState: cloudPhoneViewStateFanout,
+  } satisfies CloudPhoneViewPreloadApi,
   appControl: {
     // Every call names its lane: App Control keeps one session per lane, and
     // a call with no lane (and no chat or session id) is refused.
@@ -12435,6 +12463,38 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "proxy", "setDisabled", { args }, () =>
         ipcRenderer.invoke(IPC.proxySetDisabled, args),
       ),
+  },
+  /**
+   * The ADE Cloud iPhone (`cloud_phone` on the chat's brain): its status, and
+   * the view link the tools pane shows. Always the chat's machine: pass its pin.
+   */
+  cloudPhone: {
+    status: (pin?: OpenProjectBinding | null): Promise<CloudPhoneStatusView> =>
+      callPinnedOrBoundRuntimeActionOr<CloudPhoneStatusView>(pin, "cloud_phone", "getStatus", { args: {} }, async () => {
+        throw new Error("The ADE Cloud iPhone needs this project's ADE brain. Open the project and try again.");
+      }),
+    view: (args: { control?: boolean } = {}, pin?: OpenProjectBinding | null): Promise<CloudPhoneViewLink> =>
+      callPinnedOrBoundRuntimeActionOr<CloudPhoneViewLink>(pin, "cloud_phone", "view", { args: { ...args } }, async () => {
+        throw new Error("The ADE Cloud iPhone needs this project's ADE brain. Open the project and try again.");
+      }),
+    start: (args: { device?: string } = {}, pin?: OpenProjectBinding | null): Promise<unknown> =>
+      callPinnedOrBoundRuntimeActionOr<unknown>(pin, "cloud_phone", "start", { args: { ...args } }, async () => {
+        throw new Error("The ADE Cloud iPhone needs this project's ADE brain. Open the project and try again.");
+      }),
+    stop: (pin?: OpenProjectBinding | null): Promise<{ stopped: boolean }> =>
+      callPinnedOrBoundRuntimeActionOr<{ stopped: boolean }>(pin, "cloud_phone", "stop", { args: {} }, async () => {
+        throw new Error("The ADE Cloud iPhone needs this project's ADE brain. Open the project and try again.");
+      }),
+    /** A screenshot filed to the proof drawer, owned by the chat and lane given. */
+    screenshot: (args: { chatSessionId?: string | null; laneId?: string | null }, pin?: OpenProjectBinding | null): Promise<{ artifactId: string | null }> =>
+      callPinnedOrBoundRuntimeActionOr<{ artifactId: string | null }>(pin, "cloud_phone", "screenshot", { args: { ...args } }, async () => {
+        throw new Error("The ADE Cloud iPhone needs this project's ADE brain. Open the project and try again.");
+      }),
+    /** Start, then stop: the stop files the MP4 to the proof drawer. */
+    record: (args: { action: "start" | "stop"; chatSessionId?: string | null; laneId?: string | null }, pin?: OpenProjectBinding | null): Promise<{ failed: boolean; text: string; artifactId: string | null }> =>
+      callPinnedOrBoundRuntimeActionOr<{ failed: boolean; text: string; artifactId: string | null }>(pin, "cloud_phone", "record", { args: { ...args } }, async () => {
+        throw new Error("The ADE Cloud iPhone needs this project's ADE brain. Open the project and try again.");
+      }),
   },
   providerLogins: {
     status: (args: { provider?: ProviderLoginProvider | null } = {}, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
@@ -14410,6 +14470,7 @@ const adeBridge = {
     pickPlanCleanup: (input: { planId: CloudPlanId } & CloudPlanCleanupPick): Promise<CloudAccountState | null> =>
       ipcRenderer.invoke(IPC.cloudPickPlanCleanup, input),
     setExtraDisk: (choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraDisk, choice),
+    setExtraPhoneMinutes: (choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraPhoneMinutes, choice),
     redeemInvite: (code: string): Promise<CloudInviteRedeemOutcome> => ipcRenderer.invoke(IPC.cloudRedeemInvite, { code }),
     openBillingPortal: (): Promise<{ opened: boolean }> => ipcRenderer.invoke(IPC.cloudOpenBillingPortal),
     openFreeUnlock: (): Promise<{ opened: boolean; unlocked: boolean }> => ipcRenderer.invoke(IPC.cloudOpenFreeUnlock),

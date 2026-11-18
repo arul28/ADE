@@ -36,6 +36,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "messages",
   "integration_connect",
   "cloud",
+  "cloud_phone",
   "mcp_registry",
   "account_settings",
   "account_vault",

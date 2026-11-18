@@ -60,6 +60,8 @@ import type { JevAnswers, JevDecideRequest, JevQuestions, JevStatus } from "../s
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { AndroidEmulatorPreloadApi } from "../shared/types/androidEmulator";
+import type { CloudPhoneViewPreloadApi } from "../shared/types/cloudPhoneView";
+import type { CloudPhoneStatusView, CloudPhoneViewLink } from "../shared/cloudPhone";
 import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
 import type { DatabaseCopiesBridge } from "../shared/types/startupRecovery";
 import type { ProductSurveyBridge } from "../shared/types/productSurveys";
@@ -3750,6 +3752,13 @@ declare global {
        */
       androidEmulator: AndroidEmulatorPreloadApi;
       /**
+       * The ADE Cloud iPhone's live view. Desktop-only: an offscreen page in
+       * the main process paints the phone, and its cropped frames arrive as
+       * JPEG. A browser has no such API, so its callers fall back to a flat
+       * iframe (`useCloudPhoneFrames`).
+       */
+      cloudPhoneView: CloudPhoneViewPreloadApi;
+      /**
        * The lane's private macOS screen. Mirrors `iosSimulator`: every method
        * takes an optional pin, because the display belongs to the lane's host
        * rather than to this window.
@@ -4409,6 +4418,15 @@ declare global {
        * `useSettingsMachineScope().pin` for its "this computer" part; the
        * account part is the same from any brain of the person's.
        */
+      /** The ADE Cloud iPhone on the chat's brain (`cloud_phone`). Pass the chat's pin. */
+      cloudPhone: {
+        status: (pin?: OpenProjectBinding | null) => Promise<CloudPhoneStatusView>;
+        view: (args?: { control?: boolean }, pin?: OpenProjectBinding | null) => Promise<CloudPhoneViewLink>;
+        start: (args?: { device?: string }, pin?: OpenProjectBinding | null) => Promise<unknown>;
+        stop: (pin?: OpenProjectBinding | null) => Promise<{ stopped: boolean }>;
+        screenshot: (args: { chatSessionId?: string | null; laneId?: string | null }, pin?: OpenProjectBinding | null) => Promise<{ artifactId: string | null }>;
+        record: (args: { action: "start" | "stop"; chatSessionId?: string | null; laneId?: string | null }, pin?: OpenProjectBinding | null) => Promise<{ failed: boolean; text: string; artifactId: string | null }>;
+      };
       providerLogins: {
         status: (args?: { provider?: ProviderLoginProvider | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         captureNow: (args?: { provider?: ProviderLoginProvider | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
@@ -5162,6 +5180,8 @@ declare global {
         setExtraHours?: (enabled: boolean) => Promise<CloudAccountState | null>;
         /** Extra disk on with a monthly limit in whole dollars (1 to 1,000), or off. */
         setExtraDisk?: (choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }) => Promise<CloudAccountState | null>;
+        /** Extra iPhone minutes on, with a monthly limit in whole dollars or no limit, or off (paid plans). */
+        setExtraPhoneMinutes?: (choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }) => Promise<CloudAccountState | null>;
         /**
          * Enters a friend's invite: the pasted link (https or ade://) or the bare
          * code (no pin: account level). Once per account, never changed, within

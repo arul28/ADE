@@ -13,6 +13,7 @@ import {
   cloudPlanLabelOf,
   formatCloudCents,
   formatCloudCentsPerHour,
+  formatCloudCentsPerMinute,
   formatCloudDate,
   formatCloudHours,
   type CloudAccountState,
@@ -36,13 +37,16 @@ import "./cloudPlans.css";
 /** The monthly limits a person picks for extra disk, in dollars. */
 const EXTRA_DISK_LIMITS = ["5", "10", "20", "50"];
 const DEFAULT_EXTRA_DISK_LIMIT = "10";
+/** The monthly limits a person picks for extra iPhone minutes, in dollars; "none" is no limit. */
+const EXTRA_PHONE_LIMITS = ["5", "10", "25", "50", "100"];
 
 type Column = { id: CloudPlanId; facts: CloudPlanFacts };
 
 /**
  * Plans side by side (what each includes, the current one marked) with one
- * action per plan, then the paid plan's extra hours and extra disk and the
- * way to Stripe's billing page. Replaces the two bare "Plus" / "Pro" buttons.
+ * action per plan, then the paid plan's extra Linux hours, Linux disk and
+ * iPhone minutes, and the way to Stripe's billing page. Replaces the two bare
+ * "Plus" / "Pro" buttons.
  *
  * Reads nothing of its own: the account comes from the page's computer list.
  * Account level, so no pin.
@@ -72,6 +76,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [diskLimit, setDiskLimit] = useState(DEFAULT_EXTRA_DISK_LIMIT);
+  const [phoneLimit, setPhoneLimit] = useState("none");
   // A downgrade over the cheaper plan's disk: the question first (CloudPlanLimitsDialog).
   const [asking, setAsking] = useState<CloudPaidPlanId | null>(null);
 
@@ -227,6 +232,17 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   const diskLimitOptions = (EXTRA_DISK_LIMITS.includes(shownDiskLimit) ? EXTRA_DISK_LIMITS : [...EXTRA_DISK_LIMITS, shownDiskLimit].sort((a, b) => Number(a) - Number(b)))
     .map((value) => ({ value, label: `Up to $${value} a month` }));
 
+  // Extra iPhone minutes (paid only, and only when the server sells them).
+  const phone = account.phone;
+  const phoneExtra = phone?.extra.available && phone.minutes ? { ...phone.extra, included: phone.minutes.included } : null;
+  const phoneExtraOn = phoneExtra?.enabled === true;
+  const shownPhoneLimit = phoneExtra?.enabled && phoneExtra.monthlyLimitCents != null ? String(Math.floor(phoneExtra.monthlyLimitCents / 100)) : phoneLimit;
+  const phoneLimitOptions = [
+    { value: "none", label: "No limit" },
+    ...EXTRA_PHONE_LIMITS.map((value) => ({ value, label: `$${value}` })),
+    ...(shownPhoneLimit !== "none" && !EXTRA_PHONE_LIMITS.includes(shownPhoneLimit) ? [{ value: shownPhoneLimit, label: `$${shownPhoneLimit}` }] : []),
+  ];
+
   const statusLine = pastDue
     ? "Your last payment failed. Update your card in Manage billing."
     : billing.cancelAtPeriodEnd
@@ -316,10 +332,13 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                   {showPhoneMinutes ? (
                     <li title="Time on an iPhone simulator in the cloud, for agents to test your app. Coming soon."><DeviceMobile size={13} /><span><b className="kit-num" data-face="ui">{column.facts.phoneMinutes ?? "–"}</b> iOS Simulator <span className="adecd-nowrap">minutes <em>soon</em></span></span></li>
                   ) : null}
+                  {column.facts.extraPhoneMinuteCents != null ? (
+                    <li title="Only if you turn extra iPhone minutes on"><DeviceMobile size={13} /><span><b className="kit-num" data-face="ui">{formatCloudCentsPerMinute(column.facts.extraPhoneMinuteCents)}</b> an extra iPhone minute</span></li>
+                  ) : null}
                   {cents == null ? (
                     <li data-quiet="true" title="Work stops until your hours reset"><Lightning size={13} /><span>Work stops at the limit</span></li>
                   ) : (
-                    <li title="Only if you turn extra hours on"><Lightning size={13} /><span><b className="kit-num" data-face="ui">{formatCloudCentsPerHour(cents)}</b> an extra hour</span></li>
+                    <li title="Only if you turn extra Linux hours on"><Lightning size={13} /><span><b className="kit-num" data-face="ui">{formatCloudCentsPerHour(cents)}</b> an extra Linux hour</span></li>
                   )}
                 </ul>
                 <footer className="adecd-plancard-foot">
@@ -351,7 +370,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 <b>Hours run your cloud computers</b> and renew every month: Linux computers your agents work on, one per lane, as many as you like.
                 An hour is one hour of a Small computer; bigger sizes use hours faster (2× uses two).
                 {extraHours.available && currentExtraCents != null
-                  ? ` With extra hours on, an hour past your plan costs ${formatCloudCentsPerHour(currentExtraCents)} times the size's rate.`
+                  ? ` With extra Linux hours on, an hour past your plan costs ${formatCloudCentsPerHour(currentExtraCents)} times the size's rate.`
                   : null}
               </p>
             </div>
@@ -377,38 +396,40 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
           ) : null}
         </div>
 
-        {extraHours.available ? (
+        {extraHours.available || extraDisk || phoneExtra ? (
           <div className="adecd-addons">
-            <div className="kit-panel adecd-addon" data-on={extraHours.enabled || undefined}>
-              <div className="adecd-addon-top">
-                <span className="adecd-addon-icon"><Lightning size={15} weight="duotone" /></span>
-                <b>Extra hours</b>
-                <SettingsToggle
-                  checked={extraHours.enabled}
-                  disabled={busy}
-                  label="Extra hours"
-                  onChange={(enabled) => void run(() => bridge?.setExtraHours?.(enabled) ?? Promise.resolve(null))}
-                />
+            {extraHours.available ? (
+              <div className="kit-panel adecd-addon" data-on={extraHours.enabled || undefined}>
+                <div className="adecd-addon-top">
+                  <span className="adecd-addon-icon"><Lightning size={15} weight="duotone" /></span>
+                  <b>Extra Linux hours</b>
+                  <SettingsToggle
+                    checked={extraHours.enabled}
+                    disabled={busy}
+                    label="Extra Linux hours"
+                    onChange={(enabled) => void run(() => bridge?.setExtraHours?.(enabled) ?? Promise.resolve(null))}
+                  />
+                </div>
+                <div className="adecd-addon-price">
+                  <b className="kit-num" data-face="ui">{formatCloudCentsPerHour(currentExtraCents ?? catalog.extraHourCents)}</b>
+                  <span>a Linux hour past your plan, billed after use</span>
+                </div>
+                <small className="adecd-addon-state">
+                  {extraHours.enabled
+                    ? `On.${extraHours.usedMilli > 0 ? ` ${formatCloudHours(extraHours.usedMilli)} Linux hours used this month.` : " Linux work keeps going when your hours run out."}`
+                    : "Off. Linux work stops when your hours run out."}
+                </small>
               </div>
-              <div className="adecd-addon-price">
-                <b className="kit-num" data-face="ui">{formatCloudCentsPerHour(currentExtraCents ?? catalog.extraHourCents)}</b>
-                <span>an hour past your plan, billed after use</span>
-              </div>
-              <small className="adecd-addon-state">
-                {extraHours.enabled
-                  ? `On.${extraHours.usedMilli > 0 ? ` ${formatCloudHours(extraHours.usedMilli)} hours used this month.` : " Work keeps going when your hours run out."}`
-                  : "Off. Work stops when your hours run out."}
-              </small>
-            </div>
+            ) : null}
             {extraDisk ? (
               <div className="kit-panel adecd-addon" data-on={extraDiskOn || undefined}>
                 <div className="adecd-addon-top">
                   <span className="adecd-addon-icon"><HardDrives size={15} weight="duotone" /></span>
-                  <b>Extra disk</b>
+                  <b>Extra Linux disk</b>
                   <SettingsSelect
                     value={shownDiskLimit}
                     disabled={busy}
-                    ariaLabel="Monthly limit for extra disk"
+                    ariaLabel="Monthly limit for extra Linux disk"
                     style={{ minWidth: 0 }}
                     options={diskLimitOptions}
                     onChange={(value) => {
@@ -419,7 +440,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                   <SettingsToggle
                     checked={extraDiskOn}
                     disabled={busy}
-                    label="Extra disk"
+                    label="Extra Linux disk"
                     onChange={(enabled) => void run(() => bridge?.setExtraDisk?.(
                       enabled ? { enabled: true, monthlyLimitUsd: Number(shownDiskLimit) } : { enabled: false },
                     ) ?? Promise.resolve(null))}
@@ -427,12 +448,52 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 </div>
                 <div className="adecd-addon-price">
                   <b className="kit-num" data-face="ui">{formatCloudCents(extraDisk.centsPer10Gb)}</b>
-                  <span>per 10 GB a month past {extraDisk.planGb} GB, counted by the day</span>
+                  <span>per 10 GB of Linux disk a month past {extraDisk.planGb} GB, counted by the day</span>
                 </div>
                 <small className="adecd-addon-state">
                   {extraDiskOn
                     ? `On. ${formatCloudCents(extraDisk.usedCents)} so far this month.`
-                    : "Off. Computers stop growing at your plan's disk."}
+                    : "Off. Linux computers stop growing at your plan's disk."}
+                </small>
+              </div>
+            ) : null}
+            {phoneExtra ? (
+              <div className="kit-panel adecd-addon" data-on={phoneExtraOn || undefined}>
+                <div className="adecd-addon-top">
+                  <span className="adecd-addon-icon"><DeviceMobile size={15} weight="duotone" /></span>
+                  <b>Extra iPhone minutes</b>
+                  <SettingsSelect
+                    value={shownPhoneLimit}
+                    disabled={busy}
+                    ariaLabel="Monthly limit for extra iPhone minutes"
+                    style={{ minWidth: 0 }}
+                    options={phoneLimitOptions}
+                    onChange={(value) => {
+                      setPhoneLimit(value);
+                      if (phoneExtraOn) {
+                        void run(() => bridge?.setExtraPhoneMinutes?.({ enabled: true, monthlyLimitUsd: value === "none" ? null : Number(value) }) ?? Promise.resolve(null));
+                      }
+                    }}
+                  />
+                  <SettingsToggle
+                    checked={phoneExtraOn}
+                    disabled={busy}
+                    label="Extra iPhone minutes"
+                    onChange={(enabled) => void run(() => bridge?.setExtraPhoneMinutes?.(
+                      enabled ? { enabled: true, monthlyLimitUsd: shownPhoneLimit === "none" ? null : Number(shownPhoneLimit) } : { enabled: false },
+                    ) ?? Promise.resolve(null))}
+                  />
+                </div>
+                <div className="adecd-addon-price">
+                  <b className="kit-num" data-face="ui">{formatCloudCentsPerMinute(phoneExtra.centsPerMinute ?? currentFacts?.extraPhoneMinuteCents ?? 0)}</b>
+                  <span>a minute past your plan's {phoneExtra.included}, billed after use</span>
+                </div>
+                <small className="adecd-addon-state">
+                  {phoneExtraOn
+                    ? phoneExtra.usedMinutes > 0
+                      ? `On. ${phoneExtra.usedMinutes} extra minutes (${formatCloudCents(phoneExtra.usedCents)}) this month.`
+                      : "On. The iPhone keeps going when your minutes run out."
+                    : "Off. The iPhone stops when your minutes run out."}
                 </small>
               </div>
             ) : null}

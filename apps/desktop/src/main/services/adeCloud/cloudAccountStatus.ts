@@ -1,17 +1,22 @@
 import {
+  CLOUD_PLAN_LABELS,
   cloudCatalogOf,
+  cloudExtraHourCentsOf,
   cloudLimitsPresetOf,
   cloudPlanFactsOf,
+  cloudPlanIdOf,
   cloudPlanLabelOf,
   cloudShapeFor,
   cloudShapeWithin,
   describeCloudMachineSize,
   type CloudAccountState,
   type CloudAgentLimits,
+  type CloudCatalog,
   type CloudDiskUsage,
   type CloudLimitsPreset,
   type CloudMachine,
   type CloudMachinesResult,
+  type CloudPlanId,
 } from "../../../shared/adeCloud";
 import { cloudLaneStartBlock, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { cloudTierOfMachine, cloudTiers, type CloudTierId } from "../../../shared/cloudTiers";
@@ -103,6 +108,34 @@ export type CloudAccountStatus = {
     extraHours: { available: boolean; enabled: boolean };
   } | null;
   disk: { usedGb: number; limitGb: number | null } | null;
+  /**
+   * The ADE Cloud iPhone (`ade devices use ios@cloud`): `access` on, soon (not on
+   * this account yet) or off; this period's minutes (null unless on), when they
+   * reset, and extra minutes past the plan (paid plans; the free plan stops).
+   * Null from a server before the iPhone.
+   */
+  iphone: {
+    access: "on" | "soon" | "off";
+    minutes: { left: number; included: number; used: number } | null;
+    resetsAt: string | null;
+    extraMinutes: { available: boolean; enabled: boolean; centsPerMinute: number | null; monthlyLimitCents: number | null; usedMinutes: number; usedCents: number };
+  } | null;
+  /** Every plan ADE Cloud sells, cheapest first, with what each includes and costs; `current` is the account's. */
+  plans: Array<{
+    id: CloudPlanId;
+    label: string;
+    priceUsdMonth: number;
+    hours: number;
+    diskGb: number;
+    iphoneMinutes: number | null;
+    /** Cents a Small-hour past the plan, null where work stops (Free). */
+    extraHourCents: number | null;
+    /** Cents an iPhone minute past the plan, null where the phone stops (Free). */
+    extraIphoneMinuteCents: number | null;
+    current: boolean;
+  }>;
+  /** Cents for 10 GB of disk past the plan for a month (paid plans), or null when not sold. */
+  extraDiskCentsPer10GbMonth: number | null;
   /** How many computers the account has and how many are awake: there is no limit on how many. */
   computers: { inUse: number; awake: number } | null;
   /** Every computer of the account, lanes first. */
@@ -133,6 +166,27 @@ export type CloudAccountStatus = {
   /** A plain sentence when part of the picture couldn't be read, else null. */
   message: string | null;
 };
+
+const PLAN_ORDER: readonly CloudPlanId[] = ["free", "plus", "pro", "max"];
+
+/** The plans the server sells, from its catalog (`plus` is `paid` on a server before Pro). */
+function plansOf(catalog: CloudCatalog, current: CloudPlanId | null): CloudAccountStatus["plans"] {
+  return PLAN_ORDER.flatMap((id) => {
+    const facts = id === "plus" ? catalog.plans.plus ?? catalog.plans.paid : catalog.plans[id];
+    if (!facts) return [];
+    return [{
+      id,
+      label: CLOUD_PLAN_LABELS[id],
+      priceUsdMonth: facts.priceUsd,
+      hours: milliToHours(facts.includedMilli),
+      diskGb: facts.diskGb,
+      iphoneMinutes: facts.phoneMinutes ?? null,
+      extraHourCents: cloudExtraHourCentsOf(id, catalog),
+      extraIphoneMinuteCents: id === "free" ? null : facts.extraPhoneMinuteCents ?? null,
+      current: id === current,
+    }];
+  });
+}
 
 /** `canStartLane` from one list read: the access answer first, then the account's facts. */
 export function canStartLaneOf(result: CloudMachinesResult): CloudCanStartLane {
@@ -217,6 +271,16 @@ export function buildCloudAccountStatus(input: {
         }
       : null,
     disk: part.disk ? { usedGb: part.disk.usedGb, limitGb: part.disk.limitGb } : null,
+    iphone: part.phone
+      ? {
+          access: part.phone.access,
+          minutes: part.phone.minutes ? { left: part.phone.minutes.left, included: part.phone.minutes.included, used: part.phone.minutes.used } : null,
+          resetsAt: part.billing ? new Date(part.billing.periodEnd).toISOString() : null,
+          extraMinutes: { ...part.phone.extra },
+        }
+      : null,
+    plans: plansOf(catalog, account ? cloudPlanIdOf(account) : null),
+    extraDiskCentsPer10GbMonth: catalog.extraDiskCentsPer10GbMonth ?? null,
     computers: part.computers ? { inUse: part.computers.total, awake: part.computers.awake } : null,
     lanes,
     sizes: tiers.map((tier) => ({

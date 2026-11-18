@@ -236,7 +236,7 @@ function MachineRow({
             </button>
           );
         })}
-        {kind === "ios" ? (
+        {kind === "ios" && !able.some((machine) => machine.isCloudIphone) ? (
           <span className="inline-flex h-6 shrink-0 items-center gap-1 px-1.5 font-sans text-[11.5px] text-muted-fg/70" title="ADE Cloud: a simulator that runs on no machine of yours. Coming soon.">
             <CloudArrowUp size={12} weight="bold" aria-label="ADE Cloud, coming soon" />
             <span className="hidden @[480px]:inline">ADE Cloud soon</span>

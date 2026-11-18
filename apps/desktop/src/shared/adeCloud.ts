@@ -165,8 +165,8 @@ const CLOUD_CATALOG_FALLBACK: CloudCatalog = {
   ],
   // Only what every server sells: Pro and extra disk are offered only when the server sends them.
   plans: {
-    free: { includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 20, extraHourCents: null },
-    paid: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 30, extraHourCents: 2 },
+    free: { includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 60, extraHourCents: null },
+    paid: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 80, extraHourCents: 2 },
   },
   diskStepGb: 4,
   paidPriceUsd: 5,
@@ -235,6 +235,8 @@ export function cloudExtraHourCentsOf(planId: CloudPlanId, catalog: CloudCatalog
 
 /** "2¢", "1.5¢": an extra hour's price as people read it. */
 export const formatCloudCentsPerHour = (cents: number): string => `${Number(cents.toFixed(2))}¢`;
+/** "2.5¢": an extra iPhone minute's price as people read it. */
+export const formatCloudCentsPerMinute = (cents: number): string => `${Number(cents.toFixed(2))}¢`;
 
 export const CLOUD_PLAN_LABELS: Readonly<Record<CloudPlanId, string>> = { free: "Free", plus: "Plus", pro: "Pro", max: "Max" };
 /** Plan order, cheapest first: whether a move between two plans is up or down. */

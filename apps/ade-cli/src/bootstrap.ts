@@ -4615,6 +4615,9 @@ export async function createAdeRuntime(args: {
         cursorCloudFleetService,
         // Read when a phone asks: the runtime is built a little later.
         cloudActions: () => (runtimeForCtoActions ? (getAdeActionDomainServices(runtimeForCtoActions).cloud as Record<string, unknown> | null | undefined) ?? null : null),
+        // The ADE Cloud iPhone's pane on the phone and in ADE Web: the same
+        // `cloud_phone` domain the desktop reaches through its runtime pin.
+        cloudPhoneActions: () => (runtimeForCtoActions ? (getAdeActionDomainServices(runtimeForCtoActions).cloud_phone as Record<string, unknown> | null | undefined) ?? null : null),
         cloudAgentsService,
         pushPublisherService,
         ctoStateService,

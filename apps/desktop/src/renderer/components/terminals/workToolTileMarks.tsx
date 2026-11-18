@@ -1,4 +1,4 @@
-import { AppWindow, ChatsCircle, FolderOpen, Globe, Monitor, TerminalWindow } from "@phosphor-icons/react";
+import { AppWindow, ChatsCircle, CloudArrowUp, FolderOpen, Globe, Monitor, TerminalWindow } from "@phosphor-icons/react";
 import { BrandMark, osBrandForPlatform } from "./workToolBrandMarks";
 import type { CatalogCardId } from "./workToolCatalog";
 import type { ToolMachine } from "./useToolMachines";
@@ -48,7 +48,8 @@ export function WorkToolTileMark({
 }
 
 /** A machine's OS mark at label size, in the text's colour. */
-export function MachineOsMark({ machine, size = 11 }: { machine: Pick<ToolMachine, "platform">; size?: number }) {
+export function MachineOsMark({ machine, size = 11 }: { machine: Pick<ToolMachine, "platform" | "isCloudIphone">; size?: number }) {
+  if (machine.isCloudIphone) return <CloudArrowUp size={size} weight="bold" />;
   const os = osBrandForPlatform(machine.platform);
   return os ? <BrandMark brand={os} size={size} color="currentColor" /> : <Monitor size={size} weight="fill" />;
 }

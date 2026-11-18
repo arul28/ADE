@@ -398,6 +398,18 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // service timed out" while the daemon kept building, so the session surfaced
   // minutes later with no error to explain it.
   ["ios_simulator.launch", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
+  // The ADE Cloud iPhone: a build uploads the project and builds it there; a
+  // start may wait in NoMac's line for a free phone (up to 5 minutes).
+  ["cloud_phone.launch", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
+  ["cloud_phone.installApp", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
+  ["cloud_phone.runTests", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
+  ["cloud_phone.start", 7 * 60_000],
+  ["cloud_phone.look", 7 * 60_000],
+  ["cloud_phone.act", 7 * 60_000],
+  ["cloud_phone.screenshot", 7 * 60_000],
+  ["cloud_phone.control", 7 * 60_000],
+  ["cloud_phone.logs", 7 * 60_000],
+  ["cloud_phone.record", 7 * 60_000],
   // Builds into the lane's DerivedData like a launch, then installs.
   ["ios_simulator.installApp", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
   // See IOS_SIMULATOR_PREVIEW_TIMEOUT_MS.

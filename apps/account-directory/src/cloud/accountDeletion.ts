@@ -1,3 +1,4 @@
+import { deleteAccountPhone } from "./phones";
 import { purgeRelayAccountData, type RelayAccountPurgeEnv } from "../activityRelay";
 import { cancelAccountSubscription } from "./billing";
 import { deleteAllAccountChats } from "./chats";
@@ -23,7 +24,7 @@ import {
  * adopted, then the minute cron deletes it because `deleted_at` is set.
  */
 export async function deleteCloudAccount(
-  env: Pick<CloudEnv, "DB" | "CLOUD_CHATS" | "AGENT37_API_KEY" | "STRIPE_SECRET_KEY"> & RelayAccountPurgeEnv,
+  env: Pick<CloudEnv, "DB" | "CLOUD_CHATS" | "AGENT37_API_KEY" | "STRIPE_SECRET_KEY" | "NOMAC_API_KEY"> & RelayAccountPurgeEnv,
   userId: string,
 ): Promise<void> {
   const now = Date.now();
@@ -44,6 +45,8 @@ export async function deleteCloudAccount(
     }
   }
 
+  // The ADE Cloud iPhone's saved states, replays and workspace at NoMac, and the beta list.
+  await deleteAccountPhone(env, userId);
   await env.DB.prepare("delete from cloud_wakes where user_id = ?").bind(userId).run();
   // The topics that wake a computer at rest, their state, and the request counts of the Linear and Jira reads.
   await env.DB.batch([
@@ -87,6 +90,8 @@ export async function deleteCloudAccount(
     // unblocked; abuse events and owner alerts stay for the owner. All re-keyed to the hash.
     env.DB.prepare("update cloud_free_card_claims set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("update cloud_blocks set user_id = ? where user_id = ?").bind(gone, userId),
+    // The ADE Cloud iPhone's phones stay for the cost report, under the hash.
+    env.DB.prepare("update cloud_phones set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("update cloud_abuse_events set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("update cloud_owner_alerts set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("delete from cloud_cpu_reports where user_id = ?").bind(userId),

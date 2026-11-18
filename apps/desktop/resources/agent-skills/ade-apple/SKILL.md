@@ -1,6 +1,6 @@
 ---
 name: ade-apple
-description: "iOS app or SwiftUI view running on a simulator via `ade apple`: find or create the lane's device, boot and stream it, drive by element query, screenshots, recordings, proof, SwiftUI previews."
+description: "iOS app or SwiftUI view running on a simulator via `ade apple`, on a Mac or, from any machine (Windows, Linux), the ADE Cloud iPhone: find or create the lane's device, boot and stream it, drive by element query, screenshots, recordings, proof, SwiftUI previews."
 ---
 
 # ADE Apple Development
@@ -117,7 +117,9 @@ Use these directly; you do not need `--help` for them. `A="$ADE_CLI_PATH"`.
 
 `status` is the gate and the map.
 
-- `supported: false` means the runtime is not a Mac. Stop and say so.
+- `supported: false` means this machine is not a Mac. Use a Mac's simulator
+  (`ade devices` lists `ios@<Mac>`) or the ADE Cloud iPhone (`ios@cloud`, below)
+  instead. Only with neither, stop and say so.
 - `capabilities` lists every action you may call on this device, by name. Read
   it instead of guessing verbs or reading source.
 - `device` tells you whether this lane already owns a simulator, its `origin`
@@ -148,6 +150,41 @@ There `screenshot --out <path>` copies the shot back to this machine.
 
 Use `--no-build` when the app is already installed and you only want it in
 front. Use `relaunch` or `terminate` for an app that is already there.
+
+## ADE Cloud iPhone (any machine)
+
+`ios@cloud` is the account's iPhone at NoMac, not a simulator on any machine,
+so Windows and Linux use it too. `ade devices` lists it only when the account
+has it; otherwise `use ios@cloud` says why (not on this account yet). It spends
+iPhone minutes; a Mac of the person's (`ios@<Mac>`) spends none, so prefer one
+that is listed.
+
+```bash
+"$ADE_CLI_PATH" devices use ios@cloud   # this chat's iPhone
+"$ADE_CLI_PATH" apple status --text     # access, minutes left, capabilities
+```
+
+For one command, `ade apple … --machine cloud`. What differs:
+
+- `launch` and `test` pack this checkout as it is (uncommitted changes too,
+  git-ignored files left out), upload it, and build it with Xcode there
+  (Xcode projects only). For an app built elsewhere, install its Simulator
+  `.app` instead: `ade apple install --app <path>` (`--no-launch` installs
+  without starting it). From any machine, Expo builds one in its cloud:
+  `npx eas-cli build -p ios --profile <a profile with "ios": {"simulator": true}>`,
+  then unpack the archive it gives. React Native and Flutter
+  (`--simulator`) build one only on a Mac.
+- `screenshot` files to the proof drawer (`--no-proof` skips it); a
+  recording's MP4 link lasts 7 days.
+- Verbs with no cloud answer (iPad windows, the Duo, leases, device settings)
+  are refused with a sentence. `act` takes the same words as the screen.
+- It spends the plan's iPhone minutes while it runs, building included.
+  `ade cloud status` has them (`iphone`: left, reset day, extra minutes) and
+  every plan's (`plans`). It stops at 0 unless extra minutes are on (paid
+  plans), after 5 minutes with no input, and after 2 hours. `ade apple stop`
+  when you are done. Only the person changes the plan or extra minutes, in
+  Settings › ADE Cloud. A full-auto chat or an automation uses it only when the
+  person lets agents spend (the agent limits, as for hours).
 
 ## Use this lane's own device
 

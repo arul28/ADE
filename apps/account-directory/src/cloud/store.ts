@@ -37,6 +37,19 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   CLOUD_CREATES_PAUSED?: string;
   /** Secret. The bearer of the owner's block and unblock routes (`safety.ts`). Unset: those routes answer 503. */
   CLOUD_OWNER_TOKEN?: string;
+  /** Secret. NoMac's account key (`nmk_…`) for the ADE Cloud iPhone (`phones.ts`). Unset: the phone answers `off`. */
+  NOMAC_API_KEY?: string;
+  /** Secret. NoMac's embed secret (`nme_…`): signs each view link for its account alone. Unset: the link alone is the permission. */
+  NOMAC_EMBED_SECRET?: string;
+  /** Secret. Signs NoMac's webhook deliveries (`/cloud/nomac/webhook`). Unset: the webhook answers 503 and the ten-minute check settles phones alone. */
+  NOMAC_WEBHOOK_SECRET?: string;
+  /** Who may use the ADE Cloud iPhone: `beta` (default, the owner's list), `all`, or `off` (`phones.ts`). */
+  CLOUD_PHONE_ACCESS?: string;
+  /** `1`: no new ADE Cloud iPhones (running ones finish). */
+  CLOUD_PHONES_PAUSED?: string;
+  /** Extra iPhone minutes' metered price and meter (`billing.ts`). Unset: extra minutes aren't sold. */
+  STRIPE_PHONE_MINUTE_PRICE_ID?: string;
+  STRIPE_PHONE_METER_EVENT?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   STRIPE_PLAN_PRICE_ID?: string;
@@ -178,7 +191,7 @@ export type ComputerRow = {
   idle_failed_count?: number | null;
   /** Files git ignores that a delete would lose (`CloudIgnoredFiles` as JSON). */
   ignored_files_json?: string | null;
-  /** The ADE version of its last brain start (migration 0039, `POST .../booted`). */
+  /** The ADE version of its last brain start (migration 0045, `POST .../booted`). */
   ade_version?: string | null;
   ade_version_at?: number | null;
   /** Comma list of `CLOUD_COMPUTER_FEATURES` from the last boot report; null: an older image. */
@@ -230,6 +243,15 @@ export type AccountRow = {
   past_due_earned_milli: number | null;
   /** Refused the free plan: its computer already gave another account free hours (`freePlan.ts`). Free hours are 0 while set. */
   free_refused_at: number | null;
+  /** The ADE Cloud iPhone (migration 0040, `phones.ts`): extra minutes and the minutes warnings. Absent before the migration. */
+  phone_extra_enabled?: number;
+  phone_extra_limit_cents?: number | null;
+  phone_extra_reported_minutes?: number;
+  phone_extra_owed_minutes?: number;
+  phone_extra_period_start?: number | null;
+  phone_warned_80_at?: number | null;
+  phone_warned_zero_at?: number | null;
+  phone_warned_period_start?: number | null;
   /** When the ADE account was created (Clerk), for the invite code's 30-day window. */
   account_created_at: number | null;
   /**
@@ -1096,9 +1118,9 @@ export async function rollPeriodIfDue(env: CloudEnv, account: AccountRow, now: n
   // `past_due` stays a paid account underneath: only a cancel ends the plan here.
   const nextPlan = cancelled ? "free" : account.plan === "paid" ? "paid" : "free";
   const rolled = await startFreshPeriod(env, account, { plan: nextPlan, start: period.start, end: period.end, included: "free" }, now, cancelled ? [
-    env.DB.prepare("update cloud_accounts set cancel_at_period_end = 0, extra_enabled = 0, extra_disk_state = 'off', stripe_status = null, updated_at = ? where user_id = ?").bind(now, account.user_id),
+    env.DB.prepare("update cloud_accounts set cancel_at_period_end = 0, extra_enabled = 0, phone_extra_enabled = 0, extra_disk_state = 'off', stripe_status = null, updated_at = ? where user_id = ?").bind(now, account.user_id),
   ] : [], { keepOldTerms: !cancelled && account.plan === "paid" });
-  return cancelled ? { ...rolled, cancel_at_period_end: 0, extra_enabled: 0, extra_disk_state: "off", stripe_status: null } : rolled;
+  return cancelled ? { ...rolled, cancel_at_period_end: 0, extra_enabled: 0, phone_extra_enabled: 0, extra_disk_state: "off", stripe_status: null } : rolled;
 }
 
 export type CloudPlanChange = {

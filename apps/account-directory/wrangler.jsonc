@@ -67,6 +67,21 @@
   // `POST /cloud/owner/block` and `/cloud/owner/unblock` (src/cloud/safety.ts).
   // Set out of band. Unset, those routes answer 503.
   //
+  // SECRETS — NOMAC_API_KEY, NOMAC_EMBED_SECRET, NOMAC_WEBHOOK_SECRET (ADE Cloud iPhone)
+  // NoMac's account key (`nmk_…`) runs the account's iOS Simulator
+  // (src/cloud/phones.ts); required, and only this Worker holds it. The
+  // optional embed secret (`nme_…`) signs each view link for the account.
+  // Set both out of band, here and with `--env production`. Apply
+  // migrations/0045_cloud_phone_beta.sql before the Worker that reads it
+  // deploys. Unset NOMAC_API_KEY, the phone reads `off` and answers "not set
+  // up"; without the embed secret a view link is its own permission. The
+  // webhook secret is the one NoMac shows once when the webhook to
+  // /cloud/nomac/webhook is made. Apply migrations/0046_cloud_phone_usage.sql
+  // first too. Vars (here and under env.production): CLOUD_PHONE_ACCESS
+  // (`beta` by default, `all` at launch, `off`), CLOUD_PHONES_PAUSED (`1`
+  // stops new phones), STRIPE_PHONE_MINUTE_PRICE_ID and
+  // STRIPE_PHONE_METER_EVENT (scripts/stripe-setup.mjs prints both).
+  //
   // SECRET — CLOUD_CHAT_MASTER_KEY (ADE Cloud, saved chats)
   // 32 random bytes, base64 (`openssl rand -base64 32`). Seals the per-user key
   // that encrypts saved chats. Set out of band. Rotating it makes existing saved
@@ -172,6 +187,9 @@
     "STRIPE_MAX_PRICE_ID": "price_1UbEC9Bsy4QVYccD16fLtkI2",
     "STRIPE_DISK_PRICE_ID": "price_1UbECBBsy4QVYccDXcCUZEYt",
     "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
+    // Extra ADE Cloud iPhone minutes (2.5 cents a minute, its own meter). Same script, same sandbox.
+    "STRIPE_PHONE_MINUTE_PRICE_ID": "price_1Ud7x8Bsy4QVYccDQcdVWRfk",
+    "STRIPE_PHONE_METER_EVENT": "ade_cloud_phone_minutes",
     "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaJvHBsy4QVYccDU70Jf6tD",
     // The ADE GitHub App's public client id (also a constant in the desktop),
     // and the two GitHub bases the sign-in calls. The bases are settings so a

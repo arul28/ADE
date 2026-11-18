@@ -1570,7 +1570,7 @@ function AppleDevicePaneOnMachine({
   );
 }
 
-function PaneMessage({ title, description }: { title: string; description: string | null }) {
+export function PaneMessage({ title, description }: { title: string; description: string | null }) {
   return (
     <div
       data-apple-pane-message=""

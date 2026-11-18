@@ -84350,7 +84350,7 @@ ${schedule.prompt}`
     const source = args?.source;
     const next: ChatDeviceSources = { ...(managed.deviceSources ?? {}) };
     // A machine is read the way a stored choice is read back, so the two agree.
-    const chosen = source?.kind === "machine"
+    const chosen = source?.kind === "machine" || source?.kind === "cloud"
       ? normalizeChatDeviceSources({ [kind]: { ...source, chosenAt: nowIso() } })?.[kind]
       : undefined;
     if (source?.kind === "here") {
@@ -84358,7 +84358,9 @@ ${schedule.prompt}`
     } else if (chosen) {
       next[kind] = chosen;
     } else {
-      throw new Error("source must be { kind: \"here\" } or { kind: \"machine\", machineKey, machineName }.");
+      throw new Error(source?.kind === "cloud"
+        ? "Only the iPhone has an ADE Cloud source (ios@cloud)."
+        : "source must be { kind: \"here\" }, { kind: \"machine\", machineKey, machineName } or { kind: \"cloud\" }.");
     }
     managed.deviceSources = Object.keys(next).length ? next : null;
     persistChatState(managed, { fsync: true });

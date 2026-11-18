@@ -103,7 +103,7 @@ export function useToolHandoff(args: {
   const askMachine = useCallback((kind: DeviceKind, machine: ToolMachine) => {
     if (!sessionId) return;
     const noun = DEVICE_KINDS[kind].noun;
-    const id = `${kind}@${machine.isChat ? "here" : machine.name}`;
+    const id = `${kind}@${machine.isCloudIphone ? "cloud" : machine.isChat ? "here" : machine.name}`;
     const inline = canTellRef.current && turnRunningRef.current;
     void noteToAgent(
       sessionId,

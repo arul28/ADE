@@ -6,7 +6,7 @@
 
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { cloudStatusAwake, type CloudStatus } from "../../../shared/adeCloud";
-import { setAdeCloudSkillVisible, setAgentSkillAccessRefresh } from "../../../shared/agentSkillRoots";
+import { setAdeCloudIphoneSkillVisible, setAdeCloudSkillVisible, setAgentSkillAccessRefresh } from "../../../shared/agentSkillRoots";
 import type { AccountVaultResult } from "../../../shared/types/accountVault";
 import { getSignedInAccountAccessToken, type AccountAuthService } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { resolveSelectedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
@@ -300,7 +300,44 @@ async function readCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
   setAdeCloudSkillVisible(
     access.state === "ready" || (access.state === "unreadable" && rememberedCloudAccess(accessKey(deps)) === true),
   );
+  refreshIphoneSkill(deps, access);
   return access;
+}
+
+let iphoneCache: { key: string; on: boolean; at: number } | null = null;
+let iphoneAsking = false;
+
+/**
+ * On a host that isn't a Mac, `ade-apple` is only for the ADE Cloud iPhone:
+ * its agents see it while the account has the phone (`access: "on"`). Asked
+ * in the background with the access answer's cache life; a failed ask keeps
+ * the last answer. A Mac always shows the skill (its own simulators).
+ */
+function refreshIphoneSkill(deps: CloudAccessDeps, access: CloudAccess): void {
+  if (process.platform === "darwin") return;
+  if (access.state === "signed_out" || access.state === "no_access") {
+    iphoneCache = null;
+    setAdeCloudIphoneSkillVisible(false);
+    return;
+  }
+  if (access.state !== "ready") return;
+  const key = accessKey(deps);
+  if (iphoneCache?.key === key && Date.now() - iphoneCache.at < ACCESS_TTL_MS) {
+    setAdeCloudIphoneSkillVisible(iphoneCache.on);
+    return;
+  }
+  const phoneState = access.provider.phoneState?.bind(access.provider);
+  if (iphoneAsking || !phoneState) return;
+  iphoneAsking = true;
+  void phoneState().then(
+    (state) => {
+      iphoneCache = { key, on: state.access === "on", at: Date.now() };
+      setAdeCloudIphoneSkillVisible(iphoneCache.on);
+    },
+    (error: unknown) => deps.logger?.warn("cloud.iphone_skill_read_failed", { error: getErrorMessage(error) }),
+  ).finally(() => {
+    iphoneAsking = false;
+  });
 }
 
 async function askCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {

@@ -23,6 +23,10 @@ import type {
   CloudInviteRedeemResult,
   CloudLaneWithoutComputer,
   CloudPaidPlanId,
+  CloudPhoneDevice,
+  CloudPhoneStart,
+  CloudPhoneState,
+  CloudPhoneView,
   CloudPlanCleanupPick,
   CloudPlanId,
   CloudReferralSummary,
@@ -180,6 +184,8 @@ export type CloudProvider = {
   setExtraHours(enabled: boolean): Promise<CloudAccountState>;
   /** Paid accounts only: extra disk on with a monthly limit in whole dollars, or off. */
   setExtraDisk(choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }): Promise<CloudAccountState>;
+  /** Paid accounts only: extra ADE Cloud iPhone minutes on, with an optional monthly limit in whole dollars, or off. */
+  setExtraPhoneMinutes?(choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }): Promise<CloudAccountState>;
   /** The account's invite link and what it earned (`/cloud/referrals`). Account-level. */
   readReferral(): Promise<CloudReferralSummary>;
   /**
@@ -193,4 +199,13 @@ export type CloudProvider = {
   /** One page of a saved chat, or null when it can't be read. */
   readSavedChat(args: CloudSavedChatReadArgs): Promise<CloudSavedChatPage | null>;
   deleteSavedChat(args: CloudSavedChatDeleteArgs): Promise<void>;
+  /** The ADE Cloud iPhone (`/cloud/phone`): who may use it, the plan's minutes, the live phone. */
+  phoneState?(): Promise<CloudPhoneState>;
+  /** Starts the account's phone, or answers its live one, with a token for that phone only. */
+  phoneStart?(input: { device?: CloudPhoneDevice }): Promise<CloudPhoneStart>;
+  /** A fresh token for the live phone. */
+  phoneToken?(): Promise<CloudPhoneStart>;
+  /** A link that shows the live phone to this account alone. */
+  phoneView?(input: { control: boolean }): Promise<CloudPhoneView>;
+  phoneStop?(): Promise<{ stopped: boolean }>;
 };

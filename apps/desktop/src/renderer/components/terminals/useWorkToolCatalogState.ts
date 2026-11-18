@@ -108,7 +108,7 @@ export function useWorkToolCatalogState(args: {
       sessionId,
       pin: chatPinRef.current,
       kind,
-      machine: machine.isChat ? null : { key: machine.key, name: machine.name },
+      machine: machine.isCloudIphone ? "cloud" : machine.isChat ? null : { key: machine.key, name: machine.name },
     }).then((kept) => {
       // Not kept: the device is where it was, so this turn's use counts again.
       if (!kept && machine.isChat) {

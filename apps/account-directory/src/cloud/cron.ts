@@ -2,7 +2,8 @@ import { expireChatMessages } from "./chatMessages";
 import { runLinearRenewalCron } from "./linearRenewal";
 import { captureCloudDay, type CloudWaitUntil } from "./analytics";
 import { cancelTimedWakes, type WakeBlock } from "./accountNotices";
-import { checkExtraDiskLimits, reportExtraDiskDays, type ExtraDiskOverLimit } from "./billing";
+import { checkExtraDiskLimits, reportExtraDiskDays, reportExtraPhoneMinutes, type ExtraDiskOverLimit } from "./billing";
+import { runPhoneChecks } from "./phones";
 import { sendCloudEmail } from "./email";
 import { laneFactsStatement } from "./lanesWithoutComputer";
 import { markRestedWithBackups } from "./laneBackups";
@@ -464,6 +465,13 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
     await reportExtraDiskDays(env, now);
   } catch (error) {
     reportCloudFailure("cloud.disk_report_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
+  // The ADE Cloud iPhone: live phones read again, the minutes warnings, then extra minutes to Stripe.
+  try {
+    await runPhoneChecks(env, now);
+    await reportExtraPhoneMinutes(env, now);
+  } catch (error) {
+    reportCloudFailure("cloud.phone_checks_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
   // A cheaper plan's limits: an account over the plan in force is told once (new computers are refused). Nothing is freed here.
   try {
