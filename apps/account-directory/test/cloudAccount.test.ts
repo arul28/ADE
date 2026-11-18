@@ -422,6 +422,25 @@ describe("ADE Cloud account", () => {
     expect(computer(harness).awake_since).toBeNull();
   });
 
+  // A sleep freezes the computer: a turn it cuts must be stopped and saved first,
+  // or its saved copy reads Done while it sleeps. A sleeping computer is never woken for it.
+  it.each<[string, "running" | "sleeping", boolean]>([
+    ["an awake computer stops its turns and saves its chats, then sleeps", "running", true],
+    ["a computer that already sleeps gets no command, so no wake", "sleeping", false],
+  ])("the person's Sleep: %s", async (_label, status, prepares) => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { machine_key: "key-a" });
+    provide(harness);
+    harness.net.instances.get(INSTANCE)!.status = status;
+
+    expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/sleep`)).status).toBe(200);
+
+    const lifecycle = providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/(exec|sleep)$`)).map((call) => call.url.endsWith("/exec") ? String(call.body?.command) : "sleep");
+    expect(lifecycle).toEqual(prepares
+      ? [expect.stringContaining("ade cloud prepare-stop --timeout 20 --chats-only --json"), "sleep"]
+      : ["sleep"]);
+  });
+
   function webhook(event: Row): Promise<Response> {
     const body = JSON.stringify(event);
     const timestamp = Math.floor(clock / 1000);
@@ -1888,35 +1907,37 @@ describe("ADE Cloud plan cleanup", () => {
   const run = async () => runPlanCleanupPicks(harness.env, createCloudProvider("provider-key"), clock);
   const cleanLane = { laneId: "lane_main", state: "clean" };
 
-  // `arrange` may return the reason a kept computer shows.
-  it.each<[string, () => string | void, boolean]>([
-    ["awake, every lane saved in place: freed", () => answerExecs(quiet, [cleanLane, { laneId: "lane_x", state: "clean" }]), true],
-    ["awake, a lane too large to save: kept with the sentence", () => answerExecs(quiet, [{ laneId: "lane_x", laneName: "big", state: "too_large" }]), false],
-    ["awake, an ADE older than lane backups: kept", () => answerExecs(quiet, null), false],
-    ["agents still running after prepare-stop: kept", () => answerExecs(JSON.stringify({ result: { stillRunning: 1, chatsNotUploaded: 0, timedOut: true } }), [cleanLane]), false],
+  // `arrange` may return the reason a kept computer shows. `unfreezes`: an
+  // awake computer kept after a confirmed prepare takes work again at once.
+  it.each<[string, () => string | void, boolean, boolean]>([
+    ["awake, every lane saved in place: freed", () => answerExecs(quiet, [cleanLane, { laneId: "lane_x", state: "clean" }]), true, false],
+    ["awake, a lane too large to save: kept with the sentence", () => answerExecs(quiet, [{ laneId: "lane_x", laneName: "big", state: "too_large" }]), false, true],
+    ["awake, an ADE older than lane backups: kept", () => answerExecs(quiet, null), false, true],
+    // Not confirmed: the computer ends its own freeze.
+    ["agents still running after prepare-stop: kept", () => answerExecs(JSON.stringify({ result: { stillRunning: 1, chatsNotUploaded: 0, timedOut: true } }), [cleanLane]), false, false],
     ["the person bought Plus while it saved, so the pick no longer applies: not freed", () => {
       answerExecs(quiet, [cleanLane]);
       harness.net.after.push({ match: new RegExp(`GET .*/instances/${INSTANCE}$`), run: () => { harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_status = 'active' where user_id = ?", OWNER); } });
-    }, false],
+    }, false, true],
     ["a move of it that began while it saved: not freed, so the move keeps its files", () => {
       answerExecs(quiet, [cleanLane]);
       harness.net.after.push({ match: new RegExp(`GET .*/instances/${INSTANCE}$`), run: () => { seedComputer(harness, { instance_id: "pending_move_target", moving_from: INSTANCE, status: "provisioning", created_at: NOW }); } });
-    }, false],
+    }, false, true],
     ["asleep, rested with every lane saved: freed with no start and no command", () => {
       harness.exec("update cloud_computers set status = 'sleeping', awake_since = null, backup_rest_at = ? where instance_id = ?", NOW - HOUR, INSTANCE);
       harness.net.instances.get(INSTANCE)!.status = "sleeping";
-    }, true],
+    }, true, false],
     ["asleep, its last save failed: kept, never woken", () => {
       harness.exec("update cloud_computers set status = 'sleeping', awake_since = null, backup_report_id = ?, backup_report_state = 'failed' where instance_id = ?", REPORT, INSTANCE);
       harness.net.instances.get(INSTANCE)!.status = "sleeping";
       return "ADE couldn't save this lane's work.";
-    }, false],
+    }, false, false],
     ["asleep, it rested before its ADE saved lane work: kept, never woken, and told it isn't a failure", () => {
       harness.exec("update cloud_computers set status = 'sleeping', awake_since = null where instance_id = ?", INSTANCE);
       harness.net.instances.get(INSTANCE)!.status = "sleeping";
       return CLOUD_BACKUP_NEVER_SAVED_SENTENCE;
-    }, false],
-  ])("%s", async (_label, arrange, freed) => {
+    }, false, false],
+  ])("%s", async (_label, arrange, freed, unfreezes) => {
     seedOverFreePlan();
     const keptReason = arrange();
     const startedAs = harness.net.instances.get(INSTANCE)!.status;
@@ -1928,7 +1949,11 @@ describe("ADE Cloud plan cleanup", () => {
     expect(providerCalls(harness, /POST .*\/(start|stop|sleep)$/)).toEqual([]);
     if (startedAs === "sleeping") expect(providerCalls(harness, /POST .*\/exec$/)).toEqual([]);
     // Never a commit or a push.
-    expect(providerCalls(harness, /POST .*\/exec$/).map((call) => String(call.body?.command))).not.toContainEqual(expect.stringContaining("push-work"));
+    const commands = providerCalls(harness, /POST .*\/exec$/).map((call) => String(call.body?.command));
+    expect(commands).not.toContainEqual(expect.stringContaining("push-work"));
+    // An awake computer freezes new work from its prepare until the delete, so nothing written after the save is lost.
+    if (startedAs !== "sleeping") expect(commands[0]).toContain("ade cloud prepare-stop --timeout 40 --for-delete --json");
+    expect(commands.filter((command) => command.includes("ade cloud unfreeze"))).toHaveLength(unfreezes ? 1 : 0);
     if (!freed) expect([harness.net.instances.get(INSTANCE)?.status, computer(harness).status]).toEqual([startedAs, startedAs]);
     expect(providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`))).toHaveLength(freed ? 1 : 0);
     // Only the pick: the newer computers are never touched.

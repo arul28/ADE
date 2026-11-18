@@ -2775,6 +2775,7 @@ export function createPtyService({
   onSessionAttentionRequested,
   onSessionAttentionResolved,
   diskPressureMonitor,
+  launchRefusal,
   releaseChatBrowser,
   appVersion,
   terminalShellPreferences,
@@ -2826,6 +2827,13 @@ export function createPtyService({
   onSessionAttentionRequested?: (args: { sessionId: string; message: string; source: "cli_prompt" }) => boolean;
   onSessionAttentionResolved?: (args: { laneId: string; sessionId: string }) => void;
   diskPressureMonitor?: DiskPressureMonitor | null;
+  /**
+   * A sentence when this host must not start a new process now, else null.
+   * An ADE Cloud computer that the server deletes gives one
+   * (`cloudDeleteFreeze.ts`): a terminal opened then would be lost with it.
+   * Absent: no such refusal.
+   */
+  launchRefusal?: (() => string | null) | null;
   /**
    * A tracked agent CLI with no owning chat ended: let go of anything it held
    * outside ADE (the brain detaches its `ade browser attach`).
@@ -7190,6 +7198,8 @@ export function createPtyService({
       // Reaching here always spawns a NEW PTY/process — the live-attach case
       // returned above — so resuming a tracked CLI session whose PTY is gone
       // is a new launch and must be gated too, not only brand-new sessions.
+      const refusedLaunch = launchRefusal?.() ?? null;
+      if (refusedLaunch) throw new Error(refusedLaunch);
       if (tracked && isTrackedAgentCliToolType(toolTypeHint)) {
         const decision = diskPressureMonitor?.canPerform("cli_launch");
         if (decision && !decision.allowed) {

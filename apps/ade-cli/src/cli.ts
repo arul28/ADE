@@ -736,6 +736,7 @@ import {
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/src/shared/types/recovery";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { cloudDiskGrowStatePath, cloudDiskGuardOptions, readCloudDiskGrowState } from "./services/power/cloudDiskGuard";
+import { cloudDeleteFreezeRefusal, liftCloudDeleteFreeze } from "./services/power/cloudDeleteFreeze";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
@@ -21832,12 +21833,37 @@ function buildCloudPrepareStopPlan(args: string[]): CliPlan {
   if (diskGrowToGb != null && (!Number.isFinite(diskGrowToGb) || diskGrowToGb <= 0)) {
     throw new CliUsageError("ade cloud prepare-stop --timeout <seconds> --disk-grow <GB>");
   }
+  // `--for-delete`: the server deletes the computer next, so new work is frozen (`cloudDeleteFreeze.ts`).
+  // `--chats-only`: the person's Sleep; only the turns stop and the chats are saved, with no lane backups.
+  // An older ADE ignores both flags and does a normal prepare.
+  const forDelete = args.includes("--for-delete");
+  const chatsOnly = args.includes("--chats-only");
   return {
     kind: "execute",
     label: "cloud prepare-stop",
-    steps: [{ key: "result", method: "cloud.prepareStop", params: { timeoutMs: Math.round(seconds * 1000), ...(diskGrowToGb != null ? { diskGrowToGb, ...(growId ? { growId } : {}) } : {}) } }],
+    steps: [{
+      key: "result",
+      method: "cloud.prepareStop",
+      params: {
+        timeoutMs: Math.round(seconds * 1000),
+        ...(diskGrowToGb != null ? { diskGrowToGb, ...(growId ? { growId } : {}) } : {}),
+        ...(forDelete ? { forDelete: true } : {}),
+        ...(chatsOnly ? { chatsOnly: true } : {}),
+      },
+    }],
     machineOnly: true,
     minTimeoutMs: Math.round(seconds * 1000) + 15_000,
+  };
+}
+
+/** `ade cloud unfreeze --json`: the server keeps a computer it prepared for a delete, so new work is allowed again. */
+function buildCloudUnfreezePlan(): CliPlan {
+  return {
+    kind: "execute",
+    label: "cloud unfreeze",
+    steps: [{ key: "result", method: "cloud.unfreeze", params: {} }],
+    machineOnly: true,
+    minTimeoutMs: 15_000,
   };
 }
 
@@ -21873,6 +21899,7 @@ function buildCloudMessagesPlan(args: string[]): CliPlan {
 /** What the server runs on a computer, whatever the access answer. */
 const CLOUD_ON_COMPUTER_PLANS = new Map<string, (args: string[]) => CliPlan>([
   ["prepare-stop", buildCloudPrepareStopPlan],
+  ["unfreeze", buildCloudUnfreezePlan],
   ["push-work", buildCloudPushWorkPlan],
   ["work-state", buildCloudWorkStatePlan],
   ["save-for-rest", buildCloudSaveForRestPlan],
@@ -26750,6 +26777,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "keepAwake.call" ||
     method === "cloud.call" ||
     method === "cloud.prepareStop" ||
+    method === "cloud.unfreeze" ||
     method === "cloud.pushWork" ||
     method === "cloud.workState" ||
     method === "cloud.saveForRest" ||
@@ -32699,6 +32727,9 @@ async function runServe(
     const keepAwake = cloudKeepAwake;
     return Object.assign(async (request: Parameters<JsonRpcHandler>[0]) => {
       if (request.method === "ade/actions/call" && isRemoteWork(request.params)) {
+        // The server deletes this computer next (`cloudDeleteFreeze.ts`): work that came now would be lost with it.
+        const frozen = cloudDeleteFreezeRefusal();
+        if (frozen) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, frozen);
         void keepAwake.noteUse();
         // The server's idle cleanup may be saving this computer for its delete
         // (`/use`, cloudComputerRest.ts): once the delete started, the work is refused.
@@ -32733,7 +32764,7 @@ async function runServe(
         ? async () => await cloudRest.drainAnswer()
         : null,
       prepareCloudStop: cloudKeepAwake
-        ? async ({ timeoutMs, diskGrowToGb, growId }) => {
+        ? async ({ timeoutMs, diskGrowToGb, growId, forDelete, chatsOnly }) => {
             const { prepareCloudComputerToStop } = await import("./services/power/cloudPrepareStop");
             // A disk grow's restart continues the turns it cuts (`continueAfterRestartAllowed`): keep them
             // running, once the note that marks the restart is written. No note: stop them, as before.
@@ -32742,14 +32773,24 @@ async function runServe(
               (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null));
             const personal = await personalChatScope.bootedRuntime().catch(() => null);
             const runtimes = [...booted, personal].filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
-            const saveForRest = cloudRest?.saveBeforeStop ?? null;
+            // The person's Sleep (`--chats-only`) saves no lane backups: the sleep waits for this prepare.
+            const saveForRest = chatsOnly ? null : cloudRest?.saveBeforeStop ?? null;
             return await prepareCloudComputerToStop({
               runtimes,
               timeoutMs,
               logger: headlessProjectLogger,
               keepTurns,
               ...(saveForRest ? { saveForRest } : {}),
+              // A disk grow keeps the computer; only a delete freezes it.
+              ...(forDelete && !keepTurns ? { forDelete: true } : {}),
             });
+          }
+        : null,
+      unfreezeCloudComputer: cloudKeepAwake
+        ? async () => {
+            const lifted = liftCloudDeleteFreeze();
+            headlessProjectLogger.info("cloud.delete_freeze_lifted", { lifted });
+            return { ok: true, lifted };
           }
         : null,
       serverVersion: VERSION,

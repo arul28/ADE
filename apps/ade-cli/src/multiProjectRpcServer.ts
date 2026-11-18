@@ -417,7 +417,17 @@ export type MultiProjectRpcHandlerOptions = {
    * which never own the machine's power settings.
    */
   /** On a cloud computer: interrupts work and writes the saved chat copy before a stop (`ade cloud prepare-stop`). */
-  prepareCloudStop?: ((args: { timeoutMs: number; diskGrowToGb?: number | null; growId?: string | null }) => Promise<unknown>) | null;
+  prepareCloudStop?: ((args: {
+    timeoutMs: number;
+    diskGrowToGb?: number | null;
+    growId?: string | null;
+    /** The server deletes the computer next: new work is frozen (`cloudDeleteFreeze.ts`). */
+    forDelete?: boolean;
+    /** The person's Sleep: stop the turns and save the chats, with no lane backups. */
+    chatsOnly?: boolean;
+  }) => Promise<unknown>) | null;
+  /** On a cloud computer: the server keeps a computer it prepared for a delete, so the freeze ends (`ade cloud unfreeze`). */
+  unfreezeCloudComputer?: (() => Promise<unknown>) | null;
   /** On a cloud computer: commits and pushes every lane's work (`ade cloud push-work`). */
   pushCloudWork?: ((args: { check: boolean; message?: string | null }) => Promise<unknown>) | null;
   /** On a cloud computer: saves what clients read at rest, capsules too on the delete path (`ade cloud save-for-rest`). */
@@ -675,6 +685,7 @@ const RUNTIME_METHODS = new Set([
   "remoteMcp.call",
   "keepAwake.call",
   "cloud.prepareStop",
+  "cloud.unfreeze",
   "cloud.pushWork",
   "cloud.workState",
   "cloud.saveForRest",
@@ -3632,7 +3643,7 @@ export function createMultiProjectRpcRequestHandler(
     // The server runs this over exec before stopping a computer at 0 hours. Not
     // a `cloud.call`: this machine may not have the account access `cloud` needs.
     if (
-      method === "cloud.prepareStop" || method === "cloud.pushWork" || method === "cloud.workState"
+      method === "cloud.prepareStop" || method === "cloud.unfreeze" || method === "cloud.pushWork" || method === "cloud.workState"
       || method === "cloud.saveForRest" || method === "cloud.drainMessages"
     ) {
       if (callerIdentityIsAgent(callerIdentity())) {
@@ -3646,7 +3657,13 @@ export function createMultiProjectRpcRequestHandler(
         timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 40_000,
         diskGrowToGb: typeof params.diskGrowToGb === "number" && Number.isFinite(params.diskGrowToGb) && params.diskGrowToGb > 0 ? params.diskGrowToGb : null,
         growId: typeof params.growId === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(params.growId) ? params.growId : null,
+        forDelete: params.forDelete === true,
+        chatsOnly: params.chatsOnly === true,
       });
+    }
+    if (method === "cloud.unfreeze") {
+      if (!options.unfreezeCloudComputer) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't end a delete freeze.");
+      return await options.unfreezeCloudComputer();
     }
 
     // A provider sign-in a person finishes on another screen (`ade providers
