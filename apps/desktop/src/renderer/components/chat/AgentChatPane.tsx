@@ -5914,12 +5914,18 @@ export function AgentChatPane({
   const chatCloudLane = useAdeCloudLaneForBinding(chatRuntimePin ?? projectBinding);
   // Another machine's chat: pinned there, or on the machine this project tab
   // itself is bound to.
+  // The notice belongs to the chat that was open when it was raised: another
+  // chat opened in this pane doesn't show it, and going back shows it again.
+  // One raised with no chat open (a draft's first send) shows as before.
+  const noticeOwnerRef = useRef<{ notice: typeof chatNotice; sessionId: string | null }>({ notice: null, sessionId: null });
+  if (noticeOwnerRef.current.notice !== chatNotice) noticeOwnerRef.current = { notice: chatNotice, sessionId: selectedSessionId };
+  const paneNotice = noticeOwnerRef.current.sessionId == null || noticeOwnerRef.current.sessionId === selectedSessionId ? chatNotice : null;
   const shownNotice = shownChatNotice(
-    chatNotice,
+    paneNotice,
     (chatRuntimePin ?? projectBinding)?.kind === "remote",
     // Read when the notice renders: the saved-chats read marks a chat whose
     // cloud computer no longer exists (no connection, or gone from the list).
-    chatNotice != null && selectedSessionId != null
+    paneNotice != null && selectedSessionId != null
       && savedChatComputerGone(chatForeignPin, selectedSessionId),
     chatCloudLane ? (chatCloudLane.laneName.trim() || laneLabel?.trim() || null) : null,
   );
