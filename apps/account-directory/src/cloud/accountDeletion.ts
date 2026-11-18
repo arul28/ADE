@@ -67,6 +67,8 @@ export async function deleteCloudAccount(
   await env.DB.prepare("delete from cloud_project_deletes where user_id = ?").bind(userId).run();
   // Repository origins whose setup needed a bigger size.
   await env.DB.prepare("delete from cloud_repo_sizes where user_id = ?").bind(userId).run();
+  // And whose setup grew its disk.
+  await env.DB.prepare("delete from cloud_repo_disks where user_id = ?").bind(userId).run();
   // Automations on ADE Cloud (their prompts and names) and their run history.
   await deleteAccountAutomations(env, userId);
   // The invite link stops working and the computers it was seen on go. The free-plan

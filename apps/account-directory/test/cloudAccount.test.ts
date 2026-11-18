@@ -2400,6 +2400,32 @@ describe("ADE Cloud server launcher", () => {
     expect(madeCalls()).toHaveLength(2);
   });
 
+  // A big repository's install fills the 4 GB every computer starts with: the setup grows it,
+  // the computer restarts and setup runs again. The next launch starts at that disk instead,
+  // only inside the plan's included disk, so nothing new is billed or refused.
+  it.each<[string, { paid: boolean; agentStarted: boolean }, number | null, number]>([
+    ["a paid account's next launch starts at the disk its setup grew to", { paid: true, agentStarted: false }, 8, 8],
+    ["a free account's next launch starts at what its shared disk has left", { paid: false, agentStarted: false }, 8, 4],
+    ["a grow after the agent started is not the setup's, and records nothing", { paid: true, agentStarted: true }, null, 4],
+  ])("%s", async (_label, { paid, agentStarted }, remembered, nextDisk) => {
+    if (paid) harness.exec("update cloud_accounts set plan = 'paid', included_milli = 500000 where user_id = ?", OWNER);
+    await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    if (agentStarted) harness.exec("update cloud_launches set state = 'running', stages_json = ? where launch_id = ?", JSON.stringify([{ id: "agent", status: "running" }]), LAUNCH);
+
+    const grow = await harness.send(OWNER, "POST", "/cloud/instances/madenew12345/resize", { cpu: 2, memory: 4, disk: 8, computerIdle: true, origin: "auto" });
+    expect(grow.status).toBe(200);
+    expect(harness.rows("select disk_gb from cloud_repo_disks where user_id = ?", OWNER)).toEqual(remembered == null ? [] : [{ disk_gb: remembered }]);
+
+    clock += HOUR;
+    const next = await harness.send(OWNER, "POST", "/cloud/launches", {
+      ...launchBody, launchId: "9d4f6b8a-3e5c-4c7d-9a1b-2c3d4e5f6a7b", lane: { id: "4e6a8c0b-3d5f-4c7b-9d2e-0f1a2b3c4d5e", name: "Next" },
+    });
+    expect(next.status).toBe(201);
+    expect(madeCalls()[1]!.body!.resources).toEqual(expect.objectContaining({ disk: nextDisk }));
+    // The reserved and billed disk is the disk the provider was asked for.
+    expect(harness.row("select disk_gb from cloud_computers where request_id = ?", "9d4f6b8a-3e5c-4c7d-9a1b-2c3d4e5f6a7b")).toEqual({ disk_gb: nextDisk });
+  });
+
   describe("a default-size launch whose setup runs out of memory", () => {
     const LAUNCH_2 = "7a2e4c6b-1d3f-4a5b-8c9d-0e1f2a3b4c5d";
     const LANE_2 = "3c5e7a9b-2d4f-4b6a-8c1d-9e0f1a2b3c4d";

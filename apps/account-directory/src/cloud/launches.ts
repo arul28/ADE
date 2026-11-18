@@ -466,6 +466,53 @@ async function startSizeOf(env: CloudEnv, userId: string, parsed: CloudServerLau
 }
 
 /**
+ * The disk this repository's setup (same account, origin and lane template)
+ * grew its computer to within `CLOUD_AUTO_SIZE_MEMORY_MS`, or null. A read
+ * that fails (the table not there yet) is null: the launch starts at 4 GB.
+ */
+async function rememberedSetupDiskGb(env: CloudEnv, userId: string, parsed: CloudServerLaunchRequest, now: number): Promise<number | null> {
+  try {
+    const row = await env.DB.prepare(`
+      select disk_gb from cloud_repo_disks where user_id = ? and project_origin = ? and setup_key = ? and recorded_at > ?
+    `).bind(userId, parsed.project.origin, setupKeyOf(parsed), now - CLOUD_AUTO_SIZE_MEMORY_MS).first<{ disk_gb: number }>();
+    return typeof row?.disk_gb === "number" ? row.disk_gb : null;
+  } catch (error) {
+    reportCloudFailure("cloud.launch_repo_disk_read_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return null;
+  }
+}
+
+/**
+ * Remembers `diskGb` for the repository of the launch still setting up on
+ * `computer` (its agent not started), after the provider grew that disk.
+ * A grow outside a launch's setup (later work, a person's) records nothing.
+ * Best effort: a failure is reported, never thrown, so the grow stands.
+ */
+export async function rememberLaunchSetupDisk(env: CloudEnv, computer: ComputerRow, diskGb: number, now: number): Promise<void> {
+  try {
+    const row = await env.DB.prepare(`
+      select launch_id, project_origin, request_json from cloud_launches
+      where instance_id = ? and user_id = ? and project_origin is not null
+        and state not in ('draft', 'done', 'failed', 'cancelled', 'retrying')
+        and not exists (
+          select 1 from json_each(case when json_valid(stages_json) then stages_json else '[]' end)
+          where json_extract(value, '$.id') = ? and coalesce(json_extract(value, '$.status'), 'pending') <> 'pending'
+        )
+      order by created_at desc limit 1
+    `).bind(computer.instance_id, computer.user_id, AGENT_STAGE).first<{ launch_id: string; project_origin: string; request_json: string | null }>();
+    if (!row) return;
+    const request = parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" });
+    await env.DB.prepare(`
+      insert into cloud_repo_disks (user_id, project_origin, setup_key, disk_gb, launch_id, recorded_at) values (?, ?, ?, ?, ?, ?)
+      on conflict (user_id, project_origin, setup_key) do update set disk_gb = excluded.disk_gb, launch_id = excluded.launch_id, recorded_at = excluded.recorded_at
+    `).bind(computer.user_id, row.project_origin, setupKeyOf(request), diskGb, row.launch_id, now).run();
+    logCloud("cloud.launch_repo_disk_recorded", { launchId: row.launch_id, diskGb });
+  } catch (error) {
+    reportCloudFailure("cloud.launch_repo_disk_write_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
+}
+
+/**
  * Whether `computer` may move from Small to Medium for `launchId`'s setup
  * (a resize with `{ origin: "auto", launchId }`): the launch is this
  * account's, this computer is its computer, its size was ADE's default and
@@ -808,6 +855,8 @@ export async function startServerLaunch(
   const joinExpiresAt = now + CLOUD_LAUNCH_JOIN_TTL_MS;
   const joinHash = await sha256Hex(joinCode);
   const outcome = await deps.createComputer(userId, deps.provider, {
+    // The disk this repository's setup needed before: no fill, restart and setup again.
+    setupDiskGb: await rememberedSetupDiskGb(env, userId, parsed, now),
     body: {
       name: computerNameOf(parsed.lane.name),
       type: size.type,

@@ -10,7 +10,7 @@ import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
 import { trustedHttpsOrigin } from "../trustedOrigin";
-import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, routeLaunches, startServerLaunch, type LaunchRouteDeps } from "./launches";
+import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, rememberLaunchSetupDisk, routeLaunches, startServerLaunch, type LaunchRouteDeps } from "./launches";
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
 import { serverGitCheck } from "./accountVault";
 import { routeAccountSignIns } from "./accountSignIns";
@@ -79,6 +79,7 @@ import {
   daysLeftIn,
   isMeteredStatus,
   isPaidPlanId,
+  setupStartDiskGb,
   tierOf,
   type CloudSize,
 } from "./plans";
@@ -677,10 +678,22 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
     if (tooBig) return refused(refuse(tooBig));
   }
   // The move's source is deleted at the end of the move, so its disk isn't counted twice while it runs.
-  const room = await diskRoom(env, account, await accountDiskGb(env, userId, moveFromInstanceId ?? "") + diskGb, now);
+  const otherDiskGb = await accountDiskGb(env, userId, moveFromInstanceId ?? "");
+  // A launch whose repository's setup grew its disk before starts there, inside the plan's disk.
+  if (!isMove) diskGb = setupStartDiskGb(size, extras.setupDiskGb, otherDiskGb, countedPlanDiskGb(account));
+  const room = await diskRoom(env, account, otherDiskGb + diskGb, now);
   if (!room.ok) return refused(refuse(room));
 
-  const reservation = await reserveComputer(env, account, { size, diskGb, capGb: room.capGb, moveFromInstanceId, name, requestId, templateVersion, channel, lane, now });
+  const reserve = (disk: number, capGb: number) =>
+    reserveComputer(env, account, { size, diskGb: disk, capGb, moveFromInstanceId, name, requestId, templateVersion, channel, lane, now });
+  let reservation = await reserve(diskGb, room.capGb);
+  if (!reservation.ok && !("replay" in reservation) && diskGb !== DISK_ON_CREATE_GB && !isMove) {
+    // Another create took the room the bigger start needed: start at 4 GB, as before.
+    diskGb = DISK_ON_CREATE_GB;
+    const again = await diskRoom(env, account, await accountDiskGb(env, userId, "") + diskGb, now);
+    if (!again.ok) return refused(refuse(again));
+    reservation = await reserve(diskGb, again.capGb);
+  }
   if (!reservation.ok) {
     if ("replay" in reservation) return await replayRequest(env, provider, userId, requestId, now) ?? { kind: "in_progress" };
     return refused(reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response);
@@ -953,6 +966,9 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
     // The bigger disk is billed only now that the provider made it; a refused grow gave its room back above.
     if (nextDisk !== currentDisk) statements.push(diskDayStatement(env, account, now));
     await env.DB.batch(statements);
+    // The computer's own grow during a launch's setup: the next launch of that repository starts at this disk.
+    // Best effort, after the grow is recorded, so it can never undo or block one.
+    if (nextDisk !== currentDisk && origin === "system") await rememberLaunchSetupDisk(env, computer, nextDisk, now);
     if (shapeChanges) track({ action: "tier_change", tier: tierOf(size) });
     if (nextDisk !== currentDisk) track({ action: "grow", tier: tierOf(size) });
     return json({ status });

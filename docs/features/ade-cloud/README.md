@@ -1368,7 +1368,7 @@ One busy list, `decideCloudBusy` in
     (and `ade_disk_full`); the card and `ade cloud status` show it. A refused
     turn's sentence reads `$ADE_HOME/cloud/disk-grow.json` and names the cloud
     computer's disk, the grow under way, or the way out.
-- **Setup that fills the disk** (every size starts at 4 GB):
+- **Setup that fills the disk** (every size starts at 4 GB, or the disk the repository's setup grew to before):
   - The setup step reads `ENOSPC` in the command's output and says so with
     that line (`laneSetupDiskFullError`). A file-watcher limit is not a full
     disk.
@@ -1387,6 +1387,17 @@ One busy list, `decideCloudBusy` in
     the launch reads as interrupted (`chat_launch.environment_resume_refused`).
   - A refused grow fails the stage with its way out and Retry.
     `ade chat launch-status` prints the stage's sentence as `now`.
+  - `cloud_repo_disks` (migration 0045) remembers the disk per account,
+    origin and lane template (`setupKeyOf`). The server writes it after a grow
+    with `origin: "auto"` that the provider made, while a launch on that
+    computer is still setting up (its agent stage pending;
+    `rememberLaunchSetupDisk`, best effort). For 90 days
+    (`CLOUD_AUTO_SIZE_MEMORY_MS`) a new launch of that repository starts at
+    that disk (`setupStartDiskGb` in `plans.ts`): in whole 4 GB steps, inside
+    the size's limit and only inside the plan's included disk the other
+    computers leave, never extra disk; what doesn't fit starts at the most
+    that does, down to 4 GB. A reservation that loses the room to another
+    create starts at 4 GB, as before. A move keeps its source's disk.
 - **Memory** (`lanes/laneSetupMemoryGuard.ts`): a cloud computer has no swap,
   and out of memory the provider restarts the whole computer.
   - Every setup script and dependency install runs beside a small `sh` guard

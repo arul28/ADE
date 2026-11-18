@@ -56,6 +56,29 @@ export const DISK_ON_CREATE_GB = 4;
 export const DISK_STEP_GB = 4;
 
 /**
+ * Pure: the disk a new computer starts at. 4 GB, or the disk this
+ * repository's setup grew to before (`rememberedGb`, `cloud_repo_disks`),
+ * in whole steps, inside the size's limit and inside the plan's included disk
+ * the account's other computers leave (never extra disk, so nothing new is
+ * billed or refused). What doesn't fit starts at the most that does.
+ */
+export function setupStartDiskGb(
+  size: Pick<CloudSize, "diskMaxGb">,
+  rememberedGb: number | null | undefined,
+  otherDiskGb: number,
+  planDiskGb: number,
+): number {
+  if (typeof rememberedGb !== "number" || !Number.isFinite(rememberedGb)) return DISK_ON_CREATE_GB;
+  const step = (gb: number) => Math.floor(gb / DISK_STEP_GB) * DISK_STEP_GB;
+  const wanted = Math.min(
+    Math.ceil(rememberedGb / DISK_STEP_GB) * DISK_STEP_GB,
+    step(size.diskMaxGb),
+    step(planDiskGb - otherDiskGb),
+  );
+  return wanted > DISK_ON_CREATE_GB ? wanted : DISK_ON_CREATE_GB;
+}
+
+/**
  * The plans (the owner's table of 2026-11-13). Disk is what the account has
  * at one time, shared by all its computers; hours and phone minutes are a
  * month's. There is no limit on how many computers an account has: only a
