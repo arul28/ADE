@@ -240,8 +240,9 @@ func phoneUpdateRequirement(
 }
 
 /// Whether the phone is blocked, readable from any thread: Sentry's
-/// `beforeSend` drops the phone's own events while it is (a build that is no
-/// longer supported reports nothing anyone will fix).
+/// `beforeSend`, `beforeSendLog` and `tracesSampler` drop the phone's own
+/// events, logs and traces while it is (a build that is no longer supported
+/// reports nothing anyone will fix).
 enum PhoneUpdateGateFlag {
   private static let state = OSAllocatedUnfairLock(initialState: false)
   static var isBlocked: Bool { state.withLock { $0 } }

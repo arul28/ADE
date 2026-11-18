@@ -11,13 +11,15 @@
 import * as Sentry from "@sentry/electron/renderer";
 import { connectSentry } from "../../shared/sentry/capture";
 import { createSentryEventHooks } from "../../shared/sentry/eventFilter";
-import { SENTRY_TRACES_SAMPLE_RATE } from "../../shared/sentry/config";
 import { toMegabytes } from "../../shared/sentry/diagnostics";
 
 export function initRendererSentry(): void {
   const hooks = createSentryEventHooks();
   Sentry.init({
-    tracesSampleRate: SENTRY_TRACES_SAMPLE_RATE,
+    // The shared rate, and no trace while the update gate blocks this build
+    // (the window's gate store sets it). Errors also pass main's hooks; logs do not (the SDK records a
+    // window's logs in main without main's beforeSendLog), so this window runs it.
+    tracesSampler: hooks.tracesSampler,
     // Never add trace headers to provider, GitHub or other third-party requests.
     tracePropagationTargets: [],
     integrations: (defaults) => [
@@ -29,6 +31,7 @@ export function initRendererSentry(): void {
     beforeSend: (event, hint) => hooks.beforeSend(addRendererState(event), hint),
     beforeBreadcrumb: hooks.beforeBreadcrumb,
     beforeSendSpan: hooks.beforeSendSpan,
+    beforeSendLog: hooks.beforeSendLog,
   });
   connectSentry(Sentry);
   // No `process` tag here: the renderer's scope is merged into main's, where

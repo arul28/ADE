@@ -57,6 +57,11 @@ serve yet, a TestFlight build that is missing or still processing).
 `set` also rewrites the Sentry release filters of `ade-desktop`, `ade-brain`
 and `ade-ios`, so reports from builds below the minimum are dropped at
 Sentry's edge. Other lines in those filters are kept. `--no-sentry` skips it.
+Release filters need Sentry's Business plan. On a lower plan, Sentry refuses
+("You do not have that feature enabled"), the script shows a WARNING, and it
+exits 0 when the minimums are saved. A build that the gate blocks does not
+send its own Sentry errors, logs or traces, so only builds older than the gate
+still send reports.
 
 Apps read the minimum at launch, when the window or app comes back to the
 front after 30 minutes, and every 3 hours. The server caches it for a minute.

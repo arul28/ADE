@@ -5,7 +5,7 @@ import {
 } from "../../../../desktop/src/shared/clientUpdateGate";
 import { createClientMinimumReader, fetchClientMinimumBody } from "../../../../desktop/src/shared/clientMinimumReader";
 import { createLatestByTrackReader } from "../../../../desktop/src/shared/latestByTrack";
-import { setSentryUnsupportedBuild } from "../../../../desktop/src/shared/sentry/eventFilter";
+import { setSentryUpdateGateResolver } from "../../../../desktop/src/shared/sentry/eventFilter";
 import { forwardLogToSentry } from "../../../../desktop/src/shared/sentry/logBridge";
 import { updateTrackOfVersion } from "../../../../desktop/src/shared/updateTrack";
 import { compareUpdateVersions } from "../../../../desktop/src/shared/updateVersions";
@@ -20,8 +20,8 @@ const READ_INTERVAL_MS = 3 * 60 * 60_000;
  * computer) against the owner's minimum. It never blocks anything: a brain
  * hosts running agents, and an ADE Cloud computer is updated by the account.
  * Below the minimum it says so once on stderr (and as
- * `client_update.required`), and drops its own Sentry error events, which
- * come from a build that is already fixed.
+ * `client_update.required`), and drops its own Sentry errors, logs and
+ * traces, which come from a build that is already fixed.
  *
  * Read at start, then every 3 hours (an unref'd timer: it never keeps the
  * process alive). The newest builds are read only for a build already below
@@ -43,15 +43,17 @@ export function startBrainClientUpdateCheck(args: {
   let announced: string | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
+  let requirement: DesktopUpdateRequirement = { required: false };
+  setSentryUpdateGateResolver(() => ({ requirement, version }));
 
   const check = async (): Promise<void> => {
     const answer = await minimum.refresh();
     const floor = answer?.desktop[updateTrackOfVersion(version)] ?? null;
-    let requirement: DesktopUpdateRequirement = { required: false };
+    let next: DesktopUpdateRequirement = { required: false };
     if (floor && compareUpdateVersions(version, floor) < 0) {
-      requirement = desktopUpdateRequirement({ currentVersion: version, minimum: answer, latest: await latest.refresh() });
+      next = desktopUpdateRequirement({ currentVersion: version, minimum: answer, latest: await latest.refresh() });
     }
-    setSentryUnsupportedBuild(requirement.required);
+    requirement = next;
     if (!requirement.required) {
       announced = null;
       return;
@@ -83,6 +85,7 @@ export function startBrainClientUpdateCheck(args: {
   void check().catch(() => undefined).finally(schedule);
   return () => {
     stopped = true;
+    setSentryUpdateGateResolver(null);
     if (timer) clearTimeout(timer);
   };
 }

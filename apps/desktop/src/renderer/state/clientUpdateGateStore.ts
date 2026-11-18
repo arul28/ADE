@@ -3,7 +3,7 @@ import {
   EMPTY_CLIENT_UPDATE_GATE_STATE,
   type ClientUpdateGateState,
 } from "../../shared/clientUpdateGate";
-import { setSentryUnsupportedBuild } from "../../shared/sentry/eventFilter";
+import { setSentryUpdateGateResolver } from "../../shared/sentry/eventFilter";
 
 /**
  * The window's copy of `clientUpdateGate` state: one read and one change
@@ -16,11 +16,17 @@ let state: ClientUpdateGateState = EMPTY_CLIENT_UPDATE_GATE_STATE;
 const listeners = new Set<() => void>();
 let stop: (() => void) | null = null;
 
+// The window's own Sentry hooks: its traces never reach main's, and dropping
+// its errors here saves the trip. `self` is only ever required for this
+// build's own version (ADE Web's is never required).
+setSentryUpdateGateResolver(() => ({
+  requirement: state.self,
+  version: state.self.required ? state.self.currentVersion : null,
+}));
+
 function apply(next: ClientUpdateGateState | null | undefined): void {
   if (!next || next === state) return;
   state = next;
-  // Main drops these too; dropping here saves the trip.
-  setSentryUnsupportedBuild(next.self.required);
   for (const listener of listeners) listener();
 }
 

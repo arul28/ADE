@@ -28,10 +28,16 @@
 // App Store serves; each TestFlight build exists and finished processing.
 // The apps check the same thing again before they block.
 //
-// What `set` also does: it rewrites the Sentry release filters of ade-desktop,
-// ade-brain and ade-ios so events from builds below the minimum are dropped
-// at Sentry's edge. Lines in those filters that are not ADE release patterns
-// are kept.
+// What `set` also does: it tries to rewrite the Sentry release filters of
+// ade-desktop, ade-brain and ade-ios so events from builds below the minimum
+// are dropped at Sentry's edge. Lines in those filters that are not ADE
+// release patterns are kept. Release filters need Sentry's Business plan; on
+// a lower plan Sentry answers "You do not have that feature enabled". Then
+// the script prints a WARNING and still exits 0 once the minimums saved: a
+// build the gate blocks drops its own errors, logs and traces anyway
+// (`isBlockedBuildTelemetry`, apps/desktop/src/shared/sentry/eventFilter.ts;
+// `PhoneUpdateGateFlag` on iOS). Only builds older than the gate (v1.2.130
+// and older) still report.
 
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -228,7 +234,9 @@ function writeMinimum(body) {
 const OUR_GLOB = /^(ade|com\.ade\.ios|com\.ade\.ios\.beta)@/;
 
 async function setSentryReleaseFilter(project, globs, dryRun) {
-  const token = need("SENTRY_AUTH_TOKEN");
+  // Thrown, not exited: by now the minimums may be saved, and `set` only warns.
+  const token = process.env.SENTRY_AUTH_TOKEN?.trim();
+  if (!token) throw new Error(`sentry ${project}: SENTRY_AUTH_TOKEN is not set (--no-sentry skips this step)`);
   const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
   const current = await getJson(`${SENTRY_API}/projects/${SENTRY_ORG}/${project}/`, { headers });
   const kept = String(current?.options?.["filters:releases"] ?? "")
@@ -365,9 +373,22 @@ async function main() {
       ...iosReleaseGlobs("com.ade.ios", next.ios.testFlight?.build ?? null),
       ...iosReleaseGlobs("com.ade.ios.beta", next.ios.betaApp?.build ?? null),
     ];
-    await setSentryReleaseFilter("ade-desktop", desktopGlobs, flags["dry-run"]);
-    await setSentryReleaseFilter("ade-brain", desktopGlobs, flags["dry-run"]);
-    await setSentryReleaseFilter("ade-ios", iosGlobs, flags["dry-run"]);
+    // The minimums are saved by now, so a Sentry failure only warns.
+    const failures = [];
+    for (const [project, globs] of [["ade-desktop", desktopGlobs], ["ade-brain", desktopGlobs], ["ade-ios", iosGlobs]]) {
+      try {
+        await setSentryReleaseFilter(project, globs, flags["dry-run"]);
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (failures.length) {
+      const planLimit = failures.some((message) => message.includes("You do not have that feature enabled"));
+      console.warn(`WARNING: the Sentry release filters did not change${flags["dry-run"] ? "" : " (the minimums are saved)"}:`);
+      for (const message of failures) console.warn(`  - ${message}`);
+      if (planLimit) console.warn("  Sentry release filters need the Business plan; this plan does not have them.");
+      console.warn("  Builds the gate blocks drop their own Sentry errors, logs and traces. Builds older than the gate (v1.2.130 and older) still report.");
+    }
   }
   if (!flags["dry-run"]) {
     console.log("Done. Apps read it within a minute (server cache) and block on their next check (launch, focus, or within 3 hours).");
