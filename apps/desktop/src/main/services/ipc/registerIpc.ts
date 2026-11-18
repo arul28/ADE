@@ -1192,27 +1192,33 @@ let appProcessMetricRowsCollector: ProcessMetricRowsCollector | null = null;
 /**
  * The machine-wide `ps` behind a resource sample costs Electron main about
  * 17 ms of CPU (a process spawn plus a parse of every process on the
- * machine). The top bar's calm check runs on this same period only to decide
- * whether to show its pressure chip, so while the last sample's process trees were
- * far below every pressure line (see `isCalmProcessSample`), a calm-ok caller
- * reuses that `ps` for this long. Electron's own numbers and system memory
- * are read fresh on every call; a fresh caller (Settings > Health) always
- * gets a new `ps`.
+ * machine). A calm-ok caller (the top bar's pressure check) may reuse the
+ * last `ps` for a while, depending on what that `ps` showed:
+ * - The process trees (the brain, terminals, agents) were far below every
+ *   pressure line: reuse it for 30 s. The hidden chip samples on that period
+ *   only to decide whether to show itself.
+ * - Their CPU was far below the CPU lines, but their memory was not: reuse it
+ *   for 10 s. A shown chip samples every 2 s, and with agents holding memory
+ *   on a small Mac it can stay shown at rest; memory moves slowly, so a fresh
+ *   `ps` on every sample bought nothing but CPU.
+ * Electron's own numbers and system memory are read fresh on every call, and
+ * a fresh caller (Settings > Health) always gets a new `ps`.
  */
 const CALM_PROCESS_SAMPLE_REUSE_MS = 30_000;
-let lastProcessSample: { sample: ProcessMetricSample; atMs: number; calm: boolean } | null = null;
+const CPU_CALM_PROCESS_SAMPLE_REUSE_MS = 10_000;
+let lastProcessSample: { sample: ProcessMetricSample; atMs: number; reuseMs: number | null } | null = null;
 
 /**
- * The process trees (the brain, terminals, agents: the part a reuse keeps)
- * far below the top bar's first pressure level (30% CPU, 8% of RAM for the
- * whole app). Electron's own share is read fresh on every call anyway.
+ * How long a calm-ok caller may reuse the `ps` behind `snapshot`. Calm means
+ * the process trees are far below the top bar's first pressure level (30% CPU,
+ * 8% of RAM for the whole app).
  */
-function isCalmProcessSample(snapshot: AppResourceUsageSnapshot): boolean {
-  if (snapshot.processSample?.status !== "ok") return false;
-  if ((snapshot.ptyCpuPercent ?? 0) >= 10 || (snapshot.cpuPercent ?? 0) >= 20) return false;
+function processSampleReuseMs(snapshot: AppResourceUsageSnapshot): number {
+  if (snapshot.processSample?.status !== "ok") return 0;
+  if ((snapshot.ptyCpuPercent ?? 0) >= 10 || (snapshot.cpuPercent ?? 0) >= 20) return 0;
   const total = snapshot.totalMemoryMB ?? 0;
-  if (total <= 0) return false;
-  return (snapshot.ptyMemoryMB ?? 0) / total < 0.03;
+  if (total > 0 && (snapshot.ptyMemoryMB ?? 0) / total < 0.03) return CALM_PROCESS_SAMPLE_REUSE_MS;
+  return CPU_CALM_PROCESS_SAMPLE_REUSE_MS;
 }
 
 function processRowsCollectorFor(mode: AppResourceUsageMode): ProcessMetricRowsCollector {
@@ -1220,11 +1226,11 @@ function processRowsCollectorFor(mode: AppResourceUsageMode): ProcessMetricRowsC
   return {
     collect: async () => {
       const kept = lastProcessSample;
-      if (mode === "calm-ok" && kept?.calm && Date.now() - kept.atMs < CALM_PROCESS_SAMPLE_REUSE_MS) {
+      if (mode === "calm-ok" && kept?.reuseMs && Date.now() - kept.atMs < kept.reuseMs) {
         return kept.sample;
       }
       const sample = await base.collect();
-      lastProcessSample = { sample, atMs: Date.now(), calm: false };
+      lastProcessSample = { sample, atMs: Date.now(), reuseMs: null };
       return sample;
     },
     dispose: () => base.dispose(),
@@ -1378,11 +1384,11 @@ function getCachedAppResourceUsageSnapshot(
     },
     collectAppResourceAttributionSources(contexts, localRuntimeConnectionPool),
   ).then((snapshot) => {
-    // Calm is judged on the snapshot the newest `ps` produced, never on one
-    // that reused it, so a reuse window cannot extend itself.
+    // The reuse window is judged on the snapshot the newest `ps` produced,
+    // never on one that reused it, so a reuse window cannot extend itself.
     const kept = lastProcessSample;
-    if (kept && !kept.calm && snapshot.processSample?.sampledAt === kept.sample.sampledAt) {
-      kept.calm = isCalmProcessSample(snapshot);
+    if (kept && kept.reuseMs === null && snapshot.processSample?.sampledAt === kept.sample.sampledAt) {
+      kept.reuseMs = processSampleReuseMs(snapshot);
     }
     appResourceUsageCache.set(mode, {
       contexts: [...contexts],
