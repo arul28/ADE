@@ -8652,8 +8652,9 @@ describe("per-chat runtime routing", () => {
           .map(([, arg]) => arg),
       ).toEqual([
         { ptyIds: ["pty-a"] },
-        { ptyIds: ["pty-a", "pty-b"] },
-        { ptyIds: ["pty-a", "pty-b", "pty-c"] },
+        // A pin on another machine waits for that machine to take the list.
+        { ptyIds: ["pty-a", "pty-b"], settleBindingKey: "remote:target-b:project-b" },
+        { ptyIds: ["pty-a", "pty-b", "pty-c"], settleBindingKey: "remote:target-c:project-c" },
       ]);
 
       await vi.advanceTimersByTimeAsync(0);

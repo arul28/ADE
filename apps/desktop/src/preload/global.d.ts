@@ -2869,7 +2869,10 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
         send: (args: AgentChatSendArgs, pin: OpenProjectBinding) => Promise<void>;
-        /** Text for a running agent CLI, typed only at a free prompt (`AgentCliTypeArgs`). */
+        /**
+         * Text for a running agent CLI (`AgentCliTypeArgs`): typed only at a
+         * free prompt, or at once with `when: "now"` (the local line).
+         */
         typeIntoCli: (
           args: AgentCliTypeArgs,
           pin: OpenProjectBinding,

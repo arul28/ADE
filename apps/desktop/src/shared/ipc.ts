@@ -235,6 +235,8 @@ export const IPC = {
   remoteRuntimeRunDoctor: "ade.remoteRuntime.runDoctor",
   remoteRuntimeCheckReachability: "ade.remoteRuntime.checkReachability",
   remoteRuntimeGetConnectionSnapshot: "ade.remoteRuntime.getConnectionSnapshot",
+  /** This computer's network came back or changed: redial dropped machines now. */
+  remoteRuntimeNetworkChanged: "ade.remoteRuntime.networkChanged",
   remoteRuntimeConnectionSnapshotChanged:
     "ade.remoteRuntime.connectionSnapshotChanged",
   remoteRuntimeSaveTarget: "ade.remoteRuntime.saveTarget",

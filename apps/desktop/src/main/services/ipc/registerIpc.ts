@@ -9548,6 +9548,7 @@ export function registerIpc({
       sessionId: arg?.sessionId ?? "",
       text: arg?.text ?? "",
       holdUntilFree: arg?.holdUntilFree === true,
+      ...(arg?.when === "now" ? { when: "now" as const } : {}),
       ...(typeof arg?.clientMessageId === "string" ? { clientMessageId: arg.clientMessageId } : {}),
     });
   });

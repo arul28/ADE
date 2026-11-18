@@ -17,6 +17,7 @@ import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeRouteKind,
   RemoteRuntimeTarget,
+  RemoteRuntimeCapabilities,
 } from "../../../shared/types/remoteRuntime";
 import {
   isRemoteRuntimeEventCategory,
@@ -33,6 +34,7 @@ import {
 import { ATTACHMENT_PARTS_MIN_BYTES, createAttachmentUploadMeter, sendAttachmentInParts } from "./remoteAttachmentParts";
 import { linkWantsSlowPath, type LinkMeter } from "./remoteLinkMeter";
 import type { RuntimeRpcClient } from "./runtimeRpcClient";
+import type { RemotePtyDataFilter } from "../pty/ptyDataSubscriptions";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
@@ -419,19 +421,27 @@ function shouldRetryRemoteRuntimeAction(
 }
 
 /**
- * A chat send with a client id, to a brain that drops a repeat of an id it has
- * seen (`clientSendDedupe`). Sending it again is safe: the brain answers a
- * repeat with the first send's result and writes no second message. So a send
+ * A send with a client id that the brain answers once: a chat send to a brain
+ * that drops a repeat of an id it has seen (`clientSendDedupe`), or text for an
+ * agent CLI (`chat.typeIntoCli` with a `clientMessageId`) to a brain that
+ * advertises `agentCliTypeNow`, whose one answer ledger covers both the input
+ * box and the local line. Sending it again is safe: the brain answers a repeat
+ * with the first send's result and types or writes no second copy. So a send
  * whose answer a dropped link lost goes out again after the reconnect, instead
  * of ending as "outcome unknown" and a second copy from the person's retry.
  */
-export function isDedupedChatSend(
+export function isDedupedSend(
   request: RemoteRuntimeActionRequest,
-  brainDedupesSends: boolean,
+  capabilities: Pick<RemoteRuntimeCapabilities, "clientSendDedupe" | "agentCliTypeNow"> | null | undefined,
 ): boolean {
-  if (!brainDedupesSends || request.domain !== "chat" || request.action !== "sendMessage") return false;
-  const args = request.args as { clientSendId?: unknown } | undefined;
-  return typeof args?.clientSendId === "string" && args.clientSendId.trim().length > 0;
+  if (request.domain !== "chat") return false;
+  const args = request.args as { clientSendId?: unknown; clientMessageId?: unknown } | undefined;
+  const id = request.action === "sendMessage" && capabilities?.clientSendDedupe === true
+    ? args?.clientSendId
+    : request.action === "typeIntoCli" && capabilities?.agentCliTypeNow === true
+      ? args?.clientMessageId
+      : null;
+  return typeof id === "string" && id.trim().length > 0;
 }
 
 /**
@@ -1047,7 +1057,12 @@ export class RemoteConnectionPool {
       },
       {
         retryOnConnectionError: (entry) => shouldRetryRemoteRuntimeAction(request)
-          || isDedupedChatSend(request, entry.result.capabilities?.clientSendDedupe === true),
+          || isDedupedSend(request, entry.result.capabilities),
+        // A send may have arrived before the link dropped. If the redial
+        // fails too, that is an unknown outcome, not "can't reach": the
+        // caller waits for the message instead of handing it back.
+        sentWriteOnLostLink: (entry) => !shouldRetryRemoteRuntimeAction(request)
+          && isDedupedSend(request, entry.result.capabilities),
       },
     );
   }
@@ -1577,6 +1592,9 @@ export class RemoteConnectionPool {
         ...(isRemoteRuntimeEventCategory(request.category)
           ? { category: request.category }
           : {}),
+        ...(request.ptyDataIds && entry.result.capabilities?.ptyDataFilter === true
+          ? { ptyDataIds: request.ptyDataIds }
+          : {}),
       },
     }, {
       timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS,
@@ -1658,7 +1676,7 @@ export class RemoteConnectionPool {
   ): Promise<() => void> {
     const entry = await this.requireEntry(targetId);
     return await subscribeToRuntimeEvents(
-      entry.client,
+      entry,
       projectId,
       request,
       onEvent,
@@ -1674,18 +1692,22 @@ export class RemoteConnectionPool {
     onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
     onEnded?: () => void,
     onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
-    options: { onPhase?: (phase: RemoteEventSetupPhase) => void } = {},
+    options: {
+      onPhase?: (phase: RemoteEventSetupPhase) => void;
+      ptyDataFilter?: RemotePtyDataFilter;
+    } = {},
   ): Promise<() => void> {
     return await this.withEntryForTarget(
       target,
       (entry) =>
         subscribeToRuntimeEvents(
-          entry.client,
+          entry,
           projectId,
           request,
           onEvent,
           onEnded,
           onSubscribed,
+          options.ptyDataFilter,
         ),
       {
         retryOnConnectionError: true,
@@ -1819,6 +1841,11 @@ export class RemoteConnectionPool {
     options: {
       /** May the call go out again on a new connection? A function decides per connection (its brain's capabilities). */
       retryOnConnectionError: boolean | ((entry: PoolEntry) => boolean);
+      /**
+       * A write that may have gone out on the lost link: a failed redial ends
+       * it as `RemoteActionOutcomeUnknownError`, not as the dial's error.
+       */
+      sentWriteOnLostLink?: (entry: PoolEntry) => boolean;
       isRetryableError?: (error: unknown) => boolean;
       /** Told which step the call is waiting on, so a caller's own deadline can name it. */
       phases?: {
@@ -1839,6 +1866,7 @@ export class RemoteConnectionPool {
       ? options.retryOnConnectionError(connection)
       : options.retryOnConnectionError);
     const retryOnConnectionError = mayRetryOn(entry);
+    const sentWrite = options.sentWriteOnLostLink?.(entry) === true;
     const disconnectGeneration =
       this.disconnectGenerationByTargetId.get(target.id) ?? 0;
     const droppedElsewhere = () =>
@@ -1867,9 +1895,11 @@ export class RemoteConnectionPool {
         // instead of failing with the timeout. With no dial to join (the
         // person disconnected), it fails as before: it never dials itself.
         const redial = this.entries.get(target.id);
-        if (!redial) throw error;
+        if (!redial) throw sentWrite ? new RemoteActionOutcomeUnknownError(false) : error;
         notePhase("reconnect");
-        const nextEntry = await redial;
+        const nextEntry = await redial.catch((redialError: unknown) => {
+          throw sentWrite ? new RemoteActionOutcomeUnknownError(false) : redialError;
+        });
         if (nextEntry === entry) throw error;
         if (!mayRetryOn(nextEntry)) throw new RemoteActionOutcomeUnknownError(null);
         if (options.phases) notePhase(options.phases.operation);
@@ -1882,7 +1912,7 @@ export class RemoteConnectionPool {
       try {
         nextEntry = await this.connectEntry(reconnectTarget, { initiatedBy: "background" });
       } catch (reconnectError) {
-        if (retryOnConnectionError) throw reconnectError;
+        if (retryOnConnectionError && !sentWrite) throw reconnectError;
         throw new RemoteActionOutcomeUnknownError(false);
       }
       if (mayRetryOn(nextEntry) && retryOnConnectionError) {
@@ -2153,13 +2183,21 @@ function normalizeAdeActionRegistry(value: unknown): AdeActionRegistryEntry[] {
 }
 
 async function subscribeToRuntimeEvents(
-  client: RuntimeRpcClient,
+  entry: Pick<PoolEntry, "client" | "result">,
   projectId: string,
   request: RemoteRuntimeStreamEventsRequest,
   onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
   onEnded?: () => void,
   onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
+  ptyDataFilter?: RemotePtyDataFilter,
 ): Promise<() => void> {
+  const client = entry.client;
+  // Only a brain that takes a list gets one; an older one sends everything.
+  const filter = entry.result.capabilities?.ptyDataFilter === true ? ptyDataFilter : undefined;
+  // A window's list change waits on `ready` while the subscription opens; with
+  // no list to send, nothing has to wait.
+  if (ptyDataFilter && !filter) ptyDataFilter.markReady();
+  const initialPtyDataIds = filter?.current() ?? null;
   const pendingNotifications: RuntimeEventNotification[] = [];
   let closed = false;
   let subscriptionId: string | null = null;
@@ -2203,10 +2241,52 @@ async function subscribeToRuntimeEvents(
         ? { category: request.category }
         : {}),
       ...(typeof request.replay === "boolean" ? { replay: request.replay } : {}),
+      ...(initialPtyDataIds ? { ptyDataIds: initialPtyDataIds } : {}),
     }, {
       timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS,
     });
     subscriptionId = readSubscriptionId(value);
+    if (filter && !closed) {
+      const id = subscriptionId;
+      let sent = ptyDataIdsSignature(initialPtyDataIds);
+      // Calls still out, by list. An identical list waits for its own call
+      // even after a later list replaced `sent` and failed back to it.
+      const inFlight = new Map<string | null, Promise<void>>();
+      filter.onChange = (ptyIds) => {
+        const signature = ptyDataIdsSignature(ptyIds);
+        if (closed) return Promise.resolve();
+        // The same list asked for again while its call is out waits for that
+        // call: `sent` records a request, and a settle must not pass before
+        // the brain has it.
+        if (signature === sent) return inFlight.get(signature) ?? Promise.resolve();
+        const previous = sent;
+        sent = signature;
+        const call: Promise<void> = client.call("runtimeEvents.setPtyDataFilter", {
+          subscriptionId: id,
+          ptyDataIds: ptyIds,
+        }, { timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS }).then(
+          () => undefined,
+          (error: unknown) => {
+            // The brain kept the previous list: a later push of this one must
+            // go out again, or a terminal it now shows would get no output.
+            if (sent === signature) sent = previous;
+            throw error;
+          },
+        );
+        inFlight.set(signature, call);
+        const settleInFlight = () => {
+          if (inFlight.get(signature) === call) inFlight.delete(signature);
+        };
+        void call.then(settleInFlight, settleInFlight);
+        return call;
+      };
+      // The window may have changed its list while the subscribe was in flight.
+      // The list is on the brain when that call answers, so the wait for this
+      // subscription ends then.
+      void filter.onChange(filter.current())
+        .catch(() => undefined)
+        .finally(() => filter.markReady());
+    }
     onSubscribed?.(normalizeRuntimeEventsSubscribeResult(value, request.cursor));
     for (const notification of pendingNotifications) {
       if (closed) break;
@@ -2216,6 +2296,10 @@ async function subscribeToRuntimeEvents(
     }
   } catch (error) {
     closed = true;
+    if (filter) {
+      filter.onChange = null;
+      filter.markReady();
+    }
     removeNotificationListener();
     removeDisconnectListener();
     throw error;
@@ -2224,6 +2308,10 @@ async function subscribeToRuntimeEvents(
   return () => {
     if (closed) return;
     closed = true;
+    if (filter) {
+      filter.onChange = null;
+      filter.markReady();
+    }
     removeNotificationListener();
     removeDisconnectListener();
     const id = subscriptionId;
@@ -2233,6 +2321,10 @@ async function subscribeToRuntimeEvents(
         .catch(() => {});
     }
   };
+}
+
+function ptyDataIdsSignature(ptyIds: string[] | null): string | null {
+  return ptyIds ? ptyIds.join("\0") : null;
 }
 
 function normalizeRuntimeEventsSubscribeResult(

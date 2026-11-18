@@ -113,7 +113,7 @@ import {
 import { moveSessionOnBoard } from "./sessionBoardMoveUi";
 import { showToast } from "../app/toast/toastStore";
 import { Banner } from "../ui/notice";
-import { useSlowLinkActive } from "../../state/projectMachines";
+import { useRemoteTargetPersonFixFailure, useRemoteTargetReconnecting, useSlowLinkActive } from "../../state/projectMachines";
 import { findGridSetForSession } from "../../lib/workGrid";
 import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -1325,6 +1325,24 @@ export const SessionListPane = React.memo(function SessionListPane({
   useCloudViewOnScreen(foreignRows.some((row) => isCloudConnectionTarget(row.machineId) || isSavedChatsMachineId(row.machineId)));
   // No copy of the repository online: the list reads nothing and says so.
   const tabCopyPin = useTabCopyPin();
+  // The tab's machine dropped and ADE is dialing it again: say so, not "no computer".
+  const tabBinding = useAppStore((state) => state.projectBinding);
+  const tabReconnecting = useRemoteTargetReconnecting(tabBinding?.kind === "remote" ? tabBinding.targetId : null);
+  const reconnectingMachineName = !tabCopyPin && tabReconnecting && tabBinding?.kind === "remote"
+    ? tabBinding.runtimeName || "the machine"
+    : null;
+  // The tab's machine turned this device away (its pairing is out of date, or
+  // the account would not vouch for it): no redial fixes that, so the list
+  // says what happened and offers the step that does.
+  const tabFixFailure = useRemoteTargetPersonFixFailure(tabBinding?.kind === "remote" ? tabBinding.targetId : null);
+  const tabFix = !tabCopyPin && !reconnectingMachineName && tabFixFailure && tabBinding?.kind === "remote"
+    ? {
+      title: `Can't reach ${tabBinding.runtimeName || "the machine"}`,
+      detail: tabFixFailure.message,
+      actionLabel: tabFixFailure.failure === "pairing" ? "Pair again" : "Show machine",
+      open: () => openConnectionsPanel({ tab: "machines", machineId: tabBinding.targetId }),
+    }
+    : null;
   // Standalone callers can omit the hook's full-roster filing map, so keep the
   // foreign slice fresh here as well. The normal Work path supplies the map and
   // its own timer; this fallback timer prevents a foreign snooze from staying
@@ -2879,6 +2897,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         deltaEnabled={!foreignRow}
         githubStack={isChatToolType(session.toolType) ? sessionPr?.stack ?? null : null}
         disabledReason={disabledReason}
+        readOnly={!foreignRow && reconnectingMachineName != null}
         disabledBusy={!foreignRow}
       />
     );
@@ -4427,6 +4446,36 @@ export const SessionListPane = React.memo(function SessionListPane({
 
       <CloudLanesWithoutComputerBlock className="mx-2 mt-1.5" />
 
+      {/* The tab's machine dropped: its rows are what it last sent, and they
+          wait for it. Said once above the list, not on every row. */}
+      {reconnectingMachineName && hasAnySessions ? (
+        <Banner
+          layout="inline"
+          style={{ margin: "6px 8px 0" }}
+          model={{
+            id: "work-machine-reconnecting",
+            tone: "info",
+            title: `Reconnecting to ${reconnectingMachineName}…`,
+            detail: "These are the chats it last sent.",
+            dismiss: false,
+          }}
+        />
+      ) : null}
+      {tabFix && hasAnySessions ? (
+        <Banner
+          layout="inline"
+          style={{ margin: "6px 8px 0" }}
+          model={{
+            id: "work-machine-needs-fix",
+            tone: "warning",
+            title: tabFix.title,
+            detail: tabFix.detail,
+            actions: [{ label: tabFix.actionLabel, variant: "primary", onClick: tabFix.open }],
+            dismiss: false,
+          }}
+        />
+      ) : null}
+
       {/* Session list */}
       <div
         ref={listScrollRef}
@@ -4468,22 +4517,30 @@ export const SessionListPane = React.memo(function SessionListPane({
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
             <Terminal size={16} weight="regular" className="text-muted-fg/45 mb-2" />
             <div className="text-[12px] font-medium text-fg/70">
-              {!tabCopyPin
+              {reconnectingMachineName
+                ? `Reconnecting to ${reconnectingMachineName}…`
+                : tabFix
+                ? tabFix.title
+                : !tabCopyPin
                 ? "No computer connected"
                 : firstLoadRetrying ? "Waiting for this machine to answer" : "No chats yet"}
             </div>
             <div className="mt-1 text-[11px] text-muted-fg/60">
-              {!tabCopyPin
+              {reconnectingMachineName
+                ? "Your chats show again as soon as it answers"
+                : tabFix
+                ? tabFix.detail
+                : !tabCopyPin
                 ? "Connect a computer to see this project's chats"
                 : firstLoadRetrying ? "Your chats will show up as soon as it does" : "Start one from the prompt box"}
             </div>
-            {!tabCopyPin ? (
+            {!tabCopyPin && !reconnectingMachineName ? (
               <button
                 type="button"
                 className="mt-2.5 rounded-md px-2 py-1 text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg"
-                onClick={() => openConnectionsPanel("machines")}
+                onClick={tabFix ? tabFix.open : () => openConnectionsPanel("machines")}
               >
-                Connect a computer
+                {tabFix ? tabFix.actionLabel : "Connect a computer"}
               </button>
             ) : null}
           </div>

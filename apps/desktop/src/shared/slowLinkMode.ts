@@ -17,10 +17,17 @@
  * - Between the two it keeps what it was, so a link near the line does not
  *   switch back and forth.
  * - The person's setting for the machine wins: "on" or "off".
+ *
+ * A far link (`far`) is a lower level of the same rule, for typing only. At
+ * `FAR_RTT_ON_MS` each key already lags enough to feel, so a terminal shows
+ * typed text at once (type-ahead, the agent CLI local line). Pictures and the
+ * other heavy parts still wait for slow-connection mode.
  */
 export const SLOW_RTT_ON_MS = 400;
 export const SLOW_RTT_OFF_MS = 250;
 export const SLOW_RTT_OFF_SAMPLES = 5;
+export const FAR_RTT_ON_MS = 150;
+export const FAR_RTT_OFF_MS = 110;
 export const SLOW_DROPS_ON = 2;
 export const SLOW_DROP_WINDOW_MS = 5 * 60_000;
 const RTT_SAMPLES_KEPT = SLOW_RTT_OFF_SAMPLES;
@@ -37,6 +44,8 @@ export type SlowLinkStatus = {
   reason: SlowLinkReason | null;
   /** The last measured round trip, for the label. */
   rttMs: number | null;
+  /** Typing shows at once: slow-connection mode, or a far link. Absent from an older desktop: same as `active`. */
+  far?: boolean;
 };
 
 export type SlowLinkMeasure = {
@@ -47,10 +56,20 @@ export type SlowLinkMeasure = {
   /** What the automatic rule said last. */
   slow: boolean;
   reason: Exclude<SlowLinkReason, "setting"> | null;
+  /** What the far-link rule said last. */
+  far: boolean;
 };
 
 export function emptySlowLinkMeasure(): SlowLinkMeasure {
-  return { rttMs: [], dropAt: [], slow: false, reason: null };
+  return { rttMs: [], dropAt: [], slow: false, reason: null, far: false };
+}
+
+/** On at two of the last three at or above `onMs`; off once the last five are under `offMs`; else unchanged. */
+function latencyLevel(rttMs: number[], was: boolean, onMs: number, offMs: number): boolean {
+  if (rttMs.slice(-3).filter((rtt) => rtt >= onMs).length >= 2) return true;
+  const recent = rttMs.slice(-SLOW_RTT_OFF_SAMPLES);
+  const calm = recent.length >= SLOW_RTT_OFF_SAMPLES && recent.every((rtt) => rtt < offMs);
+  return was && !calm;
 }
 
 export function normalizeSlowLinkPreference(value: unknown): SlowLinkPreference {
@@ -58,6 +77,11 @@ export function normalizeSlowLinkPreference(value: unknown): SlowLinkPreference 
 }
 
 function decide(measure: SlowLinkMeasure, now: number): SlowLinkMeasure {
+  const decided = decideSlow(measure, now);
+  return { ...decided, far: decided.slow || latencyLevel(measure.rttMs, measure.far, FAR_RTT_ON_MS, FAR_RTT_OFF_MS) };
+}
+
+function decideSlow(measure: SlowLinkMeasure, now: number): Omit<SlowLinkMeasure, "far"> {
   const dropAt = measure.dropAt.filter((at) => now - at <= SLOW_DROP_WINDOW_MS);
   const lastThree = measure.rttMs.slice(-3);
   const slowSamples = lastThree.filter((rtt) => rtt >= SLOW_RTT_ON_MS).length;
@@ -87,9 +111,9 @@ export function noteSlowLinkDrop(measure: SlowLinkMeasure, now: number): SlowLin
 
 export function slowLinkStatus(measure: SlowLinkMeasure, preference: SlowLinkPreference): SlowLinkStatus {
   const rttMs = measure.rttMs.length ? measure.rttMs[measure.rttMs.length - 1]! : null;
-  if (preference === "on") return { active: true, reason: "setting", rttMs };
-  if (preference === "off") return { active: false, reason: null, rttMs };
-  return { active: measure.slow, reason: measure.slow ? measure.reason : null, rttMs };
+  if (preference === "on") return { active: true, reason: "setting", rttMs, far: true };
+  if (preference === "off") return { active: false, reason: null, rttMs, far: false };
+  return { active: measure.slow, reason: measure.slow ? measure.reason : null, rttMs, far: measure.far };
 }
 
 /**

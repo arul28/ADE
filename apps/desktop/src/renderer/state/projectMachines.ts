@@ -17,6 +17,8 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { LaneSummary, OpenProjectBinding, RemoteRuntimeConnectionSnapshot } from "../../shared/types";
+import { isPersonFixConnectionFailure, type RemoteRuntimeConnectionStatus } from "../../shared/types/remoteRuntime";
+import { FAR_RTT_ON_MS } from "../../shared/slowLinkMode";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { readLocalSyncStatus } from "../lib/localSyncStatusReader";
 import { useAppStore, useRootAppStore } from "./appStore";
@@ -165,6 +167,64 @@ export function useRemoteTargetState(targetId: string | null): "online" | "offli
 }
 
 /**
+ * Whether ADE is bringing a dropped link to this machine back on its own
+ * ("reconnecting"), as opposed to waiting for the person. A background redial
+ * publishes `connecting` with its recovery kept, so both states count; a first
+ * connect, or one the person asked for, has no recovery and does not. Same
+ * shared feed; null target: false, no feed.
+ */
+export function useRemoteTargetReconnecting(targetId: string | null): boolean {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!targetId) return false;
+      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+      return (connection?.state === "error" || connection?.state === "connecting")
+        && connection.recovery === "reconnecting";
+    },
+    () => false,
+  );
+}
+
+/**
+ * The target's last connect failed in a way only the person fixes (pair
+ * again, sign in): that failure and its message, else null. The service then
+ * stops redialing it (`recovery` is not "reconnecting"). Same shared feed.
+ */
+export function useRemoteTargetPersonFixFailure(
+  targetId: string | null,
+): { failure: "pairing" | "authentication" | "identity"; message: string } | null {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  // A string, so an unchanged failure in a new snapshot renders nothing.
+  const key = useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!targetId) return "";
+      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+      const failure = connection?.state === "error" ? connection.lastErrorInfo?.failure : undefined;
+      if (!isPersonFixConnectionFailure(failure)) return "";
+      return `${failure}\u0000${connection?.lastErrorInfo?.message ?? connection?.lastError ?? ""}`;
+    },
+    () => "",
+  );
+  return useMemo(() => {
+    if (!key) return null;
+    const split = key.indexOf("\u0000");
+    return {
+      failure: key.slice(0, split) as "pairing" | "authentication" | "identity",
+      message: key.slice(split + 1),
+    };
+  }, [key]);
+}
+
+/**
  * A mark for the target's current connection: its `connectedAt` while it is
  * connected (not held after a drop), else "". A new connection, such as an
  * ADE Cloud computer's new brain after a wake, gives a new mark. Same shared
@@ -175,16 +235,15 @@ export function useRemoteConnectionMark(targetId: string | null): string {
     () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
     [targetId],
   );
-  return useSyncExternalStore(
-    subscribe,
-    () => {
-      if (!targetId) return "";
-      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
-      if (!connection || connection.state !== "connected" || typeof connection.reconnectingSinceMs === "number") return "";
-      return String(connection.connectedAt ?? "");
-    },
-    () => "",
-  );
+  return useSyncExternalStore(subscribe, () => remoteConnectionMarkNow(targetId), () => "");
+}
+
+/** `useRemoteConnectionMark` read once, for a timer that runs outside render. */
+export function remoteConnectionMarkNow(targetId: string | null): string {
+  if (!targetId) return "";
+  const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+  if (!connection || connection.state !== "connected" || typeof connection.reconnectingSinceMs === "number") return "";
+  return String(connection.connectedAt ?? "");
 }
 
 /**
@@ -202,6 +261,28 @@ export function useSlowLinkActive(targetId: string | null): boolean {
       if (!targetId) return false;
       const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
       return connection?.state === "connected" && connection.slowLink?.active === true;
+    },
+    () => false,
+  );
+}
+
+/**
+ * Whether this machine's brain types a terminal's local line
+ * (`agentCliTypeNow`): an older brain types every text at a free prompt, so
+ * the local line stays off for its terminals. Same shared feed; null target:
+ * false, no feed.
+ */
+export function useRemoteTypesLocalLine(targetId: string | null): boolean {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!targetId) return false;
+      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+      return connection?.state === "connected" && connection.capabilities?.agentCliTypeNow === true;
     },
     () => false,
   );
@@ -229,14 +310,33 @@ export function useLinkRoundTripMs(targetId: string | null): number | null {
   );
 }
 
-/** Round trip from which a terminal shows typed characters before the echo. */
-export const TYPE_AHEAD_RTT_MS = 200;
+/** A connected link on which typing shows at once (`SlowLinkStatus.far`; an older desktop sends only `active`). */
+function connectionLinkFar(connection: RemoteRuntimeConnectionStatus | undefined): boolean {
+  if (connection?.state !== "connected" || !connection.slowLink) return false;
+  return connection.slowLink.far ?? connection.slowLink.active;
+}
+
+/**
+ * Whether typed text in this machine's terminals shows at once: a far link
+ * (`FAR_RTT_ON_MS`, with its own hysteresis) or slow-connection mode. The
+ * machine's "Off" setting turns it off. Same shared feed; null target: false.
+ */
+export function useFarLinkActive(targetId: string | null): boolean {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => (targetId ? connectionLinkFar(sharedSnapshot?.connections.find((entry) => entry.target.id === targetId)) : false),
+    () => false,
+  );
+}
 
 /**
  * The round trip to this machine when its terminals should guess typed
- * characters (`terminalTypeAhead.ts`), else null: slow-connection mode on, or
- * a round trip of `TYPE_AHEAD_RTT_MS` or more. The machine's "Off" setting
- * turns it off. Same shared feed; null target: null.
+ * characters (`terminalTypeAhead.ts`), else null: the link is far
+ * (`useFarLinkActive`). Same shared feed; null target: null.
  */
 export function useTypeAheadRoundTripMs(targetId: string | null): number | null {
   const subscribe = useMemo(
@@ -248,10 +348,9 @@ export function useTypeAheadRoundTripMs(targetId: string | null): number | null 
     () => {
       if (!targetId) return null;
       const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
-      if (connection?.state !== "connected" || connection.target.slowLinkMode === "off") return null;
-      const rtt = connection.slowLink?.rttMs ?? connection.route?.latencyMs ?? null;
-      if (connection.slowLink?.active) return typeof rtt === "number" ? rtt : TYPE_AHEAD_RTT_MS;
-      return typeof rtt === "number" && rtt >= TYPE_AHEAD_RTT_MS ? rtt : null;
+      if (!connectionLinkFar(connection)) return null;
+      const rtt = connection?.slowLink?.rttMs ?? connection?.route?.latencyMs ?? null;
+      return typeof rtt === "number" ? rtt : FAR_RTT_ON_MS;
     },
     () => null,
   );

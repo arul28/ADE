@@ -12381,6 +12381,8 @@ export function createAgentChatService(args: {
     & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal" | "onExit" | "waitForResumeTargetBackfill" | "ensureResumeTargets" | "dispose" | "isSessionOwnedByLivePeerRuntime" | "resumeSession" | "hasLivePty" | "showSessionNotice">>
     // The `ade chat` commands a tracked agent CLI answers (`agentCliSessionActions.ts`).
     & Partial<Pick<ReturnType<typeof createPtyService>, "interruptAgentCli" | "restartAgentCli" | "regenerateAgentCliTitle">>
+    // A line from a terminal's local line, typed now (`chat.typeIntoCli` with `when: "now"`).
+    & Partial<Pick<ReturnType<typeof createPtyService>, "typeLineIntoAgentCli">>
     // A tracked CLI's turn boundaries: its finished turns report to its parent
     // and settle a waiting automation step.
     & TrackedCliTurnSignals
@@ -26369,8 +26371,11 @@ export function createAgentChatService(args: {
     // written its message, so a retry of it must not write it again.
     if (event.type === "user_message") clientSends.noteMessageWritten(managed.session.id);
     // The person's message carries that send's id, so a client finds it by id
-    // (a queued message from the web or phone). A message ADE wrote does not.
-    if (event.type === "user_message" && !event.clientSendId && !event.metadata?.hostContinuation) {
+    // (a queued message from the web or phone, or a send whose answer was lost
+    // on a slow link). A message ADE wrote does not, and neither does a steer
+    // row: a send's own continuation can deliver another client's queued
+    // steer, and that row must not read as this send's message.
+    if (event.type === "user_message" && !event.clientSendId && !event.steerId && !event.metadata?.hostContinuation) {
       const clientSendId = clientSends.claimSendId(managed.session.id);
       if (clientSendId) event = { ...event, clientSendId };
     }
@@ -51781,8 +51786,10 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Answers to `typeIntoAgentCliWhenFree` by the caller's message id, so one
-   * queued text sent by two windows (or retried) is typed once. A call in
+   * Answers to `typeIntoAgentCliWhenFree` by session and the caller's message
+   * id, so one text sent by two windows, or sent again after a dropped link,
+   * is typed once. Both ways of typing share it: the input box's queued texts
+   * (`when: "free"`) and the terminal's local line (`when: "now"`). A call in
    * flight is shared; a typed or queued answer is kept for a while.
    */
   const agentCliTypeAnswers = new Map<string, { at: number; answer: Promise<AgentCliTypeResult> }>();
@@ -51815,6 +51822,7 @@ export function createAgentChatService(args: {
     const text = typeof args?.text === "string" ? args.text : "";
     if (!sessionId) throw new AdeExpectedError("A session id is required.", "user");
     if (!text.trim()) throw new AdeExpectedError("There is no text to send.", "user");
+    if (args.when === "now") return await typeAgentCliLineNow(sessionId, text, args.inputOrigin);
     if (!isTrackedAgentCliSession(sessionId)) {
       throw new AdeExpectedError(`Session '${sessionId}' is not an agent CLI session.`, "user");
     }
@@ -51837,6 +51845,30 @@ export function createAgentChatService(args: {
       return { outcome: "held" };
     }
     return { outcome: "deferred" };
+  };
+
+  /**
+   * `when: "now"`: the terminal's local line. Typed into the CLI's input at
+   * once, as the person's own keys would be, then Enter; no wait for a free
+   * prompt, no clear keys, no `@` expansion. Any agent CLI terminal takes it,
+   * tracked or not, like keys typed there.
+   */
+  const typeAgentCliLineNow = async (sessionId: string, text: string, inputOrigin: unknown): Promise<AgentCliTypeResult> => {
+    const row = sessionService.get(sessionId);
+    // A plain terminal is not a chat: the line would run in its shell. A
+    // tracked or untracked agent CLI terminal has a CLI tool type. The queued
+    // path refuses the same ids; this immediate one used to skip it.
+    if (row && row.toolType === "shell") {
+      throw new AdeExpectedError(`Session '${sessionId}' is not an agent CLI session.`, "user");
+    }
+    if (row?.archivedAt) {
+      throw new AdeExpectedError("This CLI session is archived.", "user");
+    }
+    if (typeof ptyService?.typeLineIntoAgentCli !== "function") {
+      throw new AdeExpectedError("Typing a line into a CLI session is not available in this runtime.", "user");
+    }
+    const typed = await ptyService.typeLineIntoAgentCli({ sessionId, text, inputOrigin });
+    return { outcome: typed ? "delivered" : "ended" };
   };
 
   // The `ade chat` commands a tracked agent CLI answers: each public chat

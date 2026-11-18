@@ -17,7 +17,8 @@ import type { JevService } from "../jev/jevService";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
-import { writeCarriesTypedInput, writeIsTerminalReport, type AgentShellRelaunchScope, type AgentShellRetireReason } from "../sessions/agentShellCleanup";
+import { writeCarriesTypedInput, type AgentShellRelaunchScope, type AgentShellRetireReason } from "../sessions/agentShellCleanup";
+import { writeIsTerminalReport } from "../../../shared/terminalReports";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -407,6 +408,12 @@ const AGENT_CLI_LINE_SUBMIT_KEY = "\r";
  * timestamp to be beaten by the next repaint.
  */
 const AGENT_CLI_SUBMIT_DELAY_MS = 25;
+/**
+ * Enter after a multi-line paste from the local line, for every CLI but
+ * Codex (its own 180 ms): a paste can take the CLI longer to take in than
+ * typed text, and an Enter that comes too soon can land in the paste.
+ */
+const LOCAL_LINE_PASTE_SUBMIT_DELAY_MS = 100;
 const CODEX_CLI_PASTE_SUBMIT_DELAY_MS = 180;
 const CURSOR_CLI_PASTE_SUBMIT_DELAY_MS = 500;
 const AGENT_CLI_READY_TIMEOUT_MS = 20_000;
@@ -6469,9 +6476,22 @@ export function createPtyService({
     await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
     if (!write(AGENT_CLI_INPUT_CLEAR_TO_START_KEY)) return false;
     await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
-    // Muse 1.4.7 takes a bracketed paste as one multi-line message; typed
-    // newlines would submit it line by line.
-    if (provider === "codex" || provider === "muse") {
+    return await writeAgentCliText(write, inputText, provider, false);
+  };
+
+  /**
+   * Puts text into an agent CLI's input without submitting it. Codex and Muse
+   * take a bracketed paste (Muse 1.4.7 takes one as a single multi-line
+   * message; typed newlines would submit it line by line); `paste` sends one
+   * to every CLI, for text with line breaks. The rest get the text typed.
+   */
+  const writeAgentCliText = async (
+    write: (data: string) => boolean,
+    inputText: string,
+    provider: TerminalResumeProvider | null,
+    paste: boolean,
+  ): Promise<boolean> => {
+    if (paste || provider === "codex" || provider === "muse") {
       return write(`${AGENT_CLI_BRACKETED_PASTE_START}${inputText}${AGENT_CLI_BRACKETED_PASTE_END}`);
     }
     for (let index = 0; index < inputText.length; index += AGENT_CLI_INPUT_CHUNK_SIZE) {
@@ -7049,6 +7069,60 @@ export function createPtyService({
       });
     },
   });
+
+  /**
+   * A line the person wrote in a terminal's local line (slow links): its text
+   * into the CLI's input, then Enter after the CLI's settle delay. Both writes
+   * happen here, so the link's jitter cannot put the Enter inside the paste.
+   * No clear keys: the CLI's input may hold text typed before, and the line
+   * adds to it the way typing would. Lines to one terminal go in order. False
+   * when the session has no live terminal. A repeat of one line is dropped by
+   * the caller (`chat.typeIntoCli`'s message ids), not here.
+   */
+  const typeLineIntoAgentCli = async ({ sessionId, text, inputOrigin }: {
+    sessionId: string;
+    text: string;
+    inputOrigin?: unknown;
+  }): Promise<boolean> => {
+    const live = liveEntryBySessionId(sessionId);
+    if (!live) return false;
+    const [ptyId, entry] = live;
+    const line = text.replace(/\r\n?/g, "\n").replace(/\x1b/g, "\u241b");
+    if (!line.trim()) return false;
+    const session = sessionService.get(entry.sessionId);
+    const toolType = session?.toolType ?? entry.toolTypeHint;
+    // A line is a CLI prompt, never a shell command: an ordinary shell would
+    // run the text. A tracked or untracked agent CLI terminal passes.
+    if (!toolType || toolType === "shell") return false;
+    const provider = session?.resumeMetadata?.provider ?? providerFromTool(toolType);
+    // A pasted tab is text, not the CLI's completion key, and a line break must
+    // stay one message: both go as a bracketed paste.
+    const needsPaste = line.includes("\n") || line.includes("\t");
+    const previous = submitInputFlights.get(entry.sessionId) ?? Promise.resolve(true);
+    const flight = previous
+      .catch(() => true)
+      .then(async () => {
+        if (entry.disposed) return false;
+        const written = await writeAgentCliText((data) => {
+          if (entry.disposed) return false;
+          // A write that throws is not a delivered line: the caller puts it
+          // back instead of reporting it typed.
+          return service.write({ ptyId, data, inputOrigin });
+        }, needsPaste ? line.replace(/\n/g, "\r") : line, provider, needsPaste);
+        if (!written) return false;
+        await delay(provider === "codex"
+          ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS
+          : needsPaste ? LOCAL_LINE_PASTE_SUBMIT_DELAY_MS : AGENT_CLI_SUBMIT_DELAY_MS);
+        if (entry.disposed) return false;
+        return service.write({ ptyId, data: AGENT_CLI_LINE_SUBMIT_KEY, inputOrigin });
+      });
+    submitInputFlights.set(entry.sessionId, flight);
+    try {
+      return await flight;
+    } finally {
+      if (submitInputFlights.get(entry.sessionId) === flight) submitInputFlights.delete(entry.sessionId);
+    }
+  };
 
   const service = {
     async waitForResumeTargetBackfill(sessionId: string): Promise<void> {
@@ -9494,30 +9568,43 @@ export function createPtyService({
       }
     },
 
-    write({ ptyId, data, inputOrigin }: { ptyId: string; data: string; inputOrigin?: unknown }): void {
+    write({ ptyId, data, inputOrigin }: { ptyId: string; data: string; inputOrigin?: unknown }): boolean {
       const entry = ptys.get(ptyId);
-      if (!entry) return;
+      if (!entry) return false;
       // Enter in a CLI chat is a message sent: remember which desktop sent it
       // (or that nobody can tell, when it came without a stamp).
       if (/[\r\n]/.test(data)) noteSessionInputOrigin(entry.sessionId, inputOrigin);
+      // A terminal's own reply (a CLI's startup query, a focus change) is
+      // passed through but is not the user typing.
+      const terminalReport = writeIsTerminalReport(data);
       try {
-        // A terminal's own reply (a CLI's startup query, a focus change) is
-        // passed through but is not the user typing.
-        if (writeIsTerminalReport(data)) {
+        if (terminalReport) {
           entry.pty.write(data);
-          return;
+        } else {
+          markPtyUserInput(entry, data);
+          claimAgentShellForUser(entry, data);
+          entry.pty.write(data);
         }
-        markPtyUserInput(entry, data);
-        claimAgentShellForUser(entry, data);
-        entry.pty.write(data);
-        clearCommittedCliActivity(entry, data);
-        tryCliUserTitleFromWrite(entry, data);
-        setRuntimeState(entry.sessionId, "running");
-        scheduleIdleTransition(entry.sessionId);
       } catch (err) {
         logger.warn("pty.write_failed", { ptyId, err: String(err) });
+        return false;
       }
+      if (!terminalReport) {
+        // The bytes are out. What follows is bookkeeping, and a database or
+        // title failure here must not report the user's line as not sent.
+        try {
+          clearCommittedCliActivity(entry, data);
+          tryCliUserTitleFromWrite(entry, data);
+          setRuntimeState(entry.sessionId, "running");
+          scheduleIdleTransition(entry.sessionId);
+        } catch (err) {
+          logger.warn("pty.write_bookkeeping_failed", { ptyId, err: String(err) });
+        }
+      }
+      return true;
     },
+
+    typeLineIntoAgentCli,
 
     markSessionAttentionRequested(sessionId: string): void {
       const live = liveEntryBySessionId(sessionId);

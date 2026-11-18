@@ -769,7 +769,7 @@ WebSocket/auth wait is capped by the remaining budget and observes cancellation;
 authentication failure stops redundant channel-home probes for that route, and
 the final error aggregates the routes/runtimes that were actually attempted.
 
-After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding` and records it in the unified recent-project list with target id, project id, runtime name, and hostname. Remote recents are keyed as `remote:<targetId>:<projectId>`, so a remote project can share a path string with a local checkout without colliding; the welcome screen can reconnect/open the remote row directly from that metadata. Each target also persists an explicit `autoConnect` preference: a successful Connect enables it, and Disconnect disables it. Only targets with that preference enabled reconnect at launch or after wake; an explicit failed Connect does not change the saved preference. Implicit retries use bounded exponential backoff from 30 s through 5 minutes and remain eligible after repeated failures. Pressing Connect bypasses the current backoff without bypassing SSH or pairing authentication. A target also persists this computer's `slowLinkMode` (`"on"`/`"off"`, absent for Automatic), which saving the machine's address again keeps; see [A slow or dropping link](#a-slow-or-dropping-link). An unpackaged (development) desktop runs with `explicitConnectOnly`: it never reconnects saved targets at launch, after wake, or for implicit use, and connects only when the person presses Connect in it. A paired host keeps one connection per device and every ADE on a computer shares that device pairing, so a dev app reconnecting on its own took machines from the installed app (which then shows the superseded error and waits). `ADE_DEV_REMOTE_AUTOCONNECT=1` turns auto-connect back on for a dev app.
+After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding` and records it in the unified recent-project list with target id, project id, runtime name, and hostname. Remote recents are keyed as `remote:<targetId>:<projectId>`, so a remote project can share a path string with a local checkout without colliding; the welcome screen can reconnect/open the remote row directly from that metadata. Each target also persists an explicit `autoConnect` preference: a successful Connect enables it, and Disconnect disables it. Only targets with that preference enabled reconnect at launch or after wake; an explicit failed Connect does not change the saved preference. Implicit retries use bounded exponential backoff from 30 s through 5 minutes and remain eligible after repeated failures — except for failures no redial can fix: a machine that rejects this device's pairing or identity, or an account that will not vouch for it, stops the 30 s maintenance redials until the person acts (Connect, Pair again, an edit) or, for a sign-in failure, until the signed-in account changes. Such a failure shows the error and its action, not "Reconnecting". Pressing Connect bypasses the current backoff without bypassing SSH or pairing authentication. A target also persists this computer's `slowLinkMode` (`"on"`/`"off"`, absent for Automatic), which saving the machine's address again keeps; see [A slow or dropping link](#a-slow-or-dropping-link). An unpackaged (development) desktop runs with `explicitConnectOnly`: it never reconnects saved targets at launch, after wake, or for implicit use, and connects only when the person presses Connect in it. A paired host keeps one connection per device and every ADE on a computer shares that device pairing, so a dev app reconnecting on its own took machines from the installed app (which then shows the superseded error and waits). `ADE_DEV_REMOTE_AUTOCONNECT=1` turns auto-connect back on for a dev app.
 
 Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha` upload to `~/.ade-alpha/` instead of `~/.ade/` so a remote machine can host stable and alpha runtimes side by side. Beta is an update track of the normal install and uses `~/.ade/`. Runtime binaries, native deps, PTY workers, and bundled ADE agent skills all live under the selected home. Remote compatibility launches keep `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so remote probes do not fight the user's login service.
 
@@ -1286,7 +1286,7 @@ within five minutes. It turns off only after five round trips under 250 ms with
 no drop in five minutes, so a link near the line does not flicker. The samples
 are the dial's latency and the 30 s maintenance ping; the drops are connection
 evictions that are not a hand-over to another ADE. The result rides the
-existing connection snapshot as `slowLink: { active, reason, rttMs }` — no new
+existing connection snapshot as `slowLink: { active, reason, rttMs, far }` — no new
 poll, timer or IPC call. The person's own setting for the machine wins: **Slow
 connection mode** in the machine's **Edit** panel is **Automatic** (default),
 **Always on** or **Off**, saved on this computer's target record
@@ -1297,9 +1297,18 @@ ms · Slow connection`.
 
 What the mode changes is only what would be hidden or delayed: a transcript
 picture from that machine waits as a `Show picture · <size>` tile until it is
-clicked (a picture already shown stays), and a plain-shell terminal types
-ahead. Pictures in the proof drawer and the lightbox load as before. The
-always-on transport work below runs in every mode.
+clicked (a picture already shown stays), a plain-shell terminal types ahead,
+and an agent CLI's terminal gets a local line (below) so a typed letter shows in
+one frame instead of most of a second later.
+
+Typing has a lower line of its own, `far`: two of the last three round trips at
+150 ms or more turn it on, and the last five under 110 ms turn it off
+(`FAR_RTT_ON_MS`, `FAR_RTT_OFF_MS`). At 150 ms each key already lags enough to
+feel, so a far link gets the type-ahead and the local line without the rest of
+the mode. Slow-connection mode always counts as far; **Always on** and **Off**
+set both. Pictures in the proof drawer and
+the lightbox load as before. The always-on transport work below runs in every
+mode.
 
 **Bulk pieces, sized to the link.** A transcript picture is read from the other
 machine in pieces about 250 ms of the measured delivery rate (1 MiB on a fast
@@ -1333,6 +1342,33 @@ message is confirmed, so an identical message later is a message of its own.
 When one call loses a dropped connection, the other reads on that machine wait
 for the same redial and ask again, while a write still reports that its outcome
 is unknown.
+
+Text for a running agent CLI (`chat.typeIntoCli`) gets the same treatment from
+both ways of typing into it: the Work box (`when: "free"`, typed at a free
+prompt) and the terminal's local line (`when: "now"`, typed at once). A brain
+that announces `agentCliTypeNow` answers a repeated `clientMessageId` once for
+both modes; the pool sends the text again after a reconnect only to such a
+brain, and a send refused before it dialled comes back to the caller as not
+sent. See
+[Terminal and Session UI Surfaces](../terminals-and-sessions/ui-surfaces.md#the-terminals-local-line-on-a-far-link).
+
+**A drop that is a blip.** A link that was up and dropped redials every 2 s for
+3 minutes (`FAST_REDIAL_WINDOW_MS`, cleared by the ordinary bounded backoff
+after that); each redial waits for the one before it, so a dead link costs one
+dial per interval and a failed redial writes no snapshot update. A window's
+network change (`online`, or the browser's connection change, merged by main)
+redials dropped machines at once and pings the connected ones, as a wake does.
+For the first 20 s (`RECONNECT_HOLD_MS`) the dropped machine still reads as
+connected, with `reconnectingSinceMs` saying when it dropped: the open chat and
+the Work list stay, the new-chat picker keeps that machine, and a call waits up
+to 8 s (`RECONNECT_CALL_WAIT_MS`) for the link instead of failing. A cloud
+computer skips the hold, so its drop is shown and a sleeping one can rest;
+Disconnect, Remove, a rest, and the end of the hold all end it at once.
+
+**Text the person is not looking at.** A window tells its machine which
+terminals it shows (`ptyDataIds`), and the brain sends only their output; see
+[PTY and sessions](../terminals-and-sessions/pty-and-sessions.md) for the
+capability and the list update.
 
 **Numbers on both ends.** `remote.link_summary` on the desktop and
 `rpc.link_summary` in the brain write one line per connection every five

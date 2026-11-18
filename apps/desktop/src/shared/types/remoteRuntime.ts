@@ -248,6 +248,17 @@ export type RemoteRuntimeConnectionAttemptFailure =
   | "protocol"
   | "unknown";
 
+/**
+ * A connect failure no redial fixes: the machine rejected this device's
+ * pairing or identity (pair it again), or the account would not vouch for
+ * this device (sign in). ADE stops redialing and shows it with its action.
+ */
+export function isPersonFixConnectionFailure(
+  failure: RemoteRuntimeConnectionAttemptFailure | null | undefined,
+): failure is "pairing" | "authentication" | "identity" {
+  return failure === "pairing" || failure === "authentication" || failure === "identity";
+}
+
 export type RemoteRuntimeConnectionAttempt = {
   kind: RemoteRuntimeRouteKind;
   /** Host and optional port only. Paths, query strings, and credentials are excluded. */
@@ -505,6 +516,19 @@ export type RemoteRuntimeCapabilities = {
   machineProjects: Partial<Record<RemoteRuntimeMachineProjectCapability, boolean>>;
   /** `chat.sendMessage` recognizes a repeat of a `clientSendId`. Absent on an older brain. */
   clientSendDedupe?: boolean;
+  /**
+   * `chat.typeIntoCli` takes `when: "now"` (the terminal's local line) and
+   * recognizes a repeat of a `clientMessageId` in both modes. Absent on an
+   * older brain, which keeps the local line off.
+   */
+  agentCliTypeNow?: boolean;
+  /**
+   * `runtimeEvents.subscribe` and `stream_events` take `ptyDataIds`, and
+   * `runtimeEvents.setPtyDataFilter` changes a subscription's list: the brain
+   * sends only the output of the terminals a window shows. Absent on an older
+   * brain, which sends every terminal's output.
+   */
+  ptyDataFilter?: boolean;
   /** The brain runs `chat.saveTempAttachmentPart` (a paste in parts). Absent on an older brain. */
   chatAttachmentParts?: boolean;
   /** `ade/actions/call` takes `backgroundJob` (a long action followed by id). Absent on an older brain. */
@@ -615,6 +639,11 @@ export type RemoteRuntimeStreamEventsRequest = {
   limit?: number;
   category?: RemoteRuntimeEventCategory;
   replay?: boolean;
+  /**
+   * Main only: the terminals whose `pty_data` the window shows. Main sets it
+   * from the window's own list; a brain without `ptyDataFilter` never sees it.
+   */
+  ptyDataIds?: string[];
 };
 
 export type RemoteRuntimeStreamEventsResult = {

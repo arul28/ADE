@@ -121,6 +121,11 @@ export type LaneMachineOption = {
   stats?: MachineStats | null;
   /** How often new work should go here. Missing reads as Normal. */
   preference?: MachinePlacementPreference;
+  /**
+   * The tab's machine dropped and ADE is dialing it again. It stays the
+   * draft's machine meanwhile; a send waits for it or comes back not sent.
+   */
+  reconnecting?: boolean;
 };
 
 export type LaneMachineDerivationInput = {

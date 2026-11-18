@@ -1,4 +1,4 @@
-import { Check, Copy, DownloadSimple, X } from "@phosphor-icons/react";
+import { Check, CircleNotch, Copy, DownloadSimple, X } from "@phosphor-icons/react";
 import React, { useCallback, useRef, useState } from "react";
 import { formatProofDuration } from "../../../shared/proofProvenance";
 import { showToast } from "../app/toast/toastStore";
@@ -20,12 +20,18 @@ import { Dialog } from "./dialog";
  * runtime's preview read, which works for a local, a paired and a web
  * client). Without one, only a `data:` or `blob:` source can be copied or
  * downloaded, and the tools that cannot work are hidden.
+ *
+ * A picture shows a loading sign until its bytes arrive. With
+ * `placeholderSrc` (a smaller copy already on screen) the viewer shows that
+ * copy at once, at full size, and swaps in `src` when it arrives; if `src`
+ * fails, the copy stays with a note.
  */
 export function MediaLightbox({
   src,
   kind,
   title,
   fileName,
+  placeholderSrc = null,
   readDataUrl,
   saveToDisk,
   onMediaError,
@@ -39,6 +45,8 @@ export function MediaLightbox({
   title: string;
   /** The saved file's name. Defaults to the title plus an extension. */
   fileName?: string;
+  /** A picture's smaller copy, already loaded, to show while `src` loads. */
+  placeholderSrc?: string | null;
   readDataUrl?: () => Promise<string | null>;
   /**
    * Saves the media without reading it into the renderer. Download uses it
@@ -56,6 +64,18 @@ export function MediaLightbox({
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState<"copy" | "download" | null>(null);
+  // Kept with the source it is about, so a new `src` starts as loading.
+  const [pictureState, setPictureState] = useState<{ src: string; phase: "loaded" | "failed" } | null>(null);
+  const picture = pictureState?.src === src ? pictureState.phase : "loading";
+  const setPicture = useCallback((phase: "loaded" | "failed") => setPictureState({ src, phase }), [src]);
+  const [aspect, setAspect] = useState<number | null>(null);
+  // A cached or inline picture can finish before React attaches `onLoad`.
+  const pictureRef = useCallback((node: HTMLImageElement | null) => {
+    if (node?.complete && node.naturalWidth > 0) setPicture("loaded");
+  }, [setPicture]);
+  const placeholder = kind === "image" && placeholderSrc && placeholderSrc !== src && picture !== "loaded"
+    ? placeholderSrc
+    : null;
   const inlineBytes = /^(data|blob):/i.test(src);
   const canReadBytes = inlineBytes || Boolean(readDataUrl);
   const canDownload = canReadBytes || Boolean(saveToDisk);
@@ -156,13 +176,72 @@ export function MediaLightbox({
             aria-label={title}
             className="block h-auto max-h-[calc(100vh_/_var(--ade-web-zoom-factor,1)_-_32px)] w-auto max-w-[calc(100vw_/_var(--ade-web-zoom-factor,1)_-_32px)] bg-black object-contain"
           />
+        ) : placeholder ? (
+          <>
+            <img
+              ref={(node) => {
+                if (node?.complete && node.naturalHeight > 0) setAspect(node.naturalWidth / node.naturalHeight);
+              }}
+              src={placeholder}
+              alt={title}
+              onLoad={(event) => {
+                const node = event.currentTarget;
+                if (node.naturalHeight > 0) setAspect(node.naturalWidth / node.naturalHeight);
+              }}
+              style={aspect ? { width: fitWidth(aspect) } : undefined}
+              className="block h-auto max-h-[calc(100vh_/_var(--ade-web-zoom-factor,1)_-_32px)] max-w-[calc(100vw_/_var(--ade-web-zoom-factor,1)_-_32px)] object-contain"
+            />
+            {picture === "failed" ? null : (
+              // The original loads out of sight; it replaces the copy once it is whole.
+              <img
+                ref={pictureRef}
+                src={src}
+                alt=""
+                aria-hidden
+                onLoad={() => setPicture("loaded")}
+                onError={() => setPicture("failed")}
+                className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
+              />
+            )}
+            <LightboxNote spinning={picture !== "failed"}>
+              {picture === "failed" ? "Showing a smaller copy. The full-size picture did not load." : "Loading full size…"}
+            </LightboxNote>
+          </>
         ) : (
-          <img
-            src={src}
-            alt={title}
-            onError={onMediaError}
-            className="block h-auto max-h-[calc(100vh_/_var(--ade-web-zoom-factor,1)_-_32px)] w-auto max-w-[calc(100vw_/_var(--ade-web-zoom-factor,1)_-_32px)] object-contain"
-          />
+          <>
+            <img
+              ref={pictureRef}
+              src={src}
+              alt={title}
+              onLoad={() => setPicture("loaded")}
+              onError={() => {
+                // The caller's own failure handling may replace this view; if
+                // it does not, say so instead of spinning forever.
+                setPicture("failed");
+                onMediaError?.();
+              }}
+              className={cn(
+                "block h-auto max-h-[calc(100vh_/_var(--ade-web-zoom-factor,1)_-_32px)] w-auto max-w-[calc(100vw_/_var(--ade-web-zoom-factor,1)_-_32px)] object-contain",
+                picture === "loaded" ? null : "pointer-events-none absolute left-0 top-0 h-px w-px opacity-0",
+              )}
+            />
+            {picture === "loaded" ? null : picture === "failed" ? (
+              <div
+                role="status"
+                className="flex min-h-40 w-[min(420px,calc(100vw-32px))] items-center justify-center bg-black/70 px-6 py-10 text-center font-sans text-[13px] text-white/75"
+              >
+                This picture did not load.
+              </div>
+            ) : (
+              <div
+                role="status"
+                className="flex min-h-40 w-[min(420px,calc(100vw-32px))] items-center justify-center gap-2 bg-black/70 px-6 py-10 font-sans text-[13px] text-white/75"
+              >
+                <CircleNotch size={14} className="animate-spin" aria-hidden />
+                Loading picture…
+              </div>
+            )}
+          </>
         )}
         {kind === "video" && !failureText && chapters && chapters.length >= 2 ? (
           <div
@@ -207,6 +286,27 @@ export function MediaLightbox({
         </div>
       </div>
     </Dialog>
+  );
+}
+
+/**
+ * The copy's width while the original loads: the width the original takes
+ * when it fills the window at this aspect, so the swap does not jump. The
+ * copy is smaller than the original, so it is drawn larger than its own size.
+ */
+function fitWidth(aspect: number): string {
+  return `min(calc(100vw / var(--ade-web-zoom-factor, 1) - 32px), calc((100vh / var(--ade-web-zoom-factor, 1) - 32px) * ${aspect}))`;
+}
+
+function LightboxNote({ spinning, children }: { spinning: boolean; children: React.ReactNode }) {
+  return (
+    <div
+      role="status"
+      className="pointer-events-none absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-full bg-black/70 px-3 py-1.5 font-sans text-[12px] text-white/85 shadow-[0_6px_24px_rgba(0,0,0,0.45)] backdrop-blur-md"
+    >
+      {spinning ? <CircleNotch size={12} className="animate-spin" aria-hidden /> : null}
+      {children}
+    </div>
   );
 }
 

@@ -159,8 +159,10 @@ type PinnedRuntimeEventsDeps = {
   /**
    * Pushes the union of the active binding's PTY id filter and every pinned
    * pump's filter to main. Preload owns the active half, so it owns the call.
+   * With a key, it resolves once that machine sends the output of the
+   * terminals in the list.
    */
-  syncPtyDataSubscriptions: () => Promise<void>;
+  syncPtyDataSubscriptions: (settleBindingKey?: string | null) => Promise<void>;
   /** True once the active path opted into main-side PTY id filtering. */
   isPtyDataFilteringConfigured: () => boolean;
   /**
@@ -552,7 +554,7 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
     // first live chunk to the previous filter while the IPC call is in flight.
     state.dataSubscriptionsConfigured = true;
     state.subscribedPtyDataIds = ptyIds;
-    await deps.syncPtyDataSubscriptions();
+    await deps.syncPtyDataSubscriptions(pin.kind === "remote" ? pin.key : null);
     ensurePinnedPtyEventPump(state);
     releasePinnedPtyEventStateIfUnused(state);
   };

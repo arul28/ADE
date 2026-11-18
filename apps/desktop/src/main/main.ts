@@ -193,6 +193,7 @@ import {
   normalizePtyDataSubscriptions,
   setPtyDataSubscriptionsForSender,
   shouldSendPtyDataToWebContents,
+  pushRemotePtyDataFilters,
 } from "./services/pty/ptyDataSubscriptions";
 import {
   heldAppControlFrameLanes,
@@ -2387,11 +2388,21 @@ app.whenReady().then(async () => {
     },
   );
 
-  ipcMain.handle(IPC.ptyDataSubscriptions, (event, arg: { ptyIds?: unknown } | undefined) => {
+  ipcMain.handle(IPC.ptyDataSubscriptions, async (
+    event,
+    arg: { ptyIds?: unknown; settleBindingKey?: unknown } | undefined,
+  ) => {
     if (!isTrustedAdeRendererSender(event)) throw new Error("Terminal output is only available to the ADE window.");
     setPtyDataSubscriptionsForSender(
       event.sender,
       normalizePtyDataSubscriptions(arg?.ptyIds),
+    );
+    // Machines that send terminal output by list get the new list. The answer
+    // waits for the machine named by `settleBindingKey`, so a terminal there
+    // that comes back reads its screen after its output flows again.
+    await pushRemotePtyDataFilters(
+      event.sender,
+      typeof arg?.settleBindingKey === "string" ? arg.settleBindingKey : null,
     );
   });
 

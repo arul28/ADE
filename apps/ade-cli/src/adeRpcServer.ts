@@ -221,6 +221,7 @@ import {
 } from "../../desktop/src/shared/types/androidEmulator";
 import { APP_CONTROL_CODE_SYNC_ACTIONS, APP_CONTROL_LANE_FREE_ACTIONS } from "../../desktop/src/shared/types/appControl";
 import { trackBrainLoopWatchdogCommand } from "./services/runtime/brainLoopWatchdog";
+import { passesPtyDataFilter, readPtyDataIds } from "./runtimeEventVolume";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
   AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
@@ -1436,7 +1437,9 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         cursor: { type: "number", minimum: 0 },
         limit: { type: "number", minimum: 1, maximum: 1000 },
-        category: { type: "string", enum: [...REMOTE_RUNTIME_EVENT_CATEGORIES] }
+        category: { type: "string", enum: [...REMOTE_RUNTIME_EVENT_CATEGORIES] },
+        // Only these terminals' `pty_data`; other events all come.
+        ptyDataIds: { type: "array", items: { type: "string" } }
       }
     }
   },
@@ -10050,13 +10053,14 @@ async function runTool(args: {
     const cursor = asNumber(toolArgs.cursor, 0);
     const limit = asNumber(toolArgs.limit, 100);
     const category = asOptionalTrimmedString(toolArgs.category);
-    if (category) {
-      // The drain looks at up to ten times `limit` events and returns only this
-      // category. Its cursor moves past the events it skipped, so polling
+    const ptyDataIds = readPtyDataIds(toolArgs.ptyDataIds);
+    if (category || ptyDataIds) {
+      // The drain looks at up to ten times `limit` events and returns only the
+      // ones that pass. Its cursor moves past the events it skipped, so polling
       // cannot stall, and it stops at the last event it returned, so a match
       // past `limit` is not skipped.
       const result = runtime.eventBuffer.drain(cursor, limit, {
-        filter: (e) => e.category === category,
+        filter: (e) => (!category || e.category === category) && passesPtyDataFilter(e, ptyDataIds),
         maxScan: limit * 10
       });
       return {

@@ -204,7 +204,12 @@ the shelf, the headers and the board.
   composer and the Start on picker name it.
 - A machine that drops keeps its rows for the reconnect window
   (`applyReachability`, 45 s to 2 min), then its rows leave until it
-  reconnects. An asleep ADE Cloud computer stays listed
+  reconnects. The open chat stays on screen while its machine is unreachable
+  (`WorkViewArea` holds it, and `AgentChatPane` keeps it selected through a
+  list read). A machine that stopped redialing because only the person can fix
+  it (a rejected pairing or identity, or a sign-in the account refused) shows
+  that failure and its action (`Pair again`, or the machine's row) in place of
+  "Reconnecting to …". An asleep ADE Cloud computer stays listed
   (`machineIsCloudResting` in `cloudRestingRows.ts`); opening a row wakes it
   (`wakeRestingCloudMachine` in `lib/cloudMachineWake.ts`), and the chat shows
   "Waking <machine>…" (`ChatMachineWakeBanner`) while the Lanes tab shows
@@ -367,12 +372,51 @@ answers `deferred`.
 | Queued | The CLI is mid-turn. | Asked again every 1.5 s, 4 s after 30 s, 10 s after 5 min, and at once on a runtime state change. |
 | Typing it now | Being typed. | Removed when the host confirms. |
 | Sends when *computer* reconnects | The machine is disconnected, or the call was refused before it was sent. | Sent on reconnect. |
-| Unconfirmed | The connection dropped mid-send. | Never retried by itself: **Send again** or **Remove**. |
+| Unconfirmed | The connection dropped mid-send. | Sent once more with the same id after a short reconnect (a brain that announces `agentCliTypeNow` types a repeated id once). Still unconfirmed: never retried by itself; **Send again** or **Remove**. |
 | Failed | The host refused it (archived, not an agent CLI). | **Send again**, **Edit** or **Remove**. |
 
 When the CLI ends, waiting texts move to the ended session's continue box
 (`ade.work.cliContinueDraft.<id>`). Two windows share the queue and claim a
 text before typing it. Typing clears the CLI's prompt line first.
+
+### The terminal's local line on a far link
+
+`TerminalLocalLineBar.tsx` and `terminalLocalLine.ts` are the other way to type
+into a running agent CLI. On a far link (150 ms or more, or slow-connection
+mode; see [A slow or dropping link](../remote-runtime/README.md#a-slow-or-dropping-link))
+`TerminalView` keeps plain text on this computer instead of writing each key to
+the machine: the overlay draws the line in the terminal's own font, and Enter
+sends it through `agentChat.typeIntoCli` with `when: "now"`, which the host
+types and submits as one line (`typeLineIntoAgentCli`). The host's answer is
+the same shape as the box's; `agentCliTypeSend.ts` classifies it for both.
+
+- **Offered only when** the terminal's machine is on a far link (`useFarLinkActive`) and
+  announces `agentCliTypeNow`, the session's tool type takes a line
+  (`toolTypeTakesLocalLine` in `shared/cliLaunch.ts`: not Cursor or Devin),
+  the terminal is interactive, the program has bracketed paste on, and the
+  session is not in box mode (`localLineAllowed={!showInputBox}`). Otherwise
+  every key goes to the machine as before.
+- **Keys.** Plain text collects in the line; Backspace, Ctrl+U, Ctrl+W and
+  Option+Backspace edit it; Shift+Enter adds a line break. Enter on a line
+  sends it; Enter on an empty line goes to the CLI. Any other key (Esc, Tab, an
+  arrow, Ctrl+C, a function key) first hands the line to the CLI as keys, then
+  sends the key, so completion and interruption behave as they do when typing
+  there. The terminal's own replies (focus, mouse reports, query answers) go to
+  the CLI and leave the line alone.
+- **Pasting** joins the line; a pasted control character is dropped (ESC is
+  shown as `␛`), so a paste cannot act as a key.
+- **A failed send** puts the line back, in front of anything typed since, and
+  says why (`Not sent: this terminal has stopped / the connection dropped / the
+  machine did not take it`). A line sent again unchanged keeps its id, so the
+  machine types it once. When the answer was lost (the connection dropped), the
+  line stays in the line and is never handed to the CLI as keys — that path has
+  no id — until Enter sends it again with the same id, or editing it makes it a
+  new line. One line is out at a time: Enter while a send is still running
+  keeps the next line here, for the next Enter.
+- **The switch** in the corner turns the line off for that session
+  (`ade.terminal.localLineOff`, most recent 200 sessions) and hands any text
+  already in it to the CLI as keys. With the line off, a fast link's type-ahead
+  (`terminalTypeAhead.ts`) is what a plain shell gets.
 
 A CLI on an asleep or deleted ADE Cloud computer takes messages through the
 account server's queue, from the web, the iPhone or the desktop. On wake, the

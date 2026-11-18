@@ -181,12 +181,13 @@ function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null
     const encoded = typeof payload.args.data === "string" ? payload.args.data.length : 0;
     return Math.min(REMOTE_ATTACHMENT_MAX_TIMEOUT_MS, REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS + Math.ceil(encoded / 16));
   }
-  // A chat send with a client id goes out again after a reconnect
-  // (`isDedupedChatSend`), so it gets the same room as a replay-safe read.
-  const sendArgs = request.domain === "chat" && request.action === "sendMessage" && isRecord(payload?.args)
-    ? payload.args
-    : null;
-  return typeof sendArgs?.clientSendId === "string" && sendArgs.clientSendId.trim()
+  // A send with a client id goes out again after a reconnect
+  // (`isDedupedSend`), so it gets the same room as a replay-safe read.
+  const sendArgs = request.domain === "chat" && isRecord(payload?.args) ? payload.args : null;
+  const sendId = request.action === "sendMessage"
+    ? sendArgs?.clientSendId
+    : request.action === "typeIntoCli" ? sendArgs?.clientMessageId : null;
+  return typeof sendId === "string" && sendId.trim()
     ? REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS
     : null;
 }

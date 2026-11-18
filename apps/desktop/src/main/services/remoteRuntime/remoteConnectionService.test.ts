@@ -908,6 +908,147 @@ describe("RemoteConnectionService", () => {
     expect(pool.connect).toHaveBeenCalledWith(previouslyConnected, { initiatedBy: "background" });
   });
 
+  it("keeps redialing a machine nothing answered, and stops for a rejected pairing until the person connects", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const saved = target("saved-machine", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [saved]),
+      get: vi.fn((id: string) => (id === saved.id ? saved : null)),
+    } as unknown as RemoteTargetRegistry;
+    let failure: Error | null = new RemoteRuntimeConnectError({
+      kind: "unreachable",
+      failure: "unreachable",
+      message: "Nothing answered at saved-machine.example.test.",
+    });
+    const pool = {
+      connect: vi.fn(async (t: RemoteRuntimeTarget) => {
+        if (failure) throw failure;
+        return connectResult(t);
+      }),
+      disconnect: vi.fn(),
+      onHostStorageWait: vi.fn(() => () => {}),
+      onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
+      onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(registry, pool);
+    const status = () => service.snapshot().connections[0];
+
+    try {
+      service.startAutoconnect();
+      await vi.waitFor(() => expect(pool.connect).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(status()?.state).toBe("error"));
+      // Nothing answered: no redial fixes it yet, but the person's link may,
+      // so the automatic redials keep going and the windows say so.
+      expect(status()?.recovery).toBe("reconnecting");
+
+      // Its backoff comes due and the maintenance pass dials again.
+      vi.setSystemTime(Date.now() + automaticReconnectBackoffMs(1));
+      service.probeSavedConnections();
+      await vi.waitFor(() => expect(vi.mocked(pool.connect).mock.calls.length).toBeGreaterThan(1));
+
+      // The machine now rejects this device's pairing: no redial fixes that.
+      failure = new RemoteRuntimeConnectError({
+        kind: "generic",
+        failure: "pairing",
+        message: "This machine rejected this device's pairing.",
+      });
+      const beforeRejection = vi.mocked(pool.connect).mock.calls.length;
+      vi.setSystemTime(Date.now() + automaticReconnectBackoffMs(9));
+      service.probeSavedConnections();
+      await vi.waitFor(() => expect(vi.mocked(pool.connect).mock.calls.length).toBe(beforeRejection + 1));
+      await vi.waitFor(() => expect(status()?.recovery ?? null).toBeNull());
+      expect(status()?.lastErrorInfo?.failure).toBe("pairing");
+
+      // Twenty maintenance passes over ten minutes: nothing dials the machine.
+      for (let pass = 0; pass < 20; pass += 1) {
+        vi.setSystemTime(Date.now() + 30_000);
+        service.probeSavedConnections();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(vi.mocked(pool.connect).mock.calls.length).toBe(beforeRejection + 1);
+
+      // Calls pinned to the machine, a window's background connect and an
+      // implicit connect say why without dialing it either.
+      const callMachineForTarget = vi.fn(async () => ({}));
+      (pool as unknown as { callMachineForTarget: typeof callMachineForTarget }).callMachineForTarget = callMachineForTarget;
+      for (const attempt of [
+        () => service.callMachineMethod(saved.id, "ping"),
+        () => service.connect(saved.id, { explicit: true, background: true }),
+        () => service.connect(saved.id),
+      ]) {
+        await expect(attempt()).rejects.toBeInstanceOf(RemoteConnectBackoffError);
+      }
+      expect(callMachineForTarget).not.toHaveBeenCalled();
+      expect(vi.mocked(pool.connect).mock.calls.length).toBe(beforeRejection + 1);
+      expect(status()?.lastErrorInfo?.failure).toBe("pairing");
+
+      // The person presses Connect: it dials now, and the machine answers.
+      failure = null;
+      await service.connect(saved.id, { explicit: true });
+      expect(vi.mocked(pool.connect).mock.calls.length).toBe(beforeRejection + 2);
+      expect(status()?.state).toBe("connected");
+    } finally {
+      service.stopAutoconnect();
+      service.stopHostReturnWatches();
+      vi.useRealTimers();
+    }
+  });
+
+  it("redials a machine whose sign-in failed once the signed-in account changes, through the call after the pass too", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const saved = target("signin-machine", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [saved]),
+      get: vi.fn((id: string) => (id === saved.id ? saved : null)),
+      pruneAccountOwned: vi.fn(() => []),
+      remove: vi.fn(() => false),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async (_t: RemoteRuntimeTarget) => {
+        throw new RemoteRuntimeConnectError({
+          kind: "generic",
+          failure: "authentication",
+          message: "Sign in to ADE to reach this machine.",
+        });
+      }),
+      disconnect: vi.fn(),
+      onHostStorageWait: vi.fn(() => () => {}),
+      onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
+      onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
+    } as unknown as RemoteConnectionPool;
+    let owner: string | null = null;
+    const service = new RemoteConnectionService(registry, pool, {
+      getAuthorizedAccountOwnerId: vi.fn(async () => owner),
+    });
+    const dials = () => vi.mocked(pool.connect).mock.calls.length;
+    const pass = async () => {
+      vi.setSystemTime(Date.now() + automaticReconnectBackoffMs(9));
+      service.probeSavedConnections();
+      for (let tick = 0; tick < 5; tick += 1) await new Promise((resolve) => setImmediate(resolve));
+    };
+
+    try {
+      service.startAutoconnect();
+      await vi.waitFor(() => expect(service.snapshot().connections[0]?.lastErrorInfo?.failure).toBe("authentication"));
+      await pass();
+      await pass();
+      expect(dials(), "signed out: no redial").toBe(1);
+
+      // The person signs in: the next pass dials, and so does the call after it.
+      owner = "account-1";
+      await pass();
+      await vi.waitFor(() => expect(dials()).toBe(2));
+    } finally {
+      service.stopAutoconnect();
+      service.stopHostReturnWatches();
+      vi.useRealTimers();
+    }
+  });
+
   it("reconciles a different account's target, credentials, and live pool entry as one command", () => {
     const accountOwned = {
       ...target("account-owned", 1_700_000_000),
@@ -1081,6 +1222,50 @@ describe("RemoteConnectionService", () => {
     expect(pool.connect).not.toHaveBeenCalled();
     expect(service.snapshot().connections[0]?.state).not.toBe("connecting");
     expect(service.snapshot().connectedCount).toBe(0);
+  });
+
+  it("stops a machine call whose machine is removed while the call waits", async () => {
+    const accountOwned = {
+      ...target("account-owned-call-cancel", 1_700_000_000),
+      accountOwnerUserId: "account-1",
+    };
+    let targets = [accountOwned];
+    const registry = {
+      list: vi.fn(() => targets),
+      get: vi.fn((id: string) => targets.find((entry) => entry.id === id) ?? null),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => ({
+        ...accountOwned,
+        ...patch,
+      })),
+      remove: vi.fn(() => {
+        targets = [];
+        return true;
+      }),
+    } as unknown as RemoteTargetRegistry;
+    const callMachineForTarget = vi.fn(async () => ({ entries: [] }));
+    const pool = {
+      connect: vi.fn(async (entry: RemoteRuntimeTarget) => connectResult(entry)),
+      disconnect: vi.fn(),
+      callMachineForTarget,
+      onHostStorageWait: vi.fn(() => () => {}),
+      onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
+      onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
+    } as unknown as RemoteConnectionPool;
+    let answerOwnerCheck!: (owner: string) => void;
+    const service = new RemoteConnectionService(registry, pool, {
+      getAuthorizedAccountOwnerId: vi.fn(
+        () => new Promise<string>((resolve) => { answerOwnerCheck = resolve; }),
+      ),
+    });
+
+    const pendingBrowse = service.browseDirectories(accountOwned.id, {});
+    expect(service.removeTarget(accountOwned.id)).toBe(true);
+    answerOwnerCheck("account-1");
+
+    await expect(pendingBrowse).rejects.toThrow();
+    expect(callMachineForTarget).not.toHaveBeenCalled();
   });
 
   it("never opens the pool for an unauthorized account-owned target but preserves local autoconnect", async () => {
@@ -2059,7 +2244,7 @@ describe("RemoteConnectionService", () => {
       await probe();
       expect(slowLink()?.active ?? false).toBe(false);
       await probe();
-      expect(slowLink()).toEqual({ active: true, reason: "latency", rttMs: 700 });
+      expect(slowLink()).toEqual({ active: true, reason: "latency", rttMs: 700, far: true });
       // The desktop tells the machine what it measured.
       expect(vi.mocked(pool.callMachineForTarget).mock.calls[1]?.[2]).toMatchObject({ link: { rttP50Ms: 700 } });
 

@@ -253,6 +253,7 @@ export type WorkBoardBuckets = Record<WorkBoardColumn, TerminalSessionSummary[]>
 import type { WorkBoardWaitingReason } from "../../../shared/types/chat";
 import { lanePrWaitingReason } from "../../../shared/sessionCanonicalState";
 import { useTabCopyPin } from "../../state/repositoryScope";
+import { useRemoteTargetReconnecting } from "../../state/projectMachines";
 import { noChatMachineError } from "../chat/chatMachinePin";
 
 export type { WorkBoardWaitingReason };
@@ -796,6 +797,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const tabCopyPin = useTabCopyPin();
   const tabCopyPinRef = useRef(tabCopyPin);
   tabCopyPinRef.current = tabCopyPin;
+  // The tab's machine dropped and ADE is dialing it again: its last rows stay.
+  const tabMachineReconnecting = useRemoteTargetReconnecting(remoteTargetId);
+  const tabMachineReconnectingRef = useRef(tabMachineReconnecting);
+  tabMachineReconnectingRef.current = tabMachineReconnecting;
   const tabCopyPinKey = tabCopyPin?.key ?? null;
   const lanes = useAppStore((s) => s.lanes);
   const focusSession = useAppStore((s) => s.focusSession);
@@ -1808,6 +1813,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // coming back to the front): an empty list here is not the computer's
       // answer, so it must not close the chats the tab has open.
       hasAuthoritativeSessionsRef.current = false;
+      if (tabMachineReconnectingRef.current && hasLoadedOnceRef.current) {
+        // A dropped link that ADE is bringing back: the rows it last sent stay
+        // on screen, and nothing asks the machine until its address returns
+        // (the pin change refreshes the list then). A Disconnect or a removed
+        // machine is not "reconnecting" and clears below.
+        setLoading(false);
+        return;
+      }
       setHostSessions([]);
       setLoading(false);
       return;
@@ -2079,7 +2092,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       load: (attempt) => refresh({ showLoading: attempt === 1 && isInitialLoad, force: isInitialLoad || attempt > 1 }),
       onRetryingChange: setFirstLoadRetrying,
     });
-  }, [isWorkRoute, projectRoot, projectStateKey, refresh, remoteTargetId, tabCopyPinKey]);
+  }, [isWorkRoute, projectRoot, projectStateKey, refresh, remoteTargetId, tabCopyPinKey, tabMachineReconnecting]);
 
   // Held under CTO or History, the list is on screen in the sidebar even though
   // Work is not: load it once, or it reads "No sessions" when the app opens

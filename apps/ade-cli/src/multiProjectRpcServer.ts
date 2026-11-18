@@ -47,7 +47,12 @@ import type {
   SearchResultItem,
 } from "../../desktop/src/shared/types";
 import type { BufferedEvent } from "./eventBuffer";
-import { isHighVolumeRuntimeEvent, runtimeEventFrameLaneId } from "./runtimeEventVolume";
+import {
+  isHighVolumeRuntimeEvent,
+  passesPtyDataFilter,
+  readPtyDataIds,
+  runtimeEventFrameLaneId,
+} from "./runtimeEventVolume";
 import { joinOrStartMachineUpdate } from "./services/runtime/machineUpdateInFlight";
 import { computeRuntimeBuildHash as hashRuntimeBuild } from "./services/runtime/runtimeBuildIdentity";
 import type { MachineUpdateAndRestartDeps } from "./services/runtime/machineUpdateAndRestart";
@@ -221,6 +226,11 @@ type RuntimeEventSubscription = {
    */
   projectId: ProjectId | null;
   unsubscribe: () => void;
+  /**
+   * The terminals whose `pty_data` this subscription sends, or null for all.
+   * `runtimeEvents.setPtyDataFilter` changes it; personal-chat streams have none.
+   */
+  ptyDataFilter?: { ids: Set<string> | null };
 };
 
 function decodeSearchQueryResult(
@@ -736,6 +746,7 @@ const RUNTIME_METHODS = new Set([
   "projects.listMyGitHubRepos",
   "runtimeEvents.subscribe",
   "runtimeEvents.unsubscribe",
+  "runtimeEvents.setPtyDataFilter",
   "appControl.setFrameDemand",
   "sync.switchHost",
   "sync.getStatus",
@@ -2527,6 +2538,8 @@ export function createMultiProjectRpcRequestHandler(
     // past the required-send ceiling and the host closed the whole connection
     // (4001 "Required sync response backpressured"). See `runtimeEventVolume`.
     const includeHighVolumeEvents = params.includeHighVolumeEvents === true;
+    // Terminal output only for the terminals the client shows (null: all).
+    const ptyDataFilter = { ids: readPtyDataIds(params.ptyDataIds) };
     // The machine scope (a computer's own settings) streams its runtime's
     // events the same way (`scopeFor`); it has no App Control frames.
     const scope = await scopeFor(projectId);
@@ -2538,7 +2551,7 @@ export function createMultiProjectRpcRequestHandler(
       // picture of the same screen, so a dropped frame costs nothing and a
       // buffered one costs the transport.
       if (!includeHighVolumeEvents && isHighVolumeRuntimeEvent(event)) return false;
-      return true;
+      return passesPtyDataFilter(event, ptyDataFilter.ids);
     };
     const unsubscribe = scope.runtime.eventBuffer.subscribe((event) => {
       if (shouldForward(event))
@@ -2569,6 +2582,7 @@ export function createMultiProjectRpcRequestHandler(
         unsubscribe();
         releaseLegacyFrameDemand?.();
       },
+      ptyDataFilter,
     });
 
     const replayResult = replay
@@ -2703,6 +2717,28 @@ export function createMultiProjectRpcRequestHandler(
     subscription.unsubscribe();
     eventSubscriptions.delete(subscriptionId);
     return { removed: true };
+  };
+
+  /**
+   * Changes which terminals' output a subscription sends. The answer comes
+   * after the change, so a client that reads a terminal's screen after it
+   * misses none of the output that follows the screen.
+   */
+  const setRuntimeEventPtyDataFilter = (params: Record<string, unknown>) => {
+    const subscriptionId =
+      typeof params.subscriptionId === "string"
+        ? params.subscriptionId.trim()
+        : "";
+    if (!subscriptionId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "runtimeEvents.setPtyDataFilter requires subscriptionId.",
+      );
+    }
+    const filter = eventSubscriptions.get(subscriptionId)?.ptyDataFilter;
+    if (!filter) return { applied: false };
+    filter.ids = readPtyDataIds(params.ptyDataIds);
+    return { applied: true };
   };
 
   const resolveSyncService = async () => {
@@ -3092,6 +3128,13 @@ export function createMultiProjectRpcRequestHandler(
           // `chat.sendMessage` drops a repeat of a `clientSendId` it has seen.
           // A client retries a send of unknown outcome only against this.
           clientSendDedupe: true,
+          // `chat.typeIntoCli` takes `when: "now"` (a terminal's local line)
+          // and answers a repeat of a `clientMessageId` once, in both modes.
+          agentCliTypeNow: true,
+          // `runtimeEvents.subscribe` and `stream_events` take `ptyDataIds`
+          // (send only these terminals' output), and
+          // `runtimeEvents.setPtyDataFilter` changes the list of a subscription.
+          ptyDataFilter: true,
           // `ade/actions/call` takes `backgroundJob: { id, waitMs }`: a long
           // action runs once per id, and a call sent again joins it.
           backgroundActionJobs: true,
@@ -4651,6 +4694,10 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "runtimeEvents.unsubscribe") {
       return unsubscribeRuntimeEvents(params);
+    }
+
+    if (method === "runtimeEvents.setPtyDataFilter") {
+      return setRuntimeEventPtyDataFilter(params);
     }
 
     if (method === "appControl.setFrameDemand") {

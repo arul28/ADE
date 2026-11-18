@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMachineSlotHold } from "../../lib/machineSlotHolds";
 import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
 import { createTerminalTypeAhead, type TerminalTypeAhead } from "./terminalTypeAhead";
+import { createTerminalLocalLine, type TerminalLocalLine, type TerminalLocalLineAction } from "./terminalLocalLine";
+import { TerminalLocalLineBar, TerminalLocalLineSwitch, readLocalLineOff, writeLocalLineOff } from "./TerminalLocalLineBar";
+import { toolTypeTakesLocalLine } from "../../../shared/cliLaunch";
 import type { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -16,7 +19,8 @@ import {
   type TerminalPreferences,
   type ThemeId,
 } from "../../state/appStore";
-import { useTypeAheadRoundTripMs } from "../../state/projectMachines";
+import { useFarLinkActive, useRemoteTargetState, useRemoteTypesLocalLine, useTypeAheadRoundTripMs } from "../../state/projectMachines";
+import { sendAgentCliText } from "./agentCliTypeSend";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { installMacShiftSelectionBridge } from "./terminalMacShiftSelection";
 import { TERMINAL_BRACKETED_PASTE_END, TERMINAL_BRACKETED_PASTE_START } from "./terminalBracketedPaste";
@@ -84,7 +88,30 @@ type RuntimeSnapshot = {
   renderer: TerminalRendererMode;
   health: TerminalHealthCounters;
   imagePasteNotice: string | null;
+  localLine: TerminalLocalLineState;
 };
+
+/** What the local line shows (`terminalLocalLine.ts`). */
+export type TerminalLocalLineState = {
+  /** Offered and the program takes a bracketed paste: keys stay local. */
+  on: boolean;
+  /** The program has bracketed paste on (the line could take keys). */
+  programTakesPaste: boolean;
+  text: string;
+  sending: boolean;
+  /** The line on its way, shown dimmed until the machine has it. */
+  sendingText: string | null;
+  error: TerminalLocalLineError | null;
+  /**
+   * The line holds text whose send could not be confirmed. It stays in the
+   * line (never handed to the CLI as keys, which has no id) until Enter sends
+   * it again with the same id or it is edited.
+   */
+  uncertain: boolean;
+};
+
+/** Why the last line was not sent: its terminal stopped, the link dropped, or the machine refused it. */
+export type TerminalLocalLineError = "stopped" | "dropped" | "refused";
 
 type TerminalRenderPreferences = Pick<TerminalPreferences, "fontFamily" | "fontSize" | "lineHeight" | "scrollback">;
 
@@ -207,6 +234,27 @@ type CachedRuntime = {
   termDataSub: { dispose: () => void } | null;
   /** Dimmed guesses of typed characters on a slow link (`terminalTypeAhead.ts`). */
   typeAhead: TerminalTypeAhead | null;
+  /** An agent CLI's typed line, kept here until Enter on a slow link (`terminalLocalLine.ts`). */
+  localLine: TerminalLocalLine | null;
+  /** The view offers the local line (slow link, a provider that takes it, not turned off). */
+  localLineWanted: boolean;
+  localLineSending: number;
+  localLineSendingText: string | null;
+  localLineError: TerminalLocalLineError | null;
+  /** The last line that failed, with its id: sent again unchanged, it keeps the id so it never arrives twice. */
+  localLineFailed: { text: string; clientSendId: string } | null;
+  /**
+   * May the local line be handed to the program as keys? False while the
+   * terminal's machine is away, so a line typed before a drop is kept rather
+   * than written into nothing.
+   */
+  localLineHandOver: boolean;
+  /**
+   * The text of a line whose send could not be confirmed: it may already be
+   * in the CLI, so it must not also go out as raw keys (that path has no id,
+   * and the CLI could get it twice). Enter sends it again with its id.
+   */
+  localLineUncertainText: string | null;
   linkProviderSub: { dispose: () => void } | null;
   pathLinkProviderSub: { dispose: () => void } | null;
   pathLinks: TerminalPathLinkContext;
@@ -311,6 +359,13 @@ const pinnedPtyExitUnsubs = new Map<string, () => void>();
 let pinnedPtyRuntimeCount = 0;
 let ptyDataSubscriptionSignature: string | null = null;
 const pinnedPtyDataSubscriptionSignatures = new Map<string, string>();
+/**
+ * The terminal list each machine is still taking, by pin. A machine that
+ * sends output by list sends a terminal's output only once it has the list,
+ * so a terminal there that comes back reads its screen after that
+ * (`hydrateTranscript`); output printed in between would be lost.
+ */
+const pinnedPtyDataSubscriptionUpdates = new Map<string, Promise<void>>();
 
 function terminalRuntimeKey(args: {
   sessionId: string;
@@ -1043,6 +1098,12 @@ function warnInvalidFitOnce(runtime: CachedRuntime, args: {
   });
 }
 
+function sameLocalLineState(a: TerminalLocalLineState | null, b: TerminalLocalLineState): boolean {
+  return a != null && a.on === b.on && a.programTakesPaste === b.programTakesPaste
+    && a.text === b.text && a.sending === b.sending && a.sendingText === b.sendingText
+    && a.error === b.error && a.uncertain === b.uncertain;
+}
+
 /** The one place a snapshot is built, so a new field is added once. */
 function runtimeSnapshot(runtime: CachedRuntime): RuntimeSnapshot {
   return {
@@ -1050,6 +1111,15 @@ function runtimeSnapshot(runtime: CachedRuntime): RuntimeSnapshot {
     renderer: runtime.renderer,
     health: cloneHealth(runtime.health),
     imagePasteNotice: runtime.imagePasteNotice,
+    localLine: {
+      on: localLineOn(runtime),
+      programTakesPaste: programTakesPaste(runtime),
+      text: runtime.localLine?.text() ?? "",
+      sending: runtime.localLineSending > 0,
+      sendingText: runtime.localLineSending > 0 ? runtime.localLineSendingText : null,
+      error: runtime.localLineError,
+      uncertain: localLineUncertainText(runtime) != null,
+    },
   };
 }
 
@@ -1225,7 +1295,11 @@ function updatePtyDataSubscriptions(removedRuntime?: CachedRuntime): void {
     if (signature === pinnedPtyDataSubscriptionSignatures.get(key)) continue;
     pinnedPtyDataSubscriptionSignatures.set(key, signature);
     if (typeof setDataSubscriptions === "function") {
-      setDataSubscriptions({ ptyIds: next }, group.pin).catch(() => {});
+      const update = setDataSubscriptions({ ptyIds: next }, group.pin).catch(() => {});
+      pinnedPtyDataSubscriptionUpdates.set(key, update);
+      void update.then(() => {
+        if (pinnedPtyDataSubscriptionUpdates.get(key) === update) pinnedPtyDataSubscriptionUpdates.delete(key);
+      });
     }
   }
 
@@ -1300,12 +1374,14 @@ function resumeRuntimePtyStream(runtime: CachedRuntime): void {
 
 function syncRuntimePtyDataStreaming(runtime: CachedRuntime, wasReceiving: boolean): void {
   const isReceiving = shouldRuntimeReceivePtyData(runtime);
+  // The list goes out first, so a terminal that comes back finds the update
+  // its screen read waits for.
+  updatePtyDataSubscriptions();
   if (wasReceiving && !isReceiving) {
     pauseRuntimePtyStream(runtime);
   } else if (!wasReceiving && isReceiving) {
     resumeRuntimePtyStream(runtime);
   }
-  updatePtyDataSubscriptions();
 }
 
 function setRuntimeVisibilityState(runtime: CachedRuntime, visible: boolean) {
@@ -1318,6 +1394,126 @@ function clearPtyInputFlushTimer(runtime: CachedRuntime): void {
   if (runtime.inputFlushTimer) {
     clearTimeout(runtime.inputFlushTimer);
     runtime.inputFlushTimer = null;
+  }
+}
+
+/**
+ * The local line takes keys only while the view offers it and the program has
+ * bracketed paste on: a screen without it (a sign-in, a picker) gets every key
+ * as before. A line whose send could not be confirmed keeps taking keys even
+ * when the line is not offered any more, so it stays visible and Enter can
+ * retry it.
+ */
+function localLineOn(runtime: CachedRuntime): boolean {
+  return (runtime.localLineWanted || localLineUncertainText(runtime) != null)
+    && runtime.localLine != null
+    && runtime.inputEnabled
+    && programTakesPaste(runtime);
+}
+
+/** The text of the line while it is the one whose send could not be confirmed. */
+function localLineUncertainText(runtime: CachedRuntime): string | null {
+  const text = runtime.localLineUncertainText;
+  if (!text) return null;
+  return runtime.localLine?.text() === text ? text : null;
+}
+
+function programTakesPaste(runtime: CachedRuntime): boolean {
+  return runtime.bracketedPasteMode || runtime.term.modes?.bracketedPasteMode === true;
+}
+
+/**
+ * A line left when the local line goes off goes to the program as typed, but
+ * only when the program's machine can take it and the line is not one whose
+ * send is already in doubt (that one may be in the CLI, so keys could type it
+ * twice). While the machine is away the line is kept and comes back with it.
+ */
+function handOverLocalLine(runtime: CachedRuntime): void {
+  if (!runtime.localLineHandOver || localLineUncertainText(runtime) != null) return;
+  const keys = runtime.localLine?.text() ? runtime.localLine.takeForHandOver() : "";
+  if (keys) writePtyInput(runtime, keys);
+}
+
+function setLocalLineWanted(runtime: CachedRuntime, wanted: boolean): void {
+  if (runtime.localLineWanted === wanted) return;
+  runtime.localLineWanted = wanted;
+  notifyRuntime(runtime);
+}
+
+/** A key from the person: through the local line while it is on, else to the program. */
+function writeKeyInput(runtime: CachedRuntime, data: string): void {
+  if (localLineOn(runtime)) {
+    // A line whose send is in doubt only submits through Enter (which keeps
+    // its id); any other key goes to the CLI without the line. While a line is
+    // being sent, Enter keeps the next one here rather than starting a second
+    // send: one line is out at a time, in the order the person presses Enter.
+    const handOver = localLineUncertainText(runtime) == null;
+    applyLocalLineActions(runtime, runtime.localLine?.input(data, {
+      handOver,
+      submit: runtime.localLineSending === 0,
+    }) ?? []);
+    return;
+  }
+  handOverLocalLine(runtime);
+  enqueuePtyInput(runtime, data);
+}
+
+function applyLocalLineActions(runtime: CachedRuntime, actions: TerminalLocalLineAction[]): void {
+  for (const action of actions) {
+    if (action.kind === "write") enqueuePtyInput(runtime, action.data);
+    else void submitLocalLine(runtime, action.text);
+  }
+}
+
+/**
+ * Sends the line to the terminal's machine, which types it and presses Enter
+ * there (`chat.typeIntoCli` with `when: "now"`, the input box's send path).
+ * One line is out at a time (`writeKeyInput` keeps the next Enter's text in
+ * the line), so what the person typed reaches the CLI in order, and an Esc
+ * after Enter waits for the line (the paste-write gate) instead of overtaking
+ * it. A failed send puts the line back; sent again unchanged it keeps its id,
+ * and the machine types a line it already has only once.
+ */
+async function submitLocalLine(runtime: CachedRuntime, text: string): Promise<void> {
+  const pin = runtime.runtimePin;
+  if (!pin) {
+    runtime.localLine?.restore(text);
+    return;
+  }
+  const pendingKeys = consumePendingPtyInput(runtime);
+  if (pendingKeys) writePtyInputNow(runtime, pendingKeys);
+  const clientSendId = runtime.localLineFailed?.text === text ? runtime.localLineFailed.clientSendId : crypto.randomUUID();
+  runtime.localLineFailed = null;
+  runtime.localLineUncertainText = null;
+  runtime.localLineSending += 1;
+  runtime.localLineSendingText = text;
+  runtime.localLineError = null;
+  runtime.pasteWriteInFlight = true;
+  notifyRuntime(runtime);
+  try {
+    const sent = await sendAgentCliText({
+      sessionId: runtime.sessionId,
+      text,
+      clientMessageId: clientSendId,
+      when: "now",
+      pin,
+    });
+    if (sent.kind !== "typed" && !runtime.disposed) {
+      runtime.localLine?.restore(text);
+      runtime.localLineFailed = { text, clientSendId };
+      // "Unconfirmed" may already be in the CLI: keeping it in the line means
+      // no other path can type it again, and Enter retries it with this id.
+      runtime.localLineUncertainText = sent.kind === "unconfirmed" ? text : null;
+      runtime.localLineError = sent.kind === "ended" ? "stopped" : sent.kind === "failed" ? "refused" : "dropped";
+    }
+  } finally {
+    runtime.localLineSending -= 1;
+    if (!runtime.disposed && runtime.localLineSending === 0) {
+      const deferred = consumeDeferredInputDuringPasteWrite(runtime);
+      runtime.pasteWriteInFlight = false;
+      if (deferred) writePtyInput(runtime, deferred);
+    }
+    if (!runtime.disposed) notifyRuntime(runtime);
   }
 }
 
@@ -1402,6 +1598,10 @@ function consumeDeferredInputDuringPasteWrite(runtime: CachedRuntime): string {
 
 async function writeTextPasteForTerminal(runtime: CachedRuntime, text: string): Promise<void> {
   if (!text || runtime.disposed) return;
+  if (localLineOn(runtime)) {
+    runtime.localLine?.paste(text);
+    return;
+  }
   if (runtime.pasteWriteInFlight) {
     runtime.deferredInputDuringPasteWrite.push({ kind: "paste", text });
     return;
@@ -1463,7 +1663,9 @@ function updateTerminalInputModes(runtime: CachedRuntime, data: string): void {
     for (const rawParam of match[1].split(";")) {
       const mode = Number(rawParam);
       if (mode === TERMINAL_BRACKETED_PASTE_MODE) {
+        const was = runtime.bracketedPasteMode;
         runtime.bracketedPasteMode = action === "h";
+        if (was !== runtime.bracketedPasteMode) notifyRuntime(runtime);
         continue;
       }
       if (!TERMINAL_MOUSE_TRACKING_EVENT_MODES.has(mode)) continue;
@@ -2944,10 +3146,17 @@ function startHydration(runtime: CachedRuntime) {
   };
 
   const hydrateTranscript = () => {
-    readInitialHydrationData(runtime)
-      .then((data) => normalizeHydrationData(runtime, data))
-      .then(finalizeHydration)
-      .catch(() => finalizeHydration({ source: "empty", text: "" }));
+    const read = () => {
+      readInitialHydrationData(runtime)
+        .then((data) => normalizeHydrationData(runtime, data))
+        .then(finalizeHydration)
+        .catch(() => finalizeHydration({ source: "empty", text: "" }));
+    };
+    const listUpdate = runtime.runtimePin
+      ? pinnedPtyDataSubscriptionUpdates.get(runtimePinSubscriptionKey(runtime.runtimePin))
+      : undefined;
+    if (listUpdate) void listUpdate.then(read);
+    else read();
   };
 
   const waitForFitThenHydrate = (attempt: number) => {
@@ -3243,6 +3452,14 @@ function createRuntime(args: {
     ptyExitUnsub: null,
     termDataSub: null,
     typeAhead: null,
+    localLine: null,
+    localLineWanted: false,
+    localLineSending: 0,
+    localLineSendingText: null,
+    localLineError: null,
+    localLineFailed: null,
+    localLineHandOver: true,
+    localLineUncertainText: null,
     linkProviderSub,
     pathLinkProviderSub,
     pathLinks,
@@ -3363,7 +3580,7 @@ function createRuntime(args: {
       }
       if (isMac && ev.metaKey) {
         ev.preventDefault();
-        writePtyInput(runtime, "\x03");
+        writeKeyInput(runtime, "\x03");
         return false;
       }
       return true;
@@ -3372,6 +3589,7 @@ function createRuntime(args: {
     // Shift+Enter should insert a newline in tools like Claude/Codex prompts.
     if (ev.shiftKey && ev.key === "Enter") {
       ev.preventDefault();
+      if (localLineOn(runtime) && runtime.localLine?.newline()) return false;
       writePtyInput(runtime, runtime.bracketedPasteMode
         ? `${TERMINAL_BRACKETED_PASTE_START}\n${TERMINAL_BRACKETED_PASTE_END}`
         : "\n");
@@ -3380,21 +3598,21 @@ function createRuntime(args: {
 
     if (isMac && ev.altKey && ev.key === "Backspace") {
       ev.preventDefault();
-      writePtyInput(runtime, "\x1b\x7f");
+      writeKeyInput(runtime, "\x1b\x7f");
       return false;
     }
 
     if (isMac && ev.metaKey && ev.key === "Backspace") {
       ev.preventDefault();
       // Ctrl+U: kill to beginning of line
-      writePtyInput(runtime, "\x15");
+      writeKeyInput(runtime, "\x15");
       return false;
     }
 
     // Ctrl+Backspace: delete word backward (same as Ctrl+W)
     if (ev.ctrlKey && ev.key === "Backspace") {
       ev.preventDefault();
-      writePtyInput(runtime, "\x17");
+      writeKeyInput(runtime, "\x17");
       return false;
     }
 
@@ -3405,9 +3623,8 @@ function createRuntime(args: {
   // full RPC round trip per write, so per-character bursts make typing feel
   // much slower than a local shell.
   runtime.typeAhead = createTerminalTypeAhead({ term });
-  runtime.termDataSub = term.onData((data) => {
-    enqueuePtyInput(runtime, data);
-  });
+  runtime.localLine = createTerminalLocalLine(() => notifyRuntime(runtime));
+  runtime.termDataSub = term.onData((data) => writeKeyInput(runtime, data));
 
   runtime.ptyDataUnsub = subscribeRuntimePtyData(runtime);
   runtime.ptyExitUnsub = subscribeRuntimePtyExit(runtime);
@@ -3544,6 +3761,7 @@ export function TerminalView({
   isVisible = isActive,
   imagePasteMode = "shell",
   toolType = null,
+  localLineAllowed = true,
 }: {
   ptyId: string;
   sessionId: string;
@@ -3554,6 +3772,11 @@ export function TerminalView({
   imagePasteMode?: TerminalImagePasteMode;
   /** Drives the web keyboard-scroll hint; absent means no hint. */
   toolType?: TerminalToolType | null;
+  /**
+   * False keeps the local line off: the session types through the Work input
+   * box ("box" mode), so keys in the terminal go to the CLI as before.
+   */
+  localLineAllowed?: boolean;
 }) {
   const appTheme = useAppStore((s) => s.theme);
   const themeId = useAppStore(selectEffectiveThemeId);
@@ -3561,11 +3784,40 @@ export function TerminalView({
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   // A terminal on screen keeps its computer's ADE Web connection slot.
   useMachineSlotHold(runtimePin, isVisible);
-  // On a slow link to the terminal's machine, typed characters show before the
+  // On a far link to the terminal's machine, typed characters show before the
   // echo. Plain shells only: an agent CLI (any provider) draws its own input
   // box, so it keeps the fast key path and gets no guesses.
   const linkRttMs = useTypeAheadRoundTripMs(runtimePin?.kind === "remote" ? runtimePin.targetId : null);
   const typeAheadRttMs = toolType == null || toolType === "shell" ? linkRttMs : null;
+  // On a far link an agent CLI gets the local line instead: typed text stays
+  // here until Enter (`terminalLocalLine.ts`). Per provider (`cliLaunch.ts`),
+  // only where the client can send a line and the machine types one, not
+  // while the session types through the input box, and off for a session the
+  // person turned it off for.
+  const remoteTargetId = runtimePin?.kind === "remote" ? runtimePin.targetId : null;
+  const farLink = useFarLinkActive(remoteTargetId);
+  const machineTypesLocalLine = useRemoteTypesLocalLine(remoteTargetId);
+  const localLineOffered = farLink
+    && machineTypesLocalLine
+    && localLineAllowed
+    // ADE Web's adapter types every text at a free prompt and refuses
+    // `when: "now"`, so it gets no local line.
+    && !isWebClientMode()
+    && toolTypeTakesLocalLine(toolType)
+    && typeof window.ade?.agentChat?.typeIntoCli === "function";
+  const [localLineOffSessionId, setLocalLineOffSessionId] = useState<string | null>(() => (readLocalLineOff(sessionId) ? sessionId : null));
+  const localLineOff = localLineOffSessionId === sessionId;
+  const localLineWanted = localLineOffered && !localLineOff;
+  const localLineWantedRef = useRef(localLineWanted);
+  localLineWantedRef.current = localLineWanted;
+  // Whether the terminal's machine can take keys now. While it cannot, a line
+  // typed before the drop stays where it is instead of being written into
+  // nothing (`handOverLocalLine`); it comes back with the line.
+  const remoteMachineState = useRemoteTargetState(remoteTargetId);
+  const machineReachable = remoteTargetId == null || remoteMachineState === "online";
+  const machineReachableRef = useRef(machineReachable);
+  machineReachableRef.current = machineReachable;
+  const [localLine, setLocalLine] = useState<TerminalLocalLineState | null>(null);
   // Keyboard-scroll hint: web only, and only for a session whose provider we
   // have documented keys for. See `terminalScrollHint.ts` for why the wheel is
   // slow over sync and why this is provider-specific.
@@ -3633,6 +3885,21 @@ export function TerminalView({
   useEffect(() => {
     runtimeRef.current?.typeAhead?.setWanted(typeAheadRttMs != null, typeAheadRttMs);
   }, [typeAheadRttMs]);
+  useEffect(() => {
+    setLocalLineOffSessionId(readLocalLineOff(sessionId) ? sessionId : null);
+  }, [sessionId]);
+  useEffect(() => {
+    if (runtimeRef.current) setLocalLineWanted(runtimeRef.current, localLineWanted);
+  }, [localLineWanted]);
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime || runtime.disposed) return;
+    runtime.localLineHandOver = machineReachable;
+    // The line is not the one being typed in any more (a fast link, box mode,
+    // the switch), and the program can take keys: hand it over as keys. While
+    // the machine is away it is kept instead.
+    if (!localLineWanted && machineReachable) handOverLocalLine(runtime);
+  }, [localLineWanted, machineReachable]);
   const currentMountConfig = { isActive, isVisible, theme: termTheme, preferences: resolvedPreferences };
   const mountConfigRef = useRef(currentMountConfig);
   mountConfigRef.current = currentMountConfig;
@@ -3660,6 +3927,8 @@ export function TerminalView({
     });
     runtimeRef.current = runtime;
     runtime.typeAhead?.setWanted(typeAheadRttMsRef.current != null, typeAheadRttMsRef.current);
+    setLocalLineWanted(runtime, localLineWantedRef.current);
+    runtime.localLineHandOver = machineReachableRef.current;
     if (pathLinkHandleRef.current) {
       runtime.pathLinks.openWorkspacePath = pathLinkHandleRef.current.openWorkspacePath;
       runtime.pathLinks.ensureLaneId = pathLinkHandleRef.current.ensureLaneId;
@@ -3676,10 +3945,12 @@ export function TerminalView({
     const onRuntimeSnapshot: RuntimeListener = (snapshot) => {
       setExited(snapshot.exitCode);
       setImagePasteNotice(snapshot.imagePasteNotice);
+      setLocalLine((current) => (sameLocalLineState(current, snapshot.localLine) ? current : snapshot.localLine));
     };
     runtime.listeners.add(onRuntimeSnapshot);
     setExited(runtime.exitCode);
     setImagePasteNotice(runtime.imagePasteNotice);
+    setLocalLine(runtimeSnapshot(runtime).localLine);
 
     if (runtime.host.parentElement !== el) {
       el.replaceChildren(runtime.host);
@@ -4131,6 +4402,24 @@ export function TerminalView({
             if (runtime) clearImagePasteNotice(runtime, imagePasteIo(runtime));
             else setImagePasteNotice(null);
           }}
+        />
+      ) : null}
+      {localLineOffered && exited == null && localLine?.programTakesPaste && !localLine.uncertain ? (
+        <TerminalLocalLineSwitch
+          on={!localLineOff}
+          onChange={(on) => {
+            writeLocalLineOff(sessionId, !on);
+            setLocalLineOffSessionId(on ? null : sessionId);
+            runtimeRef.current?.term.focus();
+          }}
+        />
+      ) : null}
+      {localLine?.on && exited == null && (localLine.text || localLine.sending || localLine.error) ? (
+        <TerminalLocalLineBar
+          state={localLine}
+          fontFamily={resolvedPreferences.fontFamily}
+          fontSize={resolvedPreferences.fontSize}
+          lineHeight={resolvedPreferences.lineHeight}
         />
       ) : null}
       {scrollHint != null && exited == null ? (

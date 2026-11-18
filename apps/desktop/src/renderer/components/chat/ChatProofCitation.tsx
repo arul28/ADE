@@ -211,9 +211,11 @@ function CitedProofMedia({
       {...mediaAttributes}
     >
       {held ? (
-        <SlowLinkHeldPicture title={text} bytes={held.bytes} onShow={showHeld} className="min-h-40" />
+        // One width for every waiting tile: a message that fits its text
+        // would otherwise give each tile its caption's width.
+        <SlowLinkHeldPicture title={text} bytes={held.bytes} onShow={showHeld} className="min-h-40 w-[420px] max-w-full" />
       ) : loading ? (
-        <span className="flex min-h-40 items-center justify-center rounded-xl border border-fg/[0.06] bg-black/20 text-muted-fg/35">
+        <span className="flex min-h-40 w-[420px] max-w-full items-center justify-center rounded-xl border border-fg/[0.06] bg-black/20 text-muted-fg/35">
           <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof" />
         </span>
       ) : failed ? (
@@ -267,6 +269,7 @@ function CitedProofMedia({
         <ArtifactLightbox
           artifact={artifact}
           preview={fullPreview ?? preview}
+          placeholder={preview}
           failed={failed}
           failureText={failureText}
           onMediaError={onMediaError}
@@ -416,6 +419,7 @@ function ProofActionThumbnailMedia({ artifact, height }: { artifact: ComputerUse
         <ArtifactLightbox
           artifact={artifact}
           preview={fullPreview ?? preview}
+          placeholder={preview}
           failed={failed}
           failureText={externalArtifactUrl(artifact.uri) ? "This proof lives at its source." : explanation}
           onMediaError={onMediaError}

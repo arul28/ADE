@@ -775,6 +775,15 @@ export type AgentCliTypeArgs = {
    * answer instead of typing the text again.
    */
   clientMessageId?: string;
+  /**
+   * `free` (the default): typed only at a free prompt, as above. `now`: the
+   * terminal's local line on a slow link, typed into the CLI's input at once
+   * and submitted, like the person's own keys. Only a host that advertises
+   * `agentCliTypeNow` reads it; an older host types every text as `free`.
+   */
+  when?: "now" | "free";
+  /** Who sent it (`sessionInputOrigin`), stamped by the preload. */
+  inputOrigin?: unknown;
 };
 
 /**

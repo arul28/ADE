@@ -3861,7 +3861,7 @@ const REMOTE_RUNTIME_EVENT_INITIAL_IDLE_POLL_MS = 2_500;
 const pinnedRuntimeEvents = createPinnedRuntimeEvents({
   ipcRenderer,
   toWrappedEvent,
-  syncPtyDataSubscriptions: () => syncPtyDataSubscriptions(),
+  syncPtyDataSubscriptions: (settleBindingKey) => syncPtyDataSubscriptions(settleBindingKey),
   isPtyDataFilteringConfigured: () => ptyDataSubscriptionsConfigured,
   isRemoteTargetOffline: (targetId) => remoteTargetGate.isOffline(targetId),
   activePumpKeepsSubscription: (pin) => activeRuntimeEventPumpKeepsSubscription(pin),
@@ -3951,13 +3951,14 @@ function collectPtyDataSubscriptionIds(): string[] {
   return [...ids];
 }
 
-function syncPtyDataSubscriptions(): Promise<void> {
+function syncPtyDataSubscriptions(settleBindingKey?: string | null): Promise<void> {
   // Until the active path opts into filtering, main-process delivery is
   // intentionally unrestricted. A pinned view must not narrow that legacy
   // stream merely by mounting; its own filter still applies in preload.
   if (!ptyDataSubscriptionsConfigured) return Promise.resolve();
   return ipcRenderer.invoke(IPC.ptyDataSubscriptions, {
     ptyIds: collectPtyDataSubscriptionIds(),
+    ...(settleBindingKey ? { settleBindingKey } : {}),
   });
 }
 
@@ -3977,7 +3978,7 @@ async function setPtyDataSubscriptions(
     pinnedRuntimeEvents.updateOpenPinnedPtyDataSubscriptions(pin, ptyIds);
   } else subscribedPtyDataIds = ptyIds;
   ensureRemoteRuntimeEventPump();
-  await syncPtyDataSubscriptions();
+  await syncPtyDataSubscriptions(pin?.kind === "remote" ? pin.key : null);
 }
 
 function ensureRemoteRuntimeEventPump(): void {
@@ -5346,6 +5347,17 @@ const runtimeStatusFanout = createIpcEventFanout<LocalRuntimeStatus>(IPC.appRunt
 const remoteConnectionSnapshotFanout = createIpcEventFanout<RemoteRuntimeConnectionSnapshot>(
   IPC.remoteRuntimeConnectionSnapshotChanged,
 );
+// This computer's network came back or switched (Wi-Fi rejoined, a new
+// network): main redials dropped machines at once instead of at their next
+// backoff. Chromium tells each window; main merges the calls. No timer here.
+if (typeof window !== "undefined") {
+  const noteNetworkChanged = () => {
+    void ipcRenderer.invoke(IPC.remoteRuntimeNetworkChanged).catch(() => {});
+  };
+  window.addEventListener("online", noteNetworkChanged);
+  const connection = (navigator as Navigator & { connection?: EventTarget }).connection;
+  connection?.addEventListener?.("change", noteNetworkChanged);
+}
 const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
 // One IPC listener per window for each, however many tabs subscribe: every
 // project tab adds a subscriber, and a listener per subscriber outgrows
@@ -9356,8 +9368,9 @@ const adeBridge = {
       }
       agentChatSummaryCache.clear();
     },
-    // The Work input box's text for a running agent CLI, on the CLI's own
-    // machine. Typed only at a free prompt; `deferred` means nothing was typed.
+    // Text for a running agent CLI, on the CLI's own machine: the Work input
+    // box's (typed only at a free prompt; `deferred` means nothing was typed)
+    // or the terminal's local line (`when: "now"`).
     typeIntoCli: async (
       args: AgentCliTypeArgs,
       pin?: OpenProjectBinding | null,

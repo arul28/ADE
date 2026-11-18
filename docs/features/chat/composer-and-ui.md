@@ -1161,8 +1161,17 @@ The composer adapts to the chat's machine (`shared/slowLinkMode.ts`; see
 - **`clientSendId`.** The composer keeps the id of an unconfirmed send, keyed
   by chat and the whole payload, and reuses it for the same payload, so the
   machine never writes a message twice. The id is forgotten once confirmed.
+- The brain writes that id on the message it wrote for the send
+  (`AgentChatEvent.user_message.clientSendId`). A pane that sees it, here or in
+  the transcript after a reconnect, treats the send as delivered whatever words
+  the message holds: its words, files and context never go back in a composer
+  or saved draft. An older brain writes no id, so only its id-less rows count by
+  words; a row that names another send is never evidence for this one.
 - A send that lost its answer shows "Sending is taking longer than expected"
-  and holds the words for up to two minutes while it checks the chat.
+  and holds the words for up to two minutes while it checks the chat. A send to
+  another machine then waits for that machine's link to settle (at most ten
+  minutes, then the text goes back), because its message and id show only once
+  the chat's history does.
 - An older machine gets one upload request and a new id per send.
 
 ## Voice conversations

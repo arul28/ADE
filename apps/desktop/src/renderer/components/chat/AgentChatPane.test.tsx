@@ -2293,11 +2293,16 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it.each([
-    { name: "never arrives", earlierCopy: false, arrives: false, restored: true },
-    { name: "arrives after the call timed out", earlierCopy: false, arrives: true, restored: false },
+    { name: "never arrives", earlierCopy: false, arrival: "none", restored: true },
+    { name: "arrives after the call timed out", earlierCopy: false, arrival: "words", restored: false },
+    // A brain that records client send ids writes the send's id on its row,
+    // so the row is this send whatever words it ends up holding.
+    { name: "arrives under its client send id with words the chat rewrote", earlierCopy: false, arrival: "byId", restored: false },
+    // Another send's identical message says nothing about this one.
+    { name: "only another send's identical message arrives", earlierCopy: false, arrival: "otherId", restored: true },
     // An identical message sent a minute earlier proves nothing about this one.
-    { name: "never arrives, though an identical earlier message is in the chat", earlierCopy: true, arrives: false, restored: true },
-  ])("a send whose call times out goes back in the composer only if it $name", async ({ earlierCopy, arrives, restored }) => {
+    { name: "never arrives, though an identical earlier message is in the chat", earlierCopy: true, arrival: "none", restored: true },
+  ])("a send whose call times out goes back in the composer only if it $name", async ({ earlierCopy, arrival, restored }) => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const text = "Ship the queue fix.";
@@ -2321,7 +2326,22 @@ describe("AgentChatPane submit recovery", () => {
       // The call gave up, not the send: the composer stays clear while it may still arrive.
       await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(""));
 
-      if (arrives) act(() => emitChatEvent(userMessage(new Date().toISOString())));
+      if (arrival !== "none") {
+        const clientSendId = send.mock.calls[0]?.[0]?.clientSendId;
+        expect(typeof clientSendId, "the send carries a client send id").toBe("string");
+        const envelope = userMessage(new Date().toISOString());
+        act(() => emitChatEvent(arrival === "words"
+          ? envelope
+          : {
+            ...envelope,
+            event: {
+              type: "user_message",
+              text: arrival === "byId" ? `${text} (rewritten by the brain)` : text,
+              turnId: "turn-x",
+              clientSendId: arrival === "byId" ? clientSendId : "another-send",
+            },
+          }));
+      }
       await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
 
       await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(restored ? text : ""));

@@ -152,6 +152,9 @@ const EMPTY_PREVIEW: PreviewState = {
   readThrew: false,
 };
 
+/** Waits before another size read of a held picture that found nothing. */
+const HELD_SIZE_RETRY_MS = [2_000, 6_000, 15_000];
+
 /** `E` is the element the caller attaches `containerRef` to; a tile uses a div, an inline citation a span. */
 export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   artifact: ComputerUseArtifactView,
@@ -216,11 +219,25 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   const showHeld = useCallback(() => setReleased(true), []);
 
   // The size a held picture will take: one small read of its display copy.
+  // A read can find nothing while the link is still coming up after a
+  // reload, or while the machine makes the copy; it tries again a few times.
+  const [heldSizeTry, setHeldSizeTry] = useState(0);
+  // A machine that comes back gets fresh tries.
   useEffect(() => {
-    if (!holding || !visible || heldBytes !== null) return;
+    if (!remoteOffline) setHeldSizeTry(0);
+  }, [remoteOffline]);
+  useEffect(() => {
+    if (!holding || !visible || heldBytes !== null || remoteOffline) return;
+    if (heldSizeTry >= HELD_SIZE_RETRY_MS.length + 1) return;
     const mediaSize = window.ade.computerUse.mediaSize;
     if (typeof mediaSize !== "function") return;
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const tryAgain = () => {
+      const wait = HELD_SIZE_RETRY_MS[heldSizeTry];
+      if (cancelled || wait === undefined) return;
+      retryTimer = setTimeout(() => setHeldSizeTry((n) => n + 1), wait);
+    };
     void window.ade.computerUse.mediaBaseUrl()
       .then((base) => {
         if (!base || cancelled) return null;
@@ -234,13 +251,16 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
         return url ? mediaSize(url) : null;
       })
       .then((bytes) => {
-        if (!cancelled && typeof bytes === "number") setHeldBytes(bytes);
+        if (cancelled) return;
+        if (typeof bytes === "number") setHeldBytes(bytes);
+        else tryAgain();
       })
-      .catch(() => {});
+      .catch(tryAgain);
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [artifact.uri, heldBytes, holding, projectId, remoteRoot, targetId, visible]);
+  }, [artifact.uri, heldBytes, heldSizeTry, holding, projectId, remoteOffline, remoteRoot, targetId, visible]);
 
   useEffect(() => {
     const node = containerRef.current;
@@ -263,6 +283,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
     setStreamRefused(false);
     setReleased(false);
     setHeldBytes(null);
+    setHeldSizeTry(0);
   }, [artifact.id, artifact.uri]);
 
   // The machine came back: load again instead of keeping "is offline".

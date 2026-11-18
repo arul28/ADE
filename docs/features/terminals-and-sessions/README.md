@@ -1703,9 +1703,10 @@ sliding window, not an absolute offset).
 A plain shell on another machine shows the characters you type straight away,
 dimmed and with a dotted underline at the cursor, until the machine's echo
 arrives (`terminalTypeAhead.ts`). The window picks it per terminal from the
-connection snapshot: on when that machine's slow-connection mode is on, or its
-measured round trip is 200 ms or more, and never when the machine's setting is
-**Off** (`useTypeAheadRoundTripMs` in `state/projectMachines.ts`). Agent command
+connection snapshot: on while that machine's link is far (two of three round
+trips at 150 ms or more, off below 110 ms) or in slow-connection mode, and
+never when the machine's setting is **Off** (`useFarLinkActive` and
+`useTypeAheadRoundTripMs` in `state/projectMachines.ts`). Agent command
 line tools get none of it — they draw their own input box, so a guess at the
 cursor is not safe there (`toolType` other than "shell" or none) — and neither
 does any terminal in the alternate screen. The rules are mosh's: only plain

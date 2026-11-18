@@ -43,6 +43,7 @@ import {
   type RemoteTargetFormPrefill,
 } from "./RemoteTargetForm";
 import { PairMachineForm } from "./PairMachineForm";
+import { showToast } from "../app/toast/toastStore";
 import {
   accountMachineForTarget as findAccountMachineForTarget,
   assignMachineSections,
@@ -260,6 +261,8 @@ export function RemoteTargetList({
   const [localMachineIdentity, setLocalMachineIdentity] =
     useState<{ machineKey: string; deviceId: string } | null>(null);
   const [pairingPrefill, setPairingPrefill] = useState<string | null>(null);
+  // The code pairing replaces a saved pairing the machine turned away.
+  const [pairingAgain, setPairingAgain] = useState(false);
   const [accountRowErrors, setAccountRowErrors] = useState<
     Record<string, string>
   >({});
@@ -503,19 +506,22 @@ export function RemoteTargetList({
   // Only the latest scan's answer lands: an older scan finishing late must not
   // replace a newer scan's result.
   const discoveryScanRef = useRef(0);
-  const loadDiscoveredMachines = useCallback(async () => {
+  // Returns what the scan found, or null when it failed or a newer one ran.
+  const loadDiscoveredMachines = useCallback(async (): Promise<readonly RemoteRuntimeDiscoveredMachine[] | null> => {
     const scan = ++discoveryScanRef.current;
     setLoadingDiscovered(true);
     try {
       const next = await window.ade.remoteRuntime.listDiscoveredMachines();
-      if (scan !== discoveryScanRef.current) return;
+      if (scan !== discoveryScanRef.current) return null;
       setDiscoveredMachines(next.machines);
       setDiscoveryDiagnostics(next.diagnostics);
       setDiscoveryFetchError(null);
+      return next.machines;
     } catch (err) {
-      if (scan !== discoveryScanRef.current) return;
+      if (scan !== discoveryScanRef.current) return null;
       setDiscoveryDiagnostics([]);
       setDiscoveryFetchError(extractError(err));
+      return null;
     } finally {
       if (scan === discoveryScanRef.current) setLoadingDiscovered(false);
     }
@@ -786,17 +792,40 @@ export function RemoteTargetList({
   );
 
   const openNearbyPairing = useCallback(
-    (machine: RemoteRuntimeDiscoveredMachine): boolean => {
+    (machine: RemoteRuntimeDiscoveredMachine, again = false): boolean => {
       const directPairingInput = discoveredPairingInput(machine);
       if (!directPairingInput) return false;
       setSelectedId(null);
       setHostKeyTrust(null);
       setError(null);
       setPairingPrefill(directPairingInput);
+      setPairingAgain(again);
       setAddMode("pair");
       return true;
     },
     [],
+  );
+
+  // "Pair again" for a machine paired with its code (not through the
+  // account): the same code pairing, with the machine as it is found nearby
+  // now. A fresh scan runs when the last one did not see it.
+  const pairAgainNearby = useCallback(
+    async (target: RemoteRuntimeTarget) => {
+      const hostIdentity = target.pairedMachine?.hostIdentity ?? null;
+      const find = (machines: readonly RemoteRuntimeDiscoveredMachine[]) => machines.find((machine) => (
+        discoveredPairingInput(machine) != null
+        && ((hostIdentity != null && machine.hostIdentity === hostIdentity) || machineMatchesSavedTarget(machine, target))
+      ));
+      const match = find(discoveredMachines) ?? find((await loadDiscoveredMachines()) ?? []);
+      if (match && openNearbyPairing(match, true)) return;
+      showToast({
+        tone: "info",
+        title: `Can't find ${target.name} nearby`,
+        message: "Open ADE on it, on this Wi-Fi or your Tailscale network, then press Pair again.",
+        report: false,
+      });
+    },
+    [discoveredMachines, loadDiscoveredMachines, openNearbyPairing],
   );
 
   const connectDiscoveredMachine = useCallback(
@@ -1294,7 +1323,9 @@ export function RemoteTargetList({
           onCancelHostKeyTrust={() => setHostKeyTrust(null)}
           onPairAgain={pairAgainMachine
             ? () => void connectAccountMachine(pairAgainMachine)
-            : null}
+            : row.target.transport === "paired"
+              ? () => void pairAgainNearby(row.target)
+              : null}
           extraActions={extras.extraActions}
           hideLocalRemove={extras.hideLocalRemove}
           footer={extras.footer}
@@ -1427,7 +1458,10 @@ export function RemoteTargetList({
   );
 
   const chooseAddMode = useCallback((next: Exclude<AddMode, "choose">) => {
-    if (next !== "pair") setPairingPrefill(null);
+    if (next !== "pair") {
+      setPairingPrefill(null);
+      setPairingAgain(false);
+    }
     if (next === "nearby") void loadDiscoveredMachines();
     setAddMode(next);
   }, [loadDiscoveredMachines]);
@@ -1438,6 +1472,7 @@ export function RemoteTargetList({
     setError(null);
     setHostKeyTrust(null);
     setPairingPrefill(null);
+    setPairingAgain(false);
     if (mode === "nearby") void loadDiscoveredMachines();
     setAddMode(mode);
   }, [loadDiscoveredMachines]);
@@ -1611,6 +1646,7 @@ export function RemoteTargetList({
               <PairMachineForm
                 defaultDeviceName={localMachineName}
                 initialInput={pairingPrefill}
+                pairingAgain={pairingAgain}
                 busy={saving}
                 onPaired={onPaired}
               />
