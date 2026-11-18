@@ -497,6 +497,7 @@ import {
 } from "../terminals/cliLaunch";
 import { CenteredWorkSurfaceHeader } from "../work/WorkSurfaceHeader";
 import { WorkActivityModule } from "../usage/ActivityModule";
+import { SceneFrost } from "../../scene/SceneFrost";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { cursorCloudAgentWebUrl, cursorCloudErrorMessage, resolveCursorCloudPrCreateFields, pushAutoCreatedLaneOriginForCursorCloud, ensureExistingLaneOriginReadyForCursorCloud } from "../../lib/cursorCloudUtils";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
@@ -22225,6 +22226,8 @@ export function AgentChatPane({
                             data-draft-depart="fade"
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
+                            {/* Frosted over a scene picture, without a live blur. */}
+                            {appPanelOpen ? null : <SceneFrost />}
                             <div className="flex min-w-0 items-center gap-2">
                               {/* Machine first, then that machine's lanes. Splitting
                                   the two keeps the lane list flat and one machine
@@ -22394,6 +22397,7 @@ export function AgentChatPane({
                             )}
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
+                            {appPanelOpen ? null : <SceneFrost />}
                             {laneAccentColor ? (
                               <LaneAccentDot lane={{ color: laneAccentColor }} size={8} />
                             ) : (

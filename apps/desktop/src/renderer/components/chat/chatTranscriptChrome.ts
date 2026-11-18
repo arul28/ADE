@@ -1,9 +1,14 @@
 import type { CSSProperties } from "react";
 import { fgTint } from "../lanes/laneDesignTokens";
 
-/** Transcript bubble outer chrome — keep aligned with AgentChatMessageList. */
+/**
+ * Transcript bubble outer chrome — keep aligned with AgentChatMessageList.
+ * Flat glass: the card sits on the chat canvas (a solid colour), where a blur
+ * showed nothing but still made Chromium on macOS redraw the whole window for
+ * every streamed word.
+ */
 export const CHAT_TRANSCRIPT_GLASS_CARD_CLASS =
-  "ade-liquid-glass overflow-hidden rounded-[var(--chat-radius-card)]";
+  "ade-liquid-glass ade-liquid-glass-flat overflow-hidden rounded-[var(--chat-radius-card)]";
 
 export const CHAT_WORK_LOG_CARD_CLASS =
   "ade-chat-work-card overflow-hidden rounded-[var(--chat-radius-card)]";

@@ -3383,7 +3383,7 @@ function renderEvent(
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "ade-chat-message-card-user group relative min-w-0 max-w-[82%] overflow-hidden px-[length:var(--chat-bubble-user-px)] py-[length:var(--chat-bubble-user-py)]",
+            "ade-chat-message-card-user group group/user-card relative min-w-0 max-w-[82%] overflow-hidden px-[length:var(--chat-bubble-user-px)] py-[length:var(--chat-bubble-user-py)]",
           )}
           style={MESSAGE_CARD_STYLE}
           data-chat-user-message-card=""
@@ -3392,8 +3392,11 @@ function renderEvent(
           data-chat-find-text=""
         >
           {/* Frosted so the actions stay legible over a long first line or a
-              brief's heading, instead of printing on top of the words. */}
-          <div data-ade-find-skip="" className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-black/30 px-1 py-0.5 opacity-0 backdrop-blur-md transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+              brief's heading, instead of printing on top of the words. The
+              blur comes with the hover that shows them: a backdrop-filter on
+              the page, even an invisible one, makes Chromium on macOS redraw
+              the whole window for every change. */}
+          <div data-ade-find-skip="" className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-black/30 px-1 py-0.5 opacity-0 transition-opacity duration-200 group-hover/user-card:opacity-100 group-hover/user-card:backdrop-blur-md focus-within:opacity-100 focus-within:backdrop-blur-md">
             {envelope.timestampSynthetic === true
               ? null
               : <RowHoverTimestamp iso={envelope.timestamp} className="mr-0.5" />}

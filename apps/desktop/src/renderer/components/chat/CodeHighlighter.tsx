@@ -294,7 +294,7 @@ function CodeCopyButton({ code, position, leading }: { code: string; position: C
       >
         <button
           type="button"
-          className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100`}
+          className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} opacity-0 group-hover/code:opacity-100 group-hover/code:backdrop-blur-sm [@media(hover:none)]:opacity-100`}
           style={CODE_BLOCK_ACTION_BUTTON_STYLE}
           onClick={() => void copy(code)}
           title={copied ? "Copied" : "Copy code"}
@@ -313,7 +313,7 @@ function CodeCopyButton({ code, position, leading }: { code: string; position: C
   const button = (
     <button
       type="button"
-      className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} ${leading ? "" : `absolute right-2 z-10 ${posClass} `}opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100`}
+      className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} ${leading ? "" : `absolute right-2 z-10 ${posClass} `}opacity-0 group-hover/code:opacity-100 group-hover/code:backdrop-blur-sm [@media(hover:none)]:opacity-100`}
       style={CODE_BLOCK_ACTION_BUTTON_STYLE}
       onClick={() => void copy(code)}
       title={copied ? "Copied" : "Copy code"}
@@ -477,7 +477,7 @@ export const HighlightedCode = React.memo(function HighlightedCode({
     // Code reads left to right even inside a right-to-left list or quote.
     <div
       dir="ltr"
-      className={`group relative my-3 rounded-[10px] border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)] ${outerOverflowClass}`.trim()}
+      className={`group/code relative my-3 rounded-[10px] border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)] ${outerOverflowClass}`.trim()}
       onPointerEnter={armRun}
       onFocus={armRun}
     >

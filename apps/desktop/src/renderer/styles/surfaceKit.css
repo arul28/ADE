@@ -147,6 +147,19 @@ html[data-scene="image"][data-theme="light"] {
   background: color-mix(in srgb, var(--color-bg) 90%, transparent);
 }
 
+/* A card with a fake frost (`SceneFrost`, mounted only over a scene picture):
+   the same tint and blur as the live frost above, painted from the picture,
+   so the card adds no backdrop-filter to the page. */
+.kit-card:has(> .ade-scene-frost) {
+  isolation: isolate;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  --scene-frost-tint: var(--kit-card-bg);
+  --scene-frost-blur: 20px;
+  --scene-frost-saturate: 1.25;
+}
+
 /* Card header: icon · label · count ………… action. Always 40px. */
 .kit-card-head {
   flex: none;
