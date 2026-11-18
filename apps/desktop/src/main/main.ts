@@ -1401,7 +1401,7 @@ async function createWindow(args: {
       windowId: win.id,
       reason: details.reason,
       exitCode: details.exitCode,
-      url: win.webContents.getURL(),
+      url: windowUrl(),
       ...(memory
         ? {
             lastHeapUsedMb: memory.heapUsedMb,
@@ -1543,21 +1543,21 @@ async function createWindow(args: {
   win.webContents.on("did-finish-load", () => {
     args.logger?.info("window.did_finish_load", {
       windowId: win.id,
-      url: win.webContents.getURL(),
+      url: windowUrl(),
     });
   });
 
   win.webContents.on("did-stop-loading", () => {
     args.logger?.info("window.did_stop_loading", {
       windowId: win.id,
-      url: win.webContents.getURL(),
+      url: windowUrl(),
     });
   });
 
   win.webContents.on("dom-ready", () => {
     args.logger?.info("window.dom_ready", {
       windowId: win.id,
-      url: win.webContents.getURL(),
+      url: windowUrl(),
     });
   });
 

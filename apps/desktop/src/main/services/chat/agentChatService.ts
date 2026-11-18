@@ -53167,6 +53167,14 @@ export function createAgentChatService(args: {
       // remap above is checked again. No servers is a no-op.
       requireProviderAcceptsCallerMcpServers(effectiveProvider);
     }
+    // An action caller (a script, an agent's raw `chat.createSession`) can
+    // leave out the provider. Only a model ADE knows or a preset names one.
+    if (!effectiveProvider) {
+      throw new AdeExpectedError(
+        "invalid_argument: chat.createSession needs a provider, a model ADE knows, or a presetId.",
+        "user",
+      );
+    }
 
     if (trimmedPresetId) {
       normalizedModel = await resolvePresetLaunchModel(effectiveProvider, trimmedPresetId, normalizedModel);

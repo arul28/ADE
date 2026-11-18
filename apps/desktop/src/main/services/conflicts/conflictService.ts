@@ -39,6 +39,7 @@ import type {
   RebaseLaneArgs,
   RebaseResult,
 } from "../../../shared/types";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -2774,7 +2775,8 @@ export function createConflictService({
   const getRebaseNeed = async (laneId: string): Promise<RebaseNeed | null> => {
     const lanes = await listActiveLanes();
     const lane = lanes.find((l) => l.id === laneId);
-    if (!lane) throw new Error(`Lane ${laneId} was not found.`);
+    // A lane deleted or archived while a view still asks about it.
+    if (!lane) throw new AdeExpectedError(`Lane ${laneId} was not found.`, "user");
     if (lane.laneType === "primary") return null;
     try {
       return await computeRebaseNeed(lane, listRecentMergedPrHeads({ db, projectId, logger }));
