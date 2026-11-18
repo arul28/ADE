@@ -48,6 +48,7 @@ import {
   type CloudPhoneSummary,
   type CloudPhoneView,
 } from "./contract";
+import { readBoundedBody } from "../sinkUtils";
 import { sendCloudEmail } from "./email";
 import { fail, json, readJson } from "./http";
 import { PHONE_EXTRA, accountRules, loadAccount, logCloud, planIdOf, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
@@ -743,8 +744,14 @@ async function nomacSignatureValid(secret: string, header: string | null, raw: s
 export async function handleNomacWebhook(request: Request, env: CloudEnv, now: number, waitUntil?: CloudWaitUntil): Promise<Response> {
   const secret = env.NOMAC_WEBHOOK_SECRET?.trim();
   if (!secret) return fail("unavailable", "The NoMac webhook isn't set up.", 503);
-  const raw = await request.text();
-  if (raw.length > 256_000 || !(await nomacSignatureValid(secret, request.headers.get("nomac-signature"), raw, now))) {
+  // Read with a cap, never whole: an unsigned sender could otherwise make the Worker buffer any size.
+  const read = await readBoundedBody(request, 256_000);
+  if (!read.ok) {
+    logCloud("cloud.nomac_webhook_refused", { reason: "too_large" });
+    return fail("bad_request", "That delivery is too large.", 413);
+  }
+  const raw = read.text;
+  if (!(await nomacSignatureValid(secret, request.headers.get("nomac-signature"), raw, now))) {
     logCloud("cloud.nomac_webhook_refused", {});
     return fail("unauthorized", "That signature isn't valid.", 401);
   }

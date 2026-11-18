@@ -3541,9 +3541,10 @@ describe("ADE Cloud iPhone minutes", () => {
     },
     {
       name: "a cancelled plan's last period is billed for the minutes used while on, then extra minutes turn off",
-      seed: () => { seedPhoneAccount({ plan: "free", stripe_status: null, phone_extra_enabled: 2, phone_extra_period_start: OLD_PERIOD, phone_extra_included: 300 }); seedPhone("ses_old", 330, OLD_PERIOD + HOUR); },
+      // The ended subscription's id is cleared; the customer is enough to bill it.
+      seed: () => { seedPhoneAccount({ plan: "free", stripe_status: null, stripe_subscription_id: null, phone_extra_enabled: 2, phone_extra_period_start: OLD_PERIOD, phone_extra_included: 300 }); seedPhone("ses_old", 330, OLD_PERIOD + HOUR); },
       act: async () => {},
-      reports: [[`ade-phone:sub_1:${OLD_PERIOD}:from-0`, 30]],
+      reports: [[`ade-phone:cus_1:${OLD_PERIOD}:from-0`, 30]],
       after: { phone_extra_enabled: 0, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 0 },
     },
   ])("extra iPhone minutes: $name", async ({ seed, act, reports, after }) => {

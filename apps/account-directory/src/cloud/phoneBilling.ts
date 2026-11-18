@@ -150,13 +150,25 @@ async function keepOwedUnderOldSettings(env: CloudEnv, userId: string, before: {
     .bind(owed, now, userId, account.period_start).run();
 }
 
-/** One meter report: the minutes past what was sent, identified by where it starts. Answers false when it must be tried again. */
-async function sendPhoneMinutes(env: CloudEnv, account: AccountRow, eventName: string, periodStart: number, from: number, to: number): Promise<boolean> {
+/** Stripe takes meter events up to 35 days old; an older one is dated a day inside that. */
+const METER_OLDEST_MS = 34 * 24 * 60 * 60_000;
+
+/**
+ * One meter report: the minutes past what was sent, identified by where it
+ * starts, dated inside the period they were used in (`usedBefore`, its end),
+ * so a report that goes out after the period ended still lands on that
+ * period's invoice while Stripe holds it open. Only the customer is needed:
+ * a subscription that ended has its id cleared, and its last period is still
+ * billed. Answers false when it must be tried again.
+ */
+async function sendPhoneMinutes(env: CloudEnv, account: AccountRow, eventName: string, periodStart: number, from: number, to: number, now: number, usedBefore: number): Promise<boolean> {
   if (to <= from) return true;
+  const at = Math.max(now - METER_OLDEST_MS, Math.min(now, usedBefore - 1000));
   try {
     await stripeRequest(env, "POST", "/billing/meter_events", {
       event_name: eventName,
-      identifier: `ade-phone:${account.stripe_subscription_id}:${periodStart}:from-${from}`,
+      identifier: `ade-phone:${account.stripe_subscription_id ?? account.stripe_customer_id}:${periodStart}:from-${from}`,
+      timestamp: String(Math.floor(at / 1000)),
       "payload[stripe_customer_id]": account.stripe_customer_id as string,
       "payload[value]": String(to - from),
     });
@@ -183,7 +195,8 @@ async function settleEndedPeriod(env: CloudEnv, account: AccountRow, now: number
   if (rows.some((row) => row.state === "live")) return;
   const reported = account.phone_extra_reported_minutes ?? 0;
   const eventName = env.STRIPE_PHONE_METER_EVENT?.trim();
-  if (eventName && account.stripe_customer_id && account.stripe_subscription_id) {
+  // The customer stays when a subscription ends (only its id is cleared), so a cancelled plan's last period is billed too.
+  if (eventName && account.stripe_customer_id) {
     const included = Math.max(account.phone_extra_included ?? 0, CLOUD_PLANS[boughtPlanIdOf(account)].phoneMinutes);
     const billable = billableExtraMinutes({
       used: settledPhoneMinutes(rows),
@@ -193,7 +206,8 @@ async function settleEndedPeriod(env: CloudEnv, account: AccountRow, now: number
       limitCents: account.phone_extra_limit_cents ?? null,
       owed: account.phone_extra_owed_minutes ?? 0,
     });
-    if (!(await sendPhoneMinutes(env, account, eventName, tracked, reported, billable))) return;
+    // The tracked period ended where the current one starts.
+    if (!(await sendPhoneMinutes(env, account, eventName, tracked, reported, billable, now, account.period_start))) return;
   }
   // Compare first: a report or a choice that moved the row meanwhile wins, and this is done next tick.
   await env.DB.prepare(`
@@ -229,7 +243,7 @@ export async function reportExtraPhoneMinutes(env: CloudEnv, now = Date.now()): 
   `).all<AccountRow>();
   for (const account of rows.results ?? []) {
     try {
-      // With no subscription left, an ended period is only closed (its switch turned off): nothing can bill it.
+      // An ended period is billed to the customer (a cancelled plan's too), then closed.
       if (tracksEndedPeriod(account)) {
         await settleEndedPeriod(env, account, now);
         continue;
@@ -245,7 +259,8 @@ export async function reportExtraPhoneMinutes(env: CloudEnv, now = Date.now()): 
       const billable = await billableThisPeriod(env, account, now);
       const included = includedPhoneMinutes(account);
       if (billable > reported) {
-        if (!(await sendPhoneMinutes(env, account, eventName, account.period_start, reported, billable))) continue;
+        const periodEnd = account.period_end > account.period_start ? account.period_end : now + 1000;
+        if (!(await sendPhoneMinutes(env, account, eventName, account.period_start, reported, billable, now, periodEnd))) continue;
         await env.DB.prepare(`
           update cloud_accounts set phone_extra_reported_minutes = ?, phone_extra_period_start = ?,
             phone_extra_owed_minutes = case when phone_extra_period_start is ? then phone_extra_owed_minutes else 0 end,

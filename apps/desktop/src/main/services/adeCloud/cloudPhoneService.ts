@@ -199,6 +199,77 @@ function supportedPlatformOf(bundle: string): string | null {
   return null;
 }
 
+/** A bundle id as Apple allows it: letters, digits, `-` and `.`. */
+const BUNDLE_ID = /^[A-Za-z0-9][A-Za-z0-9.-]*$/;
+
+const readUInt = (bytes: Buffer, offset: number, size: number): number => {
+  if (offset < 0 || offset + size > bytes.length) throw new RangeError("outside the plist");
+  let value = 0;
+  for (let index = 0; index < size; index += 1) value = value * 256 + bytes[offset + index]!;
+  return value;
+};
+
+/**
+ * One string value of a binary plist's top dictionary (`bplist00`), or null.
+ * Only what an Info.plist key needs: the trailer, the offset table, a dict, and
+ * ASCII or UTF-16 strings. Anything else, or a malformed file, is null.
+ */
+function binaryPlistString(bytes: Buffer, key: string): string | null {
+  if (bytes.length < 40 || bytes.toString("latin1", 0, 8) !== "bplist00") return null;
+  const trailer = bytes.length - 32;
+  const offsetSize = bytes[trailer + 6]!;
+  const refSize = bytes[trailer + 7]!;
+  const count = readUInt(bytes, trailer + 8, 8);
+  const top = readUInt(bytes, trailer + 16, 8);
+  const tableAt = readUInt(bytes, trailer + 24, 8);
+  const offsetOf = (ref: number): number => {
+    if (ref >= count) throw new RangeError("no such object");
+    return readUInt(bytes, tableAt + ref * offsetSize, offsetSize);
+  };
+  // A length in the marker's low half, or (0xF) in the int object after it.
+  const lengthAt = (at: number): { length: number; start: number } => {
+    const low = readUInt(bytes, at, 1) & 0x0f;
+    if (low !== 0x0f) return { length: low, start: at + 1 };
+    const size = 1 << (readUInt(bytes, at + 1, 1) & 0x0f);
+    return { length: readUInt(bytes, at + 2, size), start: at + 2 + size };
+  };
+  const stringOf = (ref: number): string | null => {
+    const at = offsetOf(ref);
+    const type = readUInt(bytes, at, 1) >> 4;
+    if (type !== 0x5 && type !== 0x6) return null;
+    const { length, start } = lengthAt(at);
+    const end = start + (type === 0x6 ? length * 2 : length);
+    if (end > bytes.length) throw new RangeError("outside the plist");
+    return type === 0x5
+      ? bytes.toString("latin1", start, end)
+      : Buffer.from(bytes.subarray(start, end)).swap16().toString("utf16le");
+  };
+  const dictAt = offsetOf(top);
+  if (readUInt(bytes, dictAt, 1) >> 4 !== 0xd) return null;
+  const { length, start } = lengthAt(dictAt);
+  for (let index = 0; index < length; index += 1) {
+    if (stringOf(readUInt(bytes, start + index * refSize, refSize)) !== key) continue;
+    return stringOf(readUInt(bytes, start + (length + index) * refSize, refSize));
+  }
+  return null;
+}
+
+/**
+ * The bundle id a `.app` names in its Info.plist (XML or binary), read here
+ * before upload, or null when it can't be told.
+ */
+function bundleIdOfApp(bundle: string): string | null {
+  try {
+    const bytes = fs.readFileSync(path.join(bundle, "Info.plist"));
+    const id = bytes.toString("latin1", 0, 6) === "bplist"
+      ? binaryPlistString(bytes, "CFBundleIdentifier")
+      : /<key>\s*CFBundleIdentifier\s*<\/key>\s*<string>\s*([^<]*?)\s*<\/string>/.exec(bytes.toString("utf8"))?.[1] ?? null;
+    return id && BUNDLE_ID.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 /** A `.tar.gz` of one `.app` folder, whole: a bundle's own folders and files are part of it. */
 function packApp(appPath: string): Promise<Packed> {
   const parent = path.dirname(appPath);
@@ -366,12 +437,15 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     if (held && held.expiresAt - Date.now() > TOKEN_REFRESH_MARGIN_MS && (!device || held.device === device)) {
       if (Date.now() - held.checkedAt < READY_TRUST_MS) return held;
       // A held phone may have stopped on its own (idle, its time limit): read it.
-      const read = await readSession(held).catch(() => null);
-      if (read?.state === "ready") {
-        held.checkedAt = Date.now();
-        return held;
+      const phone = held;
+      const read = await readSession(phone).catch(() => null);
+      // Only for the phone still held, of the account still signed in: a
+      // stop, a new start or a sign-out during the read wins over its answer.
+      if (read?.state === "ready" && held === phone && phone.account === (await currentAccount())) {
+        phone.checkedAt = Date.now();
+        return phone;
       }
-      held = null;
+      if (held === phone) held = null;
     }
     // A start already running for another account is not this caller's phone: wait for it to end, then start our own.
     while (starting && starting.account !== account) await starting.phone.catch(() => undefined);
@@ -607,7 +681,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
      * Installs a Simulator `.app` built on this machine (Expo/EAS with
      * `"simulator": true`, React Native, Flutter `--simulator`): packs the
      * whole bundle, uploads it, has the phone unpack it as `app`, installs it,
-     * and launches it unless `launch` is false.
+     * and launches it by its bundle id unless `launch` is false. With no
+     * bundle id to name, the answer says it was installed and not launched.
      */
     async installApp(args: { appPath?: unknown; launch?: unknown } | null | undefined): Promise<CloudPhoneToolAnswer & { bundleId: string | null }> {
       const requested = textArg(args?.appPath, "appPath", 2_000);
@@ -624,19 +699,25 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         throw new CloudPhoneError("appPath is an existing .app folder made by a Simulator build.", "bad_request");
       }
       if (supportedPlatformOf(appPath) === "iPhoneOS") throw new CloudPhoneError(DEVICE_BUILD, "device_build");
+      // The app's own Info.plist names it; the install answer is the fallback.
+      const plistId = bundleIdOfApp(appPath);
       const packed = await packApp(appPath);
       try {
         const phone = await ensure();
         const placed = await uploadPacked(phone, packed, "app", "the app");
         if (!placed.app) throw new CloudPhoneError("The phone did not find a .app in what was uploaded.", "fetch_failed");
         const installed = await tool("app_control", { action: "install", app: placed.app }, "Installing the app");
-        // Named, not the default: NoMac's default is the app launched LAST, which may be an earlier build's.
-        const installedId = bundleIdOf(installed.text);
-        const answers = args?.launch === false || installed.failed
-          ? [installed]
-          : [installed, await tool("app_control", { action: "launch", ...(installedId ? { app: installedId } : {}) }, "Launching the app")];
+        const installedId = plistId ?? bundleIdOf(installed.text);
+        const wantsLaunch = args?.launch !== false && !installed.failed;
+        // Launched only by name: unnamed, NoMac launches the app launched LAST, which may be an earlier build's.
+        const answers = wantsLaunch && installedId
+          ? [installed, await tool("app_control", { action: "launch", app: installedId }, "Launching the app")]
+          : [installed];
+        const skipped = wantsLaunch && !installedId
+          ? "Installed, but not launched: ADE could not tell the app's bundle id. Launch it with ade apple relaunch --bundle-id <id>."
+          : null;
         return {
-          text: answers.map((answer) => answer.text.trim()).filter(Boolean).join("\n"),
+          text: [...answers.map((answer) => answer.text.trim()), skipped ?? ""].filter(Boolean).join("\n"),
           failed: answers.some((answer) => answer.failed),
           links: [...new Set(answers.flatMap((answer) => answer.links))],
           images: answers.flatMap((answer) => answer.images),

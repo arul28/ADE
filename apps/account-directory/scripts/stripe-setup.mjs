@@ -190,7 +190,15 @@ async function ensureMeter(eventName, displayName) {
   for (;;) {
     const page = await stripe("GET", `/billing/meters?status=active&limit=100${startingAfter ? `&starting_after=${startingAfter}` : ""}`);
     const found = page.data.find((meter) => meter.event_name === eventName);
-    if (found) return found;
+    if (found) {
+      // A meter's sum and payload keys can't be changed after it is made: a different one would bill the wrong amounts.
+      const shaped = found.default_aggregation?.formula === "sum"
+        && found.customer_mapping?.type === "by_id"
+        && found.customer_mapping?.event_payload_key === "stripe_customer_id"
+        && found.value_settings?.event_payload_key === "value";
+      if (!shaped) throw new Error(`The Stripe meter for "${eventName}" (${found.id}) doesn't sum "value" by "stripe_customer_id". Deactivate it in Stripe and run this again.`);
+      return found;
+    }
     if (!page.has_more) break;
     startingAfter = page.data.at(-1).id;
   }

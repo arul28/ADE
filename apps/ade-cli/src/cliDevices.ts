@@ -562,9 +562,12 @@ async function listDevices(options: GlobalOptions, only: DeviceKind | null): Pro
     });
   });
 
-  const [here, cloudRows, ...there] = await Promise.all([hereRows, cloudIphoneRows(options, only), ...machineRows]);
+  // Under ADE MCP the list is this one machine's, so no ADE Cloud probe.
+  const cloud = underRemoteMcp() ? Promise.resolve({ rows: [], note: null }) : cloudIphoneRows(options, only);
+  const [{ rows: cloudRows, note: cloudNote }, [here, ...there]] = await Promise.all([cloud, Promise.all([hereRows, ...machineRows])]);
+  if (cloudNote) notes.push(cloudNote);
   const chosen = await choicePromise;
-  const devices = [...here!, ...there.flat(), ...cloudRows!].map((row) => {
+  const devices = [...here!, ...there.flat(), ...cloudRows].map((row) => {
     const choice = row.kind ? chosen?.[row.kind] : undefined;
     const picked = row.kind != null && (choice
       ? choice.kind === "cloud" ? row.source === "cloud" : row.machineKey === choice.machineKey && row.source === "machine"
@@ -742,20 +745,32 @@ export async function readCloudIphoneStatus(options: GlobalOptions): Promise<Clo
   }
 }
 
-/** The `ios@cloud` row, when the account has the ADE Cloud iPhone (never for another kind). */
-async function cloudIphoneRows(options: GlobalOptions, only: DeviceKind | null): Promise<DeviceEntry[]> {
-  if (only && only !== "ios") return [];
+/**
+ * The `ios@cloud` row, when the account has the ADE Cloud iPhone (never for
+ * another kind), and a note when its status could not be read: the row is
+ * then missing for a reason the list says.
+ */
+async function cloudIphoneRows(options: GlobalOptions, only: DeviceKind | null): Promise<{ rows: DeviceEntry[]; note: string | null }> {
+  if (only && only !== "ios") return { rows: [], note: null };
   const status = await readCloudIphoneStatus(options);
-  if (!status.ok || status.access !== "on") return [];
+  if (!status.ok) {
+    // A brain older than the cloud iPhone has none to read: nothing to say.
+    return { rows: [], note: isOlderBrainAnswer(status.error) ? null : `ios@cloud: the ADE Cloud iPhone couldn't be read (${firstSentence(status.error)}).` };
+  }
+  if (status.access !== "on") return { rows: [], note: null };
   const minutes = status.minutes ? ` · ${status.minutes.left} of ${status.minutes.included} min left` : "";
-  return [{
-    id: formatDeviceId({ kind: "ios", source: { kind: "cloud" } }),
-    kind: "ios",
-    what: `ADE Cloud iPhone${minutes}`,
-    source: "cloud",
-    machine: "ADE Cloud",
-    machineKey: null,
-    state: status.phoneState === "ready" ? "on" : status.phoneState === "starting" ? "starting" : "off",
-    needs: status.minutes && status.minutes.left <= 0 ? "no minutes left this period" : null,
-  }];
+  return {
+    rows: [{
+      id: formatDeviceId({ kind: "ios", source: { kind: "cloud" } }),
+      kind: "ios",
+      what: `ADE Cloud iPhone${minutes}`,
+      source: "cloud",
+      machine: "ADE Cloud",
+      machineKey: null,
+      state: status.phoneState === "ready" ? "on" : status.phoneState === "starting" ? "starting" : "off",
+      // The status has the plan's minutes only; extra minutes (paid plans) may still start it.
+      needs: status.minutes && status.minutes.left <= 0 ? "plan minutes used up (extra minutes may apply)" : null,
+    }],
+    note: null,
+  };
 }

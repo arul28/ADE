@@ -238,7 +238,10 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   const phone = account.phone;
   const phoneExtra = phone?.extra.available && phone.minutes ? { ...phone.extra, included: phone.minutes.included } : null;
   const phoneExtraOn = phoneExtra?.enabled === true;
-  const shownPhoneLimit = phoneExtra?.enabled && phoneExtra.monthlyLimitCents != null ? String(Math.floor(phoneExtra.monthlyLimitCents / 100)) : phoneLimit;
+  // On: the saved limit (null is "none"). Off: the person's pick for when they turn it on.
+  const shownPhoneLimit = phoneExtra?.enabled
+    ? phoneExtra.monthlyLimitCents == null ? "none" : String(Math.floor(phoneExtra.monthlyLimitCents / 100))
+    : phoneLimit;
   const phoneLimitOptions = [
     { value: "none", label: "No limit" },
     ...EXTRA_PHONE_LIMITS.map((value) => ({ value, label: `$${value}` })),

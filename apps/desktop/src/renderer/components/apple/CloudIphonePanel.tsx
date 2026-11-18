@@ -18,7 +18,7 @@ import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import { Button } from "../ui/Button";
 import { AppleDeviceConfirmBar } from "./AppleDeviceConfirmBar";
 import { AppleDeviceLoadingCard } from "./AppleDeviceLoadingCard";
-import { PaneMessage } from "./AppleDevicePane";
+import { PaneMessage } from "./PaneMessage";
 import { AppleDeviceRail } from "./AppleDeviceRail";
 import { AppleDeviceStage } from "./AppleDeviceStage";
 import { AppleDeviceNoticeStrip, AppleDeviceStatusStrip } from "./AppleDeviceStatusStrip";

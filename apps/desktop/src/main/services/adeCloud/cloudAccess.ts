@@ -305,7 +305,8 @@ async function readCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
 }
 
 let iphoneCache: { key: string; on: boolean; at: number } | null = null;
-let iphoneAsking = false;
+/** The account whose phone access is being asked now, or null. */
+let iphoneAsking: string | null = null;
 
 /**
  * On a host that isn't a Mac, `ade-apple` is only for the ADE Cloud iPhone:
@@ -327,17 +328,24 @@ function refreshIphoneSkill(deps: CloudAccessDeps, access: CloudAccess): void {
     return;
   }
   const phoneState = access.provider.phoneState?.bind(access.provider);
-  if (iphoneAsking || !phoneState) return;
-  iphoneAsking = true;
-  void phoneState().then(
-    (state) => {
-      iphoneCache = { key, on: state.access === "on", at: Date.now() };
+  // One ask per account at a time; a new account asks for itself.
+  if (iphoneAsking === key || !phoneState) return;
+  iphoneAsking = key;
+  void Promise.resolve()
+    .then(() => phoneState())
+    .then((state: unknown) => {
+      if (!state || typeof state !== "object" || typeof (state as { access?: unknown }).access !== "string") {
+        throw new Error("the phone state had no access");
+      }
+      // Signed out or switched while it was asked: the answer is another account's.
+      if (!deps.signedIn() || accessKey(deps) !== key) return;
+      iphoneCache = { key, on: (state as { access: string }).access === "on", at: Date.now() };
       setAdeCloudIphoneSkillVisible(iphoneCache.on);
-    },
-    (error: unknown) => deps.logger?.warn("cloud.iphone_skill_read_failed", { error: getErrorMessage(error) }),
-  ).finally(() => {
-    iphoneAsking = false;
-  });
+    })
+    .catch((error: unknown) => deps.logger?.warn("cloud.iphone_skill_read_failed", { error: getErrorMessage(error) }))
+    .finally(() => {
+      if (iphoneAsking === key) iphoneAsking = null;
+    });
 }
 
 async function askCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {

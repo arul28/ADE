@@ -471,12 +471,17 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
   } catch (error) {
     reportCloudFailure("cloud.disk_report_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
-  // The ADE Cloud iPhone: live phones read again, the minutes warnings, then extra minutes to Stripe.
+  // The ADE Cloud iPhone: live phones read again and the minutes warnings, then extra minutes to Stripe.
+  // Separate, so a failed check never holds back billing (or the other way round).
   try {
     await runPhoneChecks(env, now);
+  } catch (error) {
+    reportCloudFailure("cloud.phone_checks_failed", { step: "checks", message: error instanceof Error ? error.message : "unknown" });
+  }
+  try {
     await reportExtraPhoneMinutes(env, now);
   } catch (error) {
-    reportCloudFailure("cloud.phone_checks_failed", { message: error instanceof Error ? error.message : "unknown" });
+    reportCloudFailure("cloud.phone_checks_failed", { step: "meter", message: error instanceof Error ? error.message : "unknown" });
   }
   // A cheaper plan's limits: an account over the plan in force is told once (new computers are refused). Nothing is freed here.
   try {

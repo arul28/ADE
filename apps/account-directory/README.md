@@ -511,7 +511,11 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   extra disk) keeps going at 2.5¢ a minute up to its monthly limit (402
   `phone_extra_limit` at it). Every phone starts with NoMac's spend cap and time
   limit set to what the account may still use, so it stops by itself there.
-  Minutes used while the switch was on stay owed after it goes off.
+  Minutes used while the switch was on stay owed after it goes off. A change
+  while an ended period is still being billed (a phone of it still running)
+  answers 409 `billing_busy`; it goes through once that period is settled.
+  An ended period is billed to the Stripe customer, dated inside that period,
+  so a cancelled plan's last minutes reach its final invoice.
 - `POST /cloud/nomac/webhook`: NoMac's deliveries, checked against
   `NOMAC_WEBHOOK_SECRET` (`nomac-signature`, refused past 5 minutes), each id
   taken once. `phone.*` settle a phone; `credit.low` emails the owner.
@@ -523,7 +527,8 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   minutes; unset, the switch isn't offered. The
   account key stays in this Worker; a brain gets a token for one phone (2 hours)
   that cannot start, list or stop phones. Apply
-  `0047_cloud_phone_beta.sql` before the Worker that reads it deploys.
+  `0047_cloud_phone_beta.sql` and `0048_cloud_phone_usage.sql` before the
+  Worker that reads them deploys.
 - The owner adds accounts with `POST /cloud/owner/phone-beta`, below.
 
 ### Payments

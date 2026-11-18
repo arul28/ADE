@@ -1,4 +1,3 @@
-import { CloudIphonePanel } from "../apple/CloudIphonePanel";
 import { Suspense, createElement, lazy, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { LaneDiffMode } from "../../../shared/types";
 import type { BrowserTabMentionTarget } from "../../../shared/browserTabMention";
@@ -91,6 +90,7 @@ const browserPanel = loadOnUse(() => import("../chat/ChatBuiltInBrowserPanel").t
 const gitPanel = loadOnUse(() => import("../lanes/LaneGitActionsPane").then((m) => m.LaneGitActionsPane));
 const filesPanel = loadOnUse(() => import("../files/FilesTab").then((m) => m.FilesTab));
 const applePanel = loadOnUse(() => import("../apple/AppleDevicePane").then((m) => m.AppleDevicePane));
+const cloudIphonePanel = loadOnUse(() => import("../apple/CloudIphonePanel").then((m) => m.CloudIphonePanel));
 const androidPanel = loadOnUse(() => import("../android/AndroidDevicePane").then((m) => m.AndroidDevicePane));
 const desktopPanel = loadOnUse(() => import("../chat/ChatMacDesktopPanel").then((m) => m.ChatMacDesktopPanel));
 const prPanel = loadOnUse(() => import("../chat/ChatPrPane").then((m) => m.ChatPrPane));
@@ -101,6 +101,7 @@ const ChatBuiltInBrowserPanel = browserPanel.Panel;
 const LaneGitActionsPane = gitPanel.Panel;
 const FilesTab = filesPanel.Panel;
 const AppleDevicePane = applePanel.Panel;
+const CloudIphonePanel = cloudIphonePanel.Panel;
 const AndroidDevicePane = androidPanel.Panel;
 const ChatMacDesktopPanel = desktopPanel.Panel;
 const ChatPrPane = prPanel.Panel;
@@ -1038,7 +1039,8 @@ const GATED_WORK_TOOLS: Record<WorkSidebarTab, ReturnType<typeof gatedWorkTool>>
   browser: gatedWorkTool(WorkBrowserTool, browserPanel),
   git: gatedWorkTool(WorkGitTool, gitPanel),
   files: gatedWorkTool(WorkFilesTool, filesPanel),
-  ios: gatedWorkTool(WorkIosTool, applePanel),
+  // Both iPhone panes: the tool shows either, by the chat's choice, and never waits on a chunk while open.
+  ios: gatedWorkTool(WorkIosTool, { preload: () => Promise.all([applePanel.preload(), cloudIphonePanel.preload()]) }),
   android: gatedWorkTool(WorkAndroidTool, androidPanel),
   // App Control keeps its own boundary (its tool body has states that show before the panel).
   "app-control": { Component: WorkAppControlTool, preload: appControlPanel.preload },
