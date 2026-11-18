@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.130] - 2026-11-18
+
+### Desktop and web
+
+- ADE Cloud is one machine for every account: cloud lanes on their own computer, launches from web, phone and CLI, plans Free to Max, idle cleanup, and a redesigned ADE Cloud page (#2332, #2319, #2139, #2135, #2173, #2201, #2255, #2314, #2234, #2241, #2177, #2164, #2230).
+- Save at rest: each lane's work is saved before its computer rests, and cleanups never wake a computer (#2340, #2343).
+- One project tab shows every computer's work, and any computer uses any other's screens, App Control and builds (#2205, #2247, #2238, #2252, #2257, #2258).
+- Passwords (#2237, #2259); a CTO that remembers (#2295, #2301); automation rules follow the account (#2161); lane sharing with the real chat (#2236, #2220, #2165).
+- Provider sign-in once per account (#2171, #2172, #2341); Antigravity on `agy` (#2195); GPT-6.2 and Claude Fable 5.2 (#2335, #2148); Cursor /compact (#2130).
+- Phones and ADE Web update other machines (#2330); ADE Web sign-in, chat links and Connections (#2313, #2231, #2167, #2242).
+- Faster start and quieter idle (#2302, #2309, #2327); slow-link and brain-crash resilience (#2325, #2224, #2184, #2212).
+- Fixes: Sentry and PostHog issues (#2154, #2176, #2342, #2343, #2240), pre-launch hardening (#2338, #2180), cloud launch and delete states (#2320, #2322, #2294, #2345), deleted project folders (#2348), Cloud images and lane lists (#2349), cloud lane relaunch, free and delete, queued message files, lane chats on a new computer, and one chat's error on another (#2351, #2354, #2355, #2356, #2357, #2358); pairing, Manage lane, terminal previews, transcript reports and cloud resize fixes (#2344, #2334, #2228, #2288, #2179, #2296, #2291, #2293, #2251, #2209, #2312), Windows and Linux fixes (#2206, #2278, #2150).
+- CI, test and release tooling (#2244, #2282, #2285, #2289, #2311, #2315, #2318).
+
+### iOS
+
+- The Hub and project flows come from the account; CLI sessions on any computer; Duo layout fixes (#2202, #2204, #2210, #2225, #2245, #2168, #2175).
+- ADE Cloud on the iPhone: cloud chats with images, sends to a sleeping lane, lane computer management and delete (#2353).
+- The CLI message box stays fast while the CLI prints (#2326).
+
+### Linux
+
+- ADE desktop app for Linux with AppImage and .deb releases (#2137, #2150).
+
 ### Models
 
 - Claude Fable 5.2 leads the Claude list (Medium effort by default, $8 / $40 per million tokens); Fable 5.1 moves below Haiku 5.5. Claude Agent SDK 0.3.321 (Claude Code 2.1.321), the first to know Fable 5.2.
@@ -2849,7 +2873,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.129...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.130...HEAD
+[1.2.130]: https://github.com/arul28/ADE/compare/v1.2.129...v1.2.130
 [1.2.129]: https://github.com/arul28/ADE/compare/v1.2.128...v1.2.129
 [1.2.128]: https://github.com/arul28/ADE/compare/v1.2.127...v1.2.128
 [1.2.127]: https://github.com/arul28/ADE/compare/v1.2.126...v1.2.127
