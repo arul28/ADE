@@ -27,6 +27,12 @@ export type CloudLaneWorkLane = {
   state: "clean" | "pushed" | "failed" | "unpushed";
 };
 
+/** A work lane's name for people: the primary lane is the "main checkout". */
+export function cloudWorkLaneName(lane: Pick<CloudLaneWorkLane, "laneName" | "branchRef" | "primary">): string {
+  if (lane.primary) return "main checkout";
+  return lane.laneName || lane.branchRef;
+}
+
 /**
  * Whether a computer holds work that isn't on GitHub. `unpushed` is null when
  * the check couldn't run (an older computer, no answer): the caller then warns

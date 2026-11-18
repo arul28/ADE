@@ -127,7 +127,13 @@ test("runtime entry points and license files ship without package docs and decla
     assert.equal(keeps(packageName, root, "types/index.d.ts", "darwin-arm64"), false, `${packageName} declarations`);
     assert.equal(keeps(packageName, root, "examples/demo.js", "darwin-arm64"), false, `${packageName} examples`);
     assert.equal(keeps(packageName, root, "tests/fixture.js", "darwin-arm64"), false, `${packageName} tests`);
+    assert.equal(keeps(packageName, root, "dist/docs/guide.md", "darwin-arm64"), false, `${packageName} nested docs`);
     assert.equal(shouldCopyPackageEntry(packageName, root, root, "darwin-arm64"), true, packageName);
+  }
+  // Code in a deeper folder named like docs or tests is the package's own:
+  // yaml's document model lives in dist/doc/.
+  for (const relative of ["dist/doc/directives.js", "browser/dist/doc/Document.js"]) {
+    assert.equal(keeps("yaml", "/pkg/yaml", relative, "linux-x64"), true, `yaml/${relative}`);
   }
 });
 

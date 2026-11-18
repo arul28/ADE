@@ -6,6 +6,7 @@ import { machineNameForBinding } from "../../shared/machineIdentity";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import { chatLaunchStore } from "./chatLaunchStore";
 import { ADE_CLOUD_NAME } from "../../shared/adeCloudMachine";
+import { cloudConnectionMachineKey } from "./cloudSavedChats";
 
 /**
  * The account's ADE Cloud lane computers as last read, kept after the read's
@@ -171,7 +172,7 @@ function adeCloudLaneForBinding(
   computers: readonly AdeCloudLaneComputer[] = state.computers,
 ): AdeCloudLaneOfBinding | null {
   if (!binding || binding.kind !== "remote") return null;
-  const computer = adeCloudLaneComputerForMachine({ hostname: binding.hostname }, computers);
+  const computer = adeCloudLaneComputerForMachine({ hostname: binding.hostname, targetId: binding.targetId }, computers);
   if (computer) return { laneId: computer.laneId, laneName: computer.laneName, instanceId: computer.instanceId };
   for (const entry of Object.values(chatLaunchStore.getState().entries)) {
     const cloud = entry.snapshot.cloud;
@@ -193,11 +194,13 @@ export function useAdeCloudLaneForBinding(binding: OpenProjectBinding | null | u
  * (a lane computer's target carries its ADE Cloud id) or its machine key.
  */
 export function adeCloudLaneComputerForMachine(
-  machine: { hostname?: string | null; machineKey?: string | null },
+  // `targetId`: the connection's id. A computer reached through the relay has
+  // the relay's host name, so the account key its connection maps to decides.
+  machine: { hostname?: string | null; machineKey?: string | null; targetId?: string | null },
   computers: readonly AdeCloudLaneComputer[] = state.computers,
 ): AdeCloudLaneComputer | null {
   const host = machine.hostname?.trim().toLowerCase() ?? "";
-  const key = machine.machineKey?.trim() ?? "";
+  const key = machine.machineKey?.trim() || (machine.targetId ? cloudConnectionMachineKey(machine.targetId) ?? "" : "");
   if (!host && !key) return null;
   return computers.find((computer) => (host && computer.instanceId.toLowerCase() === host) || (key && computer.machineKey === key)) ?? null;
 }

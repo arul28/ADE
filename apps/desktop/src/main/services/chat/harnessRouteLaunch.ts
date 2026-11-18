@@ -51,6 +51,7 @@ import {
 import { isSafeIdentifier } from "../../../shared/safeIdentifier";
 import type { ApiCredentialSummary } from "../../../shared/types/apiCredentials";
 import { getApiCredentialKey, getApiCredentialSummary } from "../ai/apiKeyStore";
+import { DEFAULT_API_CREDENTIAL_ID } from "../../../shared/types/apiCredentials";
 import {
   readOpenCodeLaunchSecret,
   type OpenCodeLaunchSecret,
@@ -226,7 +227,11 @@ export function resolveRouteSource(
     return { unsupported: "This preset names an unsafe OpenCode provider id." };
   }
   const name = openCodeSourceLabel(providerId);
-  const secret = (deps.readOpenCodeSecret ?? readOpenCodeLaunchSecret)(providerId);
+  // OpenCode's own login first; else the provider's key in ADE's key store. That key
+  // reaches every computer through the account, so a route saved on one works on all.
+  const storedKey = () => (deps.getCredentialKey ?? getApiCredentialKey)(providerId, DEFAULT_API_CREDENTIAL_ID)?.trim() || null;
+  const secret = (deps.readOpenCodeSecret ?? readOpenCodeLaunchSecret)(providerId)
+    ?? ((key) => (key ? { token: key, expiresAt: null, orgId: null, methodType: "key" as const } : null))(storedKey());
   if (!secret) {
     return { unsupported: `${name} is not signed in to OpenCode on this machine. Sign in under Providers › OpenCode.` };
   }

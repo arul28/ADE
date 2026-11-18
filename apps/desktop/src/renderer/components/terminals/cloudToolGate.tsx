@@ -3,7 +3,8 @@ import { Moon } from "@phosphor-icons/react";
 import { cloudOutOfHours, cloudOverPlanDiskMessage, type CloudMachine } from "../../../shared/adeCloud";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { openCloudPlanSettings } from "../remoteTargets/openCloudPlanSettings";
-import { PushAllWorkButton } from "../remoteTargets/PushAllWorkButton";
+import { CloudLaneSavedWork } from "../cloudLane/CloudLaneSavedWork";
+import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { computerIsDown, useCloudComputer } from "../remoteTargets/useCloudComputer";
 import { Banner, type BannerModel } from "../ui/notice";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
@@ -128,11 +129,12 @@ export function CloudToolGate({
   if (!needsComputer || !box || (!down && !waking && box.state !== "starting")) return <>{children}</>;
   // ADE Cloud is one machine: the lane's computer is "This lane's computer", never its own name.
   const name = "This lane's computer";
-  // A computer the account can't wake: why, and its work pushed without a full wake.
+  // A computer the account can't wake: why, and the lane's saved work, which needs no wake.
+  const laneId = (box as CloudLaneMachine).lane?.laneId ?? null;
   const restingGate = (model: Pick<BannerModel, "id" | "title" | "detail" | "actions">) => (
     <div className="flex h-full min-h-0 flex-col justify-center gap-3 px-4">
       <Banner layout="inline" model={{ ...model, tone: "warning", report: false }} />
-      <PushAllWorkButton instanceId={box.instanceId} />
+      {laneId ? <CloudLaneSavedWork laneId={laneId} /> : null}
     </div>
   );
   if (outOfHours && down) {

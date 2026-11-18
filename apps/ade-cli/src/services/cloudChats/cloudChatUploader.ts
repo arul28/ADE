@@ -67,8 +67,12 @@ export type CloudChatUploaderDeps = {
 export type CloudChatUploadPendingResult = { uploaded: number; remaining: number; timedOut: boolean };
 
 export type CloudChatUploader = {
-  /** A chat turn ended. Marks the chat and uploads its new part in the background. */
-  noteTurnEnded(sessionId: string): void;
+  /**
+   * A chat turn ended. Marks the chat and uploads its new part in the
+   * background. `turnStatus` is the end of the turn (`done.status`): an end
+   * that is not `interrupted` removes the "stopped for rest" mark.
+   */
+  noteTurnEnded(sessionId: string, turnStatus?: string): void;
   /** A chat was deleted: its copy goes too. */
   noteChatDeleted(sessionId: string): void;
   /** A lane was deleted: every copy of its chats goes too. */
@@ -98,6 +102,25 @@ const uploaders = new Set<CloudChatUploader>();
  * and conflict with the moved copy. No upload starts for them until then.
  */
 const restoringChats = new Set<string>();
+
+/**
+ * Chats whose running turn ADE stopped because this computer goes to sleep,
+ * stops or is deleted (`prepare-stop`). Their saved row reads
+ * `SAVED_CHAT_STOPPED_STATUS`, so a client shows the turn as Stopped, not
+ * Done, while the computer rests. The next turn end that is not an interrupt
+ * removes the mark. Kept in memory: the prepare uploads the chat at once.
+ */
+const stoppedForRest = new Set<string>();
+
+/** ADE stops the turn of this chat for a sleep, a stop or a delete (`prepare-stop`). */
+export function noteCloudChatStoppedForRest(sessionId: string): void {
+  if (sessionId) stoppedForRest.add(sessionId);
+}
+
+/** Whether ADE stopped the last turn of this chat for a sleep, a stop or a delete. */
+export function cloudChatStoppedForRest(sessionId: string): boolean {
+  return stoppedForRest.has(sessionId);
+}
 
 /** Holds back every upload of `sessionId` until `adoptRestoredCloudChat` or `releaseRestoringCloudChat`. */
 export function holdRestoringCloudChat(sessionId: string): void {
@@ -479,7 +502,8 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
   }
 
   const uploader: CloudChatUploader = {
-    noteTurnEnded(sessionId) {
+    noteTurnEnded(sessionId, turnStatus) {
+      if (turnStatus !== undefined && turnStatus !== "interrupted") stoppedForRest.delete(sessionId);
       if (disposed || !sessionId) return;
       const entry = state.chats[sessionId] ?? { offset: 0, seq: 0, dirty: true, laneId: null };
       entry.dirty = true;

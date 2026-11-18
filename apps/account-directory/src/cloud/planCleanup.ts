@@ -10,7 +10,8 @@ import {
   type CloudPlanCleanupPick,
   type CloudPlanId,
 } from "./contract";
-import { CLOUD_COMPUTER_COMMANDS, type CloudSaveForRestReport } from "./contract";
+import { CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_COMPUTER_COMMANDS, type CloudSaveForRestReport } from "./contract";
+import { backupNotSavedReason } from "./laneBackups";
 import { sendCloudEmail } from "./email";
 import { isCloudBlocked, notBlockedSql } from "./blocks";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
@@ -43,8 +44,8 @@ import {
  *
  * - In ADE, a downgrade that would leave more disk than the new plan allows
  *   asks first. Only disk counts: there is no limit on how many computers. The person cleans up themselves (the downgrade is
- *   not made), or picks the computers ADE frees and whether their work is
- *   pushed to GitHub first (`CloudPlanCleanupPick`). The server checks the
+ *   not made), or picks the computers ADE frees and whether each lane's work
+ *   must be saved first (`CloudPlanCleanupPick.push`). The server checks the
  *   pick names only the account's computers and makes the account fit
  *   (`checkPlanCleanupPick`), changes the plan, and records the pick
  *   (`recordPlanCleanupPick`); the minute cron frees exactly those computers
@@ -56,13 +57,12 @@ import {
  *   or pick in ADE (`POST /cloud/billing/plan-cleanup`, the same check and
  *   the same freeing).
  *
- * Freeing a computer is "keep the lane, free its computer". With push on,
- * the computer's own ADE interrupts its agents, saves its chats and pushes
- * every lane's work to its branch on GitHub (`ade cloud prepare-stop`,
- * `ade cloud push-work`); a second read (`ade cloud work-state`) must find
- * nothing left; a computer whose work can't all be pushed stays, and the
- * person is told. With push off, ADE saves what it can without waking the
- * computer and deletes it. Either way the lane stays as a lane without a
+ * Freeing a computer is "keep the lane, free its computer". With `push` on
+ * ("Save each lane's work first"), it goes only when each lane's work is
+ * saved as a lane backup (`saveBeforeDelete`): a resting computer is never
+ * woken for it, nothing is committed or pushed, and a computer whose lanes
+ * are not all saved stays, and the person is told. With `push` off, ADE
+ * saves what it can without waking the computer and deletes it. Either way the lane stays as a lane without a
  * computer (reason `plan_limit`), with its chats; the next message to it makes
  * a new computer from its branch, under the plan's limits like any other.
  * A `past_due` account is never cleaned: Stripe is still trying the card.
@@ -75,15 +75,8 @@ const CLEANUPS_PER_TICK = 4;
 const CLAIM_STALE_MS = 20 * 60_000;
 /** How long a pick waits for its plan change to be saved before it counts as no longer wanted. */
 const PICK_SETTLE_MS = 15 * 60_000;
-/** A start answered; ADE on the computer answers a few seconds after it runs. */
-const WAKE_WAIT_MS = 3 * 60_000;
-const WAKE_POLL_MS = 5_000;
-/** Like the person's push-work wake: not charged, and the tick's stops and sleeps leave it alone. */
-const FREE_WAKE_MS = 15 * 60_000;
-/** Interrupt and save first (40 s, as the 0-hours stop), then push: bounded like the desktop's 3-minute push. */
+/** Interrupt and save first (40 s, as the 0-hours stop), then the save for rest. */
 const PREPARE_TIMEOUT_MS = 90_000;
-const PUSH_TIMEOUT_MS = 4 * 60_000;
-const CHECK_TIMEOUT_MS = 2 * 60_000;
 const DONE_SHOWN_MS = 14 * DAY_MS;
 /** Most computers one pick names. */
 const MAX_PICKED = 50;
@@ -95,21 +88,13 @@ export const commandWith = (...lines: string[]) => [
   ...lines,
 ].join("\n");
 const PREPARE_COMMAND = commandWith("ade cloud prepare-stop --timeout 40 --json");
-const PUSH_COMMAND = commandWith("ade cloud push-work --json");
-/**
- * The push with its own commit message for uncommitted work. Only fixed
- * messages without a single quote reach the shell; an older ADE ignores the
- * flag and uses its own message.
- */
-const pushCommandWith = (message: string | undefined): string => {
-  if (!message) return PUSH_COMMAND;
-  if (!/^[A-Za-z0-9 .,:()-]{1,120}$/.test(message)) throw new Error("push-work message must be plain text");
-  return commandWith(`ade cloud push-work --json --message '${message}'`);
-};
-const CHECK_COMMAND = commandWith("ade cloud work-state --json");
-/** Capsules, CLI and shell copies and Git summaries, so the lane reads with no computer (CONTRACTS 4). */
+/** The prepare before a delete: the computer also freezes new work until the delete (`cloudDeleteFreeze.ts` in ade-cli). */
+const PREPARE_FOR_DELETE_COMMAND = commandWith(CLOUD_COMPUTER_COMMANDS.prepareForDelete);
+const UNFREEZE_COMMAND = commandWith(CLOUD_COMPUTER_COMMANDS.unfreeze);
+const UNFREEZE_TIMEOUT_MS = 45_000;
+/** Capsules, CLI and shell copies, Git summaries and lane backups, so the lane reads and continues with no computer (CONTRACTS 4). */
 const SAVE_FOR_REST_COMMAND = commandWith(CLOUD_COMPUTER_COMMANDS.saveForRest);
-/** Capsules upload up to 20 MB each: longer than the check, bounded all the same. */
+/** Capsules upload up to 20 MB each and a lane backup up to 50 MB: bounded all the same. */
 const SAVE_FOR_REST_TIMEOUT_MS = 4 * 60_000;
 
 type CleanupComputerRow = ComputerRow & { plan_cleanup_claimed_at?: number | null; plan_cleanup_failed_at?: number | null };
@@ -698,8 +683,10 @@ async function stillPicked(env: CloudEnv, userId: string, instanceId: string, ch
   return moving == null;
 }
 
-/** Codes for a person's own unpushed work: normal, and not ADE's to fix. */
-const USER_STATE_CODES = new Set(["push_left_work", "check_left_work"]);
+/** Codes for a lane whose work isn't saved: the person's own state, not ADE's to fix. */
+/** A resting computer that never reported a save: kept, with no email (nothing failed). */
+export const BACKUP_NEVER_SAVED_CODE = "backup_never_saved";
+export const BACKUP_STATE_CODES = new Set(["backup_not_current", BACKUP_NEVER_SAVED_CODE]);
 
 /** One picked computer, freed, kept or skipped, and its outcome on the pick's notice. */
 async function freePicked(env: CloudEnv, provider: CloudProvider, userId: string, choice: PlanCleanupChoice, computer: CleanupComputerRow, now: number): Promise<void> {
@@ -720,10 +707,11 @@ async function freePicked(env: CloudEnv, provider: CloudProvider, userId: string
 }
 
 /**
- * Frees one picked computer, keeping its lane. With push on, its work is
- * pushed from the computer itself first, and anything short of "everything
- * is on GitHub" keeps it. With push off, it is deleted after a best-effort
- * save on a computer that is awake (one that rests is not woken).
+ * Frees one picked computer, keeping its lane. With `push` on ("Save each
+ * lane's work first"), it goes only when every lane is saved
+ * (`saveBeforeDelete`: no wake, nothing pushed); else it stays and the
+ * person is told why. With `push` off, it is deleted after a best-effort save
+ * on a computer that is awake (one that rests is not woken).
  */
 async function freeComputer(env: CloudEnv, provider: CloudProvider, choice: PlanCleanupChoice, computer: CleanupComputerRow, now: number): Promise<Outcome> {
   const claimed = await env.DB.prepare(`
@@ -731,42 +719,40 @@ async function freeComputer(env: CloudEnv, provider: CloudProvider, choice: Plan
     where instance_id = ? and deleted_at is null and (plan_cleanup_claimed_at is null or plan_cleanup_claimed_at < ?)
   `).bind(now, computer.instance_id, now - CLAIM_STALE_MS).run();
   if ((claimed.meta?.changes ?? 0) !== 1) return { kind: "skipped" };
-  // Set once this run woke the computer: a computer it keeps goes back to how it was, not left running.
-  const wake: WakeRecord = { woke: false, from: computer.status };
   const release = async (): Promise<Outcome> => {
-    if (wake.woke) await putBackToRest(env, provider, computer.instance_id, wake.from);
     await env.DB.prepare("update cloud_computers set plan_cleanup_claimed_at = null where instance_id = ?").bind(computer.instance_id).run();
     logCloud("cloud.plan_cleanup_no_longer_picked", { instanceId: computer.instance_id });
     return { kind: "skipped" };
   };
   const keep = async (reason: string, code: string): Promise<Outcome> => {
-    if (USER_STATE_CODES.has(code)) logCloud("cloud.plan_cleanup_kept", { instanceId: computer.instance_id, code });
+    if (BACKUP_STATE_CODES.has(code)) logCloud("cloud.plan_cleanup_kept", { instanceId: computer.instance_id, code });
     else reportCloudFailure("cloud.plan_cleanup_kept", { instanceId: computer.instance_id, code });
-    if (wake.woke) await putBackToRest(env, provider, computer.instance_id, wake.from);
     // The claim stays until the outcome is recorded (`freePicked`).
     await env.DB.prepare("update cloud_computers set plan_cleanup_failed_at = ? where instance_id = ?")
       .bind(now, computer.instance_id).run();
     return { kind: "kept", name: nameOf(computer), reason };
   };
   try {
-    // Never woken for nothing.
     if (!(await stillPicked(env, computer.user_id, computer.instance_id, choice))) return await release();
     let metadata: Record<string, string> = {};
-    let pushedLanes: Tally["lanes"] = null;
+    let resting = false;
     if (choice.push) {
-      const work = await pushAllWork(env, provider, computer, now, wake, "plan_cleanup");
+      const work = await saveBeforeDelete(env, provider, computer, "plan_cleanup");
       if (!work.ok) return await keep(work.reason, work.code);
       metadata = work.metadata;
-      pushedLanes = work.pushed.lanes;
+      resting = work.resting;
     } else {
       metadata = await saveWithoutPush(provider, computer);
     }
-    // The pushes took minutes: the person may have stayed on Pro since.
-    if (!(await stillPicked(env, computer.user_id, computer.instance_id, choice))) return await release();
+    // The save took minutes: the person may have stayed on Pro since, or started it.
+    // An awake computer was frozen for the delete (`saveBeforeDelete`): it takes work again at once.
+    if (!(await stillPicked(env, computer.user_id, computer.instance_id, choice))) {
+      if (!resting) await unfreezeComputer(provider, computer.instance_id);
+      return await release();
+    }
+    if (resting && !(await stillRestsWithBackups(env, computer.instance_id))) return await release();
 
     const lane = mergeLaneFacts(laneFactsOfRow(computer), laneFactsOf(metadata));
-    const own = pushedLanes?.find((entry) => entry.laneId === lane.laneId) ?? null;
-    if (own?.branchRef) lane.branch = own.branchRef;
     const laneKept = namesLane(lane);
     if (laneKept) await markKeepLaneStatement(env, computer, lane, "plan_limit").run();
     try {
@@ -775,11 +761,11 @@ async function freeComputer(env: CloudEnv, provider: CloudProvider, choice: Plan
       if (laneKept) await unmarkKeepLaneStatement(env, computer.instance_id).run();
       throw error;
     }
-    logCloud("cloud.plan_cleanup_freed", { instanceId: computer.instance_id, keptLane: laneKept, pushed: choice.push });
+    logCloud("cloud.plan_cleanup_freed", { instanceId: computer.instance_id, keptLane: laneKept, saved: choice.push, resting });
     return { kind: "freed", name: nameOf(computer), branch: lane.branch, laneKept };
   } catch (error) {
     const code = error instanceof CloudProviderError ? error.code : "unknown";
-    return keep(choice.push ? "ADE Cloud couldn't reach the computer to push its work." : "ADE Cloud couldn't reach the computer to delete it.", code);
+    return keep(choice.push ? "ADE Cloud couldn't reach the computer to save its work." : "ADE Cloud couldn't reach the computer to delete it.", code);
   }
 }
 
@@ -792,7 +778,8 @@ async function saveWithoutPush(provider: CloudProvider, computer: ComputerRow): 
   try {
     const instance = await provider.getInstance(computer.instance_id);
     if (isMeteredStatus(instance.status)) {
-      await provider.exec(computer.instance_id, PREPARE_COMMAND, PREPARE_TIMEOUT_MS).catch(() => null);
+      // The delete follows whatever the prepare says, so the computer stays frozen until it.
+      await provider.exec(computer.instance_id, PREPARE_FOR_DELETE_COMMAND, PREPARE_TIMEOUT_MS).catch(() => null);
     }
     return instance.metadata;
   } catch {
@@ -800,125 +787,99 @@ async function saveWithoutPush(provider: CloudProvider, computer: ComputerRow): 
   }
 }
 
-/** Whether this run started the computer, and the resting status it had before (`stopped` or `sleeping`). */
-export type WakeRecord = { woke: boolean; from: string };
-
-/** All of a computer's work pushed and checked (its metadata and the push's tally), or why some stays, with a code for the log. */
-export type PushAllOutcome =
-  | { ok: true; metadata: Record<string, string>; pushed: Tally }
+/** All of a computer's lanes saved, so it can go (its metadata), or why it stays, with a code for the log. */
+export type SaveBeforeDeleteOutcome =
+  | { ok: true; metadata: Record<string, string>; resting: boolean }
   | { ok: false; reason: string; code: string };
 
 /**
- * The one push-before-delete run, on the computer itself: a free wake when it
- * rests, its own ADE stops its agents and saves its chats, pushes every
- * lane's work, then reads it all again; anything new or unknown keeps it.
- * The plan cleanup and the project delete both delete only on `ok`. `wake`
- * notes a wake, so a caller that keeps the computer puts it back to rest
- * (`putBackToRest`). Provider errors are thrown.
+ * The one save before a delete, and it never starts a computer (every wake
+ * is use). A computer that rests may go only when it rested right after a
+ * backup report that saved every lane (`backup_rest_at`, `laneBackups.ts`);
+ * else it stays with `CLOUD_BACKUP_NOT_SAVED_SENTENCE` and the lanes' own
+ * reasons. A computer that is awake is metered already: its own ADE stops its
+ * agents, saves its chats (`prepare-stop`), then saves fork capsules, copies
+ * and every lane's backup (`save-for-rest --capsules`), and goes only when
+ * that save's report is current. Nothing is committed or pushed. Provider
+ * errors are thrown.
  */
-export async function pushAllWork(
-  env: CloudEnv,
-  provider: CloudProvider,
-  computer: ComputerRow,
-  now: number,
-  wake: WakeRecord,
-  reason: string,
-  options: { commitMessage?: string } = {},
-): Promise<PushAllOutcome> {
-  const pushCommand = pushCommandWith(options.commitMessage);
-  const metadata = await wakeForPush(env, provider, computer, now, wake, reason);
-  // Agents stopped and chats saved first: anything still writing could land after the check.
-  const prepared = await provider.exec(computer.instance_id, PREPARE_COMMAND, PREPARE_TIMEOUT_MS);
-  if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) return { ok: false, reason: "ADE on the computer couldn't stop its agents and save its chats.", code: "prepare_stop_failed" };
-  const pushed = readTally((await provider.exec(computer.instance_id, pushCommand, PUSH_TIMEOUT_MS)).stdout);
-  if (!pushed) return { ok: false, reason: "ADE on the computer didn't answer the push.", code: "push_unreadable" };
-  const left = leftLanes(pushed);
-  if (left) return { ok: false, reason: left, code: "push_left_work" };
-  // Before the check: what the lane needs to read and continue with no computer. Never keeps the computer.
-  await saveForRest(provider, computer, reason);
-  // Read once more: anything new or unknown keeps it.
-  const checked = readTally((await provider.exec(computer.instance_id, CHECK_COMMAND, CHECK_TIMEOUT_MS)).stdout);
-  if (!checked) return { ok: false, reason: "ADE couldn't confirm all work is on GitHub.", code: "check_unreadable" };
-  const stillLeft = leftLanes(checked);
-  if (stillLeft) return { ok: false, reason: stillLeft, code: "check_left_work" };
-  return { ok: true, metadata, pushed };
+export async function saveBeforeDelete(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, reason: string): Promise<SaveBeforeDeleteOutcome> {
+  const instance = await provider.getInstance(computer.instance_id);
+  if (!isMeteredStatus(instance.status)) {
+    const row = await backupRestRow(env, computer.instance_id);
+    if (row?.backup_rest_at != null) return { ok: true, metadata: instance.metadata, resting: true };
+    logCloud("cloud.save_before_delete_not_current", { instanceId: computer.instance_id, reason, reported: row?.backup_report_id != null });
+    // It never reported a save (it rested before its ADE saved lane work): nothing failed, it is kept until it next rests.
+    if (row?.backup_report_id == null) return { ok: false, reason: CLOUD_BACKUP_NEVER_SAVED_SENTENCE, code: BACKUP_NEVER_SAVED_CODE };
+    return { ok: false, reason: backupNotSavedReason(row), code: "backup_not_current" };
+  }
+  // Agents stopped and chats saved first: anything still writing could land after the backup.
+  // Every delete but the idle cleanup also freezes new work on the computer until the delete:
+  // the idle cleanup has its own rule, where a person's use calls the delete off (`/use`).
+  const freezes = reason !== "idle_cleanup";
+  /** The computer stays (a throw is read as "couldn't reach it"): it takes work again. */
+  const unfreezeOnThrow = async (error: unknown): Promise<never> => {
+    if (freezes) await unfreezeComputer(provider, computer.instance_id);
+    throw error;
+  };
+  const prepared = await provider.exec(computer.instance_id, freezes ? PREPARE_FOR_DELETE_COMMAND : PREPARE_COMMAND, PREPARE_TIMEOUT_MS)
+    .catch(unfreezeOnThrow);
+  if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) {
+    // A readable answer that is not confirmed: the computer ended its own freeze. Any other answer may hide one.
+    if (freezes && (prepared.exitCode !== 0 || readResult(prepared.stdout) == null)) await unfreezeComputer(provider, computer.instance_id);
+    return { ok: false, reason: "ADE on the computer couldn't stop its agents and save its chats.", code: "prepare_stop_failed" };
+  }
+  const kept = async (outcome: SaveBeforeDeleteOutcome): Promise<SaveBeforeDeleteOutcome> => {
+    if (freezes) await unfreezeComputer(provider, computer.instance_id);
+    return outcome;
+  };
+  const saved = await provider.exec(computer.instance_id, SAVE_FOR_REST_COMMAND, SAVE_FOR_REST_TIMEOUT_MS).catch(unfreezeOnThrow);
+  const report = saved.exitCode === 0 ? readResult(saved.stdout) as Partial<CloudSaveForRestReport> | null : null;
+  const reportId = report?.backups && typeof report.backups === "object" ? report.backups.reportId ?? null : null;
+  logCloud("cloud.save_for_rest", {
+    instanceId: computer.instance_id,
+    reason,
+    ok: report?.ok === true,
+    capsules: Number(report?.capsules) || 0,
+    sessions: Number(report?.sessions) || 0,
+    git: Number(report?.git) || 0,
+    backups: report?.backups?.state ?? "none",
+  });
+  if (!reportId) return await kept({ ok: false, reason: "This computer's ADE is too old to save its lanes' work. It saves them after it updates, the next time it rests.", code: "backup_unsupported" });
+  const row = await backupRestRow(env, computer.instance_id);
+  if (row?.backup_report_id === reportId && row.backup_report_state === "current") return { ok: true, metadata: instance.metadata, resting: false };
+  return await kept({ ok: false, reason: backupNotSavedReason(row ?? {}), code: "backup_not_current" });
 }
 
 /**
- * `ade cloud save-for-rest --capsules --json` on the computer: fork capsules,
- * CLI and shell copies and Git summaries go to the server. Best effort: an
- * older ADE that doesn't know the command, or a failure, means no capsule
- * (a new computer replays the saved chat instead), never a kept computer.
+ * Ends the freeze of a computer `saveBeforeDelete` prepared for a delete that
+ * now does not happen, so it takes work again at once, not when the freeze
+ * runs out (10 minutes). Best effort, and only on a computer that is awake:
+ * exec wakes a sleeping computer, and a sleeping one does no work.
  */
-async function saveForRest(provider: CloudProvider, computer: ComputerRow, reason: string): Promise<void> {
+export async function unfreezeComputer(provider: CloudProvider, instanceId: string): Promise<void> {
   try {
-    const ran = await provider.exec(computer.instance_id, SAVE_FOR_REST_COMMAND, SAVE_FOR_REST_TIMEOUT_MS);
-    const report = ran.exitCode === 0 ? readResult(ran.stdout) as Partial<CloudSaveForRestReport> | null : null;
-    if (!report || typeof report.capsules !== "number") {
-      logCloud("cloud.save_for_rest_unavailable", { instanceId: computer.instance_id, reason, exitCode: ran.exitCode });
-      return;
-    }
-    logCloud("cloud.save_for_rest", {
-      instanceId: computer.instance_id,
-      reason,
-      ok: report.ok === true,
-      capsules: report.capsules,
-      sessions: Number(report.sessions) || 0,
-      git: Number(report.git) || 0,
-      skipped: Number(report.skipped) || 0,
-    });
+    const instance = await provider.getInstance(instanceId);
+    if (!isMeteredStatus(instance.status)) return;
+    const result = await provider.exec(instanceId, UNFREEZE_COMMAND, UNFREEZE_TIMEOUT_MS);
+    logCloud("cloud.delete_freeze_ended", { instanceId, exitCode: result.exitCode });
   } catch (error) {
-    logCloud("cloud.save_for_rest_unavailable", { instanceId: computer.instance_id, reason, code: error instanceof CloudProviderError ? error.code : "unknown" });
+    // The freeze ends on its own.
+    logCloud("cloud.delete_freeze_end_failed", { instanceId, code: error instanceof CloudProviderError ? error.code : "unknown" });
   }
 }
 
-/**
- * Wakes a resting computer for the push, as the person's push-work wake does:
- * the time isn't charged, isn't counted as use, and the tick's stops and
- * sleeps leave it alone. Answers the computer's metadata, and notes in `wake`
- * that it started it (before the wait, so a wake that times out is put back too).
- */
-async function wakeForPush(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, now: number, wake: WakeRecord, reason = "plan_cleanup"): Promise<Record<string, string>> {
-  let instance = await provider.getInstance(computer.instance_id);
-  if (isMeteredStatus(instance.status)) return instance.metadata;
-  wake.from = instance.status;
-  const status = await provider.startInstance(computer.instance_id);
-  wake.woke = true;
-  await env.DB.batch([
-    env.DB.prepare(`
-      update cloud_computers set status = ?, status_changed_at = ?, awake_since = ?, free_wake_started_at = ?, free_wake_until = ?, zero_stop_started_at = null, cold_storage = 0
-      where instance_id = ? and deleted_at is null and awake_since is null
-    `).bind(status, now, now + FREE_WAKE_MS, now, now + FREE_WAKE_MS, computer.instance_id),
-    powerLogStatement(env, computer, "start", reason, now),
-  ]);
-  let awake = isMeteredStatus(status);
-  for (let polls = 0; !awake && polls < WAKE_WAIT_MS / WAKE_POLL_MS; polls += 1) {
-    await new Promise((resolve) => setTimeout(resolve, WAKE_POLL_MS));
-    instance = await provider.getInstance(computer.instance_id);
-    awake = isMeteredStatus(instance.status);
-  }
-  if (!awake) throw new CloudProviderError("The computer didn't wake.", "wake_timeout", 0);
-  return instance.metadata;
+async function backupRestRow(env: CloudEnv, instanceId: string): Promise<Pick<ComputerRow, "backup_rest_at" | "backup_report_id" | "backup_report_state" | "backup_problems_json"> | null> {
+  return await env.DB.prepare("select backup_rest_at, backup_report_id, backup_report_state, backup_problems_json from cloud_computers where instance_id = ?")
+    .bind(instanceId).first();
 }
 
 /**
- * A computer this run woke and then kept goes back to rest the way the rest of
- * the server rests one: a stopped computer is stopped again, any other is put
- * to sleep, and the row's status change closes the free push wake (its time
- * isn't charged). Best effort: a failure is reported, and the tick's
- * no-check-in sleep is the backstop.
+ * Just before the provider delete of a computer `saveBeforeDelete` found
+ * resting: it still rests with its backups (a start since clears them).
  */
-export async function putBackToRest(env: CloudEnv, provider: CloudProvider, instanceId: string, from: string, reason = "plan_cleanup"): Promise<void> {
-  try {
-    const row = await env.DB.prepare("select * from cloud_computers where instance_id = ? and deleted_at is null").bind(instanceId).first<ComputerRow>();
-    if (!row) return;
-    const status = from === "stopped" ? await provider.stopInstance(instanceId) : await provider.sleepInstance(instanceId);
-    const statements = statusChangeStatements(env, row, status, Date.now(), reason);
-    if (statements.length) await env.DB.batch(statements);
-    logCloud(`cloud.${reason}_put_back`, { instanceId, status });
-  } catch (error) {
-    reportCloudFailure(`cloud.${reason}_put_back_failed`, { instanceId, code: error instanceof CloudProviderError ? error.code : "unknown" });
-  }
+export async function stillRestsWithBackups(env: CloudEnv, instanceId: string): Promise<boolean> {
+  return (await backupRestRow(env, instanceId))?.backup_rest_at != null;
 }
 
 /** The JSON a `--json` command printed: its `result`, or the object itself. Null when unreadable. */
@@ -942,52 +903,4 @@ function prepareConfirmed(exitCode: number, stdout: string): boolean {
   if (exitCode !== 0) return false;
   const result = readResult(stdout);
   return result != null && result.stillRunning === 0 && result.chatsNotUploaded === 0 && result.timedOut === false;
-}
-
-type TallyLane = { laneId: string; laneName: string; branchRef: string; state: string; primary: boolean };
-/** `readsRemotes`: an ADE whose `ahead` counts commits no remote has and that reports an unreadable lane as `failed`. */
-type Tally = { failed: number; readsRemotes: boolean; lanes: TallyLane[] | null };
-
-/** `ade cloud push-work --json` / `work-state --json`: the tally, or null when unreadable. */
-function readTally(stdout: string): Tally | null {
-  const tally = readResult(stdout);
-  if (!tally) return null;
-  const lanes = Array.isArray(tally.lanes)
-    ? tally.lanes.flatMap((entry): TallyLane[] => {
-      if (!entry || typeof entry !== "object") return [];
-      const lane = entry as Record<string, unknown>;
-      return typeof lane.laneId === "string" ? [{
-        laneId: lane.laneId,
-        laneName: typeof lane.laneName === "string" ? lane.laneName : "",
-        branchRef: typeof lane.branchRef === "string" ? lane.branchRef : "",
-        state: typeof lane.state === "string" ? lane.state : "unknown",
-        // A lane that doesn't say is treated as the primary lane: the stricter rule.
-        primary: lane.primary !== false,
-      }] : [];
-    })
-    : null;
-  return { failed: Number(tally.failed) || 0, readsRemotes: tally.readsRemotes === true, lanes };
-}
-
-/**
- * Whether a lane's work is all on GitHub. Only `clean` and `pushed` say so;
- * any other state, known or not, keeps the computer. The primary lane is never
- * pushed, and an older ADE counts its commits against its own branch (0 for
- * the primary lane) and reports a lane it couldn't read as `clean`, so a
- * primary lane is safe only when it says `pushed`, or `clean` from an ADE that
- * reads against the remotes.
- */
-function laneIsSafe(lane: TallyLane, readsRemotes: boolean): boolean {
-  if (lane.state === "pushed") return true;
-  return lane.state === "clean" && (readsRemotes || !lane.primary);
-}
-
-/** Why work stays on the computer, or null when everything is on GitHub. An older ADE without the lane list can't say: it stays. */
-function leftLanes(tally: Tally): string | null {
-  if (!tally.lanes) return "This computer's ADE is too old to say what isn't pushed.";
-  if (tally.failed > 0) return "ADE couldn't read or push every project on it.";
-  const left = tally.lanes.filter((lane) => !laneIsSafe(lane, tally.readsRemotes));
-  if (left.length === 0) return null;
-  const names = left.map((lane) => lane.laneName || lane.branchRef).filter(Boolean);
-  return `Work that isn't on GitHub yet${names.length ? `: ${names.join(", ")}` : ""}.`;
 }

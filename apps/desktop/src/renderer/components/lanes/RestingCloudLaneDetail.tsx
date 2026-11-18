@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CircleNotch, Lightning } from "@phosphor-icons/react";
+import { CircleNotch, GearSix, Lightning } from "@phosphor-icons/react";
 import type { CloudGitSummaryCounts } from "../../../../../account-directory/src/cloud/contract";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import type { FileChange } from "../../../shared/types/git";
@@ -99,7 +99,12 @@ function useRestingLaneRead(row: RestingLaneRow): ReadState {
  * wakes: the view shows what the account saved of the lane, and "Wake to
  * run" starts the computer. The lane opens in full once it is connected.
  */
-export function RestingCloudLaneDetail({ laneName, machine }: { laneName: string; machine: RestingLaneRow }) {
+export function RestingCloudLaneDetail({ laneName, machine, onManage }: {
+  laneName: string;
+  machine: RestingLaneRow;
+  /** Size, free and delete: account actions that need no wake. */
+  onManage?: () => void;
+}) {
   const pin = machine.binding ?? null;
   const laneWake = useAdeCloudLaneWake(pin);
   const listWaking = useCloudMachineWakeInFlight(restingCloudMachineKey(machine));
@@ -128,16 +133,29 @@ export function RestingCloudLaneDetail({ laneName, machine }: { laneName: string
               : "Your ADE Cloud computer is asleep. This is the lane as it was last saved."}
           </div>
         </div>
-        <button
-          type="button"
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-[12px] text-fg/85 hover:bg-fg/[0.05] disabled:opacity-60"
-          disabled={waking}
-          onClick={wake}
-          data-testid="lane-detail-cloud-wake"
-        >
-          {waking ? <CircleNotch size={12} className="animate-spin" /> : <Lightning size={12} />}
-          {waking ? "Waking…" : "Wake to run"}
-        </button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {onManage ? (
+            <button
+              type="button"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-[12px] text-fg/85 hover:bg-fg/[0.05]"
+              onClick={onManage}
+              data-testid="lane-detail-cloud-manage"
+            >
+              <GearSix size={12} />
+              Manage
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-[12px] text-fg/85 hover:bg-fg/[0.05] disabled:opacity-60"
+            disabled={waking}
+            onClick={wake}
+            data-testid="lane-detail-cloud-wake"
+          >
+            {waking ? <CircleNotch size={12} className="animate-spin" /> : <Lightning size={12} />}
+            {waking ? "Waking…" : "Wake to run"}
+          </button>
+        </div>
       </div>
 
       {laneWake.state === "failed" && laneWake.message ? (

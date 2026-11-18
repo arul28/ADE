@@ -23,7 +23,7 @@ import { UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson } from "./
 import { isCloudBlocked } from "./blocks";
 import { githubOriginOf, startServerLaunch, type LaunchRouteDeps, type ParsedLaunchRequest } from "./launches";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
-import { pushAllWork, putBackToRest, type WakeRecord } from "./planCleanup";
+import { saveBeforeDelete, stillRestsWithBackups } from "./planCleanup";
 import { cloudSizeForTier } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import { deleteComputer, logCloud, ownedComputer, reportCloudFailure } from "./store";
@@ -898,11 +898,12 @@ export async function noteAutomationLaunchProgress(env: RelayEnv, record: CloudL
 }
 
 /**
- * After the run: its computer's chats are saved and its work pushed, then
+ * After the run: its computer's chats are saved and each lane's work is
+ * saved as a lane backup (`saveBeforeDelete`: no wake, nothing pushed), then
  * the computer is deleted and its lane kept as a lane without a computer.
- * Anything short of "everything is on GitHub" keeps the computer and says why.
+ * Anything short of "every lane saved" keeps the computer and says why.
  */
-async function finishRun(env: RelayEnv, provider: CloudProvider, run: RunRow, now: number): Promise<void> {
+async function finishRun(env: RelayEnv, provider: CloudProvider, run: RunRow): Promise<void> {
   const rule = await readRule(env, run.user_id, run.rule_id);
   const outcome = run.outcome === "failed" ? "failed" : "done";
   const end = async (computer: "freed" | "kept" | null, why: string | null): Promise<void> => {
@@ -915,21 +916,13 @@ async function finishRun(env: RelayEnv, provider: CloudProvider, run: RunRow, no
   const computer = run.instance_id ? await ownedComputer(env, run.user_id, run.instance_id) : null;
   if (!computer) return end(null, null);
   if (rule?.keep_computer === 1) return end("kept", "This rule keeps its computer after a run.");
-  // A blocked account's computer stays stopped: the push would wake it.
+  // A blocked account's computer stays as it is.
   if (await isCloudBlocked(env, run.user_id)) return end("kept", "Its computer stays: ADE Cloud is turned off for this account.");
-  const wake: WakeRecord = { woke: false, from: computer.status };
-  const keep = async (why: string): Promise<void> => {
-    if (wake.woke) await putBackToRest(env, provider, computer.instance_id, wake.from);
-    return end("kept", `Its computer stays: ${why}`);
-  };
   try {
-    // The plan cleanup's push: stop the agents and save the chats, push every lane, check again.
-    const outcome = await pushAllWork(env, provider, computer, now, wake, "automation_run");
-    if (!outcome.ok) return keep(outcome.reason);
-    const { metadata, pushed } = outcome;
-    const lane = mergeLaneFacts(laneFactsOfRow(computer), laneFactsOf(metadata));
-    const own = pushed.lanes?.find((entry) => entry.laneId === lane.laneId) ?? null;
-    if (own?.branchRef) lane.branch = own.branchRef;
+    const saved = await saveBeforeDelete(env, provider, computer, "automation_run");
+    if (!saved.ok) return end("kept", `Its computer stays: ${saved.reason}`);
+    if (saved.resting && !(await stillRestsWithBackups(env, computer.instance_id))) return end("kept", "Its computer stays: someone started it while ADE saved it.");
+    const lane = mergeLaneFacts(laneFactsOfRow(computer), laneFactsOf(saved.metadata));
     const laneKept = namesLane(lane);
     if (laneKept) await markKeepLaneStatement(env, computer, lane, "freed").run();
     try {
@@ -942,7 +935,7 @@ async function finishRun(env: RelayEnv, provider: CloudProvider, run: RunRow, no
     return end("freed", null);
   } catch (error) {
     reportCloudFailure("cloud.automation_run_free_failed", { runId: run.run_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
-    return keep("ADE Cloud couldn't reach it to push its work.");
+    return end("kept", "Its computer stays: ADE Cloud couldn't reach it to save its work.");
   }
 }
 
@@ -988,7 +981,7 @@ export async function runCloudAutomations(env: RelayEnv, deps: Omit<AutomationDe
         if ((claimed.meta?.changes ?? 0) !== 1) continue;
         finishes += 1;
         const run = row.run_id ? await readRun(env, row.run_id) : null;
-        if (run) await finishRun(env, deps.provider, run, now);
+        if (run) await finishRun(env, deps.provider, run);
       } else await moveRunOn(env, row, runDeps);
     } catch (error) {
       reportCloudFailure("cloud.automation_tick_failed", { ruleId: row.rule_id, runId: row.run_id, error: error instanceof Error ? error.message : "unknown" });

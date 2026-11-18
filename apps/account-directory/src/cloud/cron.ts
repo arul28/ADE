@@ -5,6 +5,7 @@ import { cancelTimedWakes, type WakeBlock } from "./accountNotices";
 import { checkExtraDiskLimits, reportExtraDiskDays, type ExtraDiskOverLimit } from "./billing";
 import { sendCloudEmail } from "./email";
 import { laneFactsStatement } from "./lanesWithoutComputer";
+import { markRestedWithBackups } from "./laneBackups";
 import type { CloudHoursState, CloudInstance } from "./contract";
 import { refreshCostEstimate, runDailyCostReport } from "./costReport";
 import { AWAKE_COMPUTER_CAP, cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
@@ -56,7 +57,7 @@ const DISK_GROW_SETTLE_MS = 10 * 60_000;
 /** Exec gets this long; the command gives itself 40 s. */
 const PREPARE_STOP_TIMEOUT_MS = 45_000;
 /** `ade brain update` puts the newer ADE on the disk (`$ADE_HOME/bin`), which the image's PATH doesn't reach. */
-const PREPARE_STOP_COMMAND = 'PATH="$ADE_HOME/bin:$PATH" ade cloud prepare-stop --timeout 40';
+const PREPARE_STOP_COMMAND = 'PATH="$ADE_HOME/bin:$PATH" ade cloud prepare-stop --timeout 40 --json';
 const ZERO_STOP_RETRY_GUARD_MS = 2 * 60_000;
 const STOP_RETRIES = 3;
 const STOP_RETRY_DELAY_MS = 3_000;
@@ -178,10 +179,10 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   } catch (error) {
     reportCloudFailure("cloud.block_tick_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
-  const blockedUsers = await settleAccounts(env, provider, live, now);
-  // Rollbacks for updates that never reported in, then a few asleep computers onto their channel's image.
+  await settleAccounts(env, provider, live, now);
+  // Rollbacks for updates that never reported in. A resting computer is never updated here (that would wake it).
   try {
-    await runCloudAutoUpdates(env, provider, live, blockedUsers, now);
+    await runCloudAutoUpdates(env, provider, live, now);
   } catch (error) {
     reportCloudFailure("cloud.auto_updates_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
@@ -340,9 +341,12 @@ async function warnHours(env: CloudEnv, account: AccountRow, state: CloudHoursSt
 }
 
 /**
- * Asks each awake computer to save and interrupt its work, then stops it; a
- * sleeper just stops. For an account whose wakes are refused (0 hours, or
- * disk the free plan doesn't cover); the short push-work wake runs out first.
+ * Asks each awake computer to interrupt its work and save it (its chats and
+ * each lane's backup, `prepare-stop`), then stops it; a sleeper just stops.
+ * For an account whose wakes are refused (0 hours, or disk the free plan
+ * doesn't cover). A computer whose prepare-stop reported current backups
+ * rests with them (`markRestedWithBackups`), so a cleanup can delete it later
+ * with no wake. Nothing wakes it again for free.
  */
 async function stopAll(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number, reason: WakeBlock): Promise<void> {
   await Promise.all(computers.map(async (computer) => {
@@ -353,38 +357,58 @@ async function stopAll(env: CloudEnv, provider: CloudProvider, computers: TickCo
     if (computer.zero_stop_started_at != null && now - computer.zero_stop_started_at < ZERO_STOP_RETRY_GUARD_MS) return;
     await env.DB.prepare("update cloud_computers set zero_stop_started_at = ? where instance_id = ?").bind(now, computer.instance_id).run();
     computer.zero_stop_started_at = now;
+    let backupReportId: string | null = null;
     if (isMeteredStatus(computer.status)) {
       try {
         const result = await provider.exec(computer.instance_id, PREPARE_STOP_COMMAND, PREPARE_STOP_TIMEOUT_MS);
-        logCloud("cloud.prepare_stop_done", { instanceId: computer.instance_id, exitCode: result.exitCode });
+        backupReportId = result.exitCode === 0 ? prepareStopBackupReportId(result.stdout) : null;
+        logCloud("cloud.prepare_stop_done", { instanceId: computer.instance_id, exitCode: result.exitCode, backups: backupReportId != null });
       } catch (error) {
         reportCloudFailure("cloud.prepare_stop_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
       }
     }
-    await stopWithRetry(env, provider, computer, now, reason);
+    if (await stopWithRetry(env, provider, computer, now, reason)) {
+      await markRestedWithBackups(env, computer.instance_id, backupReportId, now);
+    }
   }));
 }
 
-async function stopWithRetry(env: CloudEnv, provider: CloudProvider, computer: TickComputer, now: number, reason: string): Promise<void> {
+/** True when the computer is stopped now. */
+async function stopWithRetry(env: CloudEnv, provider: CloudProvider, computer: TickComputer, now: number, reason: string): Promise<boolean> {
   for (let attempt = 0; attempt < STOP_RETRIES; attempt += 1) {
     try {
       const status = await provider.stopInstance(computer.instance_id);
       const statements = statusChangeStatements(env, computer, status, now, reason);
       if (statements.length) await env.DB.batch(statements);
-      return;
+      return true;
     } catch (error) {
       if (error instanceof CloudProviderError && error.status === 400) {
         // Cold storage: a stop can't apply. If something wakes it, a later tick stops it.
         await env.DB.prepare("update cloud_computers set cold_storage = 1 where instance_id = ?").bind(computer.instance_id).run();
         computer.cold_storage = 1;
-        return;
+        return false;
       }
       if (!(error instanceof CloudProviderError && error.code === TRY_AGAIN_CODE)) {
         reportCloudFailure("cloud.stop_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
-        return;
+        return false;
       }
       if (attempt < STOP_RETRIES - 1) await new Promise((resolve) => setTimeout(resolve, STOP_RETRY_DELAY_MS));
     }
+  }
+  return false;
+}
+
+/** `ade cloud prepare-stop --json`: the backup report its save made, when it says every lane is saved. */
+export function prepareStopBackupReportId(stdout: string): string | null {
+  try {
+    const parsed = JSON.parse(stdout.trim()) as Record<string, unknown> | null;
+    const result = (parsed?.result && typeof parsed.result === "object" ? parsed.result : parsed) as Record<string, unknown> | null;
+    // Only a stop that was really prepared: a turn still running (or a chat not saved) can write after the save.
+    if (!result || result.stillRunning !== 0 || result.chatsNotUploaded !== 0 || result.timedOut !== false) return null;
+    const backups = result.backups as Record<string, unknown> | null | undefined;
+    return backups && backups.state === "current" && typeof backups.reportId === "string" ? backups.reportId : null;
+  } catch {
+    return null;
   }
 }
 
@@ -642,7 +666,7 @@ async function reconcileDays(env: CloudEnv, provider: CloudProvider, last: strin
         ? Math.round((providerBillableMs * meteredMilli) / meteredMs)
         : hoursMilliFor(providerBillableMs, multiplier);
       const delta = providerMilli - meteredMilli;
-      // The provider charges every awake minute, free push-work time too, at the rate the day ran at.
+      // The provider charges every awake minute, an update's free time too, at the rate the day ran at.
       const providerAwakeMs = entry.awakeMinutes * 60_000;
       const meteredCost = row.cost_micros ?? 0;
       const providerCost = meteredMs > 0 && meteredCost > 0

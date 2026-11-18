@@ -373,7 +373,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     },
   ): Promise<{ counted: () => void; release: () => void; unattended: boolean; maker: CloudAgentMaker | null; limitRefusal: string | null }> => {
     const nothing = { counted: () => undefined, release: () => undefined, unattended: false, maker: null, limitRefusal: null };
-    const noChatToAsk = () => new CloudDeclined(`${card.title} uses hours or deletes something, so it needs your yes, and ADE has no chat to ask you in. ${card.personPlace ?? "Run it from an ADE chat, or use the machine's card in ADE (Your computers)."}`);
+    const noChatToAsk = () => new CloudDeclined(`${card.title} uses hours or deletes something, so it needs your yes, and ADE has no chat to ask you in. ${card.personPlace ?? "Run it from an ADE chat, or do it in ADE: Settings › ADE Cloud, the lane's row."}`);
     if (approval.by === "person") return nothing;
     const chatSessionId = approval.chatSessionId;
     // An app on ADE MCP has no chat to ask in: it is answered like a chat

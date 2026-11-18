@@ -219,7 +219,10 @@ them in PostHog and update this list in the same branch.
   `unknown`. Up to and including 1.2.130-beta.2, `expected_kind: unexpected`
   also holds answers that carry no mark (no GitHub sign-in, a lane whose
   folder is gone); later builds send those as `expected`, so `unexpected`
-  steps down at that release.
+  steps down at that release. From the first release after
+  1.2.130-beta.51 an unexpected failure also carries `brain_frame`
+  (`function:line` in the brain), so `rpc_tool_failed` can be split by
+  the code that threw.
 - **`metadata_regenerated`** is sent at most once per mode and outcome per
   install an hour from the first desktop release after 1.2.129-beta.8. Before,
   it was a quarter of the events of the installs that reached their daily

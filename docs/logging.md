@@ -2216,7 +2216,10 @@ characters; it names a registry entry, never anything a person typed), and
 gate knows by its text or code (`shared/sentry/expectedFailure.ts`), or
 `unexpected` for everything else, which is what separates
 a bug from a refusal the person caused; `brain_action` names the first
-action of that shape in the hour. A per-domain-per-code one-hour
+action of that shape in the hour. An unexpected failure with no code also
+carries `brain_frame`, the brain's top frame of ADE's own code as
+`function:line` (`brainActionFailureFrame`): no file name and no path, so
+`rpc_tool_failed` can be traced to the code that threw. A per-domain-per-code one-hour
 deduplication key (unchanged when these two were added, so counts stay
 comparable across builds) turns an error loop into one accepted event an hour, and the
 event's own 20-per-day / 3-per-minute caps bound the rest without touching

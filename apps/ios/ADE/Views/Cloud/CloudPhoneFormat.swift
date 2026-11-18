@@ -87,7 +87,7 @@ func cloudPlanSentenceName(_ id: String) -> String {
 func cloudPlanCleanupDoneSentence(_ done: CloudPhoneAccount.PlanCleanupDone) -> String? {
   var parts: [String] = []
   if !done.freed.isEmpty {
-    let list = done.freed.map { entry in entry.pushed == false ? entry.name : entry.branch.map { "\(entry.name) (work on \($0))" } ?? entry.name }.joined(separator: ", ")
+    let list = done.freed.map(\.name).joined(separator: ", ")
     let these = done.freed.count == 1 ? "this computer" : "these computers"
     // Only a computer that held a lane keeps one: a computer made for no lane is simply gone.
     let lanesKept = done.freed.filter { $0.laneKept == true }.count
@@ -99,11 +99,11 @@ func cloudPlanCleanupDoneSentence(_ done: CloudPhoneAccount.PlanCleanupDone) -> 
     } else {
       kept = " \(lanesKept == 1 ? "The lane among them and its chats stay" : "The lanes among them and their chats stay"); the next message to a lane makes a new computer."
     }
-    let how = done.freed.allSatisfy { $0.pushed != false } ? "pushed each lane's work to GitHub and removed" : "removed"
+    let how = done.freed.allSatisfy { $0.pushed != false } ? "saved each lane's work and removed" : "removed"
     parts.append("To fit \(cloudPlanSentenceName(done.planId)), ADE \(how) \(these): \(list).\(kept)")
   }
   if !done.kept.isEmpty {
-    parts.append("ADE kept \(done.kept.map(\.name).joined(separator: ", ")), because its work couldn't all be pushed to GitHub. Push its work or delete it yourself, or pick again in ADE.")
+    parts.append("ADE kept \(done.kept.map(\.name).joined(separator: ", ")), because ADE couldn't save its lanes' work. Use it once so ADE saves the work when it rests, delete it yourself, or pick again in ADE.")
   }
   return parts.isEmpty ? nil : parts.joined(separator: " ")
 }
@@ -141,18 +141,18 @@ func cloudIdleCleanupWhen(_ deletesAt: Double, now: Double) -> String {
 func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) -> String {
   let subject = entry.laneName.map { $0.isEmpty ? entry.displayName : "\($0)'s computer" } ?? entry.displayName
   if let held = entry.held {
-    return "\(subject) wasn't deleted: ADE couldn't save its work. \(held.reason) Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again \(cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now)).\(cloudIgnoredFilesShort(entry.ignoredFiles))"
+    return "\(subject) wasn't deleted: ADE couldn't save its work. \(held.reason) Open the lane once so ADE saves its work when the computer rests, or delete the lane if you don't need it. ADE checks again \(cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now)).\(cloudIgnoredFilesShort(entry.ignoredFiles))"
   }
   let save = entry.laneName != nil
-    ? "ADE pushes its work to \(entry.branch ?? "the lane's branch") first, and the lane and its chats stay."
-    : "ADE pushes its work to GitHub first."
+    ? "Its work that isn't on GitHub is saved in ADE Cloud, and the lane and its chats stay."
+    : "Its work that isn't on GitHub is saved in ADE Cloud first."
   let ignored = cloudIgnoredFilesShort(entry.ignoredFiles)
   return "\(subject) will be \(cloudIdleCleanupWhen(entry.deletesAt, now: now)), on \(cloudDate(entry.deletesAt)), because it isn't used. \(save)\(ignored) To keep it, send a message in the lane, or choose Keep it in the ADE desktop app."
 }
 
 /// The ignored files a delete loses, in one short sentence (with a leading space), or "" when none were found.
 func cloudIgnoredFilesShort(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFiles?) -> String {
-  guard let ignored else { return " Files git ignores, such as .env, aren't pushed." }
+  guard let ignored else { return " Files git ignores, such as .env, aren't saved." }
   let list: String?
   if ignored.paths.isEmpty {
     list = ignored.more > 0 ? "\(ignored.more) \(ignored.more == 1 ? "file" : "files")" : nil
@@ -161,11 +161,11 @@ func cloudIgnoredFilesShort(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFile
     list = ignored.more > 0 ? "\(shown) and \(ignored.more) more" : shown
   }
   if ignored.incomplete == true {
-    guard let list else { return " ADE couldn't read every lane to see which files git ignores, such as .env; those aren't pushed." }
-    return " Files git ignores aren't pushed, so these won't be kept: \(list). ADE couldn't read every lane, so there may be more."
+    guard let list else { return " ADE couldn't read every lane to see which files git ignores, such as .env; those aren't saved." }
+    return " Files git ignores aren't saved, so these won't be kept: \(list). ADE couldn't read every lane, so there may be more."
   }
   guard let list else { return "" }
-  return " Files git ignores aren't pushed, so these won't be kept: \(list)."
+  return " Files git ignores aren't saved, so these won't be kept: \(list)."
 }
 
 /// Why timed wake-ups were cancelled and how they come back

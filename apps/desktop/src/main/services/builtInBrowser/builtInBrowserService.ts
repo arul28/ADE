@@ -7375,7 +7375,8 @@ function createBuiltInBrowserWindowService(args: {
   /** The key button: saved logins for the tab's own page (never a value). */
   async function savedLoginsForTab(input: BuiltInBrowserTabArgs): Promise<Array<{ id: string; username: string | null; sites: string[] }>> {
     const tab = tabs.find((entry) => entry.id === input.tabId) ?? null;
-    if (!tab || !args.passwords) return [];
+    // A tab closed while the key button's read was on its way has no page.
+    if (!tab || tab.webContents.isDestroyed() || !args.passwords) return [];
     const pageUrl = tab.webContents.getURL();
     if (!loginOfferTarget(pageUrl)) return [];
     if (!(await args.passwords.enabled())) return [];

@@ -36,8 +36,13 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
+  CLOUD_COMPUTER_LIST_BUDGET_MS,
+  CLOUD_COMPUTER_LIST_REQUEST,
   MACHINE_ROW_KEY,
+  cloudComputerKeysOf,
   createMachineRemoteConnection,
+  machineListLabel,
+  markCloudComputers,
   executePlanAcrossMachines,
   extractMachineTargeting,
   FREE_TEXT_VALUE_FLAGS,
@@ -58,6 +63,7 @@ import {
   formatChatLocate,
   locateChatOnAccount,
   routedToLocation,
+  restingCloudChatLocation,
   type ChatLocateReport,
 } from "./cliChatLocate";
 import { isDevicesCommand, runDevicesCommand, withChatDeviceChoice } from "./cliDevices";
@@ -735,6 +741,7 @@ import {
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/src/shared/types/recovery";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { cloudDiskGrowStatePath, cloudDiskGuardOptions, readCloudDiskGrowState } from "./services/power/cloudDiskGuard";
+import { cloudDeleteFreezeRefusal, liftCloudDeleteFreeze } from "./services/power/cloudDeleteFreeze";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
@@ -935,6 +942,8 @@ export type InvocationStep = {
   params?: JsonObject | ((values: JsonObject) => JsonObject);
   unwrapToolResult?: boolean;
   optional?: boolean;
+  /** An optional step's budget: after this long it counts as failed, and the plan goes on. */
+  timeoutMs?: number;
   /** Not run when this says so, given the earlier steps' values (a fallback for an older host). */
   skipWhen?: (values: JsonObject) => boolean;
   injectProjectRootIntoArgs?: boolean;
@@ -5126,10 +5135,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   Each computer on your ADE Cloud account is one of your machines: reach it
   with --machine <its name>. They sleep on their own after a few idle minutes
-  and use no hours while asleep; a --machine call or opening a lane wakes one
-  in about a second. <machine> is its name or id. Sizes: small,
-  medium, large, x-large (or 2x4, 4x8, 4x16, 4x32). --kind vm is a full
-  computer: Android (medium or bigger) and Docker.
+  and use no hours while asleep; a --machine call or a message wakes one in
+  about 20 seconds. Reading a sleeping lane's saved chats does not wake it.
+  <machine> is its name or id. Sizes: small, medium, large, xlarge
+  (ade cloud status lists each one's CPU, memory and hours). large and
+  xlarge are full computers: Android and Docker need one.
 
     $ ade cloud status --text                     Everything in one read: can a new lane start (and why not),
                                                     plan, hours, disk, computers, each lane, sizes, agent limits
@@ -5138,7 +5148,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade cloud work-state --text                 On a cloud computer: which lanes have work not on GitHub yet
     $ ade cloud invite --text                     Your invite link: friends joined, rewards left, hours earned
                                                     (enter a friend's invite in Settings › Account)
-    $ ade cloud create --kind vm --shape medium --name "android vm"
+    $ ade cloud create --kind vm --shape large --name "android vm"
     $ ade cloud sleep <machine>                   Sleep now (uses no hours)
     $ ade cloud wake <machine>                    Wake (the server refuses it at 0 hours)
     $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts
@@ -16435,12 +16445,29 @@ async function runChatHereThenElsewhere(
     const there = { ...routedToLocation(parsed, match), options: { ...parsed.options, projectRoot: match.scope.rootPath } };
     return await withShellScopeFor(there.options, () => runParsedCli(there));
   }
+  // Asleep on ADE Cloud: a send goes to the computer that saved the chat, and
+  // the `--machine` call wakes it (a wake uses hours, like a send from the app).
+  // A read is not worth a wake: it gets the "asleep" sentence instead.
+  if (!match && report.restingCloud?.length && isChatSendCommand(parsed.command)) {
+    const resting = await restingCloudChatLocation(parsed.options, report);
+    if (resting) {
+      process.stderr.write(`· on ${resting.machineName} (asleep on ADE Cloud: waking it, which uses hours)\n`);
+      return await runOnMachine(routedToLocation(parsed, resting));
+    }
+  }
   if (!match) chatLookupMiss = report;
   if (!match && report.deleted) process.stderr.write(`${chatDeletedSentence(sessionId, report.deleted)}\n`);
   if (failure) throw failure;
   const hint = chatOtherMachineHint(process.argv.slice(2));
   if (hint) process.stderr.write(`${hint}\n`);
   return local!;
+}
+
+/** `ade chat send|message`: a command that gives a chat work, so its sleeping computer is worth a wake. */
+function isChatSendCommand(command: string[]): boolean {
+  const typed = command[0]?.toLowerCase() ?? "";
+  const sub = command[1]?.toLowerCase();
+  return (CLI_COMMAND_ALIASES[typed] ?? typed) === "chat" && (sub === "send" || sub === "message");
 }
 
 /** `ade chat locate <session>`: which machine of the account has a chat. */
@@ -21813,12 +21840,37 @@ function buildCloudPrepareStopPlan(args: string[]): CliPlan {
   if (diskGrowToGb != null && (!Number.isFinite(diskGrowToGb) || diskGrowToGb <= 0)) {
     throw new CliUsageError("ade cloud prepare-stop --timeout <seconds> --disk-grow <GB>");
   }
+  // `--for-delete`: the server deletes the computer next, so new work is frozen (`cloudDeleteFreeze.ts`).
+  // `--chats-only`: the person's Sleep; only the turns stop and the chats are saved, with no lane backups.
+  // An older ADE ignores both flags and does a normal prepare.
+  const forDelete = args.includes("--for-delete");
+  const chatsOnly = args.includes("--chats-only");
   return {
     kind: "execute",
     label: "cloud prepare-stop",
-    steps: [{ key: "result", method: "cloud.prepareStop", params: { timeoutMs: Math.round(seconds * 1000), ...(diskGrowToGb != null ? { diskGrowToGb, ...(growId ? { growId } : {}) } : {}) } }],
+    steps: [{
+      key: "result",
+      method: "cloud.prepareStop",
+      params: {
+        timeoutMs: Math.round(seconds * 1000),
+        ...(diskGrowToGb != null ? { diskGrowToGb, ...(growId ? { growId } : {}) } : {}),
+        ...(forDelete ? { forDelete: true } : {}),
+        ...(chatsOnly ? { chatsOnly: true } : {}),
+      },
+    }],
     machineOnly: true,
     minTimeoutMs: Math.round(seconds * 1000) + 15_000,
+  };
+}
+
+/** `ade cloud unfreeze --json`: the server keeps a computer it prepared for a delete, so new work is allowed again. */
+function buildCloudUnfreezePlan(): CliPlan {
+  return {
+    kind: "execute",
+    label: "cloud unfreeze",
+    steps: [{ key: "result", method: "cloud.unfreeze", params: {} }],
+    machineOnly: true,
+    minTimeoutMs: 15_000,
   };
 }
 
@@ -21854,6 +21906,7 @@ function buildCloudMessagesPlan(args: string[]): CliPlan {
 /** What the server runs on a computer, whatever the access answer. */
 const CLOUD_ON_COMPUTER_PLANS = new Map<string, (args: string[]) => CliPlan>([
   ["prepare-stop", buildCloudPrepareStopPlan],
+  ["unfreeze", buildCloudUnfreezePlan],
   ["push-work", buildCloudPushWorkPlan],
   ["work-state", buildCloudWorkStatePlan],
   ["save-for-rest", buildCloudSaveForRestPlan],
@@ -26731,6 +26784,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "keepAwake.call" ||
     method === "cloud.call" ||
     method === "cloud.prepareStop" ||
+    method === "cloud.unfreeze" ||
     method === "cloud.pushWork" ||
     method === "cloud.workState" ||
     method === "cloud.saveForRest" ||
@@ -26774,6 +26828,23 @@ function buildMachinesPlan(args: string[]): CliPlan {
     // An agent's shell reads the agent-safe roster: names, presence, platform
     // and projects, with no device ids, routes or tokens. The account
     // directory itself (`account.listMachines`) stays the person's.
+    // The account's ADE Cloud computers, so their rows read "ADE Cloud · <lane>"
+    // as the app shows them. A read that wakes nothing; without an answer in
+    // time the rows keep their plain names.
+    const cloudStep: InvocationStep = {
+      key: "cloud",
+      method: "cloud.call",
+      params: { ...CLOUD_COMPUTER_LIST_REQUEST },
+      optional: true,
+      timeoutMs: CLOUD_COMPUTER_LIST_BUDGET_MS,
+    };
+    const withCloudMarks = (values: JsonObject): unknown => {
+      // An action answer can come in its envelope (`{ domain, action, result }`).
+      const raw = values.result;
+      const list = isRecord(raw) && isRecord(raw.result) && asString(raw.domain) && asString(raw.action) ? raw.result : raw;
+      if (!isRecord(list) || !Array.isArray(list.machines)) return list;
+      return { ...list, machines: markCloudComputers(list.machines, cloudComputerKeysOf(values.cloud)) };
+    };
     if (process.env.ADE_CHAT_SESSION_ID?.trim() || includeProjects) {
       return {
         kind: "execute",
@@ -26781,7 +26852,8 @@ function buildMachinesPlan(args: string[]): CliPlan {
         formatter: "machines-roster",
         machineOnly: true,
         machineAutoStart: true,
-        steps: [{ key: "result", method: "machines.list", params: { includeProjects } }],
+        steps: [{ key: "result", method: "machines.list", params: { includeProjects } }, cloudStep],
+        shapeResult: withCloudMarks,
       };
     }
     return {
@@ -26791,7 +26863,8 @@ function buildMachinesPlan(args: string[]): CliPlan {
       machineOnly: true,
       machineAutoStart: true,
       connectRole: "cto",
-      steps: [accountActionStep("result", "listMachines")],
+      steps: [accountActionStep("result", "listMachines"), cloudStep],
+      shapeResult: withCloudMarks,
     };
   }
   if (sub === "show" || sub === "get" || sub === "view" || sub === "info") {
@@ -30851,18 +30924,16 @@ async function runServe(
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
         readBusy: readCloudBusy,
-        requestIdleSleep: async (instanceId) => {
+        requestIdleSleep: async (instanceId, extras) => {
           const client = await (await getCloudBrainAccess()).client();
           if (!client) throw new Error("no ADE Cloud access");
-          await client.requestIdleSleep(instanceId);
+          await client.requestIdleSleep(instanceId, { backupReportId: extras?.backupReportId ?? null });
         },
         growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
         diskGrowDueNow: () => cloudDiskGrower?.growDueNow() ?? false,
         reportUse: async (lastWorkAt, stillIdle) => await cloudDiskUsageReporter?.report(lastWorkAt, stillIdle),
         // Copies and Git summaries before the sleep: the lane reads the same with no computer awake.
-        saveForRest: async (stillIdle) => {
-          await cloudRest?.saveAtIdle(stillIdle);
-        },
+        saveForRest: async (stillIdle: () => boolean): Promise<string | null> => (cloudRest ? await cloudRest.saveAtIdle(stillIdle) : null),
         // Messages queued for its chats while it slept go now.
         onWoke: () => cloudRest?.drain("woke"),
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
@@ -32430,6 +32501,31 @@ async function runServe(
     if (Object.keys(update).length === 1) return;
     await chat.updateSession(update);
   };
+  // ADE Cloud computer: a lane that starts here gets its saved work back. Installed
+  // before the boot launch starts, so its first lane never misses the restore.
+  if (!embedded && cloudInstanceId && cloudRest && cloudKeepAwake) {
+    const [{ installCloudLaneRestore }, laneBackup] = await Promise.all([
+      import("../../desktop/src/main/services/lanes/cloudLaneRestoreHook"),
+      import("./services/cloudChats/cloudLaneBackup"),
+    ]);
+    installCloudLaneRestore({
+      prepareBranch: async ({ laneId, branchRef, projectRoot }) => {
+        const api = await accountCloudApi();
+        const machineKey = thisMachineKey();
+        if (!api || !machineKey) return { created: false };
+        return await laneBackup.prepareLaneBranchFromBackup({ api, machineKey, laneId, branchRef, projectRoot, logger: headlessProjectLogger });
+      },
+      restore: async ({ laneId, worktreePath, projectRoot }) => {
+        const api = await accountCloudApi();
+        const machineKey = thisMachineKey();
+        if (!api || !machineKey) return null;
+        const outcome = await laneBackup.restoreLaneBackupIfNeeded({ api, instanceId: cloudInstanceId, machineKey, laneId, worktreePath, projectRoot, logger: headlessProjectLogger });
+        return outcome === "kept_newer_local_work" || outcome === "kept_branch_differs"
+          ? "This lane has other work than its saved work on ADE Cloud, so ADE left the lane as it is. Download the saved work from the lane to compare."
+          : outcome === "applied" ? "ADE put back this lane's work that wasn't on GitHub." : null;
+      },
+    });
+  }
   if (bootLaunchEnv) {
     startCloudBootLaunch(bootLaunchEnv, {
       cloudInstanceId,
@@ -32529,11 +32625,21 @@ async function runServe(
 
   // ADE Cloud computer: the rest save and the queue of messages for its chats.
   if (!embedded && cloudInstanceId && cloudRest && cloudKeepAwake) {
-    const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats, uploadSubagentCloudCopy }] = await Promise.all([
+    const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats, uploadSubagentCloudCopy }, laneBackup, { normalizeGitRemoteIdentity }, { readGitOriginUrl }] = await Promise.all([
       import("./services/cloudChats/cloudRestSave"),
       import("./services/cloudChats/cloudChatMessageQueue"),
       import("./services/cloudChats/cloudChatUploader"),
+      import("./services/cloudChats/cloudLaneBackup"),
+      import("../../desktop/src/shared/crossMachineHandoff"),
+      import("../../desktop/src/main/services/projects/recentProjectSummary"),
     ]);
+    const projectKeyOf = (root: string): string | null => {
+      try {
+        return normalizeGitRemoteIdentity(readGitOriginUrl(root)) || null;
+      } catch {
+        return null;
+      }
+    };
     const restSave = createCloudRestSave({
       adeHome: layout.adeDir,
       instanceId: cloudInstanceId,
@@ -32551,6 +32657,16 @@ async function runServe(
       flushChats: (timeoutMs) => uploadPendingCloudChats(timeoutMs),
       accountUserId: () => brainAccountAuthService.getStatus().userId ?? null,
       uploadSubagentCopy: uploadSubagentCloudCopy,
+      backupLanes: laneBackup.createBackupLaneLister({
+        cachePath: path.join(layout.adeDir, "cloud", "backup-lanes.json"),
+        projects: () => projectRegistry.list().map((record) => ({
+          projectId: record.projectId,
+          booted: async () => (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null,
+          open: async () => (await scopeRegistry.get(record.projectId)).runtime,
+        })),
+        projectKey: projectKeyOf,
+        logger: headlessProjectLogger,
+      }),
     });
     const chatQueue = createCloudChatMessageQueue({
       instanceId: cloudInstanceId,
@@ -32637,6 +32753,9 @@ async function runServe(
     const keepAwake = cloudKeepAwake;
     return Object.assign(async (request: Parameters<JsonRpcHandler>[0]) => {
       if (request.method === "ade/actions/call" && isRemoteWork(request.params)) {
+        // The server deletes this computer next (`cloudDeleteFreeze.ts`): work that came now would be lost with it.
+        const frozen = cloudDeleteFreezeRefusal();
+        if (frozen) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, frozen);
         void keepAwake.noteUse();
         // The server's idle cleanup may be saving this computer for its delete
         // (`/use`, cloudComputerRest.ts): once the delete started, the work is refused.
@@ -32671,7 +32790,7 @@ async function runServe(
         ? async () => await cloudRest.drainAnswer()
         : null,
       prepareCloudStop: cloudKeepAwake
-        ? async ({ timeoutMs, diskGrowToGb, growId }) => {
+        ? async ({ timeoutMs, diskGrowToGb, growId, forDelete, chatsOnly }) => {
             const { prepareCloudComputerToStop } = await import("./services/power/cloudPrepareStop");
             // A disk grow's restart continues the turns it cuts (`continueAfterRestartAllowed`): keep them
             // running, once the note that marks the restart is written. No note: stop them, as before.
@@ -32680,14 +32799,24 @@ async function runServe(
               (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null));
             const personal = await personalChatScope.bootedRuntime().catch(() => null);
             const runtimes = [...booted, personal].filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
-            const saveForRest = cloudRest?.saveBeforeStop ?? null;
+            // The person's Sleep (`--chats-only`) saves no lane backups: the sleep waits for this prepare.
+            const saveForRest = chatsOnly ? null : cloudRest?.saveBeforeStop ?? null;
             return await prepareCloudComputerToStop({
               runtimes,
               timeoutMs,
               logger: headlessProjectLogger,
               keepTurns,
               ...(saveForRest ? { saveForRest } : {}),
+              // A disk grow keeps the computer; only a delete freezes it.
+              ...(forDelete && !keepTurns ? { forDelete: true } : {}),
             });
+          }
+        : null,
+      unfreezeCloudComputer: cloudKeepAwake
+        ? async () => {
+            const lifted = liftCloudDeleteFreeze();
+            headlessProjectLogger.info("cloud.delete_freeze_lifted", { lifted });
+            return { ok: true, lifted };
           }
         : null,
       serverVersion: VERSION,
@@ -39982,7 +40111,8 @@ function formatAccountMachines(value: unknown): string {
   const machines = Array.isArray(result.machines)
     ? result.machines.flatMap((entry) => {
         const machine = parseAccountMachine(entry);
-        return machine ? [machine] : [];
+        // `cloud`: an ADE Cloud computer (`markCloudComputers`).
+        return machine ? [{ machine, cloud: isRecord(entry) && entry.cloud === true }] : [];
       })
     : [];
   // `status` answers "can this be dialled"; `presence` answers "is it awake,
@@ -39992,7 +40122,7 @@ function formatAccountMachines(value: unknown): string {
   // `connected` is deliberately not passed: this table marks no row as holding
   // a live channel, and a surface that renders no such mark must not claim one.
   let anyAsleep = false;
-  const rows = machines.map((machine) => {
+  const rows = machines.map(({ machine, cloud }) => {
     const connectionState = accountMachineConnectionState(machine);
     if (accountMachinePresence(machine) === "asleep") anyAsleep = true;
     const lastSeenAt = typeof machine.lastSeenAt === "number" && Number.isFinite(machine.lastSeenAt)
@@ -40002,7 +40132,7 @@ function formatAccountMachines(value: unknown): string {
       asString(machine.machineKey) ?? "—",
       // With the install ("MacBook Pro · ADE Alpha"), so two installs on one
       // Mac do not look like a duplicate to remove.
-      accountMachineRowLabel(machine) ?? asString(machine.deviceId) ?? "Unnamed machine",
+      machineListLabel(accountMachineRowLabel(machine) ?? asString(machine.deviceId) ?? "Unnamed machine", cloud),
       connectionState,
       machineStatusLine(machine) ?? "—",
       lastSeenAt,
@@ -42325,6 +42455,18 @@ function chatCreateNotices(plan: CliPlan & { kind: "execute" }, values: JsonObje
 const FOLLOW_SHELL_POLL_MS = 1_000;
 /** The most output `shell start --wait --json` keeps (the end of it). */
 const FOLLOW_SHELL_MAX_OUTPUT_CHARS = 1024 * 1024;
+/**
+ * No new output for this long while the command runs: one line on stderr
+ * says that it may wait for input there. The command runs in a terminal that
+ * nobody types in, so a pager or a prompt waits forever.
+ */
+const FOLLOW_SHELL_QUIET_NOTICE_MS = 2 * 60_000;
+/**
+ * No new output for this long: `--wait` stops and says how to read or stop
+ * the command, which keeps running there. A guard, so that `--wait` always
+ * ends; the other machine starts the command with no pager or git prompt.
+ */
+const FOLLOW_SHELL_QUIET_LIMIT_MS = 30 * 60_000;
 /** A screen code cut off at the end of a read: a lone ESC, a CSI with no final byte, an unterminated OSC. */
 // eslint-disable-next-line no-control-regex
 const FOLLOW_SHELL_PARTIAL_CODE = /\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*\x1b?|[ -/]*)$/;
@@ -42347,6 +42489,8 @@ async function followShellToExit(
     unwrapActionEnvelope(unwrapToolResult(await connection.request("ade/actions/call", { name: "run_ade_action", arguments: { domain, action, args } })));
   let since: number | undefined;
   let output = "";
+  // When the shell last printed something (the start counts).
+  let lastOutputAt = Date.now();
   // A read can end inside a screen code; its start waits for the next read
   // so the pipe never gets half a code the stripper could not match.
   let heldCode = "";
@@ -42376,10 +42520,21 @@ async function followShellToExit(
     // adds (Windows' console sends a title, clear screen and mode switches
     // around the first line of output).
     if (data || last) writeText(data, last);
-    if (data) output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
+    if (data) {
+      output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
+      lastOutputAt = Date.now();
+    }
     if (typeof read.nextSince === "number") since = read.nextSince;
     return read;
   };
+  let quietNoticeSent = false;
+  // The commands that read or stop the shell, on the machine it runs on.
+  const onMachine = options.machine?.trim()
+    ? ` --machine ${quoteShellArg(options.machine.trim())}${options.machineProject?.trim() ? ` --machine-project ${quoteShellArg(options.machineProject.trim())}` : ""}`
+    : "";
+  const ptyId = asString(created.ptyId);
+  const readAndStop = `Read it: ade terminal read --terminal ${terminalId}${onMachine} --text`
+    + (ptyId ? ` · stop it: ade shell close ${ptyId}${onMachine}` : "");
   for (;;) {
     const read = await readMore();
     // A brain older than the read's status falls back to the terminal list.
@@ -42399,6 +42554,21 @@ async function followShellToExit(
         exitCode,
         ...(options.text ? {} : { output }),
       };
+    }
+    const quietMs = Date.now() - lastOutputAt;
+    if (quietMs >= FOLLOW_SHELL_QUIET_LIMIT_MS) {
+      throw new CliToolError(
+        `The command printed nothing for ${Math.round(FOLLOW_SHELL_QUIET_LIMIT_MS / 60_000)} minutes and still runs, so ADE stopped waiting for it. `
+          + `It can wait for input (a pager or a prompt). ${readAndStop}`,
+        { terminalId, ...(ptyId ? { ptyId } : {}), status: "running" },
+      );
+    }
+    if (!quietNoticeSent && quietMs >= FOLLOW_SHELL_QUIET_NOTICE_MS) {
+      quietNoticeSent = true;
+      process.stderr.write(
+        `\n· the command printed nothing for ${Math.round(FOLLOW_SHELL_QUIET_NOTICE_MS / 60_000)} minutes and still runs. `
+          + `It can wait for input (a pager or a prompt). ${readAndStop}\n`,
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, FOLLOW_SHELL_POLL_MS));
   }
@@ -42497,10 +42667,18 @@ async function executePlan(
               },
             }
           : resolvedParams;
-        values[step.key] = await waitThroughBrowserApproval(async () => {
+        const answer = waitThroughBrowserApproval(async () => {
           const raw = await connection.request(step.method, params);
           return step.unwrapToolResult ? unwrapToolResult(raw) : raw;
         });
+        values[step.key] = step.optional && step.timeoutMs != null
+          ? await Promise.race([
+            answer,
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error(`${step.method} did not answer in ${step.timeoutMs} ms.`)), step.timeoutMs).unref?.();
+            }),
+          ])
+          : await answer;
       } catch (error) {
         if (!step.optional) {
           const createdSessionId = (
@@ -42558,14 +42736,18 @@ async function executePlan(
       error instanceof CliExecutionError
     )
       throw error;
+    const cause = error instanceof Error ? error.message : String(error);
     throw new CliExecutionError(`Failed while running ${plan.label}.`, {
-      cause: error instanceof Error ? error.message : String(error),
+      cause,
       mode: connection.mode,
       projectRoot: connection.projectRoot,
       workspaceRoot: connection.workspaceRoot,
       socketPath: connection.socketPath,
       nextAction:
-        connection.mode === "desktop-socket"
+        // A clone into a folder that is already there: a doctor run would not help.
+        plan.label === "projects clone" && /already exists/i.test(cause)
+          ? "Clone into another folder: add --name <dir> (a new folder name) or --path <folder> (where it goes)."
+          : connection.mode === "desktop-socket"
           ? "Check ADE desktop logs or retry with --headless if the workflow does not need UI-owned state."
           : "Run ade doctor --json to inspect local project readiness, or start ADE desktop and retry with --socket.",
     });

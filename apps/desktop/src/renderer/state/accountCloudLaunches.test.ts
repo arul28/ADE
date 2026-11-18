@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
-import { useAccountCloudLaunches } from "./accountCloudLaunches";
+import { retryAccountCloudLaunch, startAccountCloudChat, useAccountCloudLaunches } from "./accountCloudLaunches";
 import { refreshAccountProjectList } from "./accountProjectListClient";
 
 const originalAde = globalThis.window.ade;
@@ -56,5 +56,45 @@ describe("account cloud launches across an account change", () => {
     await new Promise((flushed) => setTimeout(flushed, 0));
     expect(result.current.entries).toEqual([]);
     expect(status).not.toHaveBeenCalledWith("launch-b");
+  });
+});
+
+/** The web's first message to a new ADE Cloud chat with images: the server gets the files before the start names them. */
+describe("account cloud launch files", () => {
+  it("sends every file before the start, names them on it, and never starts without one that failed", async () => {
+    const uploads: string[] = [];
+    let failOnce = true;
+    const uploadFile = vi.fn(async (_launchId: string, fileId: string, bytes: Uint8Array) => {
+      if (fileId.startsWith("f1-") && failOnce) {
+        failOnce = false;
+        throw new Error("the network dropped");
+      }
+      uploads.push(fileId);
+      return { fileId, sizeBytes: bytes.byteLength };
+    });
+    const start = vi.fn(async (request: { launchId: string }) => ({ launchId: request.launchId, state: "making", stages: [], updatedAt: 1 }));
+    globalThis.window.ade = {
+      cloudLaunches: { start, uploadFile, active: vi.fn(async () => ({ launches: [] })), status: vi.fn(), messages: vi.fn(async () => ({ messages: [] })) },
+      account: { status: vi.fn(async () => ({ userId: "user-a" })) },
+      project: { accountList: vi.fn(async () => ({ state: "ready", projects: [] })) },
+    } as unknown as typeof window.ade;
+    await refreshAccountProjectList({ force: true });
+    const { result } = renderHook(() => useAccountCloudLaunches());
+    const file = (name: string, text: string) => ({ name, read: async () => ({ bytes: new TextEncoder().encode(text), contentType: "image/png" }) });
+
+    const launchId = await startAccountCloudChat({
+      origin: "https://github.com/acme/app", provider: "claude", modelId: "claude-sonnet-5-5", prompt: "look at these",
+      files: [file("one.png", "aaaa"), file("two.png", "bb")],
+    });
+
+    // The second file couldn't go: no start, and the entry names the file.
+    expect(start).not.toHaveBeenCalled();
+    await waitFor(() => expect(result.current.entries.find((entry) => entry.launchId === launchId)?.startError).toContain("two.png"));
+
+    await retryAccountCloudLaunch(launchId);
+    expect(start).toHaveBeenCalledTimes(1);
+    const sent = start.mock.calls[0]![0] as unknown as { chat: { attachments: Array<{ name: string; sizeBytes: number; contentType: string }> } };
+    expect(sent.chat.attachments.map((entry) => [entry.name, entry.sizeBytes, entry.contentType])).toEqual([["one.png", 4, "image/png"], ["two.png", 2, "image/png"]]);
+    expect(uploads.every((fileId) => fileId.endsWith(launchId.slice(0, 8)))).toBe(true);
   });
 });

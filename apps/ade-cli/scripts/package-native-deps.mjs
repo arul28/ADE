@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import {
   isPackageNoticeFile,
   RUNTIME_INLINED_PACKAGES,
@@ -439,6 +440,27 @@ async function makeTarGz(sourceDir, outputPath) {
   }
 }
 
+/**
+ * The brain loads these plain JavaScript packages from the archive on first
+ * use (`lazyPackages.ts`), so the build loads each one from the staged copy.
+ * A filter that drops a file they need then fails here, not on a computer:
+ * yaml's `dist/doc/` went missing this way and every ADE Cloud image from
+ * ade@54 to ade@58 failed its check.
+ */
+const LAZY_LOADED_PACKAGES = ["yaml", "node-cron", "mp4-muxer"];
+
+function assertLazyPackagesLoad(bundleRoot, copied) {
+  const requireFromBundle = createRequire(path.join(bundleRoot, "node_modules", "_"));
+  for (const packageName of LAZY_LOADED_PACKAGES) {
+    if (!copied.includes(packageName)) continue;
+    try {
+      requireFromBundle(packageName);
+    } catch (error) {
+      throw new Error(`The runtime archive's ${packageName} does not load: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const bundleRoot = path.join(args.outDir, `ade-${args.target}.native`);
@@ -465,6 +487,7 @@ async function main() {
   await copyAndroidScrcpyServer(bundleRoot);
   await chmodRuntimeExecutables(bundleRoot, args.target);
   await writeManifest(bundleRoot, args.target, copied, inlined);
+  assertLazyPackagesLoad(bundleRoot, copied);
 
   const archivePath = path.join(args.outDir, `ade-${args.target}.native.tar.gz`);
   await makeTarGz(bundleRoot, archivePath);

@@ -100,15 +100,18 @@ export type CloudProvider = {
   forgetLaneWithoutComputer(laneId: string): Promise<boolean>;
   /** Checkpoints a running machine: memory and processes kept. Answers with the new status. */
   sleepInstance(id: string): Promise<string>;
-  /** The machine asks to be slept (idle three minutes); the server stops instead at 0 hours. Answers with the new status. */
-  requestIdleSleep(id: string): Promise<string>;
+  /**
+   * The machine asks to be slept (idle three minutes); the server stops instead at 0 hours. `backupReportId`
+   * names the lane backup report it made just before: it rests with those backups. Answers with the new status.
+   */
+  requestIdleSleep(id: string, options?: { backupReportId?: string | null }): Promise<string>;
   /**
    * "Keep it" on an idle cleanup warning (`POST .../keep`): the idle clock
    * restarts with no wake and no hours. Optional: only ADE's server has it.
    */
   keepIdleComputer?(id: string): Promise<void>;
-  /** Wakes a sleeping machine or starts a stopped one. `push_work` is the one wake allowed at 0 hours. Answers with the new status. */
-  startInstance(id: string, options?: { reason?: "push_work" }): Promise<string>;
+  /** Wakes a sleeping machine or starts a stopped one. Every wake is use; none is allowed at 0 hours. Answers with the new status. */
+  startInstance(id: string): Promise<string>;
   /** Stops the machine (no memory kept). Only an explicit start brings it back. */
   stopInstance(id: string): Promise<string>;
   /**
