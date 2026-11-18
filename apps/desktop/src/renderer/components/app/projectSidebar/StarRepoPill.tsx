@@ -13,7 +13,6 @@ import {
   starPillShowing,
 } from "../../../lib/starPill";
 import { captureStarPromptAnalytics } from "../../../lib/starPillActivity";
-import { useUnaskedNudge } from "../../../onboarding/unaskedNudge";
 import type { GitHubRepoStarState, OpenProjectBinding } from "../../../../shared/types";
 
 /** How long "Thanks!" stays up before it fades. */
@@ -40,8 +39,7 @@ async function readStarState(pin: OpenProjectBinding | null): Promise<GitHubRepo
  */
 export function StarRepoPill() {
   const prefs = useRootAppStore((s) => s.starPill);
-  // Under the shared unasked budget: never during onboarding or a new account's quiet days.
-  const visible = useUnaskedNudge(isStarPillVisible(prefs), STAR_PILL_SCHEDULE.shownDue(prefs));
+  const visible = isStarPillVisible(prefs);
   const showing = starPillShowing(prefs);
   const reducedMotion = usePrefersReducedMotion();
   const [thanks, setThanks] = useState<ThanksPhase>("none");

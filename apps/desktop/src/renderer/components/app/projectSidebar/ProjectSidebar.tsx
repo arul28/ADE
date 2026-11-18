@@ -66,7 +66,8 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
   const settingsVisible = !isWebClientMode() || WEB_CLIENT_TAB_PATHS.has("/settings");
   const routeKey = bindingKey ?? (projectRoot ? `local:${projectRoot}` : null);
   // The star pill is a desktop-only nudge, shown under the Work session list.
-  const starPillSlotActive = !isWebClientMode() && !heldRoute && activeTab === "/work";
+  // Only while the sidebar shows: a nudge mounted in a hidden sidebar would spend the unasked budget unseen.
+  const starPillSlotActive = !hidden && !isWebClientMode() && !heldRoute && activeTab === "/work";
 
   // The tab a click asked for, shown before the route commits. The tab strip
   // starts its animation on the click, and the new page mounts after it.

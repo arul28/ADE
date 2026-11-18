@@ -3,12 +3,11 @@ import { isTourOpen, onboardingSettledBeforeThisLaunch, subscribeOnboardingProgr
 import { markUnaskedShown, subscribeUnaskedBudget, unaskedAllowed } from "./unaskedBudget";
 
 /**
- * The sidebar nudges ("Star ADE on GitHub", "Invite friends") under the
- * shared unasked budget. A new showing waits until onboarding ended on an
- * earlier launch, a new account's quiet days passed, and nothing else
- * unasked showed today; showing spends the day's budget. A showing already
- * up stays up (it is a quiet banner the person can dismiss), except while
- * onboarding still has this launch.
+ * The "Invite friends" sidebar nudge under the shared unasked budget. A new
+ * showing waits until onboarding ended on an earlier launch, a new account's
+ * quiet days passed, and nothing else unasked showed today; showing spends
+ * the day's budget. A showing already up stays up (it is a quiet banner the
+ * person can dismiss), except while onboarding still has this launch.
  */
 
 function subscribe(listener: () => void): () => void {
