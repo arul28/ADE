@@ -877,6 +877,42 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
   };
 
   /**
+   * Whether git, run in the copy, works on the copy itself. Copies live inside
+   * the main checkout (`.ade/remote-work/…`), so a copy whose worktree link
+   * broke (its `.git` file gone, or its registration pruned) silently resolves
+   * to the MAIN checkout: the sync's `checkout --force` and `clean` would then
+   * rewrite the person's own working tree. Read from the files alone (this
+   * runs before every tap and screenshot), so git is spawned only for a link
+   * that is already broken: `git worktree repair` once, then read again.
+   */
+  const copyLinked = async (copyPath: string): Promise<boolean> => {
+    const linkedHere = (): boolean => {
+      try {
+        // A worktree's `.git` is a file naming its folder in the main repository.
+        const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(path.join(copyPath, ".git"), "utf8"));
+        if (!pointer) return false;
+        return fs.existsSync(path.join(path.resolve(copyPath, pointer[1]!), "HEAD"));
+      } catch {
+        return false;
+      }
+    };
+    if (linkedHere()) return true;
+    await git(["worktree", "repair", copyPath], projectRoot);
+    return linkedHere();
+  };
+
+  /**
+   * A copy folder git no longer treats as its own checkout: moved aside with
+   * its files (it may hold work made there), never synced or deleted, so a
+   * new copy can take its place.
+   */
+  const setAsideUnlinkedCopy = (owner: string, copyPath: string): void => {
+    const aside = `${copyPath}.unlinked-${now()}`;
+    fs.renameSync(copyPath, aside);
+    logger?.warn("remote_work.unlinked_copy_set_aside", { owner, path: copyPath, aside });
+  };
+
+  /**
    * A copy folder the list lost (a damaged or replaced copies.json): keep it,
    * list it unsynced, and let the guarded sync take it over rather than
    * deleting what it holds. Null when there is no such folder.
@@ -884,6 +920,10 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
   const adoptUnlistedCopy = async (owner: string, source: RemoteWorkSource, timestamp: string): Promise<RemoteWorkCopy | null> => {
     const copyPath = pathFor(owner);
     if (!fs.existsSync(path.join(copyPath, ".git"))) return null;
+    if (!(await copyLinked(copyPath))) {
+      setAsideUnlinkedCopy(owner, copyPath);
+      return null;
+    }
     // A folder that is there but unreadable is refused, not replaced: it may hold work.
     const head = await gitOrThrow(["rev-parse", "HEAD"], copyPath, "Could not read the code left in this chat's folder there");
     logger?.warn("remote_work.adopted_unlisted_copy", { owner, path: copyPath });
@@ -941,6 +981,12 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     return await withLock(owner, async () => {
       const timestamp = new Date(now()).toISOString();
       let copy = get(owner);
+      if (copy && fs.existsSync(copy.path) && !(await copyLinked(copy.path))) {
+        // Git there would act on the main checkout; never run a command in it.
+        if (inUse(owner)) throw busyError();
+        setAsideUnlinkedCopy(owner, copy.path);
+        copy = null;
+      }
       if (!copy || !fs.existsSync(copy.path)) {
         if (inUse(owner)) throw busyError();
         // An adopted folder goes through the guarded sync below; a new copy is synced already.
