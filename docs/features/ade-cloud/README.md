@@ -1387,7 +1387,7 @@ One busy list, `decideCloudBusy` in
     the launch reads as interrupted (`chat_launch.environment_resume_refused`).
   - A refused grow fails the stage with its way out and Retry.
     `ade chat launch-status` prints the stage's sentence as `now`.
-  - `cloud_repo_disks` (migration 0045) remembers the disk per account,
+  - `cloud_repo_disks` (migration 0046) remembers the disk per account,
     origin and lane template (`setupKeyOf`). The server writes it after a grow
     with `origin: "auto"` that the provider made, while a launch on that
     computer is still setting up (its agent stage pending;
