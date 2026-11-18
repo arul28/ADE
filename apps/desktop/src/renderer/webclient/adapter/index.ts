@@ -4,6 +4,7 @@ import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { AdeSyncClient } from "../sync";
 import { BrowserAccountClient } from "../account/client";
 import { createAccountNamespace, createAccountSettingsNamespace } from "./account";
+import { createWebClientUpdateGate } from "./clientUpdateGate";
 import { createLaneShareGuestDirectory } from "../../../shared/laneShareGuestDirectory";
 import { createAgentChatNamespace } from "./agentChat";
 import { createArchiveNamespace } from "./archive";
@@ -282,6 +283,8 @@ export function createAdeWebAdapter(
     updateCancelAutoApply: webUpdateMethods.updateCancelAutoApply,
     updateDismissInstalledNotice: async () => undefined,
     updateRelaunchApp: async () => false,
+    // Never blocks this tab; read for other machines' "runs an old ADE" panels.
+    clientUpdateGate: createWebClientUpdateGate(accountClient),
     onUpdateEvent: (listener: (snapshot: AutoUpdateSnapshot) => void) => {
       updateListeners.add(listener);
       return () => {

@@ -97,6 +97,7 @@ import { registerIpc } from "./services/ipc/registerIpc";
 import { isTrustedAdeRendererSender } from "./services/ipc/trustedRendererSender";
 import { connectBrowserToNowPlaying, registerHomeWidgetsIpc } from "./services/home/registerHomeWidgetsIpc";
 import { registerAppBundleOwnershipIpc } from "./services/updates/registerAppBundleOwnershipIpc";
+import { createClientUpdateGateService, registerClientUpdateGateIpc } from "./services/updates/clientUpdateGate";
 import { createDesktopStartupRecovery } from "./services/startupRecovery/desktopStartupRecovery";
 import { registerDatabaseCopiesIpc } from "./services/startupRecovery/registerDatabaseCopiesIpc";
 import type { StartupRecovery } from "./services/startupRecovery/startupRecovery";
@@ -10208,6 +10209,25 @@ app.whenReady().then(async () => {
     BrowserWindow.getAllWindows().forEach((win) => {
       win.webContents.send(IPC.updateEvent, snapshot);
     });
+  });
+  // This build against the owner's minimum (`/client/minimum`): read here at
+  // launch, every 3 hours and on focus after 30 minutes; the window shows the
+  // "Update ADE to keep working" screen from it. Dev and channel builds have
+  // no minimum of their own, but still read it to judge other machines.
+  const clientUpdateGate = createClientUpdateGateService({
+    currentVersion: app.isPackaged && hasReleaseChannel ? app.getVersion() : null,
+    canSelfUpdate: hasUpdateFeed,
+    platform: process.platform,
+    arch: process.arch,
+    autoUpdate: autoUpdateService,
+    directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl(),
+    logger: updateLogger,
+  });
+  const stopClientUpdateGateEvents = registerClientUpdateGateIpc(clientUpdateGate, updateLogger);
+  app.on("browser-window-focus", () => clientUpdateGate.noteWindowFocus());
+  app.on("will-quit", () => {
+    stopClientUpdateGateEvents();
+    clientUpdateGate.dispose();
   });
   // Onboarding shows live fetch progress for the pinned agent CLIs; push it the
   // same way update progress is pushed rather than making the renderer poll.

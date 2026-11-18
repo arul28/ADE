@@ -88,6 +88,7 @@ import { laneCompareBase, laneRebaseLine, useLaneRebaseNeeds, type LaneRebaseLin
 import { confirmForeignLaneDeleted, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { deleteCloudLaneWithCheck, useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
 import { RestingCloudLaneDetail } from "./RestingCloudLaneDetail";
+import { RemoteMachineUpdateGate } from "../remoteTargets/RemoteMachineUpdateGate";
 import { CloudLanesWithoutComputerBlock } from "../cloudLane/CloudLanesWithoutComputerBlock";
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced } from "../../lib/prReadCache";
@@ -2349,6 +2350,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                   </div>
                 </div>
               ) : (
+                <RemoteMachineUpdateGate binding={detailForeignRow.pin}>
                 <LaneSplitBody
                   left={(
                     <LaneDashboard
@@ -2393,6 +2395,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                     </div>
                   )}
                 />
+                </RemoteMachineUpdateGate>
               )
             ) : !tabLanePin ? (
               <div
@@ -2405,6 +2408,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                 </div>
               </div>
             ) : (
+            <RemoteMachineUpdateGate binding={tabLanePin}>
             <LaneSplitBody
               left={(
                 <LaneDashboard
@@ -2442,6 +2446,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                 </div>
               )}
             />
+            </RemoteMachineUpdateGate>
             )}
           </>
         ) : (

@@ -2,6 +2,7 @@ import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared
 import { fetchDevTestSessionToken } from "./devTestSession";
 import { CLOUD_PATHS } from "../../../../../account-directory/src/cloud/contract";
 import { LATEST_RELEASES_PATH, type LatestReleasesResponse } from "../../../../../account-directory/src/latestReleasesContract";
+import { ACCOUNT_DELETE_PATH } from "../../../../../account-directory/src/clientMinimumContract";
 import { validVersionOn } from "../../../shared/latestByTrack";
 import { captureError } from "../../../shared/sentry/capture";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
@@ -712,6 +713,27 @@ export class BrowserAccountClient {
     };
     await this.clearPersistedSessionBestEffort();
     return this.getSnapshot();
+  }
+
+  /**
+   * Deletes the signed-in account (`POST /account/delete`), then signs this
+   * browser out. Throws a sentence to show when the account was not deleted;
+   * the session stays then.
+   */
+  async deleteAccount(): Promise<BrowserAccountSnapshot> {
+    let answer: { status: number; body: unknown };
+    try {
+      answer = await this.allowedDirectoryRequest({ method: "POST", path: ACCOUNT_DELETE_PATH, body: { confirm: "delete" } });
+    } catch (cause) {
+      if (parseCodedErrorMessage(cause).code === "signed_out") throw new Error("Sign in to ADE to delete your account.");
+      throw new Error("ADE couldn't reach your account. Check your connection and try again.");
+    }
+    const body = answer.body && typeof answer.body === "object" ? answer.body as Record<string, unknown> : {};
+    if (answer.status < 200 || answer.status >= 300 || body.deleted !== true) {
+      const error = body.error && typeof body.error === "object" ? body.error as Record<string, unknown> : {};
+      throw new Error(typeof error.message === "string" && error.message.trim() ? error.message : "Your account was not deleted. Try again.");
+    }
+    return await this.signOut();
   }
 
   async loadMachines(): Promise<BrowserAccountSnapshot> {

@@ -72,6 +72,7 @@ import {
   type AccountProjectChangeResult,
 } from "../../../shared/accountProject";
 import type { LaneShareGuestBridge } from "../../../shared/types/laneShare";
+import { ACCOUNT_DELETE_PATH } from "../../../../../account-directory/src/clientMinimumContract";
 import {
   LaneShareGrantError,
   resolveLaneShareDirectoryBase,
@@ -486,6 +487,13 @@ export type AccountBridge = {
   pollDeviceLogin(sessionId: string): Promise<AdeAccountDeviceLoginPoll>;
   cancelDeviceLogin(sessionId: string): Promise<void>;
   signOut(): AdeAccountStatus;
+  /**
+   * Deletes the signed-in account (`POST /account/delete`) with this
+   * computer's account token, here in main, then signs out. Throws a plain
+   * sentence when the account server refused or could not be reached; the
+   * session is kept then.
+   */
+  deleteAccount(): Promise<AdeAccountStatus>;
   listMachines(): Promise<AdeAccountMachinesResult>;
   renameMachine(machineKey: string, customName: string | null): Promise<AdeAccountMachine>;
   pairMachine(
@@ -888,6 +896,37 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     },
 
     signOut: () => {
+      const accountService = service();
+      const status = accountService.signOut();
+      accountMachineNames.clear();
+      reconcileLocalMachines(null);
+      return toAccountStatus(status, configured());
+    },
+
+    deleteAccount: async () => {
+      let answer: { status: number; body: unknown };
+      try {
+        answer = await sendLaneShareDirectoryRequest(
+          laneShareDirectoryAccess,
+          resolveLaneShareDirectoryBase(laneShareDirectoryAccess),
+          { method: "POST", path: ACCOUNT_DELETE_PATH, body: { confirm: "delete" } },
+        );
+      } catch (error) {
+        if (error instanceof LaneShareGrantError && error.code === "signed_out") {
+          throw new Error("Sign in to ADE to delete your account.");
+        }
+        throw markExpected(new Error("ADE couldn't reach your account. Check your connection and try again."), "network");
+      }
+      const body = answer.body && typeof answer.body === "object" ? answer.body as Record<string, unknown> : {};
+      if (answer.status < 200 || answer.status >= 300 || body.deleted !== true) {
+        const error = body.error && typeof body.error === "object" ? body.error as Record<string, unknown> : {};
+        options.logger?.warn("account.delete_failed", { status: answer.status, code: typeof error.code === "string" ? error.code : null });
+        throw new Error(typeof error.message === "string" && error.message.trim()
+          ? error.message
+          : "Your account was not deleted. Try again.");
+      }
+      options.logger?.info("account.deleted", {});
+      // The account is gone; this computer's session goes with it.
       const accountService = service();
       const status = accountService.signOut();
       accountMachineNames.clear();

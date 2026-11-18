@@ -50,6 +50,7 @@ import { ProjectSidebarHold, ProjectSidebarSlotProvider } from "./projectSidebar
 const ProjectWelcomePage = React.lazy(() => import("../projects/ProjectWelcomePage").then((module) => ({ default: module.ProjectWelcomePage })));
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
+import { UpdateRequiredGate } from "./UpdateRequiredGate";
 import { OnboardingHintHost } from "../onboarding/hints/OnboardingHintHost";
 import { OnboardingTourHost } from "../onboarding/tour/OnboardingTourHost";
 import { AdeTipsDialogHost } from "../onboarding/tips/AdeTipsDialog";
@@ -1885,6 +1886,8 @@ export function App() {
     // Interface, theme, reduce-motion and the OS colour scheme come from
     // AppearanceRoot, which the hosted sign-in screen mounts too.
     <AppearanceRoot>
+    {/* A build below the owner's minimum: the whole window, signed in or not. */}
+    <UpdateRequiredGate />
     <LaunchGate>
       <Router>
         <div

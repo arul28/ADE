@@ -1,4 +1,5 @@
 import type { SlowLinkPreference } from "../shared/slowLinkMode";
+import type { ClientUpdateGateState } from "../shared/clientUpdateGate";
 import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopyResult } from "../shared/ctoAccountCopy";
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { MessagesIntegrationSettings, MessagesIntegrationStatus } from "../shared/types/messagesIntegration";
@@ -5370,6 +5371,7 @@ const cloudStatusChangedFanout = createIpcEventFanout<unknown>(IPC.cloudStatusCh
 // listener serves this and every `onChanged` subscriber.
 cloudStatusChangedFanout(() => adeCloudAccountReader.clear());
 const updateEventFanout = createIpcEventFanout<AutoUpdateSnapshot>(IPC.updateEvent);
+const clientUpdateGateEventFanout = createIpcEventFanout<ClientUpdateGateState>(IPC.clientUpdateGateEvent);
 const projectChangedFanout = createIpcEventFanout<ProjectInfo | null>(
   IPC.appProjectChanged,
   () => clearProjectScopedReadCaches(),
@@ -14257,6 +14259,9 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.accountCancelDeviceLogin, args),
     signOut: (): Promise<AdeAccountStatus> =>
       ipcRenderer.invoke(IPC.accountSignOut),
+    // Account level, no pin: main deletes the account with its own token.
+    deleteAccount: (): Promise<AdeAccountStatus> =>
+      ipcRenderer.invoke(IPC.accountDelete),
     listMachines: (): Promise<AdeAccountMachinesResult> =>
       ipcRenderer.invoke(IPC.accountListMachines),
     getMachineInventory: async (
@@ -15883,6 +15888,14 @@ const adeBridge = {
     ipcRenderer.invoke(IPC.updateRelaunchApp),
   onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) =>
     updateEventFanout((payload) => cb(payload)),
+  // This computer's build against the owner's minimum. About this app only:
+  // no pin (another machine is judged from its connection status).
+  clientUpdateGate: {
+    getState: (): Promise<ClientUpdateGateState> => ipcRenderer.invoke(IPC.clientUpdateGateGetState),
+    refresh: (): Promise<ClientUpdateGateState> => ipcRenderer.invoke(IPC.clientUpdateGateRefresh),
+    onChange: (cb: (state: ClientUpdateGateState) => void) => clientUpdateGateEventFanout((payload) => cb(payload)),
+    quit: (): Promise<boolean> => ipcRenderer.invoke(IPC.clientUpdateGateQuit),
+  },
   // This computer's ADE.app only; no pin (see registerAppBundleOwnershipIpc).
   appBundleOwnership: {
     getStatus: (args?: { refresh?: boolean }) => ipcRenderer.invoke(IPC.appBundleOwnershipGetStatus, args ?? {}),

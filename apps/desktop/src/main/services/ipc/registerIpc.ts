@@ -2384,6 +2384,7 @@ export function registerIpc({
       channel === IPC.accountStatus
       || channel === IPC.accountCancelLogin
       || channel === IPC.accountSignOut
+      || channel === IPC.accountDelete
     ) {
       return {
         ...record,
@@ -13466,6 +13467,15 @@ export function registerIpc({
 
   handle(IPC.accountSignOut, async (): Promise<AdeAccountStatus> => {
     const status = accountBridge.signOut();
+    productAnalyticsService?.resetAccountIdentity();
+    cloudAccountChanged();
+    return status;
+  });
+
+  // The person deletes their own account (Settings › Account). Account level:
+  // no pin. The token stays in main; the account server removes the rest.
+  handle(IPC.accountDelete, async (): Promise<AdeAccountStatus> => {
+    const status = await accountBridge.deleteAccount();
     productAnalyticsService?.resetAccountIdentity();
     cloudAccountChanged();
     return status;

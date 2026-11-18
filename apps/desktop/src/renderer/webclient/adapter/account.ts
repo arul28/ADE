@@ -87,6 +87,8 @@ export function createAccountNamespace(
     }),
     cancelDeviceLogin: async () => browserAccountStatus(accountClient.getSnapshot()),
     signOut: async () => browserAccountStatus(await accountClient.signOut()),
+    // This browser's own account session deletes the account, then signs out.
+    deleteAccount: async () => browserAccountStatus(await accountClient.deleteAccount()),
     listMachines: async () => machinesResult(await accountClient.loadMachines()),
     renameMachine: async (machineKey: string, customName: string | null) =>
       await accountClient.renameMachine(machineKey, customName),

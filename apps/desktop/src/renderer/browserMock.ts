@@ -46,6 +46,7 @@ import {
   showBrowserMockBrainDownPending,
   showBrowserMockRecoveryScreen,
 } from "./browserMockRecovery";
+import { applyBrowserMockUpdateGate } from "./browserMockUpdateGate";
 import {
   BUILT_IN_BROWSER_SETTINGS_DEFAULTS,
   applyBuiltInBrowserSettingsPatch,
@@ -5980,6 +5981,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           setSignedOut(true);
           return signedOutStatus;
         },
+        // The preview never deletes anything: it says so, as a failed delete would.
+        deleteAccount: async () => {
+          throw new Error("The browser preview can't delete accounts.");
+        },
         // This computer, so the account page has a row it can expand into live
         // detail (the local row is the only one a preview can actually serve).
         getLocalMachineIdentity: async () => ({
@@ -10896,6 +10901,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     updateDismissInstalledNotice: resolved(undefined),
     updateRelaunchApp: resolved(false),
     onUpdateEvent: noop,
+    // No minimum in the preview (`?mockUpdateGate=` sets one).
+    clientUpdateGate: {
+      getState: resolved({ self: { required: false }, minimum: null, latest: { stable: null, beta: null }, downloadUrl: "https://ade-app.dev/download", install: "updater", packageManagerCommand: null, answeredAt: null }),
+      refresh: resolved({ self: { required: false }, minimum: null, latest: { stable: null, beta: null }, downloadUrl: "https://ade-app.dev/download", install: "updater", packageManagerCommand: null, answeredAt: null }),
+      onChange: noop,
+    },
     music: createBrowserMockMusic(),
     // Recovery screen + hard reset scenarios (`?adeRecovery=<state>`; see
     // browserMockRecovery.ts for every recovery and brain-down preview URL).
@@ -10904,6 +10915,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   // Brain-down banner scenarios (`?adeBrainDown=<cause>`).
   applyBrowserMockBrainDown((window as any).ade);
   applyBrowserMockUpdateAndFallback((window as any).ade);
+  // `?mockUpdateGate=`: this build, or Studio Mac, below the owner's minimum.
+  applyBrowserMockUpdateGate((window as any).ade, { lanes: MOCK_LANES, sessions: MOCK_SESSIONS });
   applyBrowserMockProviderLogins((window as any).ade); // `?mockSignIns=`: ADE Cloud sign-ins
   applyBrowserMockCloud((window as any).ade); // `?mockCloud=`: the ADE Cloud dashboard
   // `?mockToolsPane=`: the Work tools catalogue across machines.
