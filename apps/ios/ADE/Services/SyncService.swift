@@ -4914,6 +4914,9 @@ final class SyncService: ObservableObject {
     Set(UserDefaults.standard.stringArray(forKey: SyncService.cloudMachineFleetKeysDefaultsKey) ?? []) {
     didSet {
       guard cloudMachineFleetKeys != oldValue else { return }
+      // A computer leaving this set may be a deleted one the phone is still
+      // focused on (`leaveDeletedFocusedCloudComputer`).
+      rememberSeenCloudFleetKeys(oldValue)
       UserDefaults.standard.set(cloudMachineFleetKeys.sorted(), forKey: Self.cloudMachineFleetKeysDefaultsKey)
       machineFleet?.setCloudMachineKeys(cloudMachineFleetKeys)
       updateFocusedMachineListing()
@@ -11327,6 +11330,8 @@ final class SyncService: ObservableObject {
     machineFleet?.forgetConnectionChoices(keeping: Set(loadSavedProfilesRaw().keys))
     cloudMachineFleetKeys = []
     UserDefaults.standard.removeObject(forKey: Self.cloudMachineFleetKeysDefaultsKey)
+    // After the clear: its didSet records the keys it removed.
+    UserDefaults.standard.removeObject(forKey: Self.seenCloudFleetKeysDefaultsKey)
     // Per-project view state, archive marks, pinned lanes and the plan seen.
     for key in ["ade.work.viewStateByScope.v1", "ade.work.newSessionModeByProject.v1"] {
       shared.removeObject(forKey: key)
@@ -30663,6 +30668,7 @@ extension SyncService {
       return HiddenMachineStore.fleetKey(deviceId: deviceId)
     }
     cloudMachineFleetKeys = Set(keys)
+    leaveDeletedFocusedCloudComputer()
   }
 }
 

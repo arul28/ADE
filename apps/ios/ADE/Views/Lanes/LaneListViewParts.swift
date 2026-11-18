@@ -481,7 +481,13 @@ extension LanesTabView {
     // Built once per pass, not once per row.
     let chips = laneMachineChips
     let remoteSections = visibleRemoteMachineLanes
-    if syncService.isAccountProjectScope, remoteLanes.machines.isEmpty {
+    let accountHasNoLanes = syncService.isAccountProjectScope
+      // A failed read did not show there are none: its machine row says so.
+      && remoteLanes.machines.allSatisfy { $0.snapshots.isEmpty && $0.error == nil }
+    if accountHasNoLanes, !remoteLanes.hasRead {
+      // The first read of the cloud lanes is still out: nothing to say yet.
+      EmptyView()
+    } else if accountHasNoLanes {
       // No computer's copy, and no cloud lane yet.
       ADEEmptyStateView(
         symbol: ADECloudMachine.symbol,
@@ -825,7 +831,11 @@ extension LanesTabView {
         try await syncService.refreshLaneSnapshots(includeDecorations: includeDecorations)
       }
       let loadedSnapshots = laneSnapshotsByHubRule(
-        try await syncService.fetchLaneListSnapshots(includeArchived: true),
+        laneSnapshotsWithoutCloudMainCheckout(
+          try await syncService.fetchLaneListSnapshots(includeArchived: true),
+          machineKey: syncService.focusedMachineKey,
+          sync: syncService
+        ),
         roster: syncService.activeProject.flatMap { syncService.rosterProject(for: $0) }
       )
       let loadedPullRequests = try await syncService.fetchPullRequestListItems()
