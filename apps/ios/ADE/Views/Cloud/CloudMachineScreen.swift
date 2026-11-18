@@ -152,6 +152,8 @@ struct CloudMachineControls: View {
               // Opened from Settings the page is in Settings' own stack;
               // closing Settings closes it too, so the work shows.
               store.syncService.settingsPresented = false
+              // Opened from a lane's "Manage computer" sheet: it closes too.
+              CloudLaneActions.shared.closeAllManage()
               Task { _ = await store.syncService.ensureAccountMachineForNavigation(key) }
             } label: {
               Label("Open its work", systemImage: "arrow.up.forward.app")
@@ -165,6 +167,7 @@ struct CloudMachineControls: View {
               CloudLaneAtRestScreen(subject: subject, onAwake: {
                 store.syncService.cloudPanePresented = false
                 store.syncService.settingsPresented = false
+                CloudLaneActions.shared.closeAllManage()
                 _ = await store.syncService.ensureAccountMachineForNavigation(key)
               })
             } label: {
@@ -329,11 +332,14 @@ struct CloudSavedWorkDownload: View {
 
 /// The dashboard's "Saved lane work": what ADE Cloud keeps for lanes whose
 /// computer is gone (`GET /cloud/backups`), each with its download and its
-/// delete. One read when the page shows or its computers change.
+/// delete. One read when the page shows, its computers change or it is
+/// pulled to refresh.
 struct CloudSavedLaneWorkCard: View {
   @ObservedObject var store: CloudPaneStore
   @ObservedObject private var cloudStore = AccountCloudStore.shared
   @State private var backups: [CloudLaneBackupRow] = []
+  /// The last read failed: a notice with a retry, not an empty page.
+  @State private var loadFailed = false
   @State private var forgetAsk: CloudLaneBackupRow?
   @State private var forgetting: String?
 
@@ -356,7 +362,11 @@ struct CloudSavedLaneWorkCard: View {
   var body: some View {
     let rows = withoutComputer
     Group {
-      if !rows.isEmpty {
+      if loadFailed, rows.isEmpty {
+        ADESettingsNotice(message: "Couldn't read your saved lane work.", actionTitle: "Try again") {
+          Task { await load() }
+        }
+      } else if !rows.isEmpty {
         ADEKitCard(title: "Saved lane work", symbol: "arrow.down.doc", count: "\(rows.count)", hint: "Lanes whose computer is gone") {
           VStack(alignment: .leading, spacing: 12) {
             ForEach(rows) { backup in
@@ -383,7 +393,7 @@ struct CloudSavedLaneWorkCard: View {
         }
       }
     }
-    .task(id: store.machines.map(\.instanceId)) { await load() }
+    .task(id: ReadKey(machineIds: store.machines.map(\.instanceId), refreshes: store.refreshes)) { await load() }
     .confirmationDialog(
       "Delete the saved work of \(forgetAsk.map(name) ?? "this lane")?",
       isPresented: Binding(get: { forgetAsk != nil }, set: { if !$0 { forgetAsk = nil } }),
@@ -397,9 +407,20 @@ struct CloudSavedLaneWorkCard: View {
     }
   }
 
+  private struct ReadKey: Equatable {
+    let machineIds: [String]
+    let refreshes: Int
+  }
+
   private func load() async {
     guard let client = await store.syncService.cloudServerClient() else { return }
-    if let rows = try? await client.allLaneBackups() { backups = rows }
+    do {
+      backups = try await client.allLaneBackups()
+      loadFailed = false
+    } catch {
+      // A cancelled read was replaced by a newer one.
+      if !Task.isCancelled { loadFailed = true }
+    }
   }
 
   private func forget(_ backup: CloudLaneBackupRow) async {
@@ -479,13 +500,14 @@ final class CloudLaneActions: ObservableObject {
   static let shared = CloudLaneActions()
 
   @Published private(set) var deleteTarget: CloudLaneDeleteTarget?
-  @Published private(set) var manageTarget: CloudComputerManageTarget?
+  /// Each host's "Manage computer" sheet. One per host, so a computer page
+  /// asked from inside another one opens over it and the first stays open.
+  @Published private(set) var manageTargets: [UUID: CloudComputerManageTarget] = [:]
   /// The result of a delete; the frontmost host shows it.
   @Published var toast: ADEToastMessage?
   /// Hosts on screen, the frontmost last.
   @Published private(set) var hosts: [UUID] = []
   private var deletePresenter: UUID?
-  private var managePresenter: UUID?
 
   /// Asks before deleting a cloud lane. `fromMenu`: a context menu is still
   /// closing, and a sheet presented into that is dropped.
@@ -498,8 +520,8 @@ final class CloudLaneActions: ObservableObject {
 
   func manageComputer(instanceId: String, showsOpenWork: Bool = true, fromMenu: Bool = false) {
     present(fromMenu) { [self] in
-      managePresenter = hosts.last
-      manageTarget = CloudComputerManageTarget(instanceId: instanceId, showsOpenWork: showsOpenWork)
+      guard let host = hosts.last else { return }
+      manageTargets[host] = CloudComputerManageTarget(instanceId: instanceId, showsOpenWork: showsOpenWork)
     }
   }
 
@@ -512,22 +534,27 @@ final class CloudLaneActions: ObservableObject {
   }
 
   func deleteTarget(for host: UUID) -> CloudLaneDeleteTarget? { deletePresenter == host ? deleteTarget : nil }
-  func manageTarget(for host: UUID) -> CloudComputerManageTarget? { managePresenter == host ? manageTarget : nil }
+  func manageTarget(for host: UUID) -> CloudComputerManageTarget? { manageTargets[host] }
 
   func closeDelete() {
     deleteTarget = nil
     deletePresenter = nil
   }
 
-  func closeManage() {
-    manageTarget = nil
-    managePresenter = nil
+  func closeManage(host: UUID) {
+    manageTargets[host] = nil
   }
 
-  /// A deleted lane's computer page has nothing left to show: it closes too.
+  /// Every computer page closes: the person opened a lane's work, which
+  /// shows under them.
+  func closeAllManage() {
+    manageTargets.removeAll()
+  }
+
+  /// A deleted lane's computer pages have nothing left to show: they close too.
   func deleted(instanceId: String) {
     closeDelete()
-    if manageTarget?.instanceId == instanceId { closeManage() }
+    manageTargets = manageTargets.filter { $0.value.instanceId != instanceId }
   }
 
   func attach(_ host: UUID) {
@@ -537,6 +564,8 @@ final class CloudLaneActions: ObservableObject {
 
   func detach(_ host: UUID) {
     hosts.removeAll { $0 == host }
+    // A host gone from screen leaves no sheet waiting to reopen.
+    manageTargets[host] = nil
   }
 }
 
@@ -548,7 +577,7 @@ private struct CloudLaneActionsHost: ViewModifier {
     content
       .sheet(item: Binding(
         get: { actions.manageTarget(for: id) },
-        set: { if $0 == nil { actions.closeManage() } }
+        set: { if $0 == nil { actions.closeManage(host: id) } }
       )) { target in
         CloudLaneManageSheet(syncService: SyncMenuSafePublisher.shared.service, instanceId: target.instanceId, showsOpenWork: target.showsOpenWork)
       }

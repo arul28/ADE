@@ -859,7 +859,7 @@ struct PrDetailView: View {
 
   private func nextStepLabel(_ action: PrNextStepAction) -> String {
     switch action {
-    case .deleteBranch: return "Delete branch"
+    case .deleteBranch: return deletesCloudLane ? "Delete lane" : "Delete branch"
     case .reopen: return "Reopen"
     case .readyForReview: return "Ready for review"
     case .resolveConflicts: return currentPr.laneId.isEmpty ? "Resolve on GitHub" : "Rebase lane"
@@ -873,6 +873,13 @@ struct PrDetailView: View {
     case .fixThreads: return "Show open threads"
     case .merge: return "Merge…"
     }
+  }
+
+  /// The PR's lane lives on its own ADE Cloud computer: its delete goes
+  /// through the account, computer and all, with no wake. Nothing then runs
+  /// git for it, so its branch on GitHub stays.
+  private var deletesCloudLane: Bool {
+    !currentPr.laneId.isEmpty && cloudLaneDeleteTarget(laneId: currentPr.laneId, laneName: currentPr.headBranch, sync: syncService) != nil
   }
 
   private func nextStepAvailable(_ action: PrNextStepAction) -> Bool {
@@ -1640,6 +1647,7 @@ struct PrDetailView: View {
       runStep: runNextStep,
       stepLabel: nextStepLabel,
       stepAvailable: nextStepAvailable,
+      cleanupLabel: deletesCloudLane ? "Delete lane…" : "Delete lane and branch…",
       merge: { mergeCurrentPr() },
       mergeAnyway: { mergeAnywayConfirmationPresented = true },
       stackMerge: { stackMergeConfirmationPresented = true },
@@ -1918,6 +1926,8 @@ struct PrDuoDetailActions {
   var runStep: (PrNextStepAction) -> Void
   var stepLabel: (PrNextStepAction) -> String
   var stepAvailable: (PrNextStepAction) -> Bool
+  /// The merged PR's lane cleanup button.
+  var cleanupLabel = "Delete lane and branch…"
   var merge: () -> Void
   var mergeAnyway: () -> Void
   var stackMerge: () -> Void
@@ -2842,7 +2852,8 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
           case "threads", "review": runStep(.fixThreads)
           default: break
           }
-        }
+        },
+        cleanupLabel: actions.cleanupLabel
       )
     case .comment:
       PrDuoCommentCard(

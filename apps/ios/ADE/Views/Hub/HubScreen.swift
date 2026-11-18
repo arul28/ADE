@@ -135,7 +135,9 @@ struct HubScreen: View {
   }
 
   private var hubAutoConnectCandidate: AccountMachine? {
-    guard hubAutoConnectAllowed else { return nil }
+    // Until the account's ADE Cloud computers are known, an online cloud
+    // computer looks like the person's own and could take the one attempt.
+    guard hubAutoConnectAllowed, syncService.cloudServerReadFinished else { return nil }
     let ownMachines = account.machines.filter { machine in
       machine.online && syncService.accountHasOwnComputer([machine])
     }
@@ -146,7 +148,7 @@ struct HubScreen: View {
   /// connection change.
   private var hubAutoConnectKey: String {
     let online = account.machines.filter(\.online).map(\.machineKey).sorted().joined(separator: ",")
-    return "\(account.identity?.userId ?? "")|\(online)|\(syncService.connectionState)|\(machineFleet.machines.count)"
+    return "\(account.identity?.userId ?? "")|\(online)|\(syncService.connectionState)|\(machineFleet.machines.count)|\(syncService.cloudServerReadFinished)"
   }
 
   /// A computer is on its way: the focused one or any in the fleet.
@@ -439,10 +441,21 @@ struct HubScreen: View {
       guard hubAutoConnectAllowed else { return }
       // Nothing else reads the account's computers on a plain launch.
       if account.machines.isEmpty { await account.loadMachines() }
+      // Tells the account's own computers from its ADE Cloud ones; the key
+      // re-runs this task when that read lands.
+      syncService.refreshCloudServerIfStale()
       guard !Task.isCancelled, let machine = hubAutoConnectCandidate else { return }
+      // The sign-in can still be settling: wait briefly for its pairing
+      // authorization rather than spend the one attempt without it.
+      var authorization = AccountService.shared.currentPairingAuthorization
+      for _ in 0..<20 where authorization == nil {
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        guard !Task.isCancelled else { return }
+        authorization = AccountService.shared.currentPairingAuthorization
+      }
+      guard let authorization else { return }
       hubAutoConnectLog.notice("hub_auto_connect start machine=\(machine.displayName, privacy: .public)")
       HubScreen.autoConnectAttempted = true
-      guard let authorization = AccountService.shared.currentPairingAuthorization else { return }
       // Its own task: this one is keyed on the connection state, which the
       // connect itself changes, and that would cancel the connect.
       Task { @MainActor [syncService] in

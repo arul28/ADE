@@ -58,7 +58,7 @@ struct CloudDashboardScreen: View {
       .padding(.bottom, 36)
     }
     .background(ADEColor.pageBackground.ignoresSafeArea())
-    .refreshable { await store.reload() }
+    .refreshable { await store.refresh() }
     .onAppear { observePlan(store.account) }
     .onChange(of: store.account) { _, account in observePlan(account) }
     .navigationTitle("ADE Cloud")

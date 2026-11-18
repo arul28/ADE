@@ -416,8 +416,10 @@ struct CloudServerClient {
 
   /// Holds a message for an existing cloud chat and wakes its computer. The
   /// same `messageId` again answers the same message (the client's send id).
-  func queueMessage(machineKey: String, chatId: String, messageId: String, text: String) async throws -> CloudChatQueueResult {
-    let body = try JSONSerialization.data(withJSONObject: ["messageId": messageId, "text": text])
+  func queueMessage(machineKey: String, chatId: String, messageId: String, text: String, attachments: [[String: Any]] = []) async throws -> CloudChatQueueResult {
+    var payload: [String: Any] = ["messageId": messageId, "text": text]
+    if !attachments.isEmpty { payload["attachments"] = attachments }
+    let body = try JSONSerialization.data(withJSONObject: payload)
     return try decode(
       CloudChatQueueResult.self,
       from: try await send("POST", "cloud/chats/\(segment(machineKey))/\(segment(chatId))/messages", body: body, timeout: 30)

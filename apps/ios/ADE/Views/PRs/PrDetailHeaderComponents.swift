@@ -452,6 +452,7 @@ struct PrDuoMergeCard: View {
   let onStackMerge: () -> Void
   let onArchiveLane: () -> Void
   let onChip: (PrRequirementChip) -> Void
+  var cleanupLabel = "Delete lane and branch…"
 
   private var isBusy: Bool { busyLabel != nil }
   private var tone: Color {
@@ -650,7 +651,7 @@ struct PrDuoMergeCard: View {
       Button(role: .destructive) {
         onRun(.deleteBranch)
       } label: {
-        Label("Delete lane and branch…", systemImage: "trash")
+        Label(cleanupLabel, systemImage: "trash")
           .frame(maxWidth: .infinity)
       }
       .buttonStyle(.borderedProminent)

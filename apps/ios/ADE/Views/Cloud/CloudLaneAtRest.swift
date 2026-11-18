@@ -92,7 +92,7 @@ func cloudLaneAtRestSubject(fleetKey: String, lane: LaneSummary, sync: SyncServi
     fleetKey: fleetKey,
     accountMachineKey: accountKey,
     laneId: laneId,
-    laneName: lane.name,
+    laneName: lane.displayName,
     branchHint: nonEmptyTrimmed(lane.branchRef),
     repo: sync.cloudProjectRepo
   )

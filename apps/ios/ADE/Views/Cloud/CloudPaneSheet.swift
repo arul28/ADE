@@ -112,17 +112,22 @@ struct CloudPaneSheet: View {
       }
       .frame(height: topHeight)
       DuoSeam(axis: .horizontal, foldRect: fold.frame)
-      ScrollView {
-        VStack(alignment: .leading, spacing: 14) {
-          if let machine = store.selected {
-            CloudMachineControls(store: store, machine: machine)
+      // Its own stack, so an asleep lane's "Open its work" pushes the lane's
+      // saved work into this half. The bar shows only on that pushed page.
+      NavigationStack {
+        ScrollView {
+          VStack(alignment: .leading, spacing: 14) {
+            if let machine = store.selected {
+              CloudMachineControls(store: store, machine: machine)
+            }
+            ADEEyebrow("Lanes and computers")
+            CloudMachineChips(store: store)
           }
-          ADEEyebrow("Lanes and computers")
-          CloudMachineChips(store: store)
+          .padding(16)
         }
-        .padding(16)
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .toolbar(.hidden, for: .navigationBar)
       }
-      .background(ADEColor.pageBackground.ignoresSafeArea())
     }
   }
 }
@@ -205,6 +210,8 @@ final class CloudPaneStore: ObservableObject {
   @Published var actionError: String?
   /// One clock per read: "ran 3 h ago" moves when the list is read again.
   @Published private(set) var now = Date()
+  /// Bumped by each pull to refresh: cards with reads of their own read again.
+  @Published private(set) var refreshes = 0
 
   let syncService: SyncService
 
@@ -295,6 +302,12 @@ final class CloudPaneStore: ObservableObject {
     }
     await readLimitsThroughComputer()
     await reloadSignIns()
+  }
+
+  /// A pull to refresh: the page, and each card's own read.
+  func refresh() async {
+    refreshes += 1
+    await reload()
   }
 
   /// The page from the account server, with this phone's own sign-in.

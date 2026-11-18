@@ -16908,25 +16908,20 @@ final class SyncService: ObservableObject {
     // the server holds the message, wakes the lane's own computer (or makes
     // a new one that continues this chat), and delivers it once. The phone
     // may close meanwhile. An older server has no queue: wake, then send.
-    if (attachments ?? []).isEmpty, !cloudFiles.isEmpty,
-       let key = chatThreadKey(for: sessionId), savedCloudChatAccountKey(forThreadKey: key) != nil {
-      // The account can hold files, but a computer can't fetch them yet (the
-      // server serves only files a started launch names): wake the computer,
-      // and the caller uploads them over its live link.
-      await wakeSavedCloudChatComputer(key)
-      throw CloudChatFilesNeedLiveLink()
-    }
     if (attachments ?? []).isEmpty,
        let key = chatThreadKey(for: sessionId),
        let accountKey = savedCloudChatAccountKey(forThreadKey: key) {
       let messageId = (args["clientSendId"] as? String) ?? UUID().uuidString
-      switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, using: self) {
+      switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, files: cloudFiles, using: self) {
       case .queued:
         return .heldByServer
       case .refused(let message), .failed(let message):
         throw NSError(domain: "ADE", code: 46, userInfo: [NSLocalizedDescriptionKey: message])
       case .routeMissing:
         await wakeSavedCloudChatComputer(key)
+        // An older computer with no queue: the caller uploads the files over
+        // its now-live link and sends again.
+        if !cloudFiles.isEmpty { throw CloudChatFilesNeedLiveLink() }
       }
     } else if let key = chatThreadKey(for: sessionId), savedCloudChatAccountKey(forThreadKey: key) != nil {
       // Files ride a live link only: wake the computer first.

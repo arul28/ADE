@@ -127,6 +127,8 @@ struct WorkModelPickerSheet: View {
   @State private var rawCatalogGroups: [WorkModelCatalogGroup]?
   @State private var scopedCatalogGroups: [WorkModelCatalogGroup]?
   @State private var isLoadingCatalog = false
+  /// Why ADE Cloud's model list didn't load (the account server failed).
+  @State private var cloudCatalogError: String?
   @State private var didPickInitialSelection = false
   @State private var selectedProviderTabKey: String?
   @State private var selectedModelId: String
@@ -247,6 +249,8 @@ struct WorkModelPickerSheet: View {
         topControlBar
         if isLoadingCatalog && catalog.isEmpty && !customHarnessesAvailable {
           loadingState
+        } else if let cloudCatalogError, catalog.isEmpty {
+          cloudCatalogErrorState(cloudCatalogError)
         } else if catalog.isEmpty && !customHarnessesAvailable {
           catalogEmptyState
         } else {
@@ -581,9 +585,33 @@ struct WorkModelPickerSheet: View {
       Spacer(minLength: 24)
       ProgressView()
         .tint(ADEColor.accent)
-      Text("Loading models from the paired machine…")
+      Text(cloudCatalog == nil ? "Loading models from the paired machine…" : "Loading ADE Cloud’s models…")
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
+      Spacer(minLength: 24)
+    }
+    .frame(maxWidth: .infinity)
+  }
+
+  private func cloudCatalogErrorState(_ message: String) -> some View {
+    VStack(spacing: 12) {
+      Spacer(minLength: 24)
+      Image(systemName: "exclamationmark.icloud")
+        .font(.title3.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+      Text("Couldn't load ADE Cloud's models.")
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      Text(message)
+        .font(.footnote)
+        .foregroundStyle(ADEColor.textSecondary)
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, 28)
+      Button("Retry") {
+        Task { await loadLiveCatalog() }
+      }
+      .buttonStyle(.bordered)
+      .tint(ADEColor.accent)
       Spacer(minLength: 24)
     }
     .frame(maxWidth: .infinity)
@@ -714,9 +742,16 @@ struct WorkModelPickerSheet: View {
     if var cloudCatalog {
       if cloudCatalog.providers.isEmpty {
         let launches = AccountCloudLaunchStore.shared
+        cloudCatalogError = nil
+        isLoadingCatalog = true
         await launches.loadCatalogIfNeeded(using: syncService)
+        isLoadingCatalog = false
         guard !Task.isCancelled else { return }
-        if let loaded = launches.catalog { cloudCatalog = loaded }
+        if let loaded = launches.catalog {
+          cloudCatalog = loaded
+        } else {
+          cloudCatalogError = launches.catalogError ?? "Check your connection, then try again."
+        }
       }
       setHostGroups(workModelCatalogGroups(cloudCatalog: cloudCatalog))
       return
