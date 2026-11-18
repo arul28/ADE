@@ -1,5 +1,6 @@
 import type { LaneListSnapshot, LaneSummary, RebaseNeed, TerminalToolType } from "../../../../shared/types";
 import { pickPrimaryPr } from "../../../../shared/primaryPr";
+import { laneDisplayName } from "../../../../shared/laneDisplayName";
 import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
 
@@ -330,4 +331,37 @@ export function laneGroupBulkActions(id: LaneStateGroupId): LaneGroupBulkAction[
     case "stale": return ["archive", "delete"];
     default: return [];
   }
+}
+
+/** Every lane the layout shows, in no set order. */
+export function laneSidebarLayoutLanes(layout: LaneSidebarLayout): LaneSummary[] {
+  const rows = layout.groupBy === "list" ? layout.rows : [...layout.pinned, ...layout.groups.flatMap((group) => group.rows)];
+  return rows.map((row) => row.lane);
+}
+
+/**
+ * The row keys whose rows show their machine on screen: the rows that have
+ * the same display name as a row on a different machine (as the main
+ * checkouts of two machines do). Other rows show no machine; their hover card
+ * names it.
+ */
+export function laneIdsShowingMachine(
+  lanes: readonly LaneSummary[],
+  machineIdByLaneId: (laneId: string) => string | null,
+): ReadonlySet<string> {
+  const byName = new Map<string, Array<{ laneId: string; machineId: string }>>();
+  for (const lane of lanes) {
+    const machineId = machineIdByLaneId(lane.id);
+    if (!machineId) continue;
+    const key = laneDisplayName(lane).trim().toLowerCase();
+    const bucket = byName.get(key);
+    if (bucket) bucket.push({ laneId: lane.id, machineId });
+    else byName.set(key, [{ laneId: lane.id, machineId }]);
+  }
+  const shown = new Set<string>();
+  for (const bucket of byName.values()) {
+    if (bucket.length < 2 || new Set(bucket.map((entry) => entry.machineId)).size < 2) continue;
+    for (const entry of bucket) shown.add(entry.laneId);
+  }
+  return shown;
 }

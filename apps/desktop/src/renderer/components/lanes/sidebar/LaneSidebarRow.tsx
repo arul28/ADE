@@ -59,9 +59,15 @@ export type LaneSidebarRowProps = {
   needsYouReason?: string | null;
   /**
    * The lane's machine, set when the project has lanes on more than one
-   * machine. The row shows no machine; its hover card names it.
+   * machine. The hover card names it.
    */
   machine?: MachineChipModel | null;
+  /**
+   * The row also names `machine` after the lane's name, quietly. Set when a
+   * row on a different machine has the same name (two main checkouts), so
+   * the two rows do not look the same.
+   */
+  showMachine?: boolean;
   /**
    * Set when the lane's machine cannot be reached ("<Machine> is offline").
    * The row is dimmed, says why on hover, and offers no menu or drag.
@@ -229,6 +235,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
     creating,
     needsYouReason = null,
     machine = null,
+    showMachine = false,
     disabledReason = null,
     foreign = false,
     shareTarget = null,
@@ -250,7 +257,9 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
   const devicesOpen = lane.devicesOpen ?? [];
   // The lane color lives on the name only, as in the Work list.
   const accent = getLaneAccent(lane, fallbackColorIndex);
-  // The machine is named here and in the composer only, never on the row.
+  // The hover card names the machine. The row names it too only when another
+  // row of the same name is on a different machine (`showMachine`).
+  const machineOnRow = showMachine && machine ? machine : null;
   const hoverCard = useSessionHoverCard({ disabled: !machine, rowId: `lane-row:${lane.id}` });
 
   return (
@@ -330,8 +339,20 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
           />
           <span className="min-w-0 truncate">{laneDisplayName(lane)}</span>
           {/* Read out with the row's name, so a screen reader tells lanes of
-              the same name apart; on screen the hover card names it. */}
-          {machine ? <span className="sr-only">, on {machine.machineName}</span> : null}
+              the same name apart. On screen the machine shows only when a
+              row of the same name is on another machine. */}
+          {machine && !machineOnRow ? <span className="sr-only">, on {machine.machineName}</span> : null}
+          {machineOnRow ? (
+            <span
+              className="flex min-w-0 shrink items-center gap-1 text-[11px] font-normal"
+              style={{ color: "var(--kit-text-3)" }}
+              data-testid="lane-sidebar-row-machine"
+            >
+              <DesktopTower size={11} weight="duotone" aria-hidden className="shrink-0" />
+              <span className="sr-only">, on </span>
+              <span className="min-w-0 truncate">{machineOnRow.machineName}</span>
+            </span>
+          ) : null}
         </span>
         {share && !deleting ? <LaneShareMark laneId={share.laneId} laneName={laneDisplayName(lane)} pin={share.pin} /> : null}
         {deleting || creating ? (

@@ -36,8 +36,13 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
+  CLOUD_COMPUTER_LIST_BUDGET_MS,
+  CLOUD_COMPUTER_LIST_REQUEST,
   MACHINE_ROW_KEY,
+  cloudComputerKeysOf,
   createMachineRemoteConnection,
+  machineListLabel,
+  markCloudComputers,
   executePlanAcrossMachines,
   extractMachineTargeting,
   FREE_TEXT_VALUE_FLAGS,
@@ -936,6 +941,8 @@ export type InvocationStep = {
   params?: JsonObject | ((values: JsonObject) => JsonObject);
   unwrapToolResult?: boolean;
   optional?: boolean;
+  /** An optional step's budget: after this long it counts as failed, and the plan goes on. */
+  timeoutMs?: number;
   /** Not run when this says so, given the earlier steps' values (a fallback for an older host). */
   skipWhen?: (values: JsonObject) => boolean;
   injectProjectRootIntoArgs?: boolean;
@@ -26793,6 +26800,23 @@ function buildMachinesPlan(args: string[]): CliPlan {
     // An agent's shell reads the agent-safe roster: names, presence, platform
     // and projects, with no device ids, routes or tokens. The account
     // directory itself (`account.listMachines`) stays the person's.
+    // The account's ADE Cloud computers, so their rows read "ADE Cloud · <lane>"
+    // as the app shows them. A read that wakes nothing; without an answer in
+    // time the rows keep their plain names.
+    const cloudStep: InvocationStep = {
+      key: "cloud",
+      method: "cloud.call",
+      params: { ...CLOUD_COMPUTER_LIST_REQUEST },
+      optional: true,
+      timeoutMs: CLOUD_COMPUTER_LIST_BUDGET_MS,
+    };
+    const withCloudMarks = (values: JsonObject): unknown => {
+      // An action answer can come in its envelope (`{ domain, action, result }`).
+      const raw = values.result;
+      const list = isRecord(raw) && isRecord(raw.result) && asString(raw.domain) && asString(raw.action) ? raw.result : raw;
+      if (!isRecord(list) || !Array.isArray(list.machines)) return list;
+      return { ...list, machines: markCloudComputers(list.machines, cloudComputerKeysOf(values.cloud)) };
+    };
     if (process.env.ADE_CHAT_SESSION_ID?.trim() || includeProjects) {
       return {
         kind: "execute",
@@ -26800,7 +26824,8 @@ function buildMachinesPlan(args: string[]): CliPlan {
         formatter: "machines-roster",
         machineOnly: true,
         machineAutoStart: true,
-        steps: [{ key: "result", method: "machines.list", params: { includeProjects } }],
+        steps: [{ key: "result", method: "machines.list", params: { includeProjects } }, cloudStep],
+        shapeResult: withCloudMarks,
       };
     }
     return {
@@ -26810,7 +26835,8 @@ function buildMachinesPlan(args: string[]): CliPlan {
       machineOnly: true,
       machineAutoStart: true,
       connectRole: "cto",
-      steps: [accountActionStep("result", "listMachines")],
+      steps: [accountActionStep("result", "listMachines"), cloudStep],
+      shapeResult: withCloudMarks,
     };
   }
   if (sub === "show" || sub === "get" || sub === "view" || sub === "info") {
@@ -40044,7 +40070,8 @@ function formatAccountMachines(value: unknown): string {
   const machines = Array.isArray(result.machines)
     ? result.machines.flatMap((entry) => {
         const machine = parseAccountMachine(entry);
-        return machine ? [machine] : [];
+        // `cloud`: an ADE Cloud computer (`markCloudComputers`).
+        return machine ? [{ machine, cloud: isRecord(entry) && entry.cloud === true }] : [];
       })
     : [];
   // `status` answers "can this be dialled"; `presence` answers "is it awake,
@@ -40054,7 +40081,7 @@ function formatAccountMachines(value: unknown): string {
   // `connected` is deliberately not passed: this table marks no row as holding
   // a live channel, and a surface that renders no such mark must not claim one.
   let anyAsleep = false;
-  const rows = machines.map((machine) => {
+  const rows = machines.map(({ machine, cloud }) => {
     const connectionState = accountMachineConnectionState(machine);
     if (accountMachinePresence(machine) === "asleep") anyAsleep = true;
     const lastSeenAt = typeof machine.lastSeenAt === "number" && Number.isFinite(machine.lastSeenAt)
@@ -40064,7 +40091,7 @@ function formatAccountMachines(value: unknown): string {
       asString(machine.machineKey) ?? "—",
       // With the install ("MacBook Pro · ADE Alpha"), so two installs on one
       // Mac do not look like a duplicate to remove.
-      accountMachineRowLabel(machine) ?? asString(machine.deviceId) ?? "Unnamed machine",
+      machineListLabel(accountMachineRowLabel(machine) ?? asString(machine.deviceId) ?? "Unnamed machine", cloud),
       connectionState,
       machineStatusLine(machine) ?? "—",
       lastSeenAt,
@@ -42387,6 +42414,18 @@ function chatCreateNotices(plan: CliPlan & { kind: "execute" }, values: JsonObje
 const FOLLOW_SHELL_POLL_MS = 1_000;
 /** The most output `shell start --wait --json` keeps (the end of it). */
 const FOLLOW_SHELL_MAX_OUTPUT_CHARS = 1024 * 1024;
+/**
+ * No new output for this long while the command runs: one line on stderr
+ * says that it may wait for input there. The command runs in a terminal that
+ * nobody types in, so a pager or a prompt waits forever.
+ */
+const FOLLOW_SHELL_QUIET_NOTICE_MS = 2 * 60_000;
+/**
+ * No new output for this long: `--wait` stops and says how to read or stop
+ * the command, which keeps running there. A guard, so that `--wait` always
+ * ends; the other machine starts the command with no pager or git prompt.
+ */
+const FOLLOW_SHELL_QUIET_LIMIT_MS = 30 * 60_000;
 /** A screen code cut off at the end of a read: a lone ESC, a CSI with no final byte, an unterminated OSC. */
 // eslint-disable-next-line no-control-regex
 const FOLLOW_SHELL_PARTIAL_CODE = /\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*\x1b?|[ -/]*)$/;
@@ -42409,6 +42448,8 @@ async function followShellToExit(
     unwrapActionEnvelope(unwrapToolResult(await connection.request("ade/actions/call", { name: "run_ade_action", arguments: { domain, action, args } })));
   let since: number | undefined;
   let output = "";
+  // When the shell last printed something (the start counts).
+  let lastOutputAt = Date.now();
   // A read can end inside a screen code; its start waits for the next read
   // so the pipe never gets half a code the stripper could not match.
   let heldCode = "";
@@ -42438,10 +42479,21 @@ async function followShellToExit(
     // adds (Windows' console sends a title, clear screen and mode switches
     // around the first line of output).
     if (data || last) writeText(data, last);
-    if (data) output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
+    if (data) {
+      output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
+      lastOutputAt = Date.now();
+    }
     if (typeof read.nextSince === "number") since = read.nextSince;
     return read;
   };
+  let quietNoticeSent = false;
+  // The commands that read or stop the shell, on the machine it runs on.
+  const onMachine = options.machine?.trim()
+    ? ` --machine ${quoteShellArg(options.machine.trim())}${options.machineProject?.trim() ? ` --machine-project ${quoteShellArg(options.machineProject.trim())}` : ""}`
+    : "";
+  const ptyId = asString(created.ptyId);
+  const readAndStop = `Read it: ade terminal read --terminal ${terminalId}${onMachine} --text`
+    + (ptyId ? ` · stop it: ade shell close ${ptyId}${onMachine}` : "");
   for (;;) {
     const read = await readMore();
     // A brain older than the read's status falls back to the terminal list.
@@ -42461,6 +42513,21 @@ async function followShellToExit(
         exitCode,
         ...(options.text ? {} : { output }),
       };
+    }
+    const quietMs = Date.now() - lastOutputAt;
+    if (quietMs >= FOLLOW_SHELL_QUIET_LIMIT_MS) {
+      throw new CliToolError(
+        `The command printed nothing for ${Math.round(FOLLOW_SHELL_QUIET_LIMIT_MS / 60_000)} minutes and still runs, so ADE stopped waiting for it. `
+          + `It can wait for input (a pager or a prompt). ${readAndStop}`,
+        { terminalId, ...(ptyId ? { ptyId } : {}), status: "running" },
+      );
+    }
+    if (!quietNoticeSent && quietMs >= FOLLOW_SHELL_QUIET_NOTICE_MS) {
+      quietNoticeSent = true;
+      process.stderr.write(
+        `\n· the command printed nothing for ${Math.round(FOLLOW_SHELL_QUIET_NOTICE_MS / 60_000)} minutes and still runs. `
+          + `It can wait for input (a pager or a prompt). ${readAndStop}\n`,
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, FOLLOW_SHELL_POLL_MS));
   }
@@ -42559,10 +42626,18 @@ async function executePlan(
               },
             }
           : resolvedParams;
-        values[step.key] = await waitThroughBrowserApproval(async () => {
+        const answer = waitThroughBrowserApproval(async () => {
           const raw = await connection.request(step.method, params);
           return step.unwrapToolResult ? unwrapToolResult(raw) : raw;
         });
+        values[step.key] = step.optional && step.timeoutMs != null
+          ? await Promise.race([
+            answer,
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error(`${step.method} did not answer in ${step.timeoutMs} ms.`)), step.timeoutMs).unref?.();
+            }),
+          ])
+          : await answer;
       } catch (error) {
         if (!step.optional) {
           const createdSessionId = (

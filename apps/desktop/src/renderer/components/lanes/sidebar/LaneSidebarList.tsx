@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ListBullets, MagnifyingGlass, Plus, Rows, X } from "@phosphor-icons/react";
 import type { LaneDeleteProgress, LaneListSnapshot, OpenProjectBinding } from "../../../../shared/types";
 import type { LaneRebaseLine } from "../laneRebaseNeeds";
@@ -20,6 +20,8 @@ import {
   type LaneSidebarLayout,
   type LaneSidebarListRow,
   type LaneStateGroupId,
+  laneIdsShowingMachine,
+  laneSidebarLayoutLanes,
 } from "./laneSidebarModel";
 
 const GROUP_BY_OPTIONS: Array<{ value: LaneSidebarGroupBy; label: string; description: string; Icon: typeof Rows }> = [
@@ -28,6 +30,7 @@ const GROUP_BY_OPTIONS: Array<{ value: LaneSidebarGroupBy; label: string; descri
 ];
 
 const EMPTY_AGENTS: LaneAgent[] = [];
+const EMPTY_LANE_IDS: ReadonlySet<string> = new Set();
 
 export const LANES_FILTER_INPUT_ID = "lanes-filter-input";
 
@@ -144,6 +147,14 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
   const [groupMenu, setGroupMenu] = useState<{ groupId: LaneStateGroupId; laneIds: string[]; x: number; y: number } | null>(null);
   const closeGroupMenu = useCallback(() => setGroupMenu(null), []);
   const groupBy = layout.groupBy;
+  // Two rows of one name on two machines (two main checkouts) name their
+  // machine on screen; else they look the same.
+  const machineShownLaneIds = useMemo(
+    () => machineByLaneId?.size
+      ? laneIdsShowingMachine(laneSidebarLayoutLanes(layout), (laneId) => machineByLaneId.get(laneId)?.machineId ?? null)
+      : EMPTY_LANE_IDS,
+    [layout, machineByLaneId],
+  );
 
   // Keep the selected row on screen when the selection moves by keyboard or
   // by a deep link.
@@ -193,6 +204,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
         creating={!deleting && settingUpLaneIds.has(laneId)}
         needsYouReason={needsYouReasonByLaneId.get(laneId) ?? null}
         machine={machineByLaneId?.get(laneId) ?? null}
+        showMachine={machineShownLaneIds.has(laneId)}
         shareTarget={shareTargetByLaneId?.get(laneId) ?? null}
         disabledReason={disabledReasonByLaneId?.get(laneId) ?? null}
         foreign={foreignLaneIds?.has(laneId) ?? false}
