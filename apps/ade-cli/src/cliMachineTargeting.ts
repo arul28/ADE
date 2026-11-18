@@ -221,6 +221,16 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     }
     return parsed;
   }
+  if (primary === "drafts") {
+    // An --image is a path on this computer; the draft made there would name a file that machine lacks.
+    const flags = flagNamesOutsideFreeText(parsed.command);
+    if (flags.has("--machine") && flags.has("--image")) {
+      throw new CliUsageError(
+        "A draft made on another machine can't carry an image from this one. "
+        + "Drop --image, or run ade drafts on that machine itself with the image there.",
+      );
+    }
+  }
   if (primary === "files") {
     // The other `ade files` verbs act on a workspace (a lane) here; with
     // --machine they would name a lane the other machine has never heard of.
