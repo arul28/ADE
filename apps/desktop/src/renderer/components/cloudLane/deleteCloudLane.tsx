@@ -1,6 +1,6 @@
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { CloudArrowUp } from "@phosphor-icons/react";
-import type { CloudLaneDeleteOptions, CloudLaneWorkLane, CloudLaneWorkState } from "../../../shared/cloudLaneLife";
+import { cloudWorkLaneName, type CloudLaneDeleteOptions, type CloudLaneWorkLane, type CloudLaneWorkState } from "../../../shared/cloudLaneLife";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { adeCloudLaneComputersNow, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { requestCloudSavedChatsRead, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
@@ -338,7 +338,7 @@ function UnpushedList({ lanes }: { lanes: readonly CloudLaneWorkLane[] }) {
     <ul className="adecl-unpushed">
       {lanes.map((lane) => (
         <li key={lane.laneId}>
-          <b>{lane.laneName}</b>
+          <b>{cloudWorkLaneName(lane)}</b>
           <span>{unpushedText(lane)}</span>
         </li>
       ))}

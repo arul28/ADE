@@ -16,6 +16,7 @@ import {
   type CloudLaneWorkLane,
   type CloudLaneWorkState,
   cloudLaneJobGrowsDiskOnly,
+  cloudWorkLaneName,
 } from "../../../shared/cloudLaneLife";
 import { cloudTier, cloudTierOfShape, cloudTiers, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import type { CloudSavedChatRow } from "../../../shared/cloudSavedChats";
@@ -366,13 +367,13 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     if (!ran.tally) return fail(`ADE couldn't push this lane's work, so the computer stays: ${(ran.error ?? "no answer").replace(/\.$/, "")}.`);
     const left = toWorkLanes(ran.tally.lanes);
     if (ran.tally.failed > 0 || left.length > 0 || (!ran.tally.lanes && ran.tally.skipped > 0)) {
-      const names = left.map((entry) => entry.laneName || entry.branchRef).filter(Boolean);
+      const names = left.map(cloudWorkLaneName).filter(Boolean);
       return fail(`ADE couldn't push all work on this computer${names.length ? ` (${names.join(", ")})` : ""}, so it stays. Open the lane to see why, then try again.`);
     }
     // Read once more after the push: anything new or unknown keeps the computer.
     const after = await workState({ instanceId: args.instanceId });
     if (after.unpushed !== false) {
-      const names = after.unpushedLanes.map((entry) => entry.laneName || entry.branchRef).filter(Boolean);
+      const names = after.unpushedLanes.map(cloudWorkLaneName).filter(Boolean);
       return fail(after.unpushed
         ? `Work changed on this computer while ADE pushed it${names.length ? ` (${names.join(", ")})` : ""}, so it stays. Try again.`
         : `ADE couldn't confirm all work is on GitHub, so the computer stays: ${(after.message ?? "no answer").replace(/\.$/, "")}.`);
