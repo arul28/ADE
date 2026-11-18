@@ -865,6 +865,17 @@ final class ProductAnalytics {
     if error is CancellationError {
       return (provider, .cancelled, code == "unknown" ? "cancelled" : code)
     }
+    // Google and GitHub use ASWebAuthenticationSession. Dismissing that sheet
+    // is canceledLogin, and the callback sometimes surfaces as URLError.cancelled.
+    // Both are the person stopping, not a broken provider.
+    if (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin
+      || (nsError.domain == ASWebAuthenticationSessionError.errorDomain
+        && nsError.code == ASWebAuthenticationSessionError.Code.canceledLogin.rawValue) {
+      return (provider, .cancelled, "web_auth_canceled")
+    }
+    if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
+      return (provider, .cancelled, "url_canceled")
+    }
     if nsError.domain == NSURLErrorDomain {
       return (provider, .network, "url_error")
     }
