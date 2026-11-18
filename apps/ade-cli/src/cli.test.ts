@@ -9057,14 +9057,6 @@ describe("ADE CLI", () => {
     const needsYou = expectExecutePlan(buildCliPlan(["drafts", "list", "--needs-you"]));
     expect(needsYou.shapeResult?.({ result: { domain: "chat", action: "listDrafts", result: entries } }))
       .toEqual([entries[1]]);
-    const byMachine = expectExecutePlan(buildCliPlan(["drafts", "list", "--machine", "studio"]));
-    expect(byMachine.shapeResult?.({
-      result: {
-        domain: "chat",
-        action: "listDrafts",
-        result: [{ ...entries[0], targetMachineKey: "studio" }, entries[1]],
-      },
-    })).toEqual([{ ...entries[0], targetMachineKey: "studio" }]);
 
     const create = expectExecutePlan(buildCliPlan([
       "drafts",
@@ -17436,8 +17428,12 @@ describe("--machine targeting", () => {
     for (const screen of ["screen", "mac-desktop", "windows-desktop"]) {
       expect(extractMachineTargeting(parseCliArgs([screen, "status", "--machine", "Studio"])).options.machine).toBe("Studio");
     }
+    // A send for a chat on another machine is made on that machine, which fires it.
+    const draft = extractMachineTargeting(parseCliArgs(["drafts", "schedule", "d1", "--in", "1h", "--target", "c1", "--machine", "Studio"]));
+    expect(draft.options.machine).toBe("Studio");
+    expect(draft.command).not.toContain("--machine");
     // A command whose own --machine means something else keeps its flag.
-    expect(extractMachineTargeting(parseCliArgs(["drafts", "list", "--machine", "Studio"])).options.machine)
+    expect(extractMachineTargeting(parseCliArgs(["machines", "rename", "--machine", "Studio", "New"])).options.machine)
       .toBeUndefined();
     // A move's --machine names its destination: the move runs here and its
     // plan carries the machine, instead of being sent to that machine bare.

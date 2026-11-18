@@ -424,6 +424,22 @@ export function remoteWorkCopiesInRepo(
   return [...here, ...elsewhere];
 }
 
+/**
+ * Whether a work copy's worktree link is whole, from the files alone (no git
+ * process: this runs before every tap and screenshot). A worktree's `.git` is
+ * a file naming its folder in the main repository; with either gone, git run
+ * in the copy finds the main checkout around it instead.
+ */
+function worktreeLinkIntact(copyPath: string): boolean {
+  try {
+    const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(path.join(copyPath, ".git"), "utf8"));
+    if (!pointer) return false;
+    return fs.existsSync(path.join(path.resolve(copyPath, pointer[1]!), "HEAD"));
+  } catch {
+    return false;
+  }
+}
+
 export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOptions) {
   const { projectRoot, logger } = options;
   const now = options.now ?? (() => Date.now());
@@ -886,19 +902,9 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
    * that is already broken: `git worktree repair` once, then read again.
    */
   const copyLinked = async (copyPath: string): Promise<boolean> => {
-    const linkedHere = (): boolean => {
-      try {
-        // A worktree's `.git` is a file naming its folder in the main repository.
-        const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(path.join(copyPath, ".git"), "utf8"));
-        if (!pointer) return false;
-        return fs.existsSync(path.join(path.resolve(copyPath, pointer[1]!), "HEAD"));
-      } catch {
-        return false;
-      }
-    };
-    if (linkedHere()) return true;
+    if (worktreeLinkIntact(copyPath)) return true;
     await git(["worktree", "repair", copyPath], projectRoot);
-    return linkedHere();
+    return worktreeLinkIntact(copyPath);
   };
 
   /**
@@ -919,9 +925,11 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
    */
   const adoptUnlistedCopy = async (owner: string, source: RemoteWorkSource, timestamp: string): Promise<RemoteWorkCopy | null> => {
     const copyPath = pathFor(owner);
-    if (!fs.existsSync(path.join(copyPath, ".git"))) return null;
+    if (!fs.existsSync(copyPath)) return null;
     if (!(await copyLinked(copyPath))) {
-      setAsideUnlinkedCopy(owner, copyPath);
+      // A folder with files but no working link may hold work: set aside,
+      // never deleted. An empty leftover is the new copy's to replace.
+      if (fs.readdirSync(copyPath).length > 0) setAsideUnlinkedCopy(owner, copyPath);
       return null;
     }
     // A folder that is there but unreadable is refused, not replaced: it may hold work.
@@ -1091,9 +1099,11 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       if (making.failure && making.head.toLowerCase() === source.head.toLowerCase()) throw making.failure;
     }
     const existing = get(owner);
-    if (existing && fs.existsSync(existing.path)) return { prepared: await prepare(owner, source, mode, prepareOptions) };
+    // A copy that lost its git link is rebuilt by `prepare`, which takes as
+    // long as a new copy: it goes through the timed path below.
+    if (existing && worktreeLinkIntact(existing.path)) return { prepared: await prepare(owner, source, mode, prepareOptions) };
 
-    // No copy yet: make it, and answer in time either way.
+    // No usable copy yet: make it, and answer in time either way.
     const work = prepare(owner, source, mode, prepareOptions);
     const answered = await waitAtMost(work, waitMs);
     if (answered) return { prepared: answered.value };
