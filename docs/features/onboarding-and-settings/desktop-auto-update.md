@@ -126,7 +126,9 @@ that reopen it closes any live update window through the window's own cancel
 file (killing it after 5 s), because the running window is the installed
 release's script: while it beats a non-failed heartbeat, the old ADE would take
 the launch as a hand-launch mid-install and exit. A window for an install on
-quit is left alone and ADE stays closed, the same rule the window follows.
+quit is left alone and ADE stays closed, the same rule the window follows,
+unless the person opened ADE during the install (`launch-requested.json` is
+beside the window): then it is closed and ADE reopened.
 
 The window also writes a heartbeat. A copy of the old ADE opened by hand during
 the install (the person sees nothing happening and clicks the shortcut) reads

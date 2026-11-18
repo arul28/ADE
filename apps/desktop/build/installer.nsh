@@ -93,8 +93,10 @@
 ; and stops it after 5s if it is still up. Only a window beating in the last 30s
 ; counts, so a stale heartbeat whose pid now names another PowerShell is skipped. A window for an install the person
 ; quit into is left alone and answers 1: they closed ADE themselves, so it is
-; not reopened, the same rule the watchdog follows.
-!define ADE_RELEASE_UPDATE_WINDOW `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$r=0;foreach($$d in @(Get-ChildItem -Directory -Path (Join-Path $$env:LOCALAPPDATA 'ADE') -Filter 'update-progress-*' -EA 0)){try{$$b=Get-Content -LiteralPath (Join-Path $$d.FullName 'progress.json') -Raw -EA Stop|ConvertFrom-Json;$$a=Get-Content -LiteralPath (Join-Path $$d.FullName 'progress-args.json') -Raw -EA Stop|ConvertFrom-Json}catch{continue};$$p=Get-Process -Id ([int]$$b.pid) -EA 0;if(!$$p -or $$p.ProcessName -ne 'powershell' -or ([DateTimeOffset]::UtcNow-[DateTimeOffset]$$b.updatedAt).TotalSeconds -gt 30){continue};if($$a.quitInstall){$$r=1;continue};[IO.File]::WriteAllText((Join-Path $$d.FullName 'progress.json.cancel'),[string]$$a.runId);if(!$$p.WaitForExit(5000)){Stop-Process -Id $$p.Id -Force -EA 0}};exit $$r"`
+; not reopened, the same rule the watchdog follows. Unless they opened ADE again
+; during the install: that launch left launch-requested.json beside the window
+; (deferToRunningWindowsInstall), and then the window is closed and ADE reopened.
+!define ADE_RELEASE_UPDATE_WINDOW `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$r=0;foreach($$d in @(Get-ChildItem -Directory -Path (Join-Path $$env:LOCALAPPDATA 'ADE') -Filter 'update-progress-*' -EA 0)){try{$$b=Get-Content -LiteralPath (Join-Path $$d.FullName 'progress.json') -Raw -EA Stop|ConvertFrom-Json;$$a=Get-Content -LiteralPath (Join-Path $$d.FullName 'progress-args.json') -Raw -EA Stop|ConvertFrom-Json}catch{continue};$$p=Get-Process -Id ([int]$$b.pid) -EA 0;if(!$$p -or $$p.ProcessName -ne 'powershell' -or ([DateTimeOffset]::UtcNow-[DateTimeOffset]$$b.updatedAt).TotalSeconds -gt 30){continue};if($$a.quitInstall -and !(Test-Path -LiteralPath (Join-Path $$d.FullName 'launch-requested.json'))){$$r=1;continue};[IO.File]::WriteAllText((Join-Path $$d.FullName 'progress.json.cancel'),[string]$$a.runId);if(!$$p.WaitForExit(5000)){Stop-Process -Id $$p.Id -Force -EA 0}};exit $$r"`
 !macro adeHandleUninstallResult
   ${If} ${Errors}
     DetailPrint `Uninstall was not successful. Not able to launch uninstaller!`
