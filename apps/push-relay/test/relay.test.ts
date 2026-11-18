@@ -1203,6 +1203,39 @@ describe("push relay", () => {
     expect(bodies[3]).toMatchObject({ error: "relay daily budget reached" });
   });
 
+  it("answers a request whose shared budget wait belonged to a request that ended", async () => {
+    // Workers settles a promise only in the request that made it. When the
+    // request that started the shared reservation ends first, the others'
+    // wait fails with this error; each must then reserve on its own, not 503.
+    const realPrepare = db.prepare.bind(db);
+    let failed = false;
+    const env: PushRelayEnv = {
+      ...makeEnv(db, undefined),
+      IP_RATE_LIMIT_PER_MIN: "1000",
+      DB: {
+        ...db,
+        prepare: (sql: string) => {
+          const statement = realPrepare(sql);
+          const bind = statement.bind.bind(statement);
+          statement.bind = (...values: unknown[]) => {
+            const bound = bind(...values);
+            if (!failed && String(values[0]).startsWith("budget:")) {
+              failed = true;
+              bound.first = async () => {
+                throw new Error("This promise was created by a request that has since ended, so it can never settle.");
+              };
+            }
+            return bound;
+          };
+          return statement;
+        },
+      } as unknown as PushRelayEnv["DB"],
+    };
+    const response = await handleRequest(ipRequest(`/machines/${"f".repeat(40)}/devices`, "9.9.9.9", { method: "GET" }), env);
+    expect(failed).toBe(true);
+    expect(response.status).not.toBe(503);
+  });
+
   it("rate limits a flooding IP without affecting a different IP", async () => {
     const env: PushRelayEnv = { ...makeEnv(db, undefined), IP_RATE_LIMIT_PER_MIN: "2", CLAIM_RATE_LIMIT_PER_MIN: "1000" };
     const hit = (ip: string) =>

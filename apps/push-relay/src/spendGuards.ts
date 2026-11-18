@@ -269,6 +269,19 @@ export async function recordDailyBudget(
     }
     // A D1 failure that outlasts the retries rejects every waiter; each then
     // answers 503 (see `handleRequest`).
-    await budgetReservation.promise;
+    const reservation = budgetReservation;
+    try {
+      await reservation.promise;
+    } catch (error) {
+      // Workers settles a promise only in the request that made it: when that
+      // request ended first, this wait can never finish. Drop that
+      // reservation; the next round makes one in this request.
+      if (!madeByEndedRequest(error)) throw error;
+      if (budgetReservation === reservation) budgetReservation = null;
+    }
   }
+}
+
+function madeByEndedRequest(error: unknown): boolean {
+  return /created by a request that has since ended|can never settle/i.test(error instanceof Error ? error.message : String(error));
 }
