@@ -43,9 +43,9 @@ import {
 } from "./workTools";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolPickMachineState, WorkToolStartState } from "./workToolStartState";
-import { deviceKindRunsOnPlatform, type DeviceKind } from "../../../shared/types/deviceSources";
+import type { DeviceKind } from "../../../shared/types/deviceSources";
 import type { RemoteWorkCopyUse } from "../../../shared/chatRemoteWork";
-import { workCopyUseOn } from "./workToolCatalog";
+import { machineRunsKind, workCopyUseOn } from "./workToolCatalog";
 import type { ToolMachine } from "./useToolMachines";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
 import { isWebCodecsAvailable } from "../device/h264StreamPlayer";
@@ -90,6 +90,7 @@ const browserPanel = loadOnUse(() => import("../chat/ChatBuiltInBrowserPanel").t
 const gitPanel = loadOnUse(() => import("../lanes/LaneGitActionsPane").then((m) => m.LaneGitActionsPane));
 const filesPanel = loadOnUse(() => import("../files/FilesTab").then((m) => m.FilesTab));
 const applePanel = loadOnUse(() => import("../apple/AppleDevicePane").then((m) => m.AppleDevicePane));
+const cloudIphonePanel = loadOnUse(() => import("../apple/CloudIphonePanel").then((m) => m.CloudIphonePanel));
 const androidPanel = loadOnUse(() => import("../android/AndroidDevicePane").then((m) => m.AndroidDevicePane));
 const desktopPanel = loadOnUse(() => import("../chat/ChatMacDesktopPanel").then((m) => m.ChatMacDesktopPanel));
 const prPanel = loadOnUse(() => import("../chat/ChatPrPane").then((m) => m.ChatPrPane));
@@ -100,6 +101,7 @@ const ChatBuiltInBrowserPanel = browserPanel.Panel;
 const LaneGitActionsPane = gitPanel.Panel;
 const FilesTab = filesPanel.Panel;
 const AppleDevicePane = applePanel.Panel;
+const CloudIphonePanel = cloudIphonePanel.Panel;
 const AndroidDevicePane = androidPanel.Panel;
 const ChatMacDesktopPanel = desktopPanel.Panel;
 const ChatPrPane = prPanel.Panel;
@@ -252,7 +254,7 @@ function chatOnAdeCloud(machines: readonly ToolMachine[]): boolean {
 /** The machines other than the chat's that can run `kind`, offline ones too, one press each. */
 function PickMachine({ kind, deviceChoice }: WorkToolPanelProps & { kind: DeviceKind }) {
   const { choose } = deviceChoice;
-  const able = deviceChoice.machines.filter((machine) => !machine.isChat && deviceKindRunsOnPlatform(kind, machine.platform));
+  const able = deviceChoice.machines.filter((machine) => !machine.isChat && machineRunsKind(kind, machine));
   return (
     <WorkToolPickMachineState
       kind={kind}
@@ -478,6 +480,8 @@ function hasDecodedFrame(canvas: HTMLCanvasElement): boolean {
 function WorkIosTool(props: WorkToolPanelProps) {
   const { toolContext } = props;
   const driverChat = useDriverChat(props);
+  // The ADE Cloud iPhone (`ios@cloud`): the account's phone, driven through the chat's brain.
+  if (props.deviceMachines.ios?.isCloudIphone) return <CloudIphonePanel pin={props.runtimePin} sessionId={props.panelSessionId ?? null} laneId={props.laneId ?? null} />;
   const target = chosenRemoteTarget(props, "ios");
   if (target && !target.use) return <StartOn {...props} kind="ios" machine={target.machine} />;
   if (!target && !toolContext.supportsIosSimulator) {
@@ -1035,7 +1039,8 @@ const GATED_WORK_TOOLS: Record<WorkSidebarTab, ReturnType<typeof gatedWorkTool>>
   browser: gatedWorkTool(WorkBrowserTool, browserPanel),
   git: gatedWorkTool(WorkGitTool, gitPanel),
   files: gatedWorkTool(WorkFilesTool, filesPanel),
-  ios: gatedWorkTool(WorkIosTool, applePanel),
+  // Both iPhone panes: the tool shows either, by the chat's choice, and never waits on a chunk while open.
+  ios: gatedWorkTool(WorkIosTool, { preload: () => Promise.all([applePanel.preload(), cloudIphonePanel.preload()]) }),
   android: gatedWorkTool(WorkAndroidTool, androidPanel),
   // App Control keeps its own boundary (its tool body has states that show before the panel).
   "app-control": { Component: WorkAppControlTool, preload: appControlPanel.preload },

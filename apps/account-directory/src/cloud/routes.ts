@@ -3,6 +3,7 @@ import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { readBoundedJson } from "../sinkUtils";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
 import { CloudBillingError, accountReturnUrl, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours, webReturnUrl, type BillingReturnUrlFor } from "./billing";
+import { setExtraPhoneMinutes } from "./phoneBilling";
 import { parseSustainedCpuReport, recordSustainedCpu } from "./abuseSignals";
 import { buildAccountState } from "./accountState";
 import { routeSavedChats } from "./chats";
@@ -62,6 +63,7 @@ import { commandWith, overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanup
 import { deleteBackupsForLane, deleteBackupsWithComputer, markRestedWithBackups, routeLaneBackups } from "./laneBackups";
 import { freeCapRefuses } from "./costReport";
 import { ACCOUNT_BLOCKED_MESSAGE, accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusal } from "./blocks";
+import { extraPhoneOffered, handleNomacWebhook, isNomacWebhookRequest, routePhone } from "./phones";
 import { enforceBlockAfterCreate, handleCloudOwnerRequest, isCloudOwnerRequest } from "./safety";
 import { INSTANCE_LIST_TTL_S, listInstancesCached } from "./instanceListCache";
 import { boundedDisplayText } from "../displayText";
@@ -1387,9 +1389,15 @@ async function refuseForeignWake(body: Record<string, unknown> | null, env: Clou
   return wakeUrl && normalized(wakeUrl) === normalized(body.url) ? null : badRequest("That isn't this computer's wake address.");
 }
 
-const BILLING_PATHS = new Set<string>([CLOUD_PATHS.billingCheckout, CLOUD_PATHS.billingPortal, CLOUD_PATHS.billingExtraHours, CLOUD_PATHS.billingExtraDisk, CLOUD_PATHS.billingPlanCleanup, CLOUD_PATHS.billingFreeUnlock]);
+const BILLING_PATHS = new Set<string>([CLOUD_PATHS.billingCheckout, CLOUD_PATHS.billingPortal, CLOUD_PATHS.billingExtraHours, CLOUD_PATHS.billingExtraDisk, CLOUD_PATHS.billingExtraPhone, CLOUD_PATHS.billingPlanCleanup, CLOUD_PATHS.billingFreeUnlock]);
 /** The most a person may set as extra disk's monthly limit, in dollars. */
 const EXTRA_DISK_LIMIT_MAX_USD = 1000;
+
+/** A monthly limit in whole dollars from $1 to `EXTRA_DISK_LIMIT_MAX_USD`, or null when it isn't one. */
+function readMonthlyLimitUsd(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= EXTRA_DISK_LIMIT_MAX_USD ? value : null;
+}
+const LIMIT_SENTENCE = `Pick a monthly limit from $1 to $${EXTRA_DISK_LIMIT_MAX_USD}`;
 
 /**
  * Where Stripe sends the person back: this server's own page, or the hosted
@@ -1440,6 +1448,7 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
   const offers = cloudOffers(env);
   // Not set up yet: as if it didn't exist.
   if (path === CLOUD_PATHS.billingExtraDisk && !offers.extraDisk) return notFound();
+  if (path === CLOUD_PATHS.billingExtraPhone && !extraPhoneOffered(env)) return notFound();
   try {
     // The desktop sends the portal no body, which reads as `{}`.
     const body = await readJson(request);
@@ -1460,10 +1469,27 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
     }
     if (typeof body.enabled !== "boolean") return badRequest(UNREADABLE_REQUEST_MESSAGE);
     if (path === CLOUD_PATHS.billingExtraDisk) {
-      const limit = body.monthlyLimitUsd;
-      const limitOk = typeof limit === "number" && Number.isInteger(limit) && limit >= 1 && limit <= EXTRA_DISK_LIMIT_MAX_USD;
-      if (body.enabled && !limitOk) return badRequest(`Pick a monthly limit from $1 to $${EXTRA_DISK_LIMIT_MAX_USD}.`);
-      await setExtraDisk(env, userId, body.enabled ? { enabled: true, monthlyLimitCents: (limit as number) * 100 } : { enabled: false }, now);
+      if (!body.enabled) {
+        await setExtraDisk(env, userId, { enabled: false }, now);
+      } else {
+        const limit = readMonthlyLimitUsd(body.monthlyLimitUsd);
+        if (limit == null) return badRequest(`${LIMIT_SENTENCE}.`);
+        await setExtraDisk(env, userId, { enabled: true, monthlyLimitCents: limit * 100 }, now);
+      }
+      return json(await buildAccountState(env, userId, now));
+    }
+    if (path === CLOUD_PATHS.billingExtraPhone) {
+      if (!body.enabled) {
+        await setExtraPhoneMinutes(env, userId, { enabled: false }, now);
+      } else if (body.monthlyLimitUsd == null) {
+        // No limit is only ever chosen (null or left out).
+        await setExtraPhoneMinutes(env, userId, { enabled: true, monthlyLimitCents: null }, now);
+      } else {
+        // A limit is whole dollars, as extra disk's.
+        const limit = readMonthlyLimitUsd(body.monthlyLimitUsd);
+        if (limit == null) return badRequest(`${LIMIT_SENTENCE}, or none.`);
+        await setExtraPhoneMinutes(env, userId, { enabled: true, monthlyLimitCents: limit * 100 }, now);
+      }
       return json(await buildAccountState(env, userId, now));
     }
     await setExtraHours(env, userId, body.enabled, now);
@@ -1482,6 +1508,7 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
 function freePlanMomentOf(method: string, path: string): "read" | "use" | null {
   if (method === "GET" && (path === CLOUD_PATHS.account || path === CLOUD_PATHS.referrals)) return "read";
   if (method !== "POST") return null;
+  // A phone start settles them in `phones.ts`, once its access is known.
   if (path === CLOUD_PATHS.instances) return "use";
   const action = instanceRouteOf(path)?.action;
   return action === "start" || action === "fork" ? "use" : null;
@@ -1668,6 +1695,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (isCloudOwnerRequest(path)) {
     return providerCall(() => handleCloudOwnerRequest(request, env, path, { provider: providerFor(env), now: Date.now(), waitUntil }));
   }
+  // NoMac's webhook: its own signature is the proof, never an account token.
+  if (isNomacWebhookRequest(path, request.method)) return handleNomacWebhook(request, env, Date.now(), waitUntil);
   // The new computer's join has no account token yet: its one-time code is the proof.
   if (isLaunchJoinRequest(path, request.method)) {
     return providerCall(() => handleLaunchJoin(request, env, path, { provider: providerFor(env), now: Date.now() }));
@@ -1734,6 +1763,9 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (path === CLOUD_PATHS.account) {
     return request.method === "GET" ? json(await buildAccountState(env, caller.userId, now)) : notFound();
   }
+  // The ADE Cloud iPhone: no computer, so no provider (`phones.ts`).
+  const phone = await routePhone(request, path, env, caller.userId, now, waitUntil);
+  if (phone) return phone;
   const referrals = await routeReferrals(request, path, env, caller.userId, ctx);
   if (referrals) return referrals;
   const billing = await routeBilling(request, url, path, env, caller.userId, ctx);

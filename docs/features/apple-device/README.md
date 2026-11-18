@@ -15,6 +15,10 @@ downloaded only when the person asks, from the Runtimes section (see below).
 `ade ios-sim` is a deprecated alias of `ade apple` for one minor release. It
 prints one deprecation line to stderr per process.
 
+The ADE Cloud iPhone (`ios@cloud`) is the same `ade apple` surface on an iOS
+Simulator rented from NoMac for the account, so Windows and Linux machines use
+it too: [ade-cloud-iphone.md](./ade-cloud-iphone.md).
+
 ## Runtime ownership
 
 The simulator service runs where the ADE runtime runs. A local Mac runtime can

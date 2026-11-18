@@ -35,6 +35,7 @@ import { createRemoteRuntimeNamespace } from "./remoteRuntime";
 import { createSessionsPtyNamespaces } from "./sessionsPty";
 import { createWebCloudAccessNamespace, createWebCloudNamespace, createWebCloudLaunchesNamespace } from "./cloud";
 import { createWebProviderLoginsNamespace } from "./providerLogins";
+import { createWebCloudPhoneNamespace } from "./cloudPhone";
 import { createGithubAccountAppWebMethods } from "./githubStub";
 import { createWebGithubDirectNamespace } from "../github/directAdapter";
 import type { AdapterEvents, AdapterInfra } from "./types";
@@ -222,6 +223,9 @@ export function createAdeWebAdapter(
     providerInstances: misc.providerInstances,
     // The account's sign-ins (Settings › Providers, the ADE Cloud page), through the connected machine.
     providerLogins: createWebProviderLoginsNamespace(infra),
+    // The ADE Cloud iPhone through the connected machine. `cloudPhoneView` stays
+    // absent: the pane shows NoMac's flat view in an iframe on the web.
+    cloudPhone: createWebCloudPhoneNamespace(infra),
     automations: misc.automations,
     updateCheckForUpdates: async () => undefined,
     // The web app has no install of its own to move between tracks.

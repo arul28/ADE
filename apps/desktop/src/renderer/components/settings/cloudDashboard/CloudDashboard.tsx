@@ -473,11 +473,16 @@ function CloudHero({
             <div className="adecd-hero-chips">
               {earned > 0 ? <span className="adecd-hero-chip" data-tone="lamp" title="Earned from invites. They never expire.">+{formatCloudHours(earned)} h earned</span> : null}
               {account.extraHours.available ? (
-                <span className="adecd-hero-chip" title={account.extraHours.enabled ? "Work keeps going past your plan's hours, billed after use." : "Work stops when your hours run out."}>
+                <span className="adecd-hero-chip" title={account.extraHours.enabled ? "Linux work keeps going past your plan's hours, billed after use." : "Linux work stops when your hours run out."}>
                   <i data-on={account.extraHours.enabled || undefined} />
                   {account.extraHours.enabled
-                    ? `Extra hours on${account.extraHours.usedMilli > 0 ? `, ${formatCloudHours(account.extraHours.usedMilli)} h used` : ""}`
-                    : "Extra hours off"}
+                    ? `Extra Linux hours on${account.extraHours.usedMilli > 0 ? `, ${formatCloudHours(account.extraHours.usedMilli)} h used` : ""}`
+                    : "Extra Linux hours off"}
+                </span>
+              ) : null}
+              {account.phone && account.phone.access === "on" && account.phone.minutes ? (
+                <span className="adecd-hero-chip" title="Time on your ADE Cloud iPhone this month, for testing your app.">
+                  iPhone: {account.phone.minutes.used} of {account.phone.minutes.included} min this month{account.phone.extra.enabled ? " · extra on" : ""}
                 </span>
               ) : null}
               {forecast ? <span className="adecd-hero-chip" title="An estimate from your last few days of use.">{forecast}</span> : null}

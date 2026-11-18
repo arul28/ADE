@@ -8953,6 +8953,19 @@ describe("CTO-gated Linear sync commands", () => {
           readObservationPreview: vi.fn(async () => ({ ok: true })),
           setActiveTool: vi.fn(() => ({ ok: true })),
         },
+        // Same rule for `cloudPhone.*`: every brain builds the `cloud_phone`
+        // action domain (`bootstrap.ts`), so the fixture carries the one read
+        // the loop below reaches.
+        cloudPhoneActions: () => ({
+          getStatus: vi.fn(async () => ({
+            access: "off",
+            minutes: null,
+            phone: null,
+            capabilities: [],
+            supported: false,
+            reason: null,
+          })),
+        }),
         // Same rule for `macDesktop.*`: a Mac runtime builds the service and its
         // stream fan-out (`bootstrap.ts` / `main.ts`), so the fixture carries
         // both. The handlers are never reached with valid args here; the loop
@@ -9125,6 +9138,13 @@ describe("CTO-gated Linear sync commands", () => {
       // `providerLogins.*` is the person's own write, for a controller only.
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
         if (!action.startsWith("providerLogins.") || action === "providerLogins.status") continue;
+        viewerBlockedActions.add(action);
+        controllerAllowedActions.add(action);
+      }
+      // The ADE Cloud iPhone: `status` is a read; the view link, start, stop
+      // and a screenshot are the person's own, for a controller only.
+      for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
+        if (!action.startsWith("cloudPhone.") || action === "cloudPhone.status") continue;
         viewerBlockedActions.add(action);
         controllerAllowedActions.add(action);
       }

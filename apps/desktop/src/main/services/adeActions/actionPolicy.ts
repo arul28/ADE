@@ -7,6 +7,7 @@ import {
 import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
 import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../../shared/claudePluginUi";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
+import { CLOUD_PHONE_AGENT_ACTIONS, CLOUD_PHONE_USER_ONLY_ACTIONS } from "../../../shared/cloudPhone";
 import { ANDROID_AGENT_ACTIONS, ANDROID_PERSON_ONLY_ACTIONS, ANDROID_USER_ONLY_ACTIONS } from "../../../shared/types/androidEmulator";
 import {
   PROVIDER_LOGIN_ACCOUNT_WRITES,
@@ -384,6 +385,8 @@ const ROLE_ORDER: Record<AdeActionRole, number> = {
  */
 export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
   ios_simulator: APPLE_USER_ONLY_ACTIONS,
+  // The view link drives the phone from a window.
+  cloud_phone: CLOUD_PHONE_USER_ONLY_ACTIONS,
   // The SDK install and folder (Google's licences), deleting an AVD, and the
   // render a window drew: the same rule as the Apple device.
   android_emulator: ANDROID_PERSON_ONLY_ACTIONS,
@@ -1488,6 +1491,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // retyped: `getStatus().capabilities` reports it to agents and `apple.invoke`
   // gates the phone/web client on it, and three hand-kept copies is how an
   // action ships reachable on one surface and unnamed on the other two.
+  // The ADE Cloud iPhone (`cloudPhoneService`, shared/cloudPhone.ts).
+  cloud_phone: [...CLOUD_PHONE_AGENT_ACTIONS, ...CLOUD_PHONE_USER_ONLY_ACTIONS],
   ios_simulator: [...APPLE_AGENT_ACTIONS, ...APPLE_USER_ONLY_ACTIONS],
   /*
    * Mac Desktop: one private macOS screen per lane.

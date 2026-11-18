@@ -87,11 +87,11 @@ const CATALOG: CloudAccountState["catalog"] = {
     { type: "vm", cpu: 4, memoryGb: 16, multiplierMilli: 8000, tier: "xlarge", label: "X-Large", diskMaxGb: 100 },
   ],
   plans: {
-    free: { includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 20, extraHourCents: null },
-    paid: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 30, extraHourCents: 2 },
-    plus: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 30, extraHourCents: 2 },
-    pro: { includedMilli: 1_600_000, diskGb: 80, priceUsd: 20, phoneMinutes: 160, extraHourCents: 1.5 },
-    max: { includedMilli: 5_000_000, diskGb: 175, priceUsd: 50, phoneMinutes: 500, extraHourCents: 1.2 },
+    free: { includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 60, extraHourCents: null, extraPhoneMinuteCents: null },
+    paid: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 80, extraHourCents: 2, extraPhoneMinuteCents: 2.5 },
+    plus: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 80, extraHourCents: 2, extraPhoneMinuteCents: 2.5 },
+    pro: { includedMilli: 1_600_000, diskGb: 80, priceUsd: 20, phoneMinutes: 300, extraHourCents: 1.5, extraPhoneMinuteCents: 2.5 },
+    max: { includedMilli: 5_000_000, diskGb: 175, priceUsd: 50, phoneMinutes: 800, extraHourCents: 1.2, extraPhoneMinuteCents: 2.5 },
   },
   diskStepGb: 4,
   paidPriceUsd: 5,
@@ -458,6 +458,12 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       state: left <= 0 ? "zero" : percent >= 95 ? "warn95" : percent >= 80 ? "warn80" : "none",
     },
     extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.planId === "pro" ? 4_200 : 0 },
+    phone: fix.planId === "free" ? undefined : {
+      access: "on",
+      minutes: { included: plan.phoneMinutes ?? 0, used: 42, left: Math.max(0, (plan.phoneMinutes ?? 0) - 42) },
+      state: "none",
+      extra: { available: true, enabled: false, centsPerMinute: plan.extraPhoneMinuteCents ?? null, monthlyLimitCents: null, usedMinutes: 0, usedCents: 0 },
+    },
     extraDisk: fix.planId === "free" ? undefined : fix.extraDiskOn
       ? { available: true, state: "on", monthlyLimitCents: 1000, usedCents: 140 }
       : { available: true, state: "off", monthlyLimitCents: null, usedCents: 0 },
@@ -594,6 +600,23 @@ export function applyBrowserMockCloud(ade: any): void {
     setAgentLimits: base.setAgentLimits ?? (async (limits: unknown) => limits),
     setExtraHours: async (enabled: boolean) => {
       state.extraHours = { ...state.extraHours, enabled };
+      for (const listener of statusListeners) listener();
+      return state;
+    },
+    setExtraPhoneMinutes: async (choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }) => {
+      if (state.phone) {
+        state.phone = {
+          ...state.phone,
+          extra: {
+            ...state.phone.extra,
+            enabled: choice.enabled,
+            monthlyLimitCents: choice.enabled ? (choice.monthlyLimitUsd == null ? null : choice.monthlyLimitUsd * 100) : state.phone.extra.monthlyLimitCents,
+            // Turning it on shows what some extra use looks like ("$0.30" at 2.5¢ a minute).
+            usedMinutes: choice.enabled ? 12 : 0,
+            usedCents: choice.enabled ? 30 : 0,
+          },
+        };
+      }
       for (const listener of statusListeners) listener();
       return state;
     },

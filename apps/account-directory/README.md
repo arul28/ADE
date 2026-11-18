@@ -481,6 +481,56 @@ address from Clerk (`CLERK_SECRET_KEY`); owner alerts go to
 `no_resend_key`, `no_clerk_key`, `no_recipient` or `no_alert_address`. No
 email log line has the subject or a lane name.
 
+### The ADE Cloud iPhone
+
+An iOS Simulator at NoMac, one per account, driven from any machine with
+`ade apple` (`src/cloud/phones.ts`, migrations `0047_cloud_phone_beta.sql` and
+`0048_cloud_phone_usage.sql`, shapes in `contract.ts`). Who may use it is the
+var `CLOUD_PHONE_ACCESS`: `beta` (the default: only accounts the owner adds;
+everyone else reads `soon`), `all`, or `off`. `CLOUD_PHONES_PAUSED=1` refuses
+new phones (503 `phone_paused`) while running ones finish. The launch plan is
+`docs/plans/ade-cloud-iphone-launch.md`.
+
+- `GET /cloud/phone` answers `CloudPhoneState`: `access` (`on`, `soon`, `off`),
+  the period's `minutes`, and the live `phone`. `POST /cloud/phone`
+  `{ device? }` starts the account's phone (or answers its live one) and mints
+  a token for that phone (sent again, it answers the live phone with a fresh
+  token); `DELETE /cloud/phone` stops it.
+- `POST /cloud/phone/view` `{ control? }` answers a view link for it, signed for
+  the account when `NOMAC_EMBED_SECRET` is set.
+- The plan's `phoneMinutes` are the period's (`plans.ts`: Free 60, Plus 80,
+  Pro 300, Max 800; none on a free plan held by the free-plan checks, 402
+  `phone_free_held`). Each phone is a `cloud_phones` row (label
+  `ade:<userId>` at NoMac), settled by NoMac's webhook and by the ten-minute
+  check, which also reads live phones again, sends the 80% and
+  out-of-minutes emails once a period, and reports extra minutes to Stripe.
+  The account read (`CloudAccountState.phone`) comes from D1 only.
+- Past the plan's minutes: the free plan stops (402 `phone_minutes_out`). A paid
+  plan with extra iPhone minutes on (`POST /cloud/billing/extra-phone`
+  `{ enabled, monthlyLimitUsd? }`, its own switch beside extra hours and
+  extra disk) keeps going at 2.5¢ a minute up to its monthly limit (402
+  `phone_extra_limit` at it). Every phone starts with NoMac's spend cap and time
+  limit set to what the account may still use, so it stops by itself there.
+  Minutes used while the switch was on stay owed after it goes off. A change
+  while an ended period is still being billed (a phone of it still running)
+  answers 409 `billing_busy`; it goes through once that period is settled.
+  An ended period is billed to the Stripe customer, dated inside that period,
+  so a cancelled plan's last minutes reach its final invoice.
+- `POST /cloud/nomac/webhook`: NoMac's deliveries, checked against
+  `NOMAC_WEBHOOK_SECRET` (`nomac-signature`, refused past 5 minutes), each id
+  taken once. `phone.*` settle a phone; `credit.low` emails the owner.
+  Make the webhook at NoMac with `phone.ready`, `phone.ended` and `credit.low`.
+- Secrets: `NOMAC_API_KEY` (`nmk_…`, required; unset, the read answers `off` and
+  the other phone routes 503), `NOMAC_WEBHOOK_SECRET`, and optional
+  `NOMAC_EMBED_SECRET` (`nme_…`). Vars `STRIPE_PHONE_MINUTE_PRICE_ID` and
+  `STRIPE_PHONE_METER_EVENT` (from `scripts/stripe-setup.mjs`) sell extra
+  minutes; unset, the switch isn't offered. The
+  account key stays in this Worker; a brain gets a token for one phone (2 hours)
+  that cannot start, list or stop phones. Apply
+  `0047_cloud_phone_beta.sql` and `0048_cloud_phone_usage.sql` before the
+  Worker that reads them deploys.
+- The owner adds accounts with `POST /cloud/owner/phone-beta`, below.
+
 ### Payments
 
 `src/cloud/billing.ts` sells the plans through Stripe Managed Payments.
@@ -542,6 +592,11 @@ least 30 days old, one free plan per GitHub account).
     `blocked: true`.
   - A blocked GitHub account on a new ADE account reads as `github_used`; a
     blocked card can't unlock free hours. Both alert the owner.
+- **The iPhone beta list.** `POST /cloud/owner/phone-beta` `{ "email": "…" }`
+  or `{ "userId": "user_…" }` adds an account (an email is looked up in Clerk
+  once; the row keeps the id, and the address for the owner's reading).
+  `{ …, "enabled": false }` removes it, and `{}` lists the rows. See "The ADE
+  Cloud iPhone".
 - **One card, one free unlock** (`cloud_free_card_claims`, unique on the
   fingerprint). The free-unlock Checkout takes cards only, asks for 3D Secure
   (`request_three_d_secure=any`), and the webhook reads the fingerprint from

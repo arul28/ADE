@@ -116,13 +116,16 @@ export function adeHostWithheldAgentSkills(
 }
 
 let adeCloudSkillVisible = false;
+/** The account has the ADE Cloud iPhone: `ade-apple` is for any host then, not only a Mac. */
+let adeCloudIphoneVisible = false;
 let agentSkillAccessRefresh: (() => void) | null = null;
 let agentSkillRootFilter: ((roots: readonly string[]) => string[]) | null = null;
 
 /**
  * Bundled skills no agent may see right now: `ade-cloud` unless this account
  * is on ADE Cloud's access list, and the skills this host cannot run
- * ({@link adeHostWithheldAgentSkills}). Every skill channel (prompt listing,
+ * ({@link adeHostWithheldAgentSkills}), except `ade-apple` for an account
+ * with the ADE Cloud iPhone, which any host drives. Every skill channel (prompt listing,
  * the skill roots, the `ade-*` line of guidance, `ade skill`) reads this one set.
  */
 export function adeWithheldAgentSkills(): readonly string[] {
@@ -130,8 +133,13 @@ export function adeWithheldAgentSkills(): readonly string[] {
   return [
     ...ALWAYS_WITHHELD_AGENT_SKILLS,
     ...(adeCloudSkillVisible ? [] : ["ade-cloud"]),
-    ...adeHostWithheldAgentSkills(),
+    ...adeHostWithheldAgentSkills().filter((name) => !(adeCloudIphoneVisible && name === "ade-apple")),
   ];
+}
+
+/** Whether the account has the ADE Cloud iPhone (`access: "on"`), from whoever just asked the server. */
+export function setAdeCloudIphoneSkillVisible(visible: boolean): void {
+  adeCloudIphoneVisible = visible;
 }
 
 /** The account's ADE Cloud answer, from whoever just asked the server. */

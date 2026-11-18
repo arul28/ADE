@@ -9,7 +9,7 @@ import type {
   AndroidRenderRequestEvent,
 } from "../../../shared/types/androidEmulator";
 import { useAppStore } from "../../state/appStore";
-import { isInParkedSurface } from "../../lib/parkedSurface";
+import { usePaneOffScreen } from "../../lib/parkedSurface";
 import type { DeviceOrientation } from "../../../shared/types/deviceOrientation";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
@@ -179,7 +179,7 @@ function AndroidDevicePaneOnMachine({
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [bodyWidth, setBodyWidth] = useState(720);
-  const [hidden, setHidden] = useState(false);
+  const hidden = usePaneOffScreen(bodyRef);
 
   const [status, setStatus] = useState<AndroidEmulatorStatus | null>(null);
   const [statusError, setStatusError] = useState<AndroidErrorDescription | null>(null);
@@ -212,19 +212,6 @@ function AndroidDevicePaneOnMachine({
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width;
       if (typeof width === "number") setBodyWidth(width);
-    });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    const node = bodyRef.current;
-    if (!node || typeof IntersectionObserver !== "function") return undefined;
-    // A parked surface (another project or tab on screen) reads as not
-    // intersecting, but keeps its stream so switching back shows it live.
-    const observer = new IntersectionObserver((entries) => {
-      const entry = entries[0];
-      if (entry) setHidden(!entry.isIntersecting && !isInParkedSurface(node));
     });
     observer.observe(node);
     return () => observer.disconnect();

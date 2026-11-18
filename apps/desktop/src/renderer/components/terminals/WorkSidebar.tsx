@@ -64,6 +64,7 @@ import {
   DEVICE_KIND_ORDER,
   DEVICE_KINDS,
   deviceKindTool,
+  machineRunsKind,
   onlineMacElsewhere,
   remoteDeviceStatus,
 } from "./workToolCatalog";
@@ -263,7 +264,8 @@ export function WorkSidebar({
   const chatOnAdeCloud = toolMachines.machines.some((machine) => machine.isChat && machine.adeCloud === true);
   const iosOpensElsewhere = Boolean(chosenRemote.ios) || onlineMacElsewhere(toolMachines.machines) || chatOnAdeCloud;
   const androidOpensElsewhere = Boolean(chosenRemote.android)
-    || toolMachines.machines.some((machine) => !machine.isChat && machine.online)
+    // Not the ADE Cloud iPhone's row: it runs only the iPhone.
+    || toolMachines.machines.some((machine) => !machine.isChat && machine.online && machineRunsKind("android", machine))
     || chatOnAdeCloud;
   const { remoteMacDesktopPlatform, hasRemoteWindowsDesktop } = remoteDesktopToolContext(chosenRemote.screen?.platform);
   const hasRemoteAppControl = Boolean(chosenRemote.app);
@@ -709,6 +711,7 @@ export function WorkSidebar({
       tile={openTile}
       mode={barMode}
       machines={toolMachines.machines}
+      cloudIphone={toolMachines.cloudIphone}
       canChoose={catalogState.canChoose}
       viewOnly={catalogState.viewOnly}
       chooseUnavailableReason={catalogState.chooseUnavailableReason}

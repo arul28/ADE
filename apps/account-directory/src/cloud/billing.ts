@@ -92,9 +92,9 @@ export class CloudBillingError extends Error {
 /** A plan switch retried inside this window reuses its Stripe idempotency key, so it switches once. */
 const PLAN_CHANGE_RETRY_WINDOW_MS = 10 * 60_000;
 
-const unavailable = () => new CloudBillingError("billing_unavailable", "ADE Cloud can't reach billing right now. Try again soon.", 503);
+export const unavailable = () => new CloudBillingError("billing_unavailable", "ADE Cloud can't reach billing right now. Try again soon.", 503);
 
-class StripeRequestError extends Error {
+export class StripeRequestError extends Error {
   constructor(readonly status: number, readonly stripeMessage: string) {
     super(`stripe answered ${status}`);
     this.name = "StripeRequestError";
@@ -103,7 +103,7 @@ class StripeRequestError extends Error {
 
 type StripeObject = Record<string, unknown>;
 
-async function stripeRequest(
+export async function stripeRequest(
   env: Pick<CloudEnv, "STRIPE_SECRET_KEY">,
   method: "GET" | "POST" | "DELETE",
   path: string,
@@ -433,7 +433,7 @@ type SubscriptionItem = { id: string; price: string | null; meter: string | null
 const meterOfPrice = (price: unknown): string | null => idOf(objectOf(objectOf(price)?.recurring)?.meter);
 
 /** The subscription's items: which one is the plan, and the price (and meter) of each. */
-async function subscriptionItems(env: CloudEnv, subscriptionId: string): Promise<SubscriptionItem[]> {
+export async function subscriptionItems(env: CloudEnv, subscriptionId: string): Promise<SubscriptionItem[]> {
   const subscription = await stripeRequest(env, "GET", `/subscriptions/${encodeURIComponent(subscriptionId)}`);
   const items = (objectOf(subscription.items)?.data as StripeObject[] | undefined) ?? [];
   return items.flatMap((item) => {
@@ -894,7 +894,7 @@ export async function cancelAccountSubscription(
   } catch (error) {
     if (!(error instanceof StripeRequestError && error.status === 404)) throw error;
   }
-  await env.DB.prepare("update cloud_accounts set plan = 'free', stripe_subscription_id = null, stripe_status = null, extra_enabled = 0, extra_owed_milli = 0, extra_disk_state = 'off', cancel_at_period_end = 0, updated_at = ? where user_id = ?")
+  await env.DB.prepare("update cloud_accounts set plan = 'free', stripe_subscription_id = null, stripe_status = null, extra_enabled = 0, extra_owed_milli = 0, extra_disk_state = 'off', phone_extra_enabled = 0, cancel_at_period_end = 0, updated_at = ? where user_id = ?")
     .bind(now, account.user_id).run();
   logCloud(reason === "blocked_account" ? "cloud.subscription_cancelled_for_blocked_account" : "cloud.subscription_cancelled_for_deleted_account", { userId: account.user_id });
 }
@@ -1288,7 +1288,7 @@ export async function handleCloudBillingPublicRequest(request: Request, env: Clo
 /* ---- Extra hours to the meter ---- */
 
 /** Stripe refused a report because this identifier was already counted. */
-const isDuplicateReport = (error: unknown): boolean =>
+export const isDuplicateReport = (error: unknown): boolean =>
   error instanceof StripeRequestError && error.status === 400 && /identifier/i.test(error.stripeMessage) && /(already|duplicate|exists)/i.test(error.stripeMessage);
 
 /**

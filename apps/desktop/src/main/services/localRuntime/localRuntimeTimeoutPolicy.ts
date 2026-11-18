@@ -3,6 +3,7 @@ import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 import { WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS } from "../../../shared/types/macDesktop";
 import { GIT_PULL_ACTION_TIMEOUT_MS, LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
 import { FILE_DELETE_TIMEOUT_MS } from "../../../shared/removeTreeTimeouts";
+import { CLOUD_PHONE_BUILD_TIMEOUT_MS, CLOUD_PHONE_CALL_TIMEOUT_MS } from "../../../shared/cloudPhone";
 import {
   ARCHIVE_DELETE_TIMEOUT_MS,
   ARCHIVE_RESTORE_TIMEOUT_MS,
@@ -398,6 +399,18 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // service timed out" while the daemon kept building, so the session surfaced
   // minutes later with no error to explain it.
   ["ios_simulator.launch", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
+  // The ADE Cloud iPhone: a build uploads the project and builds it there; a
+  // start may wait for a free phone (`CLOUD_PHONE_CALL_TIMEOUT_MS`, `CLOUD_PHONE_BUILD_TIMEOUT_MS`).
+  ["cloud_phone.launch", CLOUD_PHONE_BUILD_TIMEOUT_MS],
+  ["cloud_phone.installApp", CLOUD_PHONE_BUILD_TIMEOUT_MS],
+  ["cloud_phone.runTests", CLOUD_PHONE_BUILD_TIMEOUT_MS],
+  ["cloud_phone.start", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.look", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.act", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.screenshot", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.control", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.logs", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.record", CLOUD_PHONE_CALL_TIMEOUT_MS],
   // Builds into the lane's DerivedData like a launch, then installs.
   ["ios_simulator.installApp", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
   // See IOS_SIMULATOR_PREVIEW_TIMEOUT_MS.

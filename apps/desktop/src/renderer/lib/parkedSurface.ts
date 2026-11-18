@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, type CSSProperties, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 
 /**
  * Project and route surfaces stay mounted while another one is on screen
@@ -61,6 +61,37 @@ export function useParkedSurfaceFocus(
 /** True when `element` sits in a parked (or inert) surface, so it is not on screen. */
 export function isInParkedSurface(element: Element): boolean {
   return element.closest(`[inert], [${PARKED_SURFACE_ATTRIBUTE}]`) != null;
+}
+
+/**
+ * True while the device pane whose body is in `ref` is off screen, so it
+ * stops its stream and its reads. A parked surface (another project or tab on
+ * screen) reports as not intersecting but is not off screen here: it keeps its
+ * stream, so switching back shows it live.
+ *
+ * Only the pane's own place on screen counts, never the window's. Pausing on
+ * `document.visibilityState` went "hidden" on macOS whenever another app's
+ * window covered this one, and the matching `visibilitychange` did not
+ * reliably fire on the way back: a pane opened behind another window sat on
+ * its loading card forever. Closing the pane unmounts it, which stops it.
+ *
+ * `parked: true` counts a parked surface as off screen too, for a pane that
+ * resumes at once (the ADE Cloud iPhone only pauses its painting).
+ */
+export function usePaneOffScreen(ref: RefObject<Element | null>, options: { parked?: boolean } = {}): boolean {
+  const parked = options.parked === true;
+  const [offScreen, setOffScreen] = useState(false);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || typeof IntersectionObserver !== "function") return undefined;
+    const observer = new IntersectionObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setOffScreen(!entry.isIntersecting && (parked || !isInParkedSurface(node)));
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [parked, ref]);
+  return offScreen;
 }
 
 /**

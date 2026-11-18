@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
@@ -28,12 +28,31 @@ export type ToolMachine = {
   isViewer: boolean;
   /** The chat's machine is one of the account's ADE Cloud computers (named "ADE Cloud"). */
   adeCloud?: boolean;
+  /** ADE Cloud: the account's cloud iPhone, not a machine of the person's (`ios@cloud`). */
+  isCloudIphone?: boolean;
+};
+
+/** The ADE Cloud iPhone as a chip in the iPhone's "runs on" row. Only the iPhone has it. */
+export const ADE_CLOUD_TOOL_MACHINE: ToolMachine = {
+  key: "ade-cloud",
+  name: "ADE Cloud",
+  platform: "darwin",
+  online: true,
+  isChat: false,
+  isViewer: false,
+  isCloudIphone: true,
 };
 
 export type ToolMachines = {
   machines: ToolMachine[];
   /** The account's machine list: not read yet, read, or unreadable (signed out, offline). */
   read: "pending" | "ok" | "failed";
+  /**
+   * The ADE Cloud iPhone on this account, as the chat's brain reads it: `on`
+   * (in the beta; its chip is in `machines`), `soon` (everyone else), or null
+   * before the read or when the brain can't say.
+   */
+  cloudIphone: "on" | "soon" | "off" | null;
 };
 
 let localKeyCache: string | null = null;
@@ -103,6 +122,31 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
 
   const binding = runtimePin ?? projectBinding ?? null;
   const bindingKey = binding?.key ?? null;
+
+  // The ADE Cloud iPhone, read once each time the pane opens, from the chat's
+  // own brain (its account's beta list and minutes). Keyed on the pin's key.
+  // Each answer names the pin it was read for: one read for another pin never shows here.
+  const [cloudIphoneRead, setCloudIphoneRead] = useState<{ pinKey: string | null; access: ToolMachines["cloudIphone"] } | null>(null);
+  const pinRef = useRef(runtimePin);
+  pinRef.current = runtimePin;
+  const runtimePinKey = runtimePin?.key ?? null;
+  useEffect(() => {
+    if (!active) return undefined;
+    const api = typeof window === "undefined" ? undefined : window.ade?.cloudPhone;
+    if (!api?.status) return undefined;
+    let cancelled = false;
+    const pinKey = runtimePinKey;
+    void api.status(pinRef.current).then(
+      (status) => { if (!cancelled) setCloudIphoneRead({ pinKey, access: status.access }); },
+      (error: unknown) => {
+        // An older brain (no `cloud_phone`) or signed out: the row keeps "soon".
+        console.warn("[tools-pane] could not read the ADE Cloud iPhone", error);
+        if (!cancelled) setCloudIphoneRead({ pinKey, access: null });
+      },
+    );
+    return () => { cancelled = true; };
+  }, [active, runtimePinKey]);
+  const cloudIphone = cloudIphoneRead?.pinKey === runtimePinKey ? cloudIphoneRead.access : null;
   const targetId = binding?.kind === "remote" ? binding.targetId : null;
   const bindingName = binding ? machineNameForBinding(binding) : null;
 
@@ -178,8 +222,9 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
     out.sort((a, b) => rank(a) - rank(b));
     const chatMachine = out.find((machine) => machine.isChat) ?? null;
     if (chatMachine && !chatMachine.platform && hostPlatform) chatMachine.platform = hostPlatform;
-    return { machines: out, read };
+    if (cloudIphone === "on") out.push(ADE_CLOUD_TOOL_MACHINE);
+    return { machines: out, read, cloudIphone };
     // `bindingKey` stands for the binding's identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bindingKey, bindingName, cloudIndex, directory, hostPlatform, localKey, read, snapshot, targetId]);
+  }, [bindingKey, bindingName, cloudIndex, cloudIphone, directory, hostPlatform, localKey, read, snapshot, targetId]);
 }

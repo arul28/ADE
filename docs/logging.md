@@ -862,6 +862,21 @@ client version and for work nobody watches
   `unclaimed_use` (free hours used with no computer seen: phone or MCP only),
   with `platform` (`darwin`, `win32`, `linux`) when known. One per account,
   step and day.
+- **`ade_cloud_phone`** (`phones.ts`): the ADE Cloud iPhone. `step` is
+  `started` (with `plan`, `device`, `minutesLeft` and whether it runs on extra
+  minutes), `ended` (with `reason`, NoMac's end reason, and `billedMinutes`)
+  or `refused` (with `reason`: `paused`, `free_cap`, `phone_free_held`,
+  `phone_minutes_out`, `phone_extra_limit`). One per account, step and phone
+  (hashed into the uuid, never sent); a refusal once per reason and hour. No
+  phone id, label, link or token is sent. Server log lines:
+  `cloud.phone_started`, `cloud.phone_stopped` (with `why`),
+  `cloud.phone_start_refused`, `cloud.extra_phone_on`, `_off`,
+  `cloud.extra_phone_period_settled`; Sentry: `cloud.phone_meter_report_failed`,
+  `cloud.phone_meter_account_failed`, `cloud.phone_meter_period_ahead`,
+  `cloud.phone_check_read_failed`, `cloud.phone_allowance_check_failed`,
+  `cloud.phone_stop_due_failed`, `cloud.phone_stops_failed`,
+  `cloud.nomac_webhook_failed`, `cloud.phone_nomac_credit`,
+  `cloud.extra_phone_item_failed`, `cloud.block_phone_stop_failed`.
 - **`ade_cloud_safety`** (`blocks.ts`, `safety.ts`, `costReport.ts`,
   `chats.ts`): `step` is `first_chat` (the account's first saved cloud chat,
   once), `free_cap_50`, `free_cap_80`, `free_cap_100` (free use passed that

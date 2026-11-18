@@ -3,7 +3,7 @@ import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/cr
 import { createCloudServerProvider } from "./cloudServerProvider";
 
 const createProvider = ({ fetch }: { fetch: (url: string, init?: RequestInit) => Promise<Response> }) =>
-  createCloudServerProvider({ accessToken: async () => "account-token", baseUrl: () => "https://directory.invalid", fetch });
+  createCloudServerProvider({ accessToken: async () => "account-token", baseUrl: () => "https://directory.invalid", account: "https://directory.invalid|account", fetch });
 import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { createCloudMachines } from "./cloudMachines";
 import {

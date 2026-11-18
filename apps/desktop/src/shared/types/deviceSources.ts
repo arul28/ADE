@@ -151,16 +151,21 @@ export function devicesSubcommand(args: readonly string[]): DevicesSubcommand {
 }
 
 /**
- * A chat's chosen source for one kind, as its brain keeps it. Only another
- * machine is stored: `here` is no entry, and the cloud source is reserved.
- * The key routes; the name is what the chat is shown.
+ * A chat's chosen source for one kind, as its brain keeps it: another machine
+ * (its key routes; its name is what the chat is shown), or ADE Cloud for an
+ * iPhone (`ios@cloud`, the account's cloud iPhone). `here` is no entry.
  */
-export type ChatDeviceSourceChoice = {
-  kind: "machine";
-  machineKey: string;
-  machineName: string;
-  chosenAt: string;
-};
+export type ChatDeviceSourceChoice =
+  | {
+    kind: "machine";
+    machineKey: string;
+    machineName: string;
+    chosenAt: string;
+  }
+  | { kind: "cloud"; chosenAt: string };
+
+/** Which kinds ADE Cloud has: only the iPhone. */
+export const deviceKindRunsOnCloud = (kind: DeviceKind): boolean => kind === "ios";
 
 export type ChatDeviceSources = Partial<Record<DeviceKind, ChatDeviceSourceChoice>>;
 
@@ -173,8 +178,8 @@ export type ChatDeviceSourcesResult = {
 export type ChatSetDeviceSourceArgs = {
   sessionId: string;
   kind: DeviceKind;
-  /** `here` clears the kind's choice. */
-  source: { kind: "here" } | { kind: "machine"; machineKey: string; machineName: string };
+  /** `here` clears the kind's choice; `cloud` is the account's cloud iPhone (ios only). */
+  source: { kind: "here" } | { kind: "machine"; machineKey: string; machineName: string } | { kind: "cloud" };
 };
 
 /** A stored record read back: unknown kinds and malformed entries are dropped. */
@@ -184,6 +189,10 @@ export function normalizeChatDeviceSources(value: unknown): ChatDeviceSources | 
   for (const [kind, entry] of Object.entries(value as Record<string, unknown>)) {
     if (!isDeviceKind(kind) || !entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const record = entry as Record<string, unknown>;
+    if (record.kind === "cloud") {
+      if (deviceKindRunsOnCloud(kind)) out[kind] = { kind: "cloud", chosenAt: typeof record.chosenAt === "string" ? record.chosenAt : new Date(0).toISOString() };
+      continue;
+    }
     const machineKey = typeof record.machineKey === "string" ? record.machineKey.trim() : "";
     const machineName = typeof record.machineName === "string" ? record.machineName.trim() : "";
     if (record.kind !== "machine" || !machineKey) continue;

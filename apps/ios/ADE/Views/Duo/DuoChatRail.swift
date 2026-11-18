@@ -23,6 +23,7 @@ struct DuoChatRailActions {
   var onToggleSidebar: (() -> Void)?
   var onChatInfo: () -> Void
   var onOpenTool: (DuoToolTab) -> Void
+  var onOpenCloudIphone: () -> Void
   var onCreatePullRequest: () -> Void
   var onOpenLane: () -> Void
   var onRename: () -> Void
@@ -360,10 +361,12 @@ struct DuoChatRail: ViewModifier {
         tools: model.menu.tools,
         hasPullRequest: model.menu.hasPullRequest,
         canCreatePullRequest: model.menu.canCreatePullRequest,
+        showsCloudIphone: model.menu.showsCloudIphone,
         selected: pane.isOpen ? pane.tab : nil,
         onOpen: { tab in
           if pane.isOpen, pane.tab == tab { pane.close() } else { actions.onOpenTool(tab) }
         },
+        onOpenCloudIphone: actions.onOpenCloudIphone,
         onCreatePullRequest: actions.onCreatePullRequest
       )
     } label: {

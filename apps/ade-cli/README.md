@@ -440,6 +440,7 @@ ade files pull --machine windows logs/run.log ./run.log            # copy one fi
 ade devices --text                                                 # every device this chat can use (ios, android, screen, app), on every machine, as <kind>@<machine|here>
 ade devices use ios@"Mac mini"                                      # keep this chat's iPhone on that machine; device commands follow it as --machine does (use ios@here to undo)
 ade devices current                                                # this chat's choice per kind
+ade devices use ios@cloud                                          # the ADE Cloud iPhone (any machine; when the account has it), then ade apple … drives it
 ade terminal list --lane lane-id --text
 ade terminal resume --terminal session-id --text
 ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"

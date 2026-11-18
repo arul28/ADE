@@ -17,6 +17,9 @@ import {
   type CloudCheckoutResult,
   type CloudInviteRedeemResult,
   type CloudLaneWithoutComputer,
+  type CloudPhoneStart,
+  type CloudPhoneState,
+  type CloudPhoneView,
   type CloudReferralSummary,
 } from "../../../../../account-directory/src/cloud/contract";
 import {
@@ -68,6 +71,8 @@ export type CloudServerProviderDeps = {
   computer?: () => Promise<CloudComputerSignal | null>;
   fetch?: FetchLike;
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
+  /** The account this client is made for (`CloudProvider.account`, `cloudAccessKey`). */
+  account: string;
 };
 
 export type CloudDeleteContext = {
@@ -203,6 +208,8 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
   }
 
   return {
+    account: deps.account,
+
     async accessEnabled(): Promise<boolean> {
       return record(await request("GET", "/cloud/access"))?.enabled === true;
     },
@@ -423,6 +430,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       return await request("POST", "/cloud/billing/extra-disk", { body: choice }) as CloudAccountState;
     },
 
+    async setExtraPhoneMinutes(choice): Promise<CloudAccountState> {
+      return await request("POST", CLOUD_PATHS.billingExtraPhone, { body: choice }) as CloudAccountState;
+    },
+
     async readReferral(): Promise<CloudReferralSummary> {
       const referral = readCloudReferralSummary(await request("GET", CLOUD_PATHS.referrals));
       if (!referral) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
@@ -469,6 +480,23 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async deleteSavedChat(args): Promise<void> {
       await request("DELETE", cloudSavedChatUrl("", args.machineKey, args.chatId));
+    },
+
+    async phoneState(): Promise<CloudPhoneState> {
+      return await request("GET", CLOUD_PATHS.phone) as CloudPhoneState;
+    },
+
+    async phoneStart(input): Promise<CloudPhoneStart> {
+      return await request("POST", CLOUD_PATHS.phone, { body: input.device ? { device: input.device } : {} }) as CloudPhoneStart;
+    },
+
+    async phoneView(input): Promise<CloudPhoneView> {
+      return await request("POST", CLOUD_PATHS.phoneView, { body: { control: input.control } }) as CloudPhoneView;
+    },
+
+    async phoneStop(): Promise<{ stopped: boolean }> {
+      const answer = record(await request("DELETE", CLOUD_PATHS.phone));
+      return { stopped: answer?.stopped === true };
     },
   };
 }

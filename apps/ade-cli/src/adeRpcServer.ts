@@ -11,6 +11,7 @@ import { CHAT_HAS_NO_PROOF_YET } from "../../desktop/src/shared/proofProvenance"
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { DEMO_STEP_MAX_CHARS, RECORDING_MAX_MS, parseDemoStepFocus } from "../../desktop/src/shared/demoVideo/demoContract";
 import { cloudDomainEnabled } from "../../desktop/src/shared/adeCloud";
+import { CLOUD_PHONE_SPEND_ACTIONS as CLOUD_PHONE_SPEND_ACTION_NAMES } from "../../desktop/src/shared/cloudPhone";
 import { createDemoEngineSet } from "../../desktop/src/main/services/demoVideo/demoEngines";
 import { localLinkOwnership } from "./services/projects/localLinkOwnership";
 import { reviewProofFile, type ProofReviewWindow } from "../../desktop/src/main/services/demoVideo/proofReview";
@@ -4219,6 +4220,9 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
   "passwords.requestLogin": "ade browser signin",
 };
 
+/** The ADE Cloud iPhone's actions that run (and so spend) its minutes: the phone checks who is asking (`cloudPhoneAgentGuard`). */
+const CLOUD_PHONE_SPEND_ACTIONS: ReadonlySet<string> = new Set(CLOUD_PHONE_SPEND_ACTION_NAMES);
+
 /**
  * The `cloud` actions that spend money or delete something. The RPC server
  * stamps who is asking on them (see runTool), and each asks for approval
@@ -7098,9 +7102,9 @@ async function runTool(args: {
       const { config: _ignoredDraftConfig, ...testArgs } = rawObjectArgs;
       scopedObjectArgs = testArgs;
     }
-    if (domain === "cloud" && CLOUD_APPROVED_ACTIONS.has(action)) {
+    if ((domain === "cloud" && CLOUD_APPROVED_ACTIONS.has(action)) || (domain === "cloud_phone" && CLOUD_PHONE_SPEND_ACTIONS.has(action))) {
       if (argsList || hasScalarArg) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `cloud.${action} requires object arguments.`);
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${domain}.${action} requires object arguments.`);
       }
       // Who may say yes to spending or deleting: a person's own client (the
       // desktop, the CTO thread) already decided; anyone else is an agent and

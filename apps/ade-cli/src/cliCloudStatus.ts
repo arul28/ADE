@@ -38,6 +38,26 @@ function cloudUpdateText(value: unknown): string {
   return target && target !== image ? `${head}, ${target} next` : `${head}, up to date`;
 }
 
+/** "$5", "$1.50": cents as dollars, cents shown only when there are some. */
+function dollarsText(cents: unknown): string {
+  if (typeof cents !== "number" || !Number.isFinite(cents)) return "—";
+  return `$${(cents / 100).toFixed(cents % 100 === 0 ? 0 : 2)}`;
+}
+
+/** The iPhone row: minutes left and when they reset, and what happens past them. */
+function cloudIphoneText(iphone: Record<string, unknown>): string {
+  if (iphone.access === "soon") return "coming soon (not on this account yet)";
+  if (iphone.access !== "on") return "not available now";
+  const minutes = isRecord(iphone.minutes) ? iphone.minutes : {};
+  const resets = typeof iphone.resetsAt === "string" ? ` · resets ${iphone.resetsAt.slice(0, 10)}` : "";
+  const extra = isRecord(iphone.extraMinutes) ? iphone.extraMinutes : {};
+  const limit = typeof extra.monthlyLimitCents === "number" ? `${dollarsText(extra.monthlyLimitCents)} a month at most` : "no monthly limit";
+  const past = extra.enabled === true
+    ? ` · extra minutes on (${String(extra.centsPerMinute)}¢ a minute, ${limit}; ${String(extra.usedMinutes ?? 0)} used this period, ${dollarsText(extra.usedCents)})`
+    : extra.available === true ? " · extra minutes off: the phone stops at 0" : " · the phone stops at 0 (no extra minutes on this plan)";
+  return `${String(minutes.left ?? "—")} of ${String(minutes.included ?? "—")} minutes left${resets}${past}`;
+}
+
 /**
  * `ade cloud status --text`: whether a new lane can start (the reason first
  * when it can't), then the plan, hours, disk, computers, agents, each lane
@@ -80,6 +100,8 @@ export function formatCloudStatus(value: unknown): string {
   }
   const disk = isRecord(status.disk) ? status.disk : null;
   if (disk) rows.push(["Disk", `${cloudGbText(disk.usedGb)}${typeof disk.limitGb === "number" ? ` of ${disk.limitGb}` : ""} GB used`]);
+  const iphone = isRecord(status.iphone) ? status.iphone : null;
+  if (iphone) rows.push(["iPhone", cloudIphoneText(iphone)]);
   const computers = isRecord(status.computers) ? status.computers : null;
   // No plan limits how many computers an account has: a count, never "of N" (an older app may still send max).
   if (computers) rows.push(["Computers", `${String(computers.inUse ?? "—")} ${computers.inUse === 1 ? "computer" : "computers"} · ${String(computers.awake ?? 0)} awake`]);
@@ -142,5 +164,19 @@ export function formatCloudStatus(value: unknown): string {
     lines.push(`  ${boxName(box)}${size}: ${boxDisk.full.trim()}`);
   }
   if (sizeRows.length) lines.push("", "Sizes (ade chat create --machine cloud --size <id>)", ...table(sizeRows));
+  const plans = Array.isArray(status.plans) ? status.plans.filter(isRecord) : [];
+  if (plans.length) {
+    // Past the plan: the price, or "stops" where nothing more is sold (Free).
+    const past = (value: unknown, unit: string): string => (typeof value === "number" ? `${value}¢ ${unit}` : "stops");
+    lines.push("", "Plans (a month; past the plan's hours and iPhone minutes)", ...table(plans.map((plan) => [
+      `${String(plan.label ?? plan.id)}${plan.current === true ? " (yours)" : ""}`,
+      typeof plan.priceUsdMonth === "number" ? `${dollarsText(plan.priceUsdMonth * 100)}` : "?",
+      `${cloudHoursText(plan.hours)} h`,
+      `${String(plan.diskGb ?? "?")} GB`,
+      typeof plan.iphoneMinutes === "number" ? `${plan.iphoneMinutes} iPhone min` : "",
+      `hours: ${past(plan.extraHourCents, "an hour")} · iPhone: ${past(plan.extraIphoneMinuteCents, "a minute")}`,
+    ])));
+    if (typeof status.extraDiskCentsPer10GbMonth === "number") lines.push(`  Extra disk (paid plans): ${dollarsText(status.extraDiskCentsPer10GbMonth)} for 10 GB a month`);
+  }
   return lines.join("\n");
 }

@@ -76,6 +76,14 @@ drive a device; other agents hand it work.
 
 ## ADE Cloud iPhone
 
-`ios@cloud` is a cloud iPhone, used like any other source: `ade devices use
-ios@cloud`, then the same `ade apple` commands. It is not on accounts yet:
-`use ios@cloud` answers "ADE Cloud iPhone is not on this account yet".
+`ios@cloud` is an iPhone at NoMac that runs for the ADE account, so it works
+from any machine. `ade devices` lists it only when the account has it.
+
+```bash
+ade devices use ios@cloud       # this chat's iPhone, then the usual ade apple …
+ade apple status --text         # access, minutes left, capabilities
+```
+
+`launch` and `test` build Xcode projects from your checkout there; for Expo,
+React Native or Flutter, `ade apple install --app <Simulator .app>`. It spends
+the plan's iPhone minutes (`ade cloud status`). ade-apple has the rest.

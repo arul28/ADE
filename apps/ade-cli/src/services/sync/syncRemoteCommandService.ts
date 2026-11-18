@@ -659,6 +659,12 @@ type SyncRemoteCommandServiceArgs = {
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   /** The `cloud` action domain (the phone's ADE Cloud page); null with no project runtime yet. */
   cloudActions?: () => Record<string, unknown> | null;
+  /**
+   * The `cloud_phone` action domain (the account's ADE Cloud iPhone), read
+   * when the phone's own pane or ADE Web asks. Resolved lazily from the
+   * runtime's action registry, since the runtime is built a little later.
+   */
+  cloudPhoneActions?: () => Record<string, unknown> | null;
   cloudAgentsService?: CloudAgentsService | null;
   personalChatScope?: Pick<PersonalChatScopeContract, "call" | "streamEvents">;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
@@ -7010,6 +7016,50 @@ function registerWebhookRemoteCommands({ args, register }: RemoteCommandRegistra
   }
 }
 
+/**
+ * The ADE Cloud iPhone (`cloud_phone` on the chat's brain), for the phone's
+ * own pane and ADE Web: the same domain service the desktop reaches through
+ * its runtime pin. `getStatus` is a read; a view link, start, stop and a
+ * screenshot are the person's own, so only a controlling device may ask.
+ */
+function registerCloudPhoneRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const getDomain = args.cloudPhoneActions;
+  if (!getDomain) return;
+  // The action registry builds every domain on each call; the phone is one per
+  // brain, so keep the first `cloud_phone` domain and reuse it.
+  let resolved: Record<string, unknown> | null = null;
+  const domain = (): Record<string, unknown> => {
+    resolved ??= getDomain() ?? null;
+    if (!resolved) throw new Error("The ADE Cloud iPhone is not available in this runtime.");
+    return resolved;
+  };
+  const call = async (action: string, input: Record<string, unknown>): Promise<unknown> => {
+    const service = domain();
+    const handler = service[action];
+    if (typeof handler !== "function") throw new Error(`The ADE Cloud iPhone has no "${action}" here.`);
+    return await (handler as (values: unknown) => Promise<unknown>).call(service, input);
+  };
+
+  register("cloudPhone.status", { viewerAllowed: true }, async () => await call("getStatus", {}));
+  register("cloudPhone.view", { viewerAllowed: false, controllerAllowed: true }, async (payload) =>
+    await call("view", payload.control === undefined ? {} : { control: payload.control }));
+  register("cloudPhone.start", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    await call("start", payload.device === undefined ? {} : { device: payload.device }));
+  register("cloudPhone.stop", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async () =>
+    await call("stop", {}));
+  // The capture is filed to the calling project's proof drawer, owned by the
+  // chat and lane named here; the answer is the drawer's id, if it has one.
+  register("cloudPhone.screenshot", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const chatSessionId = asTrimmedString(payload.chatSessionId);
+    const laneId = asTrimmedString(payload.laneId);
+    const answer = await call("screenshot", {
+      ...(chatSessionId ? { chatSessionId } : {}),
+      ...(laneId ? { laneId } : {}),
+    }) as { artifactId?: string | null };
+    return { artifactId: answer.artifactId ?? null };
+  });
+}
+
 function registerAppleRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   const service = args.appleDeviceService;
   if (!service) return;
@@ -8893,6 +8943,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerMacDesktopRemoteCommands({ args, register, connectionLeases: macDesktopConnectionLeases });
   registerAppControlRemoteCommands({ args, register });
   registerAppleRemoteCommands({ args, register });
+  registerCloudPhoneRemoteCommands({ args, register });
   registerAndroidRemoteCommands({ args, register });
   registerWebhookRemoteCommands({ args, register });
   registerAutomationRuleRemoteCommands({ args, register });

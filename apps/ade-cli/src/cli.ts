@@ -67,6 +67,7 @@ import {
   type ChatLocateReport,
 } from "./cliChatLocate";
 import { isDevicesCommand, runDevicesCommand, withChatDeviceChoice } from "./cliDevices";
+import { cloudMachineAppleCommand, runCloudIphoneCommand } from "./cliCloudIphone";
 import {
   isNoneValue,
   linearLookupNeeds,
@@ -43278,7 +43279,17 @@ async function runCli(
 ): Promise<{ output: string; exitCode: number }> {
   // A device command with no --machine and no --lane follows the chat's
   // device choice (`ade devices use`), exactly as --machine would.
-  const parsed = extractMachineTargeting(await withChatDeviceChoice(parseCliArgs(argv)));
+  const { parsed: chosen, cloudIphone } = await withChatDeviceChoice(parseCliArgs(argv));
+  // The ADE Cloud iPhone: the chat's `ios@cloud` choice, or `--machine cloud` on one `ade apple` command.
+  // Read before machine targeting, which knows no machine "cloud"; the
+  // selected project (`--project-root`, an account project) applies as for
+  // any command, so a build uploads that checkout.
+  const cloudCommand = cloudIphone ? chosen.command.slice(1) : cloudMachineAppleCommand(chosen.command);
+  if (cloudCommand) {
+    await applyAccountProjectSelector(chosen.options);
+    return await withShellScopeFor(chosen.options, async () => await runCloudIphoneCommand(chosen, cloudCommand));
+  }
+  const parsed = extractMachineTargeting(chosen);
   await applyAccountProjectSelector(parsed.options);
   return await withShellScopeFor(parsed.options, async () => {
     if (isChatLocateCommand(parsed.command)) return await runChatLocate(parsed);

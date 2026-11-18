@@ -1,13 +1,14 @@
 ---
 name: ade-cloud
-description: "Before any ADE Cloud work via `ade cloud`, and when this computer needs more free disk (grow it with `ade cloud resize --free`): the account (plan, hours, disk, computers, lanes, sizes, agent limits, whether a new lane can start), start, follow, retry or cancel a cloud lane, explain a refusal, propose a cleanup, sleep, wake, resize, copy, move, delete, clear caches."
+description: "Before any ADE Cloud work via `ade cloud`, and when this computer needs more free disk (grow it with `ade cloud resize --free`): the account (plan, hours, disk, ADE Cloud iPhone (iOS Simulator) minutes, every plan's price and what it includes, computers, lanes, sizes, agent limits, whether a new lane can start), start, follow, retry or cancel a cloud lane, explain a refusal, propose a cleanup, sleep, wake, resize, copy, move, delete, clear caches."
 ---
 
 # ADE Cloud
 
 ADE Cloud gives a lane its own Linux computer on the person's ADE account. The
 computer sleeps when idle and uses plan hours only while awake. The person
-manages lanes, not computers.
+manages lanes, not computers. The plan also has ADE Cloud iPhone minutes: an
+iOS Simulator any machine uses (section 6).
 
 ## 1. Read the status first, every time
 
@@ -15,7 +16,7 @@ manages lanes, not computers.
 
 - If `canStartLane.ok` is false, tell the person `canStartLane.reason` as it is, and stop.
 - Never work around a limit: no other size, no copy, no delete to make room.
-- Take sizes, hours rates, hours and limits from this answer, never from memory.
+- Take sizes, hours rates, hours, iPhone minutes, limits and prices from this answer, never from memory. Plan questions: `plans` lists each plan's price, hours, disk, iPhone minutes and prices past the plan (`current` is theirs).
 - It wakes nothing and costs nothing. Read it again before each new lane.
 
 ## 2. Start a lane
@@ -59,6 +60,9 @@ Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `
 | agents may pick up to a size | Pick an allowed size, or ask the person. |
 | ADE has no chat to ask you in | See the terminal rule in section 2. |
 | the person said no, or nobody answered | Stop. Don't ask again in a loop. |
+| iPhone minutes are used up | Tell the person, with the reset day. A paid plan can turn on extra iPhone minutes in Settings › ADE Cloud; the free plan picks a plan. |
+| Extra iPhone minutes reached ... monthly limit | The person raises the limit in Settings › ADE Cloud, or waits for the reset. |
+| iPhone minutes need the same check as its free hours | As the GitHub rows above. |
 | already holds a lane, or belongs to the archived lane | Start a new lane on ADE Cloud, or the person restores that lane. |
 | a launch step failed | Run it again with the same `--launch-id`. |
 
@@ -75,8 +79,21 @@ doesn't go through keeps the computer. Files git ignores (`.env`, a local
 database) are never pushed. `dueForDeletion` in the account lists the
 warnings; using the computer, or "Keep it" in Settings › ADE Cloud, keeps it.
 
+## 6. The ADE Cloud iPhone
+
+`iphone` in the status: `access` on, or soon (not on this account yet; say so).
+With access, `ade devices use ios@cloud`, then `ade apple …` (ade-apple).
+
+- It spends `iphone.minutes` while it runs, building included; they come back
+  on `iphone.resetsAt`. At 0 the phone stops, unless extra minutes are on
+  (`iphone.extraMinutes`, paid plans: `centsPerMinute` up to
+  `monthlyLimitCents`). Free never charges a card.
+- It stops after 5 minutes with no input and after 2 hours. `ade apple stop`
+  when done.
+
 ## Never
 
+- Change the plan, or turn on or raise extra hours, disk or iPhone minutes: only the person does, in Settings › ADE Cloud.
 - Delete a computer you didn't make, or any computer over ADE MCP.
 - Change a size (`ade cloud resize --shape`) yourself (growing the disk with `--free` is yours to do). Ask instead: `ade cloud resize --request --size large --reason "<why>"` puts a card in your chat, and the person confirms it.
 - Wake computers to look at them: the status already knows.

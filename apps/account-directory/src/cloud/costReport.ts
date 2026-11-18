@@ -91,14 +91,17 @@ function daysInMonthOf(day: string): number {
  * read is reported and answers none, so the email it feeds still goes.
  */
 async function topAccountsThisMonth(env: CloudEnv, monthStart: string, limit: number, use: "all" | "free"): Promise<Array<{ user_id: string; cost: number }>> {
+  // The ADE Cloud iPhone's NoMac cost counts as in the month's estimate (`refreshCostEstimate`).
   const sql = use === "free"
     ? `select user_id, free_cost_micros as cost from cloud_computer_days where day >= ? and free_cost_micros > 0
-      union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ? and free = 1`
+      union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ? and free = 1
+      union all select user_id, cost_micros as cost from cloud_phones where created_at >= ? and free = 1`
     : `select user_id, cost_micros as cost from cloud_computer_days where day >= ?
-      union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ?`;
+      union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ?
+      union all select user_id, cost_micros as cost from cloud_phones where created_at >= ?`;
   try {
     const rows = await env.DB.prepare(`select user_id, sum(cost) as cost from (${sql}) group by user_id order by cost desc limit ?`)
-      .bind(monthStart, DISK_COST_MICROS_PER_GB_DAY, monthStart, limit).all<{ user_id: string; cost: number }>();
+      .bind(monthStart, DISK_COST_MICROS_PER_GB_DAY, monthStart, Date.parse(`${monthStart}T00:00:00Z`), limit).all<{ user_id: string; cost: number }>();
     return rows.results ?? [];
   } catch (error) {
     reportCloudFailure(use === "free" ? "cloud.free_cap_top_accounts_failed" : "cloud.owner_cost_top_accounts_failed", { message: error instanceof Error ? error.name : "unknown" });
@@ -150,10 +153,13 @@ export async function refreshCostEstimate(env: CloudEnv, awake: ComputerRow[], n
     select (select coalesce(sum(cost_micros), 0) from cloud_computer_days where day >= ?) as compute,
       (select coalesce(sum(free_cost_micros), 0) from cloud_computer_days where day >= ?) as free_compute,
       (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day >= ?) as gb_days,
-      (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day >= ? and free = 1) as free_gb_days
-  `).bind(monthStart, monthStart, monthStart, monthStart).first<{ compute: number; free_compute: number; gb_days: number; free_gb_days: number }>();
-  let micros = (row?.compute ?? 0) + (row?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY;
-  let freeMicros = (row?.free_compute ?? 0) + (row?.free_gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY;
+      (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day >= ? and free = 1) as free_gb_days,
+      (select coalesce(sum(cost_micros), 0) from cloud_phones where created_at >= ?) as phones,
+      (select coalesce(sum(cost_micros), 0) from cloud_phones where created_at >= ? and free = 1) as free_phones
+  `).bind(monthStart, monthStart, monthStart, monthStart, monthStartMs, monthStartMs).first<{ compute: number; free_compute: number; gb_days: number; free_gb_days: number; phones: number; free_phones: number }>();
+  // The ADE Cloud iPhone's NoMac cost counts too, and free-plan phones toward the free-use cap.
+  let micros = (row?.compute ?? 0) + (row?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (row?.phones ?? 0);
+  let freeMicros = (row?.free_compute ?? 0) + (row?.free_gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (row?.free_phones ?? 0);
   // The stretches running now count as free unless their account is on paid rules now.
   const running = awake.filter((computer) => computer.awake_since != null && computer.awake_since <= now);
   const paid = running.length

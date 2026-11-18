@@ -3,6 +3,8 @@ import { runLinearRenewalCron } from "./linearRenewal";
 import { captureCloudDay, type CloudWaitUntil } from "./analytics";
 import { cancelTimedWakes, type WakeBlock } from "./accountNotices";
 import { checkExtraDiskLimits, reportExtraDiskDays, type ExtraDiskOverLimit } from "./billing";
+import { reportExtraPhoneMinutes } from "./phoneBilling";
+import { runPhoneChecks, stopPhonesDue } from "./phones";
 import { sendCloudEmail } from "./email";
 import { laneFactsStatement } from "./lanesWithoutComputer";
 import { markRestedWithBackups } from "./laneBackups";
@@ -87,6 +89,10 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   // No provider either: a renewed Linear grant whose publish failed during the request is published here, so it is not lost.
   await runLinearRenewalCron(env, now).catch((error: unknown) => {
     reportCloudFailure("cloud.linear_renewal_cron_failed", { message: error instanceof Error ? error.message : "unknown" });
+  });
+  // NoMac only: a cloud iPhone whose paid-for minutes ran out stops on the minute (`phones.ts`).
+  await stopPhonesDue(env, now).catch((error: unknown) => {
+    reportCloudFailure("cloud.phone_stops_failed", { message: error instanceof Error ? error.message : "unknown" });
   });
   const key = env.AGENT37_API_KEY?.trim();
   if (!key) return;
@@ -464,6 +470,18 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
     await reportExtraDiskDays(env, now);
   } catch (error) {
     reportCloudFailure("cloud.disk_report_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
+  // The ADE Cloud iPhone: live phones read again and the minutes warnings, then extra minutes to Stripe.
+  // Separate, so a failed check never holds back billing (or the other way round).
+  try {
+    await runPhoneChecks(env, now);
+  } catch (error) {
+    reportCloudFailure("cloud.phone_checks_failed", { step: "checks", message: error instanceof Error ? error.message : "unknown" });
+  }
+  try {
+    await reportExtraPhoneMinutes(env, now);
+  } catch (error) {
+    reportCloudFailure("cloud.phone_checks_failed", { step: "meter", message: error instanceof Error ? error.message : "unknown" });
   }
   // A cheaper plan's limits: an account over the plan in force is told once (new computers are refused). Nothing is freed here.
   try {

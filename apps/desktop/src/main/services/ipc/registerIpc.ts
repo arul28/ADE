@@ -962,6 +962,7 @@ import { registerCloudLaneLifeIpc } from "../adeCloud/registerCloudLaneLifeIpc";
 import { registerMachineConnectIpc } from "../machines/registerMachineConnectIpc";
 import type { MachineWakeResult } from "../machines/machineConnector";
 import { registerCloudLaneLaunchIpc } from "../adeCloud/registerCloudLaneLaunchIpc";
+import { registerCloudPhoneViewIpc } from "../adeCloud/registerCloudPhoneViewIpc";
 import { getMachineMainLogger } from "../logging/machineLogger";
 import { startStartupLoopStallWatch, takeStartupLoopStalls } from "../logging/startupLoopStalls";
 import { registerCloudSavedChatsIpc } from "../cloudChats/registerCloudSavedChatsIpc";
@@ -13241,6 +13242,10 @@ export function registerIpc({
     updateChannel: cloudUpdateChannel,
     logger: getMachineMainLogger(),
   });
+
+  // The ADE Cloud iPhone's picture: an offscreen window in this process paints
+  // NoMac's control page and streams the cropped canvas to the asking renderer.
+  registerCloudPhoneViewIpc({ logger: getMachineMainLogger() });
 
   const mcpRegistryService = createMcpRegistryService({
     vault: accountVaultBridge,

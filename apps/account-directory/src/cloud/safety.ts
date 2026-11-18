@@ -4,6 +4,7 @@ import { blockedUsersAmong, forgetNotBlocked, isCloudBlocked } from "./blocks";
 import { constantTimeEqual } from "../githubApp/seal";
 import { sha256Hex } from "../sinkUtils";
 import { fail, json, readJson } from "./http";
+import { OWNER_PHONE_BETA_PATH, handleOwnerPhoneBeta, stopAccountPhones } from "./phones";
 import { CloudProviderError, TRY_AGAIN_CODE, type CloudProvider } from "./provider";
 import {
   isPendingId,
@@ -35,6 +36,7 @@ import {
  * The owner routes take `Authorization: Bearer <CLOUD_OWNER_TOKEN>`:
  * - `POST /cloud/owner/block`   `{ userId?, githubUserId?, cardFingerprint?, reason }`
  * - `POST /cloud/owner/unblock` `{ userId?, githubUserId?, cardFingerprint? }`
+ * - `POST /cloud/owner/phone-beta` `{ email? | userId?, enabled? }`: the ADE Cloud iPhone's beta list (`phones.ts`)
  */
 
 const OWNER_BLOCK_PATH = "/cloud/owner/block";
@@ -240,6 +242,11 @@ export async function blockAccount(env: CloudEnv, provider: CloudProvider | null
     }
   }
 
+  // Its ADE Cloud iPhone stops too: a phone token still drives it at NoMac otherwise.
+  await stopAccountPhones(env, userId, now, "account_blocked").catch((error: unknown) => {
+    reportCloudFailure("cloud.block_phone_stop_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+  });
+
   const account = await env.DB.prepare("select user_id, stripe_subscription_id from cloud_accounts where user_id = ?")
     .bind(userId).first<Pick<AccountRow, "user_id" | "stripe_subscription_id">>();
   const subscriptionCancelled = Boolean(account?.stripe_subscription_id);
@@ -272,7 +279,7 @@ export async function unblockAccount(env: CloudEnv, provider: CloudProvider | nu
 
 /* ---- The owner routes ---- */
 
-export const isCloudOwnerRequest = (path: string): boolean => path === OWNER_BLOCK_PATH || path === OWNER_UNBLOCK_PATH;
+export const isCloudOwnerRequest = (path: string): boolean => path === OWNER_BLOCK_PATH || path === OWNER_UNBLOCK_PATH || path === OWNER_PHONE_BETA_PATH;
 
 /** Compares the bearer with `CLOUD_OWNER_TOKEN` in constant time (both hashed first, so length leaks nothing). */
 async function ownerTokenMatches(env: Pick<CloudEnv, "CLOUD_OWNER_TOKEN">, request: Request): Promise<boolean | null> {
@@ -316,6 +323,8 @@ export async function handleCloudOwnerRequest(request: Request, env: CloudEnv, p
   }
   const body = await readJson(request);
   if (!body) return fail("bad_request", "That request could not be read.", 400);
+  // The ADE Cloud iPhone's beta list (`phones.ts`).
+  if (path === OWNER_PHONE_BETA_PATH) return handleOwnerPhoneBeta(env, body, deps.now);
   const userId = textField(body.userId, 200);
   const githubUserId = typeof body.githubUserId === "number" && Number.isSafeInteger(body.githubUserId) && body.githubUserId > 0 ? body.githubUserId : null;
   const cardFingerprint = textField(body.cardFingerprint, 100);

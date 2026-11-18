@@ -7,6 +7,7 @@ import { idleCleanupEntries } from "./idleCleanup";
 import { planCleanupState } from "./planCleanup";
 import { AWAKE_COMPUTER_CAP, CENT_MICROS, cloudCatalog, isMeteredStatus } from "./plans";
 import { readSummaryRow, referralSummary } from "./referrals";
+import { phoneAccountState } from "./phones";
 import {
   accountRules,
   boughtPlanIdOf,
@@ -118,6 +119,11 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
         usedCents: Math.floor(extraDiskMicros / CENT_MICROS),
       },
     } : {}),
+    // D1 only: the account read is polled, and never asks NoMac.
+    phone: await phoneAccountState(env, account, now).catch((error: unknown) => {
+      reportCloudFailure("cloud.phone_account_state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+      return undefined;
+    }),
     disk: { usedGb: diskUsed, limitGb: planDiskGb(account) },
     computers: {
       total: computers.length,

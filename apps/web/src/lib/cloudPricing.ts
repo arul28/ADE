@@ -35,6 +35,8 @@ export type PricingPlan = {
   phoneMinutes: number;
   /** What an hour past the plan's costs, or null on Free, where work stops. */
   extraHourCents: number | null;
+  /** What a minute past the plan's iPhone minutes costs, or null on Free, where the phone stops. */
+  extraPhoneMinuteCents: number | null;
   /** Days an unused computer is kept before ADE cleans it up. */
   idleDays: number;
   /** One short line on who the plan is for. */
@@ -59,6 +61,7 @@ export const PRICING_PLANS: readonly PricingPlan[] = (["free", "plus", "pro", "m
     diskGb: plan.diskGb,
     phoneMinutes: plan.phoneMinutes,
     extraHourCents: plan.extraHourCents,
+    extraPhoneMinuteCents: plan.extraPhoneMinuteCents,
     idleDays: id === "free" ? CLOUD_IDLE_CLEANUP_DAYS.free : CLOUD_IDLE_CLEANUP_DAYS.paid,
     pitch: PLAN_PITCHES[id],
   };

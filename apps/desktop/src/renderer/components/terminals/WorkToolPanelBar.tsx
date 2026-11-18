@@ -7,7 +7,7 @@ import { Spinner } from "../ui/Spinner";
 import { WORK_TOOL_CHROME_CHIP, WORK_TOOL_CHROME_ROW } from "./workToolChrome";
 import { DEVICE_KINDS, machinesForKind, railMachineName } from "./workToolCatalog";
 import type { CatalogCardView } from "./useWorkToolCatalog";
-import type { ToolMachine } from "./useToolMachines";
+import type { ToolMachine, ToolMachines } from "./useToolMachines";
 import { MachineOsMark } from "./workToolTileMarks";
 
 /** The tool as a note to the agent names it. */
@@ -38,6 +38,7 @@ export function WorkToolPanelBar({
   tile,
   mode,
   machines,
+  cloudIphone,
   canChoose,
   viewOnly,
   chooseUnavailableReason,
@@ -52,6 +53,8 @@ export function WorkToolPanelBar({
   tile: CatalogCardView;
   mode: PanelBarMode;
   machines: readonly ToolMachine[];
+  /** The account's ADE Cloud iPhone (`useToolMachines`): "soon" shows its coming-soon note on the iPhone's row. */
+  cloudIphone: ToolMachines["cloudIphone"];
   /** A machine can be picked here: kept for this chat, or for this view only (`viewOnly`). */
   canChoose: boolean;
   /** The chat's brain keeps no choice: a pick only changes what this panel shows. */
@@ -116,6 +119,7 @@ export function WorkToolPanelBar({
       tile={tile}
       kind={kind}
       machines={machines}
+      cloudIphoneSoon={cloudIphone === "soon"}
       asking={mode === "agent"}
       canChoose={canChoose}
       viewOnly={viewOnly}
@@ -173,6 +177,7 @@ function MachineRow({
   tile,
   kind,
   machines,
+  cloudIphoneSoon,
   asking,
   canChoose,
   viewOnly,
@@ -183,6 +188,7 @@ function MachineRow({
   tile: CatalogCardView;
   kind: DeviceKind;
   machines: readonly ToolMachine[];
+  cloudIphoneSoon: boolean;
   /** The agent is using it: a pick asks the agent instead of switching. */
   asking: boolean;
   canChoose: boolean;
@@ -236,7 +242,7 @@ function MachineRow({
             </button>
           );
         })}
-        {kind === "ios" ? (
+        {kind === "ios" && cloudIphoneSoon ? (
           <span className="inline-flex h-6 shrink-0 items-center gap-1 px-1.5 font-sans text-[11.5px] text-muted-fg/70" title="ADE Cloud: a simulator that runs on no machine of yours. Coming soon.">
             <CloudArrowUp size={12} weight="bold" aria-label="ADE Cloud, coming soon" />
             <span className="hidden @[480px]:inline">ADE Cloud soon</span>

@@ -20,6 +20,9 @@
  * `live` marks what only the running brain can answer (`isLiveOnlyAdeAction`):
  * `"all"` for a whole domain, or the named actions.
  */
+
+import { CLOUD_PHONE_SPEND_ACTIONS, CLOUD_PHONE_USER_ONLY_ACTIONS } from "./cloudPhone";
+
 export type AdeActionAccess = "read" | "write";
 
 type AdeActionAccessTable = Readonly<
@@ -603,6 +606,13 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "deleteArtifacts", "ingestSceneSnapshot", "pruneBrokenArtifacts", "recoverArtifact",
       "updateArtifactReview",
     ],
+  },
+  // The ADE Cloud iPhone (`cloudPhoneService`): every action but the status
+  // read can start a phone, which spends the plan's minutes, so all are writes.
+  cloud_phone: {
+    live: "all",
+    read: ["getStatus"],
+    write: ["stop", ...CLOUD_PHONE_SPEND_ACTIONS, ...CLOUD_PHONE_USER_ONLY_ACTIONS],
   },
   ios_simulator: {
     live: "all",
