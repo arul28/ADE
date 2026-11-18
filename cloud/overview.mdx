@@ -13,6 +13,7 @@ Each cloud lane gets its own computer underneath. The lane, its chats and its te
 - **Reading never wakes a computer.** Saved chats, CLI sessions and shells (the last 5,000 lines), the lane's branch and changed files, files and history from GitHub, pull requests, the CTO, automations, Linear and Jira come from your account or from GitHub.
 - **Doing wakes it.** Sending a message, running a command, opening a changed file or a Git action wakes the lane's computer. The screen never waits: you can leave, and the action finishes when the computer is up.
 - **A message to an asleep chat** waits on ADE's server and is delivered once, even if you close the tab.
+- **Work is saved before a computer rests.** ADE saves each lane's work (its branch and changes, and its chats) to your account before the computer sleeps. So cleanups never wake a computer, and a new computer gets that work back.
 - **If ADE refuses to wake a computer** (out of hours, too many awake, over your plan's disk), the chat shows why. You can still read everything.
 - **Commits** on a cloud computer use your GitHub noreply address, unless you set your own Git identity.
 
@@ -49,15 +50,27 @@ Add `--size small|medium|large|xlarge` to pick a size; without it ADE uses the s
 - **Hours.** Each plan has hours for the month. A Small computer uses one hour per hour awake; bigger sizes use more. A computer that sleeps uses none.
 - **Disk.** Your plan's disk is shared by all your computers at one time. It is not a monthly amount.
 - **Extra hours and extra disk.** On a paid plan you can turn them on in **Settings › ADE Cloud**, with a monthly limit for extra disk. You pay for them only while they are on.
-- **Unused computers** are cleaned up after a while. ADE warns you first, in the lane's chats, with **Keep it**. It pushes the lane's work to its branch and saves each chat. The lane stays, and its next message makes a new computer that continues the same chat.
+- **Unused computers** are cleaned up after a while: 3 days idle on the Free plan, 10 days on a paid plan. ADE warns you first, in the lane's chats, with **Keep it**. It pushes the lane's work to its branch and saves each chat. The lane stays, and **New computer** makes a new computer on the same branch that continues the same chat.
 
-See [the plans and what each includes](https://ade-app.dev/pricing).
+## Free a lane's computer
+
+You can free a lane's computer yourself to give disk back. Open **Settings › ADE Cloud** and pick **Free up space**, or open **Manage lane** for the lane and pick **Free computer**.
+
+1. ADE pushes the lane's work to GitHub.
+2. ADE removes the computer. This can take a few minutes, and a toast shows the progress.
+3. The lane, its branch and its chats stay.
+
+A lane with no computer shows in Work and in Lanes, with **New computer**. It makes a new computer on the same branch, and the lane's chats come back with it. A message you send to that lane also makes a new computer. If the branch never reached GitHub, the new computer starts again from the repository.
+
+**Delete the lane** is different: it removes the lane, its computer and its chats.
+
+The plans are Free ($0), Plus ($5 a month), Pro ($20) and Max ($50). A bigger plan has more hours and more disk. See [the plans and what each includes](https://ade-app.dev/pricing).
 
 ## Manage your plan and billing
 
 Open **Settings › ADE Cloud** in the ADE app:
 
-- **The plan cards** move you between plans. A bigger plan applies at once; a smaller one waits for the end of the period.
+- **The plan cards** move you between plans. A bigger plan applies at once; a smaller one waits for the end of the period. If a smaller plan has less disk than you use now, ADE asks which computers to free before it changes the plan.
 - **Manage billing** opens Stripe's billing page, where you change your card, see invoices and cancel. A cancelled plan stays until the end of the period you paid for.
 
 After you buy a plan, the page Stripe returns you to has an **Open ADE** button that takes you straight to **Settings › ADE Cloud**, where the new plan shows within a moment.
