@@ -54,6 +54,13 @@ First-time setup:
 npm run setup
 ```
 
+That installs desktop, ade-cli, web, `packages/sdk` and `packages/chat-ui` in their own
+folders, and the five Cloudflare Workers (`apps/account-directory`, `password-key-service`,
+`push-relay`, `tunnel-relay`, `webhook-relay`) with one `npm install` at the repo root:
+they are one npm workspace with one root `package-lock.json`, so wrangler, workerd,
+TypeScript and Sentry are installed once and shared. To install only the Workers, run
+`npm ci` at the repo root.
+
 Since Electron 42, `npm install` no longer downloads the Electron binary; `npm run setup`
 fetches it afterwards through `apps/desktop/scripts/ensure-electron.cjs`, the same step
 `npm run dev` runs, and fails with the download's exit code if it cannot.

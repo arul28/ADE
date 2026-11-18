@@ -124,8 +124,9 @@ remote commands, or host update flows, verify:
 
 **Check:** Desktop/renderer tests run under **Node 24** (`.nvmrc`); Node 25 or
 newer breaks `window.localStorage` and produces spurious renderer failures —
-do not "fix" those by editing the tests. Each app has its own lockfile; a
-`package.json` change without a regenerated `package-lock.json` is a CI break.
+do not "fix" those by editing the tests. Each app has its own lockfile (the five
+Workers share the root one); a `package.json` change without a regenerated
+`package-lock.json` is a CI break.
 
 ## 8. Worktree path discipline
 

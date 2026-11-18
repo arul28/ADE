@@ -18,7 +18,7 @@ desktop_changes="$(git diff --name-only "$DESKTOP_LAST_TAG..origin/main" -- \
   .github/workflows/release.yml .github/workflows/release-core.yml \
   .github/workflows/release-publish.yml .github/workflows/update-brew-tap.yml \
   .github/workflows/publish-runtime-packages.yml \
-  package.json package-lock.json | wc -l | tr -d ' ')"
+  package.json | wc -l | tr -d ' ')"
 next_desktop="$(echo "${DESKTOP_LAST_TAG#v}" | awk -F. '{printf "v%d.%d.%d", $1, $2, $3 + 1}')"
 
 # iOS: files changed since the newest ios-v*-build* tag.
@@ -53,7 +53,8 @@ for s in $surfaces; do
   if [ "$s" = webclient ]; then
     paths="apps/desktop/src/renderer apps/desktop/src/shared apps/desktop/vite.webclient.config.ts"
   else
-    paths="apps/$s"
+    # The root package-lock.json is the Workers' one workspace lockfile.
+    paths="apps/$s package-lock.json"
   fi
   b="$(base_of "$s")"
   if [ -z "$b" ]; then

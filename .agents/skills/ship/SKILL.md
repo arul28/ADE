@@ -169,8 +169,11 @@ only user-visible output is the per-iteration status line and the final summary.
 
 ## Repo facts (ADE)
 
-- **Package manager:** `npm`; each app under `apps/` has its own `node_modules` +
-  `package-lock.json` (no workspaces). Node 24 (`.nvmrc`).
+- **Package manager:** `npm`; desktop, ade-cli, web and each package under
+  `packages/` have their own `node_modules` + `package-lock.json`. The five
+  Cloudflare Workers are one npm workspace: root `package.json` `workspaces`,
+  one root `package-lock.json`, installed by `npm ci` at the repo root. Node 24
+  (`.nvmrc`).
 - **CI:** `.github/workflows/ci.yml` — desktop tests shard **8-way**
   (`npx vitest run --shard=<n>/8`) plus `test-ade-cli` (2 shards); a `ci-pass`/`ci-status`
   gate aggregates required jobs. Discover the required-check list live via

@@ -98,9 +98,9 @@ jobs:
         with:
           node-version: 24
 
-      # The pinned wrangler the script runs (npx finds it here, so nothing is downloaded).
+      # The pinned wrangler the script runs from apps/account-directory (npx
+      # finds the Workers workspace's hoisted copy, so nothing is downloaded).
       - name: Install the account server's tools
-        working-directory: apps/account-directory
         run: npm ci --no-audit --no-fund
 
       - name: Test the build and move the channel

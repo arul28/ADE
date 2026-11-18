@@ -13,6 +13,10 @@
  * Spawning `npm install` with `cwd` set to the app directory is the form that
  * means what everyone actually wants. `.github/workflows/ci.yml` already uses
  * the equivalent `(cd apps/<app> && npm ci)`.
+ *
+ * The five Cloudflare Workers are the exception: they are one npm workspace
+ * (the root package.json's "workspaces"), so a single `npm install` at the
+ * repo root installs all of them from the root package-lock.json.
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -21,15 +25,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const APPS = [
-  "ade-cli",
-  "desktop",
-  "web",
-  "webhook-relay",
-  "tunnel-relay",
-  "push-relay",
-  "account-directory",
-];
+const APPS = ["ade-cli", "desktop", "web"];
 
 const PACKAGES = ["sdk", "chat-ui"];
 
@@ -37,6 +33,7 @@ const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const passthrough = process.argv.slice(2);
 
 const targets = [
+  { label: "the Workers workspace (repo root)", cwd: repoRoot },
   ...APPS.map((app) => ({ label: `apps/${app}`, cwd: path.join(repoRoot, "apps", app) })),
   ...PACKAGES.map((pkg) => ({ label: `packages/${pkg}`, cwd: path.join(repoRoot, "packages", pkg) })),
 ];
