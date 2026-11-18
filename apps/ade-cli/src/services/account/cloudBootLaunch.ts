@@ -67,7 +67,7 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import { isUuid } from "../../../../desktop/src/shared/uuid";
 import type { ProjectRegistry } from "../projects/projectRegistry";
-import type { AccountAuthService } from "./accountAuthService";
+import type { AccountAuthService, AccountAuthStatus } from "./accountAuthService";
 import type { HeadlessApprovalResult } from "./cloudHeadlessApproval";
 import { deliverQueuedMessagesWithRetry, isFinalRefusal } from "./cloudLaunchMessages";
 import { SIGN_IN_STAGE, SIGN_IN_WAIT_MS, waitForProviderSignIn, type ProviderReady } from "./cloudLaunchSignInWait";
@@ -990,6 +990,12 @@ export type CloudBootLaunchHost = {
   secretsDir: string;
   logger: Logger;
   account: AccountAuthService;
+  /**
+   * The computer signed in during this launch. The brain identifies the
+   * account at process start, which is before this sign-in, so without this
+   * the computer stays an anonymous install until the next start.
+   */
+  onAccountSignedIn?: (status: AccountAuthStatus) => void;
   directoryBaseUrl: () => string | null;
   /** The Clerk issuer this machine signs in with (`CLERK_ISSUER`); its join link must be on its hosts. */
   clerkIssuer: () => string;
@@ -1084,7 +1090,11 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
         isSignedIn: () => account.getStatus().signedIn,
         // A computer that just booted can start its sign-in before its network is up.
         startDeviceLogin: () => account.startDeviceLogin({ retryUnreachableForMs: 60_000 }),
-        pollDeviceLogin: (sessionId) => account.pollDeviceLogin(sessionId),
+        pollDeviceLogin: async (sessionId) => {
+          const result = await account.pollDeviceLogin(sessionId);
+          if (result.status === "signed_in") host.onAccountSignedIn?.(result.authStatus);
+          return result;
+        },
       },
       approveHeadless: (url, signal) => headless.approveSignInLink({
         url,
@@ -1114,6 +1124,11 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
         };
       },
       afterJoin: async () => {
+        // The poll reports `signed_in` itself. A sign-in that landed another
+        // way (the poll expired, or this computer was already signed in)
+        // still has to identify, or the launch's first events stay anonymous.
+        const status = account.getStatus();
+        if (status.signedIn) host.onAccountSignedIn?.(status);
         const client = await host.cloudClient();
         if (!client) return;
         await enableCloudSleep(client, cloudInstanceId, { logger });

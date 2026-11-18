@@ -32,6 +32,8 @@ const SPEC_OBJECTS = dashboardSpec.dashboards.length + SPEC_INSIGHTS;
 const NOT_INTERNAL = [
   { key: "is_internal", value: ["true"], operator: "is_not", type: "event" },
   { key: "is_internal", value: ["true"], operator: "is_not", type: "person" },
+  { key: "review_context", value: ["app_review"], operator: "is_not", type: "event" },
+  { key: "environment", value: ["ci"], operator: "is_not", type: "event" },
 ];
 
 test("dashboard spec is valid and excludes replay queries", () => {

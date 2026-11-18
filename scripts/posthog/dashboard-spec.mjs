@@ -104,6 +104,10 @@ export const PROPERTIES = Object.freeze({
   INTERACTIVE: "interactive",
   MODE: "mode",
   IS_INTERNAL: "is_internal",
+  // Apple's review farm (`ADEAnalyticsReviewContext`). Absent on a person's phone.
+  REVIEW_CONTEXT: "review_context",
+  // `production`, `beta`, `alpha`, `development`, or `ci`. Same words as Sentry.
+  ENVIRONMENT: "environment",
   SIGNUP_METHOD: "signup_method",
   SURVEY_NAME: "$survey_name",
   SURVEY_RESPONSE: "$survey_response",
@@ -156,7 +160,29 @@ const EXCLUDE_INTERNAL_PERSON = Object.freeze({
   operator: "is_not",
   type: "person",
 });
-const EXCLUDE_INTERNAL = Object.freeze([EXCLUDE_INTERNAL_EVENT, EXCLUDE_INTERNAL_PERSON]);
+/**
+ * Apple's review farm (`iPhone99,*`). iOS sends no person profile, so the
+ * event property is the only filter that reaches those devices.
+ */
+const EXCLUDE_REVIEW_CONTEXT = Object.freeze({
+  key: PROPERTIES.REVIEW_CONTEXT,
+  value: ["app_review"],
+  operator: "is_not",
+  type: "event",
+});
+/** A workflow that still sent. CI is disabled in the app; this catches a tag. */
+const EXCLUDE_CI_ENVIRONMENT = Object.freeze({
+  key: PROPERTIES.ENVIRONMENT,
+  value: ["ci"],
+  operator: "is_not",
+  type: "event",
+});
+const EXCLUDE_INTERNAL = Object.freeze([
+  EXCLUDE_INTERNAL_EVENT,
+  EXCLUDE_INTERNAL_PERSON,
+  EXCLUDE_REVIEW_CONTEXT,
+  EXCLUDE_CI_ENVIRONMENT,
+]);
 
 /**
  * Events no person caused, as `BACKGROUND_EVENTS` in
@@ -1241,6 +1267,8 @@ export const dashboardSpec = Object.freeze({
             `  and ifNull(toString(properties.${PROPERTIES.EXPECTED_KIND}), '') not in (${EXPECTED_BRAIN_FAILURE_KINDS.map((kind) => `'${kind}'`).join(", ")})`,
             `  and ifNull(toString(properties.${PROPERTIES.IS_INTERNAL}), '') != 'true'`,
             `  and ifNull(toString(person.properties.${PROPERTIES.IS_INTERNAL}), '') != 'true'`,
+            `  and ifNull(toString(properties.${PROPERTIES.REVIEW_CONTEXT}), '') != 'app_review'`,
+            `  and ifNull(toString(properties.${PROPERTIES.ENVIRONMENT}), '') != 'ci'`,
             "group by domain, action",
             "order by first_seen desc",
             "limit 50",

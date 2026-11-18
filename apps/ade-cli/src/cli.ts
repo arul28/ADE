@@ -32533,6 +32533,9 @@ async function runServe(
       secretsDir: layout.secretsDir,
       logger: headlessProjectLogger,
       account: brainAccountAuthService,
+      onAccountSignedIn: (status) => {
+        syncAccountAnalyticsIdentity(status, brainProductAnalytics);
+      },
       directoryBaseUrl: getSharedAccountDirectoryBaseUrl,
       clerkIssuer: () => getSharedAccountAttestationConfig().issuer,
       projectRegistry,

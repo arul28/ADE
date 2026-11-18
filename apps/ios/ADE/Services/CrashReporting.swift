@@ -21,7 +21,13 @@ enum CrashReporting {
   static func start() {
     guard !didStart else { return }
     let environment = ProcessInfo.processInfo.environment
-    if ProductAnalytics.isTruthyFlag(environment["ADE_SENTRY_DISABLED"]) || !ProductAnalytics.shared.isEnabled {
+    // A Debug run turns analytics off. `ADE_SENTRY_DEV=1` still reports, as it
+    // did before that. `DO_NOT_TRACK` turns both off.
+    if ProductAnalytics.isTruthyFlag(environment["DO_NOT_TRACK"])
+      || ProductAnalytics.isTruthyFlag(environment["ADE_SENTRY_DISABLED"]) {
+      return
+    }
+    if !ProductAnalytics.shared.isEnabled && !ProductAnalytics.isTruthyFlag(environment["ADE_SENTRY_DEV"]) {
       return
     }
     #if DEBUG
@@ -87,14 +93,21 @@ enum CrashReporting {
       }
     }
     // The tags every ADE Sentry project carries (`sentryCommonTags` in
-    // `shared/sentry/config.ts`). No `is_internal`: a phone has no team-install
-    // marker. The OS is Sentry's own `os` tag. `machine_id` is this app on this
-    // phone, the value PostHog events carry (`DirectPostHogProductAnalyticsSink.machineID`).
+    // `shared/sentry/config.ts`). `is_internal` is set for Apple's review farm
+    // only; a person's phone has no team-install marker. The OS is Sentry's
+    // own `os` tag. `machine_id` is this app on this phone, the value PostHog
+    // events carry (`DirectPostHogProductAnalyticsSink.machineID`).
+    let reportEnvironment = sentryEnvironment(isDevelopmentRun: isDevelopmentRun, releaseChannel: distribution.releaseChannel)
     SentrySDK.configureScope { scope in
       scope.setTag(value: "ios", key: "surface")
       scope.setTag(value: "ios", key: "client")
       scope.setTag(value: isDevelopmentRun ? "development" : distribution.releaseChannel, key: "release_channel")
+      scope.setTag(value: reportEnvironment, key: "environment")
       scope.setTag(value: distribution.rawValue, key: "distribution")
+      if let review = ADEAnalyticsReviewContext.current {
+        scope.setTag(value: review.rawValue, key: "review_context")
+        scope.setTag(value: "true", key: "is_internal")
+      }
       if let machineID = DirectPostHogProductAnalyticsSink.machineID {
         scope.setTag(value: machineID, key: "machine_id")
       }

@@ -5,6 +5,7 @@ import { CLOUD_SIGN_INS } from "../../../shared/cloudSignIns";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ReleaseChannel } from "../../../shared/packageChannel";
 import type { AgentChatTurnSettledEvent } from "../chat/agentChatService";
 import type { AdeDb } from "../state/kvDb";
 import { openFreshKvDb } from "../../../test/freshKvDb";
@@ -62,6 +63,7 @@ function makeHarness(options: {
   messages?: Array<Record<string, unknown>>;
   appVersion?: string;
   runtimeMode?: string;
+  releaseChannel?: ReleaseChannel;
   captureClientMessage?: ProductAnalyticsClient["capture"];
   flush?: () => Promise<void>;
   machineId?: () => string | null | undefined;
@@ -87,6 +89,7 @@ function makeHarness(options: {
     logger: { debug: vi.fn(), warn: vi.fn() } as never,
     appVersion: options.appVersion ?? "1.2.3",
     runtimeMode: options.runtimeMode ?? "test_harness",
+    releaseChannel: options.releaseChannel,
     projectToken: options.token ?? "phc_test_project_token",
     dailyBudget: options.dailyBudget,
     now: options.now,
@@ -109,6 +112,12 @@ describe("productAnalyticsService", () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("ADE_DISABLE_PRODUCT_ANALYTICS", "0");
     vi.stubEnv("ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT", "1");
+    // GitHub Actions sets these. The suite turns the test gate off on purpose
+    // so it can watch a send; it still has to clear the CI gate.
+    vi.stubEnv("CI", "");
+    vi.stubEnv("GITHUB_ACTIONS", "");
+    vi.stubEnv("ADE_TEMPLATE_CHECK", "");
+    vi.stubEnv("ADE_DEV_BRAIN", "");
   });
 
   afterEach(() => {
@@ -130,6 +139,9 @@ describe("productAnalyticsService", () => {
       ok: true,
       value: { surface: "cli" },
     });
+    // This case is a non-development send. The suite's default `NODE_ENV` is
+    // development, and that now marks the event internal.
+    vi.stubEnv("NODE_ENV", "production");
     const harness = makeHarness();
     const result = harness.service.capture({
       event: "ade_feature_used",
@@ -1332,6 +1344,58 @@ describe("productAnalyticsService", () => {
     });
     fs.rmSync(unconfigured.root, { recursive: true, force: true });
     fs.rmSync(configured.root, { recursive: true, force: true });
+  });
+
+  it.each(["GITHUB_ACTIONS", "CI", "ADE_TEMPLATE_CHECK"] as const)(
+    "accepts nothing when %s is set",
+    (name) => {
+      vi.stubEnv(name, "true");
+      const harness = makeHarness();
+      expect(harness.service.capture({ event: "ade_app_opened", surface: "desktop" })).toEqual({
+        accepted: false,
+        reason: "disabled",
+      });
+      expect(harness.messages).toHaveLength(0);
+      fs.rmSync(harness.root, { recursive: true, force: true });
+    },
+  );
+
+  it("tags a development-channel send as internal when analytics is enabled", () => {
+    const harness = makeHarness({ releaseChannel: "development" });
+    expect(harness.service.capture({ event: "ade_app_opened", surface: "desktop" })).toEqual({
+      accepted: true,
+      reason: "accepted",
+    });
+    expect(harness.messages[0]).toMatchObject({
+      properties: { is_internal: true, environment: "development", release_channel: "development" },
+    });
+    // The event is internal. The account is not: `$identify` never lowers
+    // the person flag, so a development sign-in must not set it.
+    harness.service.identifyAccount("clerk_user_real_1");
+    const identify = harness.messages.find((message) => message.event === "$identify") as
+      | { properties: { $set: Record<string, unknown> } }
+      | undefined;
+    expect(identify?.properties).toMatchObject({ is_internal: true, environment: "development" });
+    expect(identify?.properties.$set).not.toHaveProperty("is_internal");
+    fs.rmSync(harness.root, { recursive: true, force: true });
+
+    // `NODE_ENV=development` with the opt-in is a development send even when
+    // the build has no release channel. The person stays unmarked.
+    const byNodeEnv = makeHarness();
+    expect(byNodeEnv.service.capture({ event: "ade_app_opened", surface: "desktop" })).toEqual({
+      accepted: true,
+      reason: "accepted",
+    });
+    expect(byNodeEnv.messages[0]).toMatchObject({
+      properties: { is_internal: true, environment: "development" },
+    });
+    byNodeEnv.service.identifyAccount("clerk_user_real_2");
+    const nodeIdentify = byNodeEnv.messages.find((message) => message.event === "$identify") as
+      | { properties: { $set: Record<string, unknown> } & Record<string, unknown> }
+      | undefined;
+    expect(nodeIdentify?.properties).toMatchObject({ is_internal: true, environment: "development" });
+    expect(nodeIdentify?.properties.$set).not.toHaveProperty("is_internal");
+    fs.rmSync(byNodeEnv.root, { recursive: true, force: true });
   });
 
   it("is inert in development unless analytics is explicitly enabled", () => {
