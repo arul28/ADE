@@ -410,8 +410,10 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       await options.reportUse?.(lastWorkAt, () => !usedSinceTick).catch((error: unknown) => {
         options.logger?.warn("cloud.idle_use_report_failed", { error: error instanceof Error ? error.message : String(error) });
       });
-      // Work noted while the disk check ran wins: sleep waits for the next idle stretch.
-      if (usedSinceTick) {
+      // Work noted while the save ran wins: sleep waits for the next idle stretch.
+      // Busy is read again too: work that started during the save may not be in it.
+      const busyAfterSave = usedSinceTick ? true : await options.readBusy().then((busy) => busy.busy, () => true);
+      if (usedSinceTick || busyAfterSave) {
         askedToSleep = false;
         return;
       }

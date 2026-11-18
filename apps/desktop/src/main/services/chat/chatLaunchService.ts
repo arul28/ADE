@@ -682,12 +682,28 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     record.snapshot.baseRef ??= lane.baseRef ?? null;
   };
 
+  /** ADE Cloud: the lane's work that wasn't on GitHub comes back before its chat starts. Never fails the launch. */
+  const restoreSavedWork = async (record: LaunchRecord, laneId: string, worktreePath: string): Promise<string | null> => {
+    if (!deps.projectRoot || !cloudLaneRestoreInstalled()) return null;
+    return await restoreCloudLaneWork({ laneId, worktreePath, projectRoot: deps.projectRoot }).catch((error: unknown) => {
+      logger.warn("chat_launch.cloud_restore_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+      return `ADE couldn't put back this lane's saved work (${getErrorMessage(error).replace(/[.\s]+$/, "")}). It stays on ADE Cloud: download it from the lane.`;
+    });
+  };
+
   const runCheckoutStage = async (record: LaunchRecord, startFetched: boolean): Promise<void> => {
     const runtime = runtimeFor(record.snapshot.launchId);
     const interrupted = findInterruptedLane(record);
     if (interrupted) {
       adoptLane(record, interrupted);
-      setStage(record, "checkout", "done", { percent: 100, detail: "Recovered after restart" });
+      // A restart can come after the lane was made and before its saved work came back.
+      // The restore is a no-op when the work is here already.
+      const restoreNote = interrupted.worktreePath ? await restoreSavedWork(record, interrupted.id, interrupted.worktreePath) : null;
+      setStage(record, "checkout", restoreNote ? "warning" : "done", {
+        percent: 100,
+        detail: "Recovered after restart",
+        ...(restoreNote ? { error: restoreNote } : {}),
+      });
       publish(record);
       assertActive(record);
       // A user-configured lane keeps the name they chose; only a prompt-derived
@@ -763,14 +779,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     }
     adoptLane(record, lane);
     if (lane.createdFrom?.startRef) record.snapshot.baseRef = lane.createdFrom.startRef;
-    // ADE Cloud: the lane's work that wasn't on GitHub comes back before its chat starts. Never fails the launch.
-    let restoreNote: string | null = null;
-    if (deps.projectRoot && cloudLaneRestoreInstalled()) {
-      restoreNote = await restoreCloudLaneWork({ laneId: lane.id, worktreePath: lane.worktreePath, projectRoot: deps.projectRoot }).catch((error: unknown) => {
-        logger.warn("chat_launch.cloud_restore_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
-        return `ADE couldn't put back this lane's saved work (${getErrorMessage(error).replace(/[.\s]+$/, "")}). It stays on ADE Cloud: download it from the lane.`;
-      });
-    }
+    const restoreNote = await restoreSavedWork(record, lane.id, lane.worktreePath);
     // Appearance is a nicety; a color collision must never fail the launch.
     if (config?.color && deps.laneService.updateAppearance) {
       try {

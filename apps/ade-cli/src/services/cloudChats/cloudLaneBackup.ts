@@ -132,15 +132,18 @@ const refKey = (id: string): string => createHash("sha256").update(id, "utf8").d
  * branch heads point at (`ls-remote`), those this clone holds. Local
  * `origin/*` refs are not trusted: a branch deleted on GitHub (a squash
  * merge) leaves its ref here, and a backup built on it could not be restored.
- * When GitHub can't be reached, only its default branch counts. `key` goes
- * into the fingerprint, so a change on GitHub makes the next save upload.
+ * When GitHub can't be reached, only its default branch counts and the base
+ * is not `verified`: a save then keeps every backup and reports its lanes as
+ * not saved, so no cleanup deletes the computer on a guess. `key` goes into
+ * the fingerprint, so a change on GitHub makes the next save upload.
  */
-export type GithubBase = { shas: string[]; key: string };
+export type GithubBase = { shas: string[]; key: string; verified: boolean };
 
 export async function readGithubBase(cwd: string): Promise<GithubBase> {
   const listed = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin"], { cwd, timeoutMs: 30_000, env: READ_ENV });
   let candidates: string[];
-  if (listed.exitCode === 0 && !listed.timedOut) {
+  const verified = listed.exitCode === 0 && !listed.timedOut;
+  if (verified) {
     candidates = listed.stdout.split(/\r?\n/).map((line) => line.split(/\s+/)[0] ?? "").filter((sha) => SHA.test(sha));
   } else {
     const fallback = (await resolveCommit(cwd, "refs/remotes/origin/HEAD"))
@@ -154,8 +157,36 @@ export async function readGithubBase(cwd: string): Promise<GithubBase> {
     const checked = await runGit(["cat-file", "--batch-check"], { cwd, timeoutMs: 30_000, env: READ_ENV, stdin: `${unique.join("\n")}\n` });
     held = checked.stdout.split("\n").map((line) => line.split(" ")).filter((parts) => parts[1] === "commit" && SHA.test(parts[0] ?? "")).map((parts) => parts[0]!);
   }
-  return { shas: held, key: createHash("sha256").update(held.join("\n")).digest("hex") };
+  return { shas: held, key: createHash("sha256").update(held.join("\n")).digest("hex"), verified };
 }
+
+const STAGED_ONLY_SENTENCE = "This lane has staged changes that its files no longer hold. Commit or unstage them, then ADE saves it.";
+const SUBMODULE_WORK_SENTENCE = "This lane has changes inside a submodule. Commit and push them in the submodule, then ADE saves it.";
+
+/**
+ * The backup saves the lane's files as they are. Two kinds of work are not in
+ * them, so the lane is refused (and its computer kept) rather than counted as
+ * saved: a staged version the files went back from, and changes inside a
+ * submodule (the lane's tree records only the submodule's commit).
+ */
+async function refuseWorkOutsideTheFiles(cwd: string, workingTree: string, tipTree: string): Promise<void> {
+  if (workingTree === tipTree) {
+    // `write-tree` fails on a conflict; that lane's files are saved as they are.
+    const index = await runGit(["write-tree"], { cwd, timeoutMs: 30_000, env: READ_ENV });
+    if (index.exitCode === 0 && index.stdout.trim() && index.stdout.trim() !== tipTree) throw new LaneBackupRefused(STAGED_ONLY_SENTENCE, "failed");
+  }
+  if (!fs.existsSync(path.join(cwd, ".gitmodules"))) return;
+  const status = await git(cwd, ["status", "--porcelain=v2", "--ignore-submodules=none"]);
+  // Porcelain v2: `1|2|u <XY> <sub> ...`, where `<sub>` is `S<c><m><u>` for a submodule.
+  const changed = status.split("\n").some((line) => {
+    const sub = /^[12u] \S+ (S\S{3}) /.exec(line)?.[1];
+    return sub != null && sub !== "S...";
+  });
+  if (changed) throw new LaneBackupRefused(SUBMODULE_WORK_SENTENCE, "failed");
+}
+
+const GITHUB_UNREACHABLE_SENTENCE = "ADE couldn't reach GitHub to check this lane's work. It checks again at the next rest.";
+const MISSING_FOLDER_SENTENCE = "This lane's folder is missing on the computer, and ADE has no saved copy of its work.";
 
 /** `head` and the exclusions, for `rev-list --stdin`. */
 const revsNotOnGithub = (head: string, base: GithubBase): string => `${[head, ...base.shas.map((sha) => `^${sha}`)].join("\n")}\n`;
@@ -180,6 +211,7 @@ export async function readLaneWork(worktreePath: string, base?: GithubBase): Pro
   ]);
   const ahead = Number.parseInt(aheadText, 10);
   if (!Number.isSafeInteger(ahead) || ahead < 0) throw new Error("ADE couldn't count this lane's commits.");
+  await refuseWorkOutsideTheFiles(cwd, workingTree, tipTree);
   const fingerprint = createHash("sha256").update(`ade.lane-backup.v2\0${tip}\0${workingTree}\0${branch ?? ""}\0${githubBase.key}`).digest("hex");
   return { fingerprint, clean: ahead === 0 && workingTree === tipTree, cwd, tip, workingTree, tipTree, branch, ahead, base: githubBase };
 }
@@ -204,7 +236,7 @@ export async function packLaneBackup(lane: BackupLane, read: LaneWorkRead): Prom
     : await git(cwd, ["commit-tree", read.workingTree, "-p", tip, "-m", SNAPSHOT_MESSAGE], SNAPSHOT_IDENTITY);
   let files = 0;
   try {
-    files = (await refuseUnportablePaths(cwd, tip, snapshot)).length;
+    files = (await refuseUnportablePaths(cwd, tip, snapshot, read.base.shas)).length;
   } catch (error) {
     throw new LaneBackupRefused(`${error instanceof Error ? error.message : String(error)} ADE can't save this lane's work until then.`, "failed");
   }
@@ -340,6 +372,8 @@ export async function runLaneBackups(deps: LaneBackupRunDeps): Promise<CloudBack
     }
     try {
       const read = await readLaneWork(lane.worktreePath, await baseOf(lane.worktreePath));
+      // GitHub didn't answer: nothing here can say what it holds, so every backup stays and the lane is not saved.
+      if (!read.base.verified) throw new LaneBackupRefused(GITHUB_UNREACHABLE_SENTENCE, "failed");
       if (read.clean) {
         // All on GitHub: its backup, and any backup of the lane it restored, go.
         if (own.has(lane.laneId) || restoredHere.has(lane.laneId)) await api.deleteLaneBackup(machineKey, lane.laneId, instanceId);
@@ -370,6 +404,15 @@ export async function runLaneBackups(deps: LaneBackupRunDeps): Promise<CloudBack
       summary.failed += 1;
       logger.warn("cloud.lane_backup_failed", { laneId: lane.laneId, state: report.state, error: errorText(error).slice(0, 200) });
     }
+  }
+  // A lane whose folder is gone is saved only by the backup it has; without one, the report isn't current.
+  for (const laneId of listed.missing ?? []) {
+    const backup = own.get(laneId);
+    reports.push(backup
+      ? { laneId, state: "unchanged", fingerprint: backup.fingerprint }
+      : { laneId, state: "failed", reason: MISSING_FOLDER_SENTENCE });
+    if (backup) summary.unchanged += 1;
+    else summary.failed += 1;
   }
   // A lane gone from a complete list was deleted on the computer: its backup goes too.
   // A lane ADE still has with its folder missing is not deleted: its backup may be the only copy.
@@ -587,9 +630,10 @@ export function createBackupLaneLister(deps: {
  * Before an existing-branch lane is made on a new computer: a branch the
  * person never pushed is not on GitHub, so it is made here at the commit of
  * the lane's newest backup (only its commits; the uncommitted work comes with
- * `restoreLaneBackupIfNeeded`). Nothing changes when the branch is here or on
- * `origin` already, or when no backup names it. The caller must not publish
- * a branch made here.
+ * `restoreLaneBackupIfNeeded`). Nothing changes when the branch is on
+ * `origin` already, or when no backup names it. `created` is true also for a
+ * branch here that an earlier attempt made from that backup (a retry), so the
+ * caller never publishes it: the caller must not publish a branch made here.
  */
 export async function prepareLaneBranchFromBackup(args: {
   api: CloudApiClient;
@@ -601,7 +645,6 @@ export async function prepareLaneBranchFromBackup(args: {
 }): Promise<{ created: boolean; branch?: string }> {
   const branch = args.branchRef.replace(/^refs\/heads\//, "").replace(/^origin\//, "");
   const cwd = args.projectRoot;
-  if (await resolveCommit(cwd, `refs/heads/${branch}`)) return { created: false };
   if (await resolveCommit(cwd, `refs/remotes/origin/${branch}`)) return { created: false };
   // The launch fetched origin already; one more look at GitHub itself, so a branch pushed meanwhile wins.
   const remote = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", branch], { cwd, timeoutMs: 30_000, env: READ_ENV });
@@ -609,6 +652,9 @@ export async function prepareLaneBranchFromBackup(args: {
   const backup = (await args.api.laneBackups(args.laneId))
     .filter((entry) => entry.laneId === args.laneId && entry.machineKey !== args.machineKey && entry.branchRef === branch)
     .sort((a, b) => b.savedAt - a.savedAt)[0];
+  const local = await resolveCommit(cwd, `refs/heads/${branch}`);
+  // A retry: an earlier attempt made the branch from this backup, so it is still not published.
+  if (local) return backup && local === backup.headSha ? { created: true, branch } : { created: false };
   if (!backup) return { created: false };
   const chunks: Buffer[] = [];
   for (let part = 1; part <= backup.bundleParts; part += 1) chunks.push(Buffer.from(await args.api.readLaneBackupPart(backup.machineKey, args.laneId, "bundle", part)));

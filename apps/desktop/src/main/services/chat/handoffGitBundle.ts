@@ -251,14 +251,21 @@ function rawChangedPaths(raw: string): string[] {
  * they sit in the uncommitted snapshot or in a commit origin doesn't have yet.
  * Returns the snapshot's changed paths.
  */
-export async function refuseUnportablePaths(cwd: string, tip: string, snapshot: string | null): Promise<string[]> {
+export async function refuseUnportablePaths(cwd: string, tip: string, snapshot: string | null, githubShas?: readonly string[]): Promise<string[]> {
   const snapshotPaths = snapshot
     ? rawChangedPaths(await gitOut(cwd, ["diff", "--raw", "--no-renames", "-z", tip, snapshot]))
     : [];
-  const carried = await runGitOrThrow(
-    ["log", "--raw", "-z", "--no-renames", "--format=", tip, "--not", "--remotes=origin"],
-    { cwd, timeoutMs: GIT_TIMEOUT_MS, maxOutputBytes: 64 * 1024 * 1024 },
-  );
+  // The commits the bundle carries: past origin's refs here, or past the
+  // commits GitHub holds (`githubShas`, a lane backup) when the caller has them.
+  const carried = githubShas
+    ? await runGitOrThrow(
+        ["log", "--raw", "-z", "--no-renames", "--format=", "--stdin"],
+        { cwd, timeoutMs: GIT_TIMEOUT_MS, maxOutputBytes: 64 * 1024 * 1024, stdin: `${[tip, ...githubShas.map((sha) => `^${sha}`)].join("\n")}\n` },
+      )
+    : await runGitOrThrow(
+        ["log", "--raw", "-z", "--no-renames", "--format=", tip, "--not", "--remotes=origin"],
+        { cwd, timeoutMs: GIT_TIMEOUT_MS, maxOutputBytes: 64 * 1024 * 1024 },
+      );
   const commitPaths = rawChangedPaths(carried);
   const checked = [...new Set([...snapshotPaths, ...commitPaths])];
   if (checked.length) {

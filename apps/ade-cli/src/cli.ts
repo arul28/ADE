@@ -32413,6 +32413,31 @@ async function runServe(
     if (Object.keys(update).length === 1) return;
     await chat.updateSession(update);
   };
+  // ADE Cloud computer: a lane that starts here gets its saved work back. Installed
+  // before the boot launch starts, so its first lane never misses the restore.
+  if (!embedded && cloudInstanceId && cloudRest && cloudKeepAwake) {
+    const [{ installCloudLaneRestore }, laneBackup] = await Promise.all([
+      import("../../desktop/src/main/services/lanes/cloudLaneRestoreHook"),
+      import("./services/cloudChats/cloudLaneBackup"),
+    ]);
+    installCloudLaneRestore({
+      prepareBranch: async ({ laneId, branchRef, projectRoot }) => {
+        const api = await accountCloudApi();
+        const machineKey = thisMachineKey();
+        if (!api || !machineKey) return { created: false };
+        return await laneBackup.prepareLaneBranchFromBackup({ api, machineKey, laneId, branchRef, projectRoot, logger: headlessProjectLogger });
+      },
+      restore: async ({ laneId, worktreePath, projectRoot }) => {
+        const api = await accountCloudApi();
+        const machineKey = thisMachineKey();
+        if (!api || !machineKey) return null;
+        const outcome = await laneBackup.restoreLaneBackupIfNeeded({ api, instanceId: cloudInstanceId, machineKey, laneId, worktreePath, projectRoot, logger: headlessProjectLogger });
+        return outcome === "kept_newer_local_work" || outcome === "kept_branch_differs"
+          ? "This lane has other work than its saved work on ADE Cloud, so ADE left the lane as it is. Download the saved work from the lane to compare."
+          : outcome === "applied" ? "ADE put back this lane's work that wasn't on GitHub." : null;
+      },
+    });
+  }
   if (bootLaunchEnv) {
     startCloudBootLaunch(bootLaunchEnv, {
       cloudInstanceId,
@@ -32512,14 +32537,13 @@ async function runServe(
 
   // ADE Cloud computer: the rest save and the queue of messages for its chats.
   if (!embedded && cloudInstanceId && cloudRest && cloudKeepAwake) {
-    const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats, uploadSubagentCloudCopy }, laneBackup, { normalizeGitRemoteIdentity }, { readGitOriginUrl }, { installCloudLaneRestore }] = await Promise.all([
+    const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats, uploadSubagentCloudCopy }, laneBackup, { normalizeGitRemoteIdentity }, { readGitOriginUrl }] = await Promise.all([
       import("./services/cloudChats/cloudRestSave"),
       import("./services/cloudChats/cloudChatMessageQueue"),
       import("./services/cloudChats/cloudChatUploader"),
       import("./services/cloudChats/cloudLaneBackup"),
       import("../../desktop/src/shared/crossMachineHandoff"),
       import("../../desktop/src/main/services/projects/recentProjectSummary"),
-      import("../../desktop/src/main/services/lanes/cloudLaneRestoreHook"),
     ]);
     const projectKeyOf = (root: string): string | null => {
       try {
@@ -32528,24 +32552,6 @@ async function runServe(
         return null;
       }
     };
-    // A lane that starts here gets its saved work from the computer it had before (fork-continue, a new computer).
-    installCloudLaneRestore({
-      prepareBranch: async ({ laneId, branchRef, projectRoot }) => {
-        const api = await accountCloudApi();
-        const machineKey = thisMachineKey();
-        if (!api || !machineKey) return { created: false };
-        return await laneBackup.prepareLaneBranchFromBackup({ api, machineKey, laneId, branchRef, projectRoot, logger: headlessProjectLogger });
-      },
-      restore: async ({ laneId, worktreePath, projectRoot }) => {
-        const api = await accountCloudApi();
-        const machineKey = thisMachineKey();
-        if (!api || !machineKey) return null;
-        const outcome = await laneBackup.restoreLaneBackupIfNeeded({ api, instanceId: cloudInstanceId, machineKey, laneId, worktreePath, projectRoot, logger: headlessProjectLogger });
-        return outcome === "kept_newer_local_work" || outcome === "kept_branch_differs"
-          ? "This lane has other work than its saved work on ADE Cloud, so ADE left the lane as it is. Download the saved work from the lane to compare."
-          : outcome === "applied" ? "ADE put back this lane's work that wasn't on GitHub." : null;
-      },
-    });
     const restSave = createCloudRestSave({
       adeHome: layout.adeDir,
       instanceId: cloudInstanceId,

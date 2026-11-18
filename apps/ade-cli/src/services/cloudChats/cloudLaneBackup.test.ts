@@ -249,6 +249,8 @@ describe("lane backups", () => {
 
     expect(made).toEqual({ created: true, branch: "ade/never-pushed" });
     expect(git(project, "rev-parse", "refs/heads/ade/never-pushed")).toBe(git(source, "rev-parse", "HEAD"));
+    // A retry of a launch that failed after this finds the branch here: still the backup's, so still not published.
+    expect(await prepareLaneBranchFromBackup({ api: server.api, machineKey: "key-new", laneId: LANE, branchRef: "ade/never-pushed", projectRoot: project, logger })).toEqual(made);
     git(project, "checkout", "-q", "ade/never-pushed");
     expect(await restoreLaneBackupIfNeeded({ api: server.api, instanceId: "box2", machineKey: "key-new", laneId: LANE, worktreePath: project, projectRoot: project, logger })).toBe("applied");
     const expected = treeOf(source);
@@ -281,6 +283,59 @@ describe("lane backups", () => {
     expect(outcome).toBe("applied");
     expect(git(target, "log", "--format=%s", "-3")).toBe("local only\npushed\nbase");
     expect(treeOf(target)).toEqual(treeOf(source));
+  });
+
+  // Work the lane's files don't hold, or a GitHub nobody could check: the lane is not saved and its backup stays.
+  it.each<[string, (source: string, origin: string) => void, string]>([
+    ["a staged version the files went back from", (source) => {
+      write(source, "edit.txt", "v2 staged\n");
+      git(source, "add", "edit.txt");
+      write(source, "edit.txt", "v1\n");
+    }, "staged changes"],
+    ["a change inside a submodule", (source) => {
+      const sub = path.join(root, "sub.git");
+      git(root, "init", "--bare", "-q", "-b", "main", sub);
+      const subSource = path.join(root, "sub-source");
+      git(root, "clone", "-q", sub, subSource);
+      write(subSource, "lib.ts", "export const lib = 1;\n");
+      git(subSource, "add", "-A");
+      git(subSource, "commit", "-q", "-m", "lib");
+      git(subSource, "push", "-q", "origin", "HEAD:main");
+      git(source, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "sub");
+      git(source, "commit", "-q", "-m", "add sub");
+      git(source, "push", "-q", "origin", BRANCH);
+      write(path.join(source, "sub"), "lib.ts", "export const lib = 2;\n");
+    }, "inside a submodule"],
+    ["GitHub out of reach", (source) => {
+      git(source, "remote", "set-url", "origin", path.join(root, "gone.git"));
+    }, "couldn't reach GitHub"],
+  ])("%s: the report isn't current and the lane's backup stays", async (_label, change, reason) => {
+    const { source, origin } = seedOrigin();
+    write(source, "local.ts", "export const local = 1;\n");
+    git(source, "add", "-A");
+    git(source, "commit", "-q", "-m", "local only");
+    const server = fakeServer();
+    expect(await save(server, source)).toMatchObject({ state: "current", saved: 1 });
+    // Its commit reaches GitHub: on its own, the lane is clean now and its backup would go.
+    git(source, "push", "-q", "origin", BRANCH);
+    change(source, origin);
+
+    expect(await save(server, source)).toMatchObject({ state: "failed", failed: 1 });
+    expect(server.reports.at(-1)!.lanes).toEqual([expect.objectContaining({ laneId: LANE, state: "failed", reason: expect.stringContaining(reason) })]);
+    expect([server.rows.size, server.deleted]).toEqual([1, []]);
+  });
+
+  it("a lane whose folder is missing counts as saved only by its backup", async () => {
+    const { source } = seedOrigin();
+    makeUnpushedWork(source);
+    const missing = () => runLaneBackups({ api: fakeServer().api, instanceId: "box", machineKey: "key-old", logger, lanes: async () => ({ complete: true, lanes: [], missing: [LANE] }), mayGoOn: () => true });
+    expect(await missing()).toMatchObject({ state: "failed", failed: 1 });
+
+    const server = fakeServer();
+    await save(server, source);
+    const withBackup = await runLaneBackups({ api: server.api, instanceId: "box", machineKey: "key-old", logger, lanes: async () => ({ complete: true, lanes: [], missing: [LANE] }), mayGoOn: () => true });
+    expect(withBackup).toMatchObject({ state: "current", unchanged: 1 });
+    expect(server.rows.size).toBe(1);
   });
 
   it("a lane too large to save keeps the report from being current", async () => {
