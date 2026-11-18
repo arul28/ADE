@@ -481,10 +481,12 @@ extension LanesTabView {
     // Built once per pass, not once per row.
     let chips = laneMachineChips
     let remoteSections = visibleRemoteMachineLanes
-    if syncService.isAccountProjectScope, remoteLanes.machines.isEmpty, !remoteLanes.hasRead {
+    let accountHasNoLanes = syncService.isAccountProjectScope
+      && remoteLanes.machines.allSatisfy { $0.snapshots.isEmpty }
+    if accountHasNoLanes, !remoteLanes.hasRead {
       // The first read of the cloud lanes is still out: nothing to say yet.
       EmptyView()
-    } else if syncService.isAccountProjectScope, remoteLanes.machines.isEmpty {
+    } else if accountHasNoLanes {
       // No computer's copy, and no cloud lane yet.
       ADEEmptyStateView(
         symbol: ADECloudMachine.symbol,

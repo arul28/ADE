@@ -73,12 +73,12 @@ extension WorkRootListScreen {
     // rows are all other computers' (ADE Cloud lanes asleep or awake), taken
     // while `inputs` still names the open project (a rebuild that resumes
     // after a switch must not list the old project's rows).
-    let accountRowsAreCurrent = syncService.isAccountProjectScope
+    let remoteRowsAreCurrent = (localProjectionIsCurrent || syncService.isAccountProjectScope)
       && inputs.remoteMachineReposProjectId == syncService.activeProject?.id
     let remoteMerge = workMergeRemoteMachineRows(
       sessions: focusedListed ? activeRosterProjection.sessions : [],
       lanes: focusedListed ? activeRosterProjection.lanes : [],
-      remote: localProjectionIsCurrent || accountRowsAreCurrent ? inputs.remoteMachineRepos : [],
+      remote: remoteRowsAreCurrent ? inputs.remoteMachineRepos : [],
       focused: activeRoster
     )
     syncService.setWorkListRemoteChats(remoteMerge.remoteChats)

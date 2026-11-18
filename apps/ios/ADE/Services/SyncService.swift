@@ -4914,6 +4914,9 @@ final class SyncService: ObservableObject {
     Set(UserDefaults.standard.stringArray(forKey: SyncService.cloudMachineFleetKeysDefaultsKey) ?? []) {
     didSet {
       guard cloudMachineFleetKeys != oldValue else { return }
+      // A computer leaving this set may be a deleted one the phone is still
+      // focused on (`leaveDeletedFocusedCloudComputer`).
+      rememberSeenCloudFleetKeys(oldValue)
       UserDefaults.standard.set(cloudMachineFleetKeys.sorted(), forKey: Self.cloudMachineFleetKeysDefaultsKey)
       machineFleet?.setCloudMachineKeys(cloudMachineFleetKeys)
       updateFocusedMachineListing()
@@ -30662,9 +30665,8 @@ extension SyncService {
             let deviceId = machine.deviceId, !deviceId.isEmpty else { return nil }
       return HiddenMachineStore.fleetKey(deviceId: deviceId)
     }
-    let dropped = cloudMachineFleetKeys.subtracting(keys)
     cloudMachineFleetKeys = Set(keys)
-    if !dropped.isEmpty { leaveDeletedFocusedCloudComputer(dropped: dropped) }
+    leaveDeletedFocusedCloudComputer()
   }
 }
 

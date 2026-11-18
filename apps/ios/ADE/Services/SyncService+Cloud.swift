@@ -748,25 +748,47 @@ extension SyncService {
       resolveCloudMachineKeys()
     }
     machineFleet?.cloudServerChanged()
+    leaveDeletedFocusedCloudComputer()
   }
 
+  /// Every fleet key that has left this phone's ADE Cloud computer set (a
+  /// deleted computer, or one before this build). Only grows (capped): the
+  /// live set drops a deleted computer, and this is how the phone still knows
+  /// the focused machine was one.
+  private static let seenCloudFleetKeysDefaultsKey = "ade.cloudFleetKeysSeen.v1"
+
+  func rememberSeenCloudFleetKeys(_ keys: Set<String>) {
+    guard !keys.isEmpty else { return }
+    var seen = UserDefaults.standard.stringArray(forKey: Self.seenCloudFleetKeysDefaultsKey) ?? []
+    let fresh = keys.subtracting(seen).sorted()
+    guard !fresh.isEmpty else { return }
+    seen.append(contentsOf: fresh)
+    UserDefaults.standard.set(Array(seen.suffix(200)), forKey: Self.seenCloudFleetKeysDefaultsKey)
+  }
+
+  @MainActor private enum DeletedFocusedCloudComputer { static var left: Set<String> = [] }
+
   /// The project open on this phone was on an ADE Cloud computer the account
-  /// has since deleted (its lane was deleted, here or on another device):
-  /// `resolveCloudMachineKeys` saw it leave the saved cloud computers, and the
-  /// loaded account list no longer has it. A cold start restored it with its
-  /// cached lanes, which read as if it were only offline: show the Hub
-  /// instead, where the project opens elsewhere. An offline computer of the
-  /// person's own is never left this way (it was never a cloud computer).
-  func leaveDeletedFocusedCloudComputer(dropped: Set<String>) {
+  /// has since deleted (its lane was deleted, here or on another device). A
+  /// cold start restored it with its cached lanes, which read as if it were
+  /// only offline: show the Hub instead, where the project opens elsewhere.
+  /// Checked on every account list and cloud read, so a check that cannot
+  /// tell yet (still connected, list not loaded) is simply made again. An
+  /// offline computer of the person's own is never left this way (it was
+  /// never an ADE Cloud computer).
+  func leaveDeletedFocusedCloudComputer() {
     let account = AccountService.shared
     guard let focusedKey = focusedMachineKey,
-          dropped.contains(focusedKey),
           !projectHubPresented,
           activeAccountProjectId == nil,
           connectionState != .connected,
           account.machinesState == .loaded,
-          account.machine(forFleetKey: focusedKey) == nil
+          account.machine(forFleetKey: focusedKey) == nil,
+          !cloudMachineFleetKeys.contains(focusedKey),
+          (UserDefaults.standard.stringArray(forKey: Self.seenCloudFleetKeysDefaultsKey) ?? []).contains(focusedKey)
     else { return }
+    // Once per computer per launch: a person who opens it again stays.
+    guard DeletedFocusedCloudComputer.left.insert(focusedKey).inserted else { return }
     cloudServerLog.notice("cloud_server focused_computer=deleted action=show_hub")
     showProjectHub()
   }
