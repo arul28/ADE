@@ -1591,7 +1591,15 @@ export async function createAdeRuntime(args: {
     };
     reconcileStaleRunningSessions("startup");
     staleSessionReconcileTimer = setTimeout(
-      () => reconcileStaleRunningSessions("fresh-activity-grace-expired"),
+      () => {
+        // The project's database can vanish while the brain runs (its .ade
+        // folder deleted); a throw here would be an uncaught timer error.
+        try {
+          reconcileStaleRunningSessions("fresh-activity-grace-expired");
+        } catch (error) {
+          logger.warn("sessions.reconcile_stale_failed", { error: error instanceof Error ? error.message : String(error) });
+        }
+      },
       STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
     );
     staleSessionReconcileTimer.unref?.();
