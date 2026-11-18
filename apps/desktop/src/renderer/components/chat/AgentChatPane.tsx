@@ -11872,6 +11872,7 @@ export function AgentChatPane({
         envelope,
         pendingEventQueueRef.current,
         eventsBySessionRef.current[envelope.sessionId],
+        detachedLiveEventsBySessionRef.current[envelope.sessionId],
       );
       if (heldForOpen) {
         // Flushed when the hold ends.
