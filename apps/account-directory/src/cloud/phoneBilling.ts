@@ -102,6 +102,8 @@ export async function setExtraPhoneMinutes(
   // "Was on" counts: a payment that failed and came back leaves the period's earlier minutes owed.
   const wasEnabled = account.phone_extra_enabled === PHONE_EXTRA.on || account.phone_extra_enabled === PHONE_EXTRA.wasOn;
   const before = { enabled: wasEnabled && accountRules(account) === "paid", limitCents: account.phone_extra_limit_cents ?? null };
+  // Saved before the switch moves, so a failure after it never leaves used minutes unowed (a retry reads the new switch).
+  if (before.enabled) await keepOwedUnderOldSettings(env, userId, before, now);
   if (choice.enabled) {
     if (accountRules(account) !== "paid") throw new CloudBillingError("needs_paid_plan", "Extra iPhone minutes need a paid plan.", 403);
     await ensurePhoneMinutesItem(env, account, now);
@@ -167,7 +169,8 @@ async function sendPhoneMinutes(env: CloudEnv, account: AccountRow, eventName: s
   try {
     await stripeRequest(env, "POST", "/billing/meter_events", {
       event_name: eventName,
-      identifier: `ade-phone:${account.stripe_subscription_id ?? account.stripe_customer_id}:${periodStart}:from-${from}`,
+      // The customer, not the subscription: it stays when a plan ends, so a retry after a cancellation is still the same report.
+      identifier: `ade-phone:${account.stripe_customer_id}:${periodStart}:from-${from}`,
       timestamp: String(Math.floor(at / 1000)),
       "payload[stripe_customer_id]": account.stripe_customer_id as string,
       "payload[value]": String(to - from),

@@ -43286,6 +43286,8 @@ async function runCli(
   // any command, so a build uploads that checkout.
   const cloudCommand = cloudIphone ? chosen.command.slice(1) : cloudMachineAppleCommand(chosen.command);
   if (cloudCommand) {
+    // Help first: `ade apple start --machine cloud --help` must not start (or stop) a phone.
+    if (hasHelpFlag(cloudCommand)) return await runParsedCli(extractMachineTargeting({ ...chosen, command: ["apple", ...cloudCommand] }));
     await applyAccountProjectSelector(chosen.options);
     return await withShellScopeFor(chosen.options, async () => await runCloudIphoneCommand(chosen, cloudCommand));
   }

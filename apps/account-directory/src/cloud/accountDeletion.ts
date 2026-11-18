@@ -24,7 +24,7 @@ import {
  * adopted, then the minute cron deletes it because `deleted_at` is set.
  */
 export async function deleteCloudAccount(
-  env: Pick<CloudEnv, "DB" | "CLOUD_CHATS" | "AGENT37_API_KEY" | "STRIPE_SECRET_KEY" | "NOMAC_API_KEY"> & RelayAccountPurgeEnv,
+  env: Pick<CloudEnv, "DB" | "CLOUD_CHATS" | "AGENT37_API_KEY" | "STRIPE_SECRET_KEY" | "NOMAC_API_KEY" | "CLOUD_PHONE_ACCESS"> & RelayAccountPurgeEnv,
   userId: string,
 ): Promise<void> {
   const now = Date.now();
@@ -99,7 +99,8 @@ export async function deleteCloudAccount(
     env.DB.prepare("update cloud_blocks set user_id = ? where user_id = ?").bind(gone, userId),
     // The ADE Cloud iPhone's phones stay for the cost report, under the hash, and none counts as running
     // (`deleteAccountPhone` stopped them at NoMac above, or does on the retry).
-    env.DB.prepare("update cloud_phones set user_id = ?, state = 'ended', stop_at = null, ended_at = coalesce(ended_at, ?) where user_id = ?").bind(gone, Date.now(), userId),
+    // Until NoMac's cleanup succeeded they stay under the account, so Clerk's retry still finds them.
+    env.DB.prepare("update cloud_phones set user_id = ?, state = 'ended', stop_at = null, ended_at = coalesce(ended_at, ?) where user_id = ? and ? = 0").bind(gone, Date.now(), userId, phoneFailure ? 1 : 0),
     env.DB.prepare("update cloud_abuse_events set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("update cloud_owner_alerts set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("delete from cloud_cpu_reports where user_id = ?").bind(userId),
