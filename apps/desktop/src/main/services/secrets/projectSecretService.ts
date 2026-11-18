@@ -212,7 +212,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
       legacyAbsentUntil = Date.now() + LEGACY_ABSENT_RECHECK_MS;
       return null;
     }
-    legacyStore ??= new EncryptedFileCredentialStore(paths);
+    legacyStore ??= new EncryptedFileCredentialStore({ ...paths, projectRoot });
     return legacyStore;
   };
 

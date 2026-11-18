@@ -872,9 +872,19 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readonly cacheSettledReads: boolean;
   /** See {@link recheckExpiredInBackground}. */
   private expiryRecheck: Promise<void> | null = null;
+  /** See the constructor option. */
+  private readonly projectRoot: string | null;
 
   constructor(args: {
     secretsDir?: string;
+    /**
+     * The project folder that owns this store, for a store under a project's
+     * `.ade/secrets`. ADE never creates that folder: while it is missing, a
+     * read finds nothing and a write fails. Without this, the first read of a
+     * deleted project's store made the folder again, with only
+     * `.ade/secrets/.machine-key` in it.
+     */
+    projectRoot?: string | null;
     credentialsPath?: string;
     machineKeyPath?: string;
     lockPath?: string;
@@ -891,6 +901,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     cacheSettledReads?: boolean;
   } = {}) {
     this.cacheSettledReads = args.cacheSettledReads !== false;
+    this.projectRoot = args.projectRoot ? path.resolve(args.projectRoot) : null;
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
     this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
     this.machineKeyPath = args.machineKeyPath ?? path.join(secretsDir, DEFAULT_MACHINE_KEY_FILE);
@@ -969,6 +980,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     const normalized = normalizeCredentialKey(key);
     const nextValue = value.trim();
     if (!nextValue.length) return this.delete(normalized);
+    this.assertProjectFolderPresent();
     await this.withLockAsync(() => {
       const values = this.readAll({ forWrite: true });
       values[normalized] = nextValue;
@@ -978,6 +990,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   async delete(key: string): Promise<void> {
     const normalized = normalizeCredentialKey(key);
+    if (this.storeFolderMissing()) return;
     await this.withLockAsync(() => {
       const values = this.readAll({ forWrite: true });
       if (!(normalized in values)) return;
@@ -990,6 +1003,13 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     const normalized = normalizeCredentialKey(key);
     const settled = this.readSettledCache() ?? this.readSettledUnlocked();
     if (settled) return settled[normalized] ?? null;
+    // No folder, no store. The locked read below makes the folder (for its
+    // lock file) and a machine key, so it must not run here.
+    if (this.storeFolderMissing()) {
+      this.lastReadState = "missing";
+      this.lastReadFailureReason = null;
+      return null;
+    }
     // Locked because the read may re-seal an `os`-bound store to the machine
     // key (and merge a recovered quarantine back in), and those writes have to
     // exclude concurrent writers.
@@ -1187,6 +1207,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       this.deleteSync(normalized);
       return;
     }
+    this.assertProjectFolderPresent();
     this.withLock(() => {
       const values = this.readAll({ forWrite: true });
       values[normalized] = nextValue;
@@ -1196,6 +1217,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   deleteSync(key: string): void {
     const normalized = normalizeCredentialKey(key);
+    if (this.storeFolderMissing()) return;
     this.withLock(() => {
       const values = this.readAll({ forWrite: true });
       if (!(normalized in values)) return;
@@ -1205,7 +1227,9 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   onDidChange(listener: () => void): () => void {
-    ensureDirMode700(path.dirname(this.credentialsPath));
+    // A watch is not a write: a project whose folder is missing is watched by
+    // stat alone, and its folder is not made again.
+    if (this.projectFolderPresent()) ensureDirMode700(path.dirname(this.credentialsPath));
     const watcher = subscribeCredentialFileChanges(
       this.credentialsPath,
       this.credentialChangePollIntervalMs,
@@ -1226,6 +1250,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   updateSync(updater: (values: Record<string, string>) => boolean | void): void {
+    this.assertProjectFolderPresent();
     this.withLock(() => {
       const values = this.readAll({ forWrite: true });
       const shouldWrite = updater(values);
@@ -1750,6 +1775,25 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   private withLock<T>(fn: () => T, options: { timeoutMs?: number } = {}): T {
     return withCredentialFileLock(this.lockPath, fn, options);
+  }
+
+  private storeFolderMissing(): boolean {
+    return !fs.existsSync(path.dirname(this.credentialsPath));
+  }
+
+  /** True for a machine store; for a project store, whether the project folder is there. */
+  private projectFolderPresent(): boolean {
+    return !this.projectRoot || fs.existsSync(this.projectRoot);
+  }
+
+  /** A write must never make a missing project folder again. */
+  private assertProjectFolderPresent(): void {
+    if (this.projectFolderPresent()) return;
+    const error = new Error(
+      `The project folder ${this.projectRoot} isn't there. ADE did not save this credential and has not created a replacement.`,
+    ) as Error & { code?: string };
+    error.code = "project_data_missing";
+    throw error;
   }
 
   private withLockAsync<T>(fn: () => T | Promise<T>): Promise<T> {

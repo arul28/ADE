@@ -2971,7 +2971,7 @@ export async function createAdeRuntime(args: {
     // Jira is per project and follows the project to the account's other
     // machines. A project with none of its own adopts the machine's old one.
     jiraCredentialServiceForAccount = createJiraCredentialService({
-      credentialStore: new EncryptedFileCredentialStore({ secretsDir: path.join(paths.adeDir, "secrets") }),
+      credentialStore: new EncryptedFileCredentialStore({ secretsDir: path.join(paths.adeDir, "secrets"), projectRoot }),
       legacyCredentialStore: new EncryptedFileCredentialStore(),
       projectRoot,
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
@@ -3893,6 +3893,7 @@ export async function createAdeRuntime(args: {
         projectId,
         credentialStore: new EncryptedFileCredentialStore({
           secretsDir: path.join(paths.adeDir, "secrets"),
+          projectRoot,
         }),
         getLinearClient: () => headlessLinearServices.linearClient,
         getLinearAccessToken: headlessLinearAccessToken,
