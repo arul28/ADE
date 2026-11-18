@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { ArrowClockwise, CircleNotch, GitBranch, Sun, UserMinus } from "@phosphor-icons/react";
+import { ArrowClockwise, CircleNotch, GitBranch, Sun, UserCirclePlus, UserMinus } from "@phosphor-icons/react";
 import {
   cloudAccountBanner,
   cloudHoursLeftMilli,
@@ -15,6 +15,7 @@ import {
   type CloudMachinesResult,
 } from "../../../shared/adeCloud";
 import { Banner } from "../ui/notice";
+import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { CloudLaneSavedWork } from "../cloudLane/CloudLaneSavedWork";
 import type { NoticeAction } from "../ui/notice/NoticeParts";
@@ -136,6 +137,7 @@ export function CloudBoxStrip({
   catalog,
   work,
   pending,
+  approvalUrl,
   error,
   onDismissError,
   onWake,
@@ -147,6 +149,8 @@ export function CloudBoxStrip({
   catalog: CloudCatalog;
   work: CloudBoxWork;
   pending: CloudBoxPending | null;
+  /** A copy's or move's sign-in link while its new computer waits for the person. */
+  approvalUrl?: string | null;
   error: CloudBoxActionError | null;
   onDismissError: () => void;
   /** Wake on the card itself; rows that put Wake in place of Connect pass null. */
@@ -207,6 +211,13 @@ export function CloudBoxStrip({
         <div role="status" className="ade-cx-cloud-pending">
           <CircleNotch size={12} className="animate-spin" />
           {cloudPendingLabel(pending)}
+          {approvalUrl ? (
+            // The approval is the account's: this computer's ADE browser (or this browser), where the person is signed in.
+            <button type="button" className="ade-cx-cloud-wake" onClick={() => openUrlInAdeBrowser(approvalUrl)}>
+              <UserCirclePlus size={12} weight="bold" />
+              Approve
+            </button>
+          ) : null}
         </div>
       ) : null}
       {cloudMachineSelfUpdating(box) && box.update?.state === "failed" ? (

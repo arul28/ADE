@@ -713,7 +713,7 @@ import {
 } from "./services/account/accountAuthService";
 import { getSharedAccountAttestationConfig, getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
 import { createRemoteProviderSignIn, type ClaudePassRunner } from "./services/account/remoteProviderSignIn";
-import { startCloudBootLaunch, takeCloudLaunchEnv } from "./services/account/cloudBootLaunch";
+import { startCloudBootLaunch, takeCloudLaunch } from "./services/account/cloudBootLaunch";
 import { createProviderReady } from "./services/account/cloudLaunchSignInWait";
 import {
   deviceSignInInstructions,
@@ -32425,8 +32425,9 @@ async function runServe(
   // A server launch (C6): ADE's server made this computer for a caller with
   // no computer and named the launch in its env. The computer signs itself
   // in with its join code and runs the launch here. The code leaves this
-  // process's env now, so nothing the brain starts inherits it.
-  const bootLaunchEnv = !embedded && cloudInstanceId ? takeCloudLaunchEnv(process.env) : null;
+  // process's env now, so nothing the brain starts inherits it. A server
+  // copy's fork gets it in a one-time file instead, deleted as it is read.
+  const bootLaunchEnv = !embedded && cloudInstanceId ? takeCloudLaunch(layout.adeDir, headlessProjectLogger, process.env) : null;
   // A chat whose provider isn't signed in here waits for the person's sign-in
   // (a launch, and a message queued for an existing chat).
   const cloudProviderReady = createProviderReady(async (options) => (await import("../../desktop/src/main/services/ai/authDetector")).detectAllAuth(undefined, options));

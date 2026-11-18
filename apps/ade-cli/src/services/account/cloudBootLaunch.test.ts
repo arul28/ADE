@@ -4,10 +4,72 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CloudApiError, type CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
 import type { CloudLaunchStagesUpdate } from "../../../../account-directory/src/cloud/contract";
-import { runCloudBootLaunch, type CloudBootLaunchDeps } from "./cloudBootLaunch";
+import { runCloudBootLaunch, takeCloudLaunch, type CloudBootLaunchDeps } from "./cloudBootLaunch";
 
 const logger = { info: () => {}, warn: () => {} };
 const LAUNCH = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
+
+/**
+ * A server copy's fork gets its launch in a one-time file (it can't be given
+ * env), and may carry its original's spent env launch. Each call is one brain
+ * start; the entrypoint hands every start the same env again.
+ */
+describe("takeCloudLaunch: a server copy's join file", () => {
+  const SPENT = "7f6e5d4c-3b2a-4190-8f7e-6d5c4b3a2910";
+  const NEWER = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f";
+  let adeDir: string;
+  const joinFile = () => path.join(adeDir, "cloud", "launch-join.json");
+  const spentEnv = (): NodeJS.ProcessEnv => ({ ADE_LAUNCH_ID: SPENT, ADE_LAUNCH_JOIN: "spent-code", PATH: "/usr/bin" });
+  const hand = (body: string) => {
+    fs.mkdirSync(path.dirname(joinFile()), { recursive: true });
+    fs.writeFileSync(joinFile(), body, { mode: 0o600 });
+  };
+
+  beforeEach(() => {
+    adeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-join-file-"));
+  });
+  afterEach(() => fs.rmSync(adeDir, { recursive: true, force: true }));
+
+  it("reads the file once and deletes it; it wins over the copied env, whose launch every later start leaves alone", async () => {
+    hand(JSON.stringify({ launchId: LAUNCH.toUpperCase(), join: "copy-code" }));
+    const env = spentEnv();
+
+    expect(takeCloudLaunch(adeDir, logger, env)).toEqual({ launchId: LAUNCH, joinCode: "copy-code" });
+    expect(fs.existsSync(joinFile())).toBe(false);
+    expect(env).toEqual({ PATH: "/usr/bin" });
+
+    // The restarts after: the same spent env, no file.
+    expect(takeCloudLaunch(adeDir, logger, spentEnv())).toBeNull();
+    expect(takeCloudLaunch(adeDir, logger, spentEnv())).toBeNull();
+    // A launch the env names anew is still taken.
+    expect(takeCloudLaunch(adeDir, logger, { ADE_LAUNCH_ID: NEWER, ADE_LAUNCH_JOIN: "newer-code" })).toEqual({ launchId: NEWER, joinCode: "newer-code" });
+  });
+
+  it.each<[string, Record<string, string>, string | null, { launchId: string; joinCode: null } | null]>([
+    ["on the same computer, before its launch ended, goes on with it, with no code", { ADE_HOST_INSTANCE_ID: "cloud:copy1" }, null, { launchId: LAUNCH, joinCode: null }],
+    ["once its launch ended, takes none", { ADE_HOST_INSTANCE_ID: "cloud:copy1" }, "ended", null],
+    ["on a copy of this computer, takes none", { ADE_HOST_INSTANCE_ID: "cloud:copy2" }, null, null],
+    ["on a host that names no computer, takes none", {}, null, null],
+  ])("a restart after the file was read, %s", async (_label, laterEnv, bootPhase, expected) => {
+    hand(JSON.stringify({ launchId: LAUNCH, join: "copy-code" }));
+    expect(takeCloudLaunch(adeDir, logger, { ...spentEnv(), ADE_HOST_INSTANCE_ID: "cloud:copy1" })).toEqual({ launchId: LAUNCH, joinCode: "copy-code" });
+    if (bootPhase) fs.writeFileSync(path.join(adeDir, "cloud", "boot-launch.json"), JSON.stringify({ launchId: LAUNCH, phase: bootPhase }));
+
+    expect(takeCloudLaunch(adeDir, logger, { ...spentEnv(), ...laterEnv })).toEqual(expected);
+    // Never the code: only the launch is kept.
+    const kept = fs.readdirSync(path.join(adeDir, "cloud")).map((name) => fs.readFileSync(path.join(adeDir, "cloud", name), "utf8")).join("\n");
+    expect(kept).not.toContain("copy-code");
+  });
+
+  it.each([
+    ["no file", null],
+    ["a damaged file", "{\"launchId\": \"not-a-launch\", \"join\""],
+  ])("with %s the env's launch is taken, and the file is gone", async (_label, body) => {
+    if (body != null) hand(body);
+    expect(takeCloudLaunch(adeDir, logger, spentEnv())).toEqual({ launchId: SPENT, joinCode: "spent-code" });
+    expect(fs.existsSync(joinFile())).toBe(false);
+  });
+});
 
 /**
  * A `machine` launch (a move's new computer, a new one from the phone): the

@@ -22,6 +22,8 @@ import type {
   CloudInstance,
   CloudInviteRedeemResult,
   CloudLaneWithoutComputer,
+  CloudCopyRecord,
+  CloudCopyRequest,
   CloudFreeRecord,
   CloudMoveRecord,
   CloudMoveRequest,
@@ -167,6 +169,16 @@ export type CloudProvider = {
   startMove?(id: string, input: CloudMoveRequest): Promise<CloudMoveRecord>;
   readMove?(moveId: string): Promise<CloudMoveRecord>;
   cancelMove?(moveId: string): Promise<CloudMoveRecord>;
+  /**
+   * A copy, run by ADE's server (`POST /cloud/instances/:id/copy`), the same
+   * way: `readCopy` follows it, `cancelCopy` stops it before the copy signs
+   * in. An older server answers 404; 409 `server_copy_unavailable` until its
+   * computers can read their sign-in file, `copy_needs_update` for one on an
+   * older ADE.
+   */
+  startCopy?(id: string, input: CloudCopyRequest): Promise<CloudCopyRecord>;
+  readCopy?(copyId: string): Promise<CloudCopyRecord>;
+  cancelCopy?(copyId: string): Promise<CloudCopyRecord>;
   /**
    * Frees a computer (its lane kept), run by ADE's server (`POST /cloud/instances/:id/free`):
    * it pushes every lane's work, checks it again and deletes the computer with no app open;

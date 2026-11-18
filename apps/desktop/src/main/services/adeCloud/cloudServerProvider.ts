@@ -17,6 +17,7 @@ import {
   type CloudCheckoutResult,
   type CloudInviteRedeemResult,
   type CloudLaneWithoutComputer,
+  type CloudCopyRecord,
   type CloudFreeRecord,
   type CloudMoveRecord,
   type CloudPhoneStart,
@@ -98,6 +99,15 @@ function readMoveRecord(value: unknown): CloudMoveRecord {
     throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
   }
   return body as unknown as CloudMoveRecord;
+}
+
+/** A copy's record, checked the same way. */
+function readCopyRecord(value: unknown): CloudCopyRecord {
+  const body = record(value);
+  if (typeof body?.copyId !== "string" || typeof body.state !== "string" || typeof body.sourceInstanceId !== "string") {
+    throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+  }
+  return body as unknown as CloudCopyRecord;
 }
 
 function readFreeRecord(value: unknown): CloudFreeRecord {
@@ -401,6 +411,18 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async cancelMove(moveId): Promise<CloudMoveRecord> {
       return readMoveRecord(await request("DELETE", `${CLOUD_PATHS.moves}/${encodeURIComponent(moveId)}`));
+    },
+
+    async startCopy(id, input): Promise<CloudCopyRecord> {
+      return readCopyRecord(await request("POST", instancePath(id, "copy"), { body: input }));
+    },
+
+    async readCopy(copyId): Promise<CloudCopyRecord> {
+      return readCopyRecord(await request("GET", `${CLOUD_PATHS.copies}/${encodeURIComponent(copyId)}`));
+    },
+
+    async cancelCopy(copyId): Promise<CloudCopyRecord> {
+      return readCopyRecord(await request("DELETE", `${CLOUD_PATHS.copies}/${encodeURIComponent(copyId)}`));
     },
 
     async startFree(id, freeId): Promise<CloudFreeRecord> {

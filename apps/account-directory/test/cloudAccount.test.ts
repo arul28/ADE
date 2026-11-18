@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { reportExtraPhoneMinutes, setExtraPhoneMinutes } from "../src/cloud/phoneBilling";
-import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, type CloudAccountState, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
 import { runIdleCleanup } from "../src/cloud/idleCleanup";
@@ -17,7 +17,7 @@ import { rewardReferralIfDue } from "../src/cloud/referrals";
 import { prepareStopBackupReportId, runCloudMinuteCron } from "../src/cloud/cron";
 import { runLinearRenewalCron } from "../src/cloud/linearRenewal";
 import { nextFireAt } from "../src/cloud/automationSchedule";
-import { createComputer, handleCloudRequest } from "../src/cloud/routes";
+import { createComputer, forkComputer, handleCloudRequest } from "../src/cloud/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
 import { applyCloudPlanChange, type CloudEnv } from "../src/cloud/store";
 import { runDailyCostReport } from "../src/cloud/costReport";
@@ -3869,6 +3869,321 @@ describe("ADE Cloud server moves", () => {
     expect((await harness.send(OWNER, "POST", "/cloud/launches", { launchId: LAUNCH, kind: "machine", name: "Scratch" })).status).toBe(200);
     expect((await harness.send(OWNER, "PUT", `/cloud/launches/${LAUNCH}/stages`, { state: "done" })).status).toBe(200);
     expect((await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json() as { state: string }).state).toBe("done");
+  });
+});
+
+describe("ADE Cloud server copies", () => {
+  const COPY = "8b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e";
+  const OTHER_COPY = "9c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f";
+  const TARGET = "copied123456";
+  const USER_CODE = "BCDF-2345";
+  const SETTING = MACHINE_LAUNCH_MIN_VERSION_SETTING;
+  /** What the fork's shell prints for the hand-over. */
+  let shell: { hand: string };
+  let ran: Array<{ id: string; command: string }>;
+
+  beforeEach(() => {
+    harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
+    harness.env.CLERK_SECRET_KEY = "sk_test";
+    // A copy is a second computer: a plan with room for it.
+    seedAccount(harness, OWNER, { plan: "paid", included_milli: 500_000 });
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    harness.insert("cloud_settings", { key: SETTING, value: "1.2.131", updated_at: NOW });
+    seedComputer(harness, { name: "Widgets", machine_key: "mk_source", lane_id: "lane-1", lane_name: "Fix login", ade_version: "1.2.131" });
+    // What a moved, launched computer carries: none of its own names may reach the copy.
+    provide(harness, INSTANCE, "running", {
+      ade_machine_key: "mk_source", ade_lane_id: "lane-1", ade_lane_name: "Fix login", ade_launch_id: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", ade_moved_from: "older1234567", ade_former_machine_keys: "mk_older",
+    });
+    harness.insert("machines", { user_id: OWNER, machine_key: "mk_source", name: "Widgets", created_at: NOW });
+    harness.insert("device_authorizations", {
+      device_code: `device-${USER_CODE}`, user_code: USER_CODE, device_secret_hash: "hash", status: "pending", poll_interval_seconds: 5, created_at: NOW, expires_at: NOW + 60 * 60_000,
+    });
+    shell = { hand: "handed\n" };
+    ran = [];
+    harness.net.hooks.exec = (id, command) => {
+      ran.push({ id, command });
+      if (command.includes("launch-join.json")) return { exit_code: 0, stdout: shell.hand };
+      return null;
+    };
+  });
+
+  const run = () => runCloudMoves(harness.env, {
+    provider: createCloudProvider("provider-key"),
+    createComputer: (userId, provider, extras) => createComputer(harness.env, userId, provider, extras, { now: clock, waitUntil: undefined }),
+    forkComputer: (source, provider, extras) => forkComputer(harness.env, source, provider, extras, { now: clock, waitUntil: undefined }),
+  });
+  const job = (copyId = COPY) => harness.row("select * from cloud_jobs where job_id = ?", copyId);
+  const launch = () => harness.row("select * from cloud_launches where launch_id = ?", job().target_launch_id);
+  /** The minute cron, tick after tick, until the copy reaches `step`. */
+  const drive = async (step: string) => {
+    for (let tick = 0; tick < 200 && job().step !== step; tick += 1) {
+      clock += 16_000;
+      await run();
+    }
+    expect(job().step).toBe(step);
+  };
+  const start = (body: Row = {}) => harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/copy`, { copyId: COPY, ...body });
+  const record = async (copyId = COPY) => await (await harness.send(OWNER, "GET", `/cloud/copies/${copyId}`)).json() as CloudCopyRecord;
+  const onComputer = (id: string, text: string) => ran.filter((entry) => entry.id === id && entry.command.includes(text));
+  /** Each hand-over the fork got, read as its brain reads the file. */
+  const handed = () => onComputer(TARGET, "launch-join.json").map((entry) => {
+    const encoded = /printf %s '([A-Za-z0-9+/=]+)' \| base64 -d/.exec(entry.command)?.[1] ?? "";
+    return JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) as { launchId: string; join: string };
+  });
+  const join = (nonce: string, instanceId = TARGET, body: Row = { userCode: USER_CODE }) => handleCloudRequest(new Request(`https://directory.test/cloud/launches/${job().target_launch_id as string}/join`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-ade-instance": instanceId },
+    body: JSON.stringify({ nonce, ...body }),
+  }), harness.env);
+  /** The fork's brain once signed in: it registers, names its machine, then reports its launch done. */
+  const signedIn = async () => {
+    harness.insert("machines", { user_id: OWNER, machine_key: "mk_copy", name: "ade-box", created_at: clock });
+    expect((await harness.send(OWNER, "PUT", `/cloud/instances/${TARGET}/metadata`, { metadata: { ade_machine_key: "mk_copy" } })).status).toBe(200);
+    expect((await harness.send(OWNER, "PUT", `/cloud/launches/${job().target_launch_id as string}/stages`, { state: "done" })).status).toBe(200);
+  };
+  const held = () => onComputer(INSTANCE, '"reason":"copy"').length;
+  const released = () => onComputer(INSTANCE, 'rm -f "$ADE_HOME/cloud/holds/copy.json"').length;
+
+  it("copies a computer: one fork with its files, signed in with a one-time code, named, the original untouched", async () => {
+    const started = await start();
+    expect(started.status).toBe(201);
+    expect(await started.json()).toEqual(expect.objectContaining({
+      copyId: COPY, sourceInstanceId: INSTANCE, sourceName: "Widgets", name: "Widgets copy", state: "copying", targetInstanceId: null, cancellable: true,
+    }));
+    // The same copy again answers that copy.
+    const again = await start();
+    expect(again.status).toBe(200);
+    expect((await again.json() as CloudCopyRecord).copyId).toBe(COPY);
+
+    await drive("join");
+    const forks = providerCalls(harness, /POST .*\/instances\/abcde12345\/fork$/);
+    expect(forks).toHaveLength(1);
+    const metadata = forks[0]!.body!.metadata as Record<string, string>;
+    expect(metadata).toEqual(expect.objectContaining({ ade_copied_from: INSTANCE, ade_lane_id: "lane-1", ade_launch_id: job().target_launch_id, ade_request_id: job().target_launch_id }));
+    for (const key of ["ade_machine_key", "ade_former_machine_keys", "ade_moved_from", "ade_made_by_agent"]) expect(metadata).not.toHaveProperty(key);
+    expect(launch()).toEqual(expect.objectContaining({ kind: "machine", state: "joining", instance_id: TARGET }));
+    // The running original was held awake for the fork, and let go once the fork ran.
+    expect([held(), released()]).toEqual([1, 1]);
+    expect(job().source_instance_id).toBeNull();
+    expect(await record()).toEqual(expect.objectContaining({ state: "joining", targetInstanceId: TARGET, sourceInstanceId: INSTANCE }));
+
+    // The fork got its launch and code once; the code signs in only the launch's account, on the fork.
+    const [hand] = handed();
+    expect(handed()).toHaveLength(1);
+    expect(hand!.launchId).toBe(job().target_launch_id);
+    expect(onComputer(TARGET, 'pkill -f "serve --socket $ADE_HOME/sock/ade.sock"')).toHaveLength(1);
+    const joined = await join(hand!.join);
+    expect(joined.status).toBe(200);
+    expect((await joined.json() as { url: string }).url).toContain(`ticket=t_${OWNER}`);
+    // The code is never kept: only its hash, in the launch.
+    expect(JSON.stringify([job(), launch()])).not.toContain(hand!.join);
+
+    await signedIn();
+    await drive("end");
+    expect(await record()).toEqual(expect.objectContaining({
+      state: "done", targetMachineKey: "mk_copy", cancellable: false, message: "Copied Widgets into Widgets copy.",
+    }));
+    expect(harness.row("select custom_name from machines where machine_key = 'mk_copy'").custom_name).toBe("Widgets copy");
+    expect(computer(harness, TARGET).name).toBe("Widgets copy");
+    // The original is as it was.
+    expect(harness.net.instances.has(INSTANCE)).toBe(true);
+    expect(computer(harness).deleted_at).toBeNull();
+    expect(providerCalls(harness, /DELETE .*\/instances\//)).toHaveLength(0);
+    // Its copy answers no more cancels.
+    const late = await harness.send(OWNER, "DELETE", `/cloud/copies/${COPY}`);
+    expect(late.status).toBe(409);
+    expect(await late.json()).toEqual({ error: expect.objectContaining({ code: "copy_signed_in" }) });
+  });
+
+  it.each<[string, (code: string) => Promise<Response>, number, string]>([
+    ["from another computer", (code) => join(code, "otherbox1234"), 403, "join_refused"],
+    ["past its 30 minutes", (code) => { clock += 31 * 60_000; return join(code); }, 410, "join_expired"],
+    ["again once its sign-in was approved", async (code) => {
+      expect((await join(code)).status).toBe(200);
+      harness.exec("update device_authorizations set status = 'approved' where user_code = ?", USER_CODE);
+      return join(code, TARGET, { userCode: "GHJK-6789" });
+    }, 409, "join_used"],
+  ])("the copy's join code used %s is refused", async (_label, attempt, status, code) => {
+    expect((await start()).status).toBe(201);
+    await drive("join");
+
+    const refused = await attempt(handed()[0]!.join);
+    expect(refused.status).toBe(status);
+    expect(await refused.json()).toEqual({ error: expect.objectContaining({ code }) });
+  });
+
+  it.each<[string, () => Promise<void>, string]>([
+    ["the fork never runs", async () => {
+      harness.net.after.push({ match: /\/fork$/, run: () => { harness.net.instances.get(TARGET)!.status = "creating"; } });
+      await drive("boot");
+      clock += 16 * 60_000;
+    }, "ADE Cloud didn't finish making the copy in time."],
+    ["the fork fails", async () => {
+      harness.net.after.push({ match: /\/fork$/, run: () => { harness.net.instances.get(TARGET)!.status = "failed"; } });
+    }, "ADE Cloud couldn't make the copy."],
+    ["the fork never takes its sign-in", async () => {
+      shell.hand = "";
+    }, "the copy didn't take its sign-in."],
+    ["the copy never signs in", async () => {
+      await drive("join");
+      clock += 46 * 60_000;
+    }, "the copy didn't sign in in time."],
+    ["the launcher ends the unjoined copy", async () => {
+      await drive("join");
+      clock += 46 * 60_000;
+      await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+    }, "the copy didn't sign in."],
+  ])("%s: the copy is deleted and the original is as it was", async (_label, fail, why) => {
+    expect((await start()).status).toBe(201);
+    await fail();
+    await drive("end");
+
+    expect(await record()).toEqual(expect.objectContaining({
+      state: "failed", error: `ADE couldn't copy Widgets: ${why} Widgets is as it was, and the copy was deleted.`,
+    }));
+    expect(harness.net.instances.has(TARGET)).toBe(false);
+    expect(computer(harness, TARGET).deleted_at).not.toBeNull();
+    expect(["cancelled", "failed"]).toContain(launch().state);
+    expect(harness.net.instances.has(INSTANCE)).toBe(true);
+    expect(computer(harness).deleted_at).toBeNull();
+    expect(released()).toBeGreaterThanOrEqual(1);
+    // The original is free for another copy.
+    expect((await start({ copyId: OTHER_COPY })).status).toBe(201);
+  });
+
+  it("a fork whose brain lost its code before it joined is handed the same code again, at most three times", async () => {
+    expect((await start()).status).toBe(201);
+    await drive("join");
+    const window = launch().join_expires_at;
+    // Each tick past four minutes with the code unused hands it again, until the third.
+    for (const count of [2, 3, 3]) {
+      clock += 5 * 60_000;
+      await run();
+      expect(handed()).toHaveLength(count);
+    }
+    const hands = handed();
+    expect(new Set(hands.map((hand) => hand.join)).size).toBe(1);
+    // The window is the first hand's 30 minutes, never pushed on by a later hand.
+    expect(launch().join_expires_at).toBe(window);
+    expect((await join(hands[0]!.join)).status).toBe(200);
+  });
+
+  it.each<[string, boolean, number]>([
+    ["nobody approved its sign-in: it is handed the code again", false, 2],
+    ["its sign-in was approved: the code is spent, never handed again", true, 1],
+  ])("a fork whose brain used its code and stopped before it signed in, when %s", async (_label, approved, hands) => {
+    expect((await start()).status).toBe(201);
+    await drive("join");
+    // The code is used late in its hand's first minutes.
+    clock += 3 * 60_000;
+    expect((await join(handed()[0]!.join)).status).toBe(200);
+    if (approved) harness.exec("update device_authorizations set status = 'approved' where user_code = ?", USER_CODE);
+    // Handed long ago, but claimed a moment ago: still signing in, left alone.
+    clock += 2 * 60_000;
+    await run();
+    expect(handed()).toHaveLength(1);
+
+    clock += 5 * 60_000;
+    await run();
+    expect(handed()).toHaveLength(hands);
+  });
+
+  it("a cancel before the copy signs in deletes the fork and closes its sign-in", async () => {
+    expect((await start()).status).toBe(201);
+    await drive("join");
+    const code = handed()[0]!.join;
+
+    const cancelled = await harness.send(OWNER, "DELETE", `/cloud/copies/${COPY}`);
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toEqual(expect.objectContaining({ state: "cancelled", message: "The copy was cancelled. Widgets is as it was.", cancellable: false }));
+    expect(harness.net.instances.has(TARGET)).toBe(false);
+    expect(computer(harness, TARGET).deleted_at).not.toBeNull();
+    expect(launch().state).toBe("cancelled");
+    expect((await join(code)).status).toBe(409);
+    expect(harness.net.instances.has(INSTANCE)).toBe(true);
+    // Another account sees no such copy.
+    expect((await harness.send(OTHER, "DELETE", `/cloud/copies/${COPY}`)).status).toBe(404);
+    expect((await harness.send(OTHER, "GET", `/cloud/copies/${COPY}`)).status).toBe(404);
+  });
+
+  it.each<[string, () => Promise<void>, Partial<CloudCopyRecord>]>([
+    ["a cancel after it signed in, before the job read it", async () => {
+      await signedIn();
+      const late = await harness.send(OWNER, "DELETE", `/cloud/copies/${COPY}`);
+      expect(late.status).toBe(409);
+      expect(await late.json()).toEqual({ error: expect.objectContaining({ code: "copy_signed_in" }) });
+      expect((await record()).cancellable).toBe(false);
+    }, { state: "done", message: "Copied Widgets into Widgets copy.", targetMachineKey: "mk_copy" }],
+    ["a cancel asked as it signed in", async () => {
+      harness.exec("update cloud_jobs set cancel_requested_at = ? where job_id = ?", clock, COPY);
+      await signedIn();
+    }, { state: "done", message: "Widgets copy had already signed in, so the copy wasn't cancelled. Delete it from its card if you don't want it.", targetMachineKey: "mk_copy" }],
+    ["a failure after it signed in", async () => {
+      // Signed in with no machine key on its row yet, and ADE Cloud can't read the copy to find it.
+      expect((await harness.send(OWNER, "PUT", `/cloud/launches/${job().target_launch_id as string}/stages`, { state: "done" })).status).toBe(200);
+      for (let attempt = 0; attempt < 5; attempt += 1) harness.net.once.push({ match: /GET .*\/instances\/copied123456$/, reply: new Error("the provider is down") });
+    }, { state: "failed", error: "ADE couldn't finish copying Widgets: could not reach ADE Cloud. Try again. Widgets copy had already signed in, so ADE kept it. Widgets is as it was." }],
+  ])("%s: the copy is kept, never deleted", async (_label, act, expected) => {
+    expect((await start()).status).toBe(201);
+    await drive("join");
+    await act();
+    await drive("end");
+
+    expect(await record()).toEqual(expect.objectContaining(expected));
+    expect(launch().state).toBe("done");
+    expect(harness.net.instances.has(TARGET)).toBe(true);
+    expect(computer(harness, TARGET).deleted_at).toBeNull();
+    expect(providerCalls(harness, /DELETE .*\/instances\//)).toHaveLength(0);
+    expect(harness.net.instances.has(INSTANCE)).toBe(true);
+  });
+
+  it("a step that dies after the provider made the fork runs again and adopts it, never making a second one", async () => {
+    // The provider made it, and the Worker stopped before it read the answer.
+    harness.net.after.push({ match: /\/fork$/, run: () => { throw new Error("the Worker stopped"); } });
+    expect((await start()).status).toBe(201);
+    clock += 1_000;
+    await run();
+    expect(job()).toEqual(expect.objectContaining({ step: "fork", attempts: 1, target_instance_id: null }));
+
+    await drive("join");
+    expect(providerCalls(harness, /\/fork$/)).toHaveLength(1);
+    expect(await record()).toEqual(expect.objectContaining({ state: "joining", targetInstanceId: TARGET }));
+    expect(launch().instance_id).toBe(TARGET);
+    expect(handed()).toHaveLength(1);
+  });
+
+  it("an agent's copy is the agent's, and each account lists only its own copies", async () => {
+    expect((await start({ origin: "agent", madeByChat: "chat-1", name: "Scratch", sizeId: "medium" })).status).toBe(201);
+    await drive("join");
+    const fork = providerCalls(harness, /\/fork$/)[0]!.body!;
+    expect(fork.metadata).toEqual(expect.objectContaining({ ade_made_by_agent: "chat", ade_made_by_chat: "chat-1" }));
+    expect(fork).toEqual(expect.objectContaining({ name: "Scratch", resources: expect.objectContaining({ cpu: 4, memory: 8 }) }));
+    expect(await record()).toEqual(expect.objectContaining({ name: "Scratch", sizeId: "medium" }));
+
+    const listed = await (await harness.send(OWNER, "GET", "/cloud/copies")).json() as { copies: CloudCopyRecord[] };
+    expect(listed.copies.map((copy) => copy.copyId)).toEqual([COPY]);
+    expect((await (await harness.send(OTHER, "GET", "/cloud/copies")).json() as { copies: unknown[] }).copies).toEqual([]);
+  });
+
+  it.each<[string, () => void, Row, number, string]>([
+    ["the other kind's size", () => undefined, { sizeId: "large" }, 400, "bad_request"],
+    ["no hours left", () => harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER), {}, 402, "out_of_hours"],
+    ["a computer on an older ADE", () => harness.exec("update cloud_computers set ade_version = '1.2.130' where instance_id = ?", INSTANCE), {}, 409, "copy_needs_update"],
+    ["copies turned off on the server", () => harness.exec("delete from cloud_settings where key = ?", SETTING), {}, 409, "server_copy_unavailable"],
+    ["a computer another job is changing", () => harness.insert("cloud_jobs", {
+      job_id: OTHER_COPY, kind: "move", user_id: OWNER, source_instance_id: INSTANCE, state: "copying", step: "copy", next_at: clock + HOUR, created_at: NOW, updated_at: NOW, expires_at: NOW + DAY,
+    }), {}, 409, "computer_busy"],
+    ["an origin ADE doesn't know", () => undefined, { origin: "robot" }, 400, "bad_request"],
+  ])("a copy asked with %s is refused and makes nothing", async (_label, setUp, body, status, code) => {
+    setUp();
+    const refused = await start(body);
+    expect(refused.status).toBe(status);
+    expect(await refused.json()).toEqual({ error: expect.objectContaining({ code }) });
+    expect(harness.rows("select job_id from cloud_jobs where kind = 'copy'")).toEqual([]);
+    await run();
+    expect(providerCalls(harness, /\/fork$/)).toHaveLength(0);
+    // Another account's computer doesn't exist for it.
+    expect((await harness.send(OTHER, "POST", `/cloud/instances/${INSTANCE}/copy`, { copyId: COPY })).status).toBe(404);
   });
 });
 

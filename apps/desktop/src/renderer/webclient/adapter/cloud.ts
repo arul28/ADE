@@ -11,6 +11,7 @@ import type {
 } from "../../../shared/adeCloud";
 import type { CloudSignInStatus } from "../../../shared/cloudSignIns";
 import { createWebCloudBilling, type CloudBillingAccountClient } from "./cloudBilling";
+import { createWebCloudCopies } from "./cloudCopies";
 import { createWebCloudMoves } from "./cloudMoves";
 import { createWebCloudLaneLife, createWebCloudResizes } from "./cloudLaneLifeWeb";
 import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
@@ -53,7 +54,8 @@ import type { CloudAccessIpcAnswer } from "../../../shared/adeCloudMachine";
  * (`laneLife`): the work check, push all work, delete lane, free it (the
  * server runs the free), and a size change in place (run in this tab,
  * `cloudLaneLifeWeb.ts`). A move to the other kind runs on the server, so
- * the web starts and follows it (`cloudMoves.ts`).
+ * the web starts and follows it (`cloudMoves.ts`). So does a copy of a
+ * computer (`cloudCopies.ts`).
  *
  * What only the desktop app can do stays out, so each caller's own guard
  * hides it: saving a key or a Claude pass. The account's cloud sign-ins
@@ -179,6 +181,7 @@ export function createWebCloudNamespace(
   // Each one waits for the others: one change at a time per computer.
   const life = createWebCloudLaneLife({ api: cloudApi, changing: (instanceId) => resizes.isLive(instanceId) || moves.moving(instanceId) });
   const resizes = createWebCloudResizes({ api: cloudApi, agentWork: (instanceId) => life.agentWork(instanceId) });
+  const copies = createWebCloudCopies(cloudApi);
   const moves = createWebCloudMoves(cloudApi, { resizeInPlace: (args) => resizes.start(args), resizing: (instanceId) => resizes.isLive(instanceId) });
   /** A computer of the account answers on this connection. */
   const computerOnline = () => client.getStatus().readiness === "ready";
@@ -455,8 +458,10 @@ export function createWebCloudNamespace(
     },
     // No push from the host: the page reads it again on open and after its own writes.
     onCloudSignInChanged: () => () => undefined,
-    onCreateProgress: () => () => undefined,
-    cancelCreate: async () => ({ cancelled: false }),
+    // A copy runs on ADE's server (`cloudCopies.ts`) and reports as the desktop's does.
+    copyMachine: copies.copyMachine,
+    onCreateProgress: copies.onCreateProgress,
+    cancelCreate: copies.cancelCreate,
     // The plan and Stripe's pages, from this browser (`cloudBilling.ts`). The page reads the account again after each.
     openCheckout: (plan, cleanup) => billing.openCheckout(plan, cleanup),
     openBillingPortal: () => billing.openBillingPortal(),

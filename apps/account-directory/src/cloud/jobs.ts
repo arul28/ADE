@@ -1,6 +1,6 @@
 import type { CloudProvider } from "./provider";
 import type { CreateComputerExtras, CreateComputerOutcome } from "./createOutcome";
-import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
+import { logCloud, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 
 /**
  * ADE Cloud jobs the server runs on its own (migration 0049, `cloud_jobs`):
@@ -8,7 +8,7 @@ import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
  * run a step at a time. A request starts a job and may run its first step
  * after its answer (`waitUntil`); the minute cron runs every due job one or
  * two steps a tick (`runCloudJobs`), so no request and no tick holds a long
- * step. Each kind (`moves.ts`) says what its steps do.
+ * step. Each kind (`moves.ts`, `frees.ts`, `copies.ts`) says what its steps do.
  *
  * - A runner takes a job with a lease (`claimJob`): only that runner writes it
  *   until the lease ends (every write names the lease), so a tick that died
@@ -83,7 +83,7 @@ export type JobRow = {
 
 /** What a step may change on its job's row. */
 export type JobPatch = Partial<Pick<JobRow,
-  "state" | "message" | "error" | "approval_url" | "source_deleted" | "target_instance_id" | "target_launch_id" | "target_machine_key" | "facts_json"
+  "state" | "message" | "error" | "approval_url" | "source_deleted" | "source_instance_id" | "target_instance_id" | "target_launch_id" | "target_machine_key" | "facts_json"
 >>;
 
 export type StepResult =
@@ -101,6 +101,8 @@ export type CloudJobDeps = {
   provider: CloudProvider | null;
   /** The one way a computer is made (`createComputer` in routes.ts). */
   createComputer: (userId: string, provider: CloudProvider, extras: CreateComputerExtras) => Promise<CreateComputerOutcome>;
+  /** The one way a computer is copied (`forkComputer` in routes.ts); a copy's fork step waits without it. */
+  forkComputer?: (source: ComputerRow, provider: CloudProvider, extras: Pick<CreateComputerExtras, "body" | "onMade">) => Promise<CreateComputerOutcome>;
   /** The clock (a test sets its own). */
   clock?: () => number;
 };
@@ -152,7 +154,7 @@ async function claimJob(env: CloudEnv, jobId: string, now: number, leaseMs: numb
   return (claimed.meta?.changes ?? 0) === 1 ? leaseId : null;
 }
 
-const PATCH_COLUMNS = ["state", "message", "error", "approval_url", "source_deleted", "target_instance_id", "target_launch_id", "target_machine_key", "facts_json"] as const;
+const PATCH_COLUMNS = ["state", "message", "error", "approval_url", "source_deleted", "source_instance_id", "target_instance_id", "target_launch_id", "target_machine_key", "facts_json"] as const;
 
 /** One write under the lease; false when the lease was lost (another runner took the job). */
 async function writeJob(
