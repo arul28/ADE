@@ -1,4 +1,7 @@
+import OSLog
 import SwiftUI
+
+private let cloudLaneDeleteLog = Logger(subsystem: "com.ade.ios", category: "cloud-lane-delete")
 
 // MARK: - One computer
 
@@ -768,11 +771,16 @@ struct CloudLaneDeleteSheet: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var syncService: SyncService { syncPublishes.service }
   @State private var deleting = false
+  /// Why the last delete didn't go through; it stays in the sheet, not only in a toast.
+  @State private var failure: String?
 
   var body: some View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
+          if let failure {
+            ADESettingsNotice(message: failure, tone: .crit, dismiss: { self.failure = nil })
+          }
           Text("ADE deletes the lane, its computer and its chats.")
             .font(.subheadline)
             .foregroundStyle(ADEColor.textSecondary)
@@ -832,14 +840,44 @@ struct CloudLaneDeleteSheet: View {
       actions.toast = ADEToastMessage(text: "Couldn't delete \(target.laneName)", kind: .failure, detail: "Sign in to ADE, then try again.")
       return
     }
-    do {
-      try await client.deleteInstance(target.instanceId)
-    } catch CloudServerClient.Failure.noAccess {
-      // The account no longer lists that computer: it is already gone.
-    } catch {
+    func fail(_ why: String) {
       ADEHaptics.error()
-      actions.toast = ADEToastMessage(text: "Couldn't delete \(target.laneName)", kind: .failure, detail: cloudServerFailureMessage(error))
+      failure = why
+      actions.toast = ADEToastMessage(text: "Couldn't delete \(target.laneName)", kind: .failure, detail: why)
+    }
+    failure = nil
+    // The server answers "not found" both for a computer already gone and for
+    // one on another account; only the first is a delete that worked.
+    do {
+      _ = try await client.instance(target.instanceId)
+    } catch CloudServerClient.Failure.noAccess {
+      if (try? await client.instances())?.contains(where: { $0.id == target.instanceId && !$0.isGone }) != true {
+        fail("This computer isn't on the ADE account this phone is signed in to, so ADE can't delete it from here. Sign in with the account that owns it, then try again.")
+        return
+      }
+    } catch {
+      // A read that didn't answer: the delete below says whether it worked.
+    }
+    do {
+      // Waits until ADE Cloud confirms the computer is gone.
+      guard try await client.deleteInstanceConfirmed(target.instanceId) else {
+        fail("ADE Cloud took the delete but the computer is still there. Check again in a minute; if it stays, delete it again.")
+        return
+      }
+    } catch {
+      fail(cloudServerFailureMessage(error))
       return
+    }
+    // Off the account's machines too, as the desktop's delete does: else the
+    // lane stays in Lanes and Work from the machine list.
+    let account = AccountService.shared
+    if let key = target.accountMachineKey,
+       let row = account.machines.first(where: { $0.machineKey.caseInsensitiveCompare(key) == .orderedSame }) {
+      do {
+        try await account.removeMachineFromAccount(row)
+      } catch {
+        cloudLaneDeleteLog.notice("cloud_lane delete account_row=left error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      }
     }
     // The chats go after the computer, so a last saved part can't bring one back.
     var chatsLeft = false
