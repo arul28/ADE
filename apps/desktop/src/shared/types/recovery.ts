@@ -14,6 +14,8 @@ export const ADE_RECOVERY_ERROR_CODES = [
   "project_data_missing",
   /** The open database was moved or replaced while ADE was using it. */
   "db_path_changed",
+  /** The project's folder holds ADE's data, but its `.git` folder is gone, so it is no longer a Git repository. */
+  "project_not_git_repository",
   /**
    * The project's database would not open for a reason no bucket above names;
    * the failure's SQLite class (`sqliteErrorClass`) rides beside it. Was
@@ -93,6 +95,13 @@ export type ProjectRecoveryDiagnosis = {
      * simply opened.)
      */
     | "data_replaced"
+    /**
+     * The project's folder is there, with ADE's data, but it is no longer a
+     * Git repository (its `.git` folder was moved or deleted). Nothing is
+     * repaired: the person puts `.git` back, clones the repository again, or
+     * removes the project from ADE.
+     */
+    | "not_git_repository"
     | "brain_crash_looping"
     | "brain_not_installed"
     /**
@@ -258,6 +267,16 @@ export const RECOVERY_COPY: Record<RecoveryState, {
     body: "Your code is safe. A different copy of ADE's data appeared while the project was open.",
     canAutoRepair: false,
   },
+  not_git_repository: {
+    headline: "This project's folder is no longer a Git repository",
+    body: "ADE can't find the .git folder in it, so it can't show lanes or changes. ADE didn't change your files.",
+    canAutoRepair: false,
+    steps: [
+      "If you moved or deleted the .git folder, put it back. ADE opens the project when it's back.",
+      "Or clone the repository again, then open the new folder in ADE.",
+      "If you don't need this project in ADE, choose Remove from recent projects.",
+    ],
+  },
   brain_not_installed: {
     headline: "ADE's background service is missing",
     body: "Nothing in ADE can run until it's set up again. Your work is safe.",
@@ -390,6 +409,7 @@ export function stateForCode(code: AdeRecoveryErrorCode): ProjectRecoveryDiagnos
     case "db_busy": return "project_busy";
     case "project_data_missing": return "data_missing";
     case "db_path_changed": return "data_replaced";
+    case "project_not_git_repository": return "not_git_repository";
     case "brain_crash_looping": return "brain_crash_looping";
     case "brain_not_installed": return "brain_not_installed";
     case "background_item_blocked": return "background_blocked";
