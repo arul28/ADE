@@ -2555,6 +2555,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           initialTab={manageInitialTab}
           runtimePin={foreignManageRow.pin}
           cloudLaneIds={cloud.isCloudLane(foreignManageRow.pin, foreignManageRow.lane.id) ? new Set([foreignManageRow.lane.id]) : null}
+          resting={!foreignManageRow.online && restingMachineIds.has(foreignManageRow.machineId) && cloud.isCloudLane(foreignManageRow.pin, foreignManageRow.lane.id)}
         />
       ) : null}
 

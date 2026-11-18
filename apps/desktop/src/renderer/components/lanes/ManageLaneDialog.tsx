@@ -447,6 +447,7 @@ export function ManageLaneDialog({
   runtimePin,
   initialTab,
   cloudLaneIds,
+  resting = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -478,6 +479,11 @@ export function ManageLaneDialog({
    * on GitHub. The local form applies to the other lanes only.
    */
   cloudLaneIds?: ReadonlySet<string> | null;
+  /**
+   * The lane's ADE Cloud computer sleeps: only what the account does without a
+   * wake shows (Computer, Delete). Appearance and Archive need the computer.
+   */
+  resting?: boolean;
 }) {
   const lanes = managedLanes?.length ? managedLanes : managedLane ? [managedLane] : [];
   const isBatch = lanes.length > 1;
@@ -546,12 +552,12 @@ export function ManageLaneDialog({
       // An ADE Cloud lane's computer: size, sleep, free it. First, as it is what a cloud lane is managed for.
       { id: "computer" as const, label: "Computer", icon: Cloud, show: singleCloud },
       { id: "delete" as const, label: "Delete", icon: Trash, show: true },
-      { id: "appearance" as const, label: "Appearance", icon: Palette, show: !!singleLaneType },
-      { id: "archive" as const, label: "Archive", icon: Archive, show: true },
+      { id: "appearance" as const, label: "Appearance", icon: Palette, show: !!singleLaneType && !resting },
+      { id: "archive" as const, label: "Archive", icon: Archive, show: !resting },
     ]
       .filter((t) => t.show)
       .map(({ show: _, ...tab }) => tab);
-  }, [singleCloud, singleLaneType]);
+  }, [resting, singleCloud, singleLaneType]);
   // A cloud lane's Manage lane opens on its Computer tab. Any other lane opens
   // on Delete, with nothing ticked (the hosts start with an empty selection
   // and Force delete off). Callers can pick another tab ("Archive all" opens on Archive).
