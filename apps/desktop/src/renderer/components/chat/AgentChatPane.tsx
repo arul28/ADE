@@ -4323,6 +4323,23 @@ function isLikelyMacRenderer(): boolean {
   return /\bMac\b/i.test(navigator.platform) || /\bMac OS X\b/i.test(navigator.userAgent);
 }
 
+/**
+ * A file the composer saved on a machine (its chat attachment store), read
+ * back from that machine as bytes (`agentChat.getImageDataUrl`, the call
+ * that owns those paths on the desktop and the web).
+ */
+async function readMachineFile(filePath: string, pin: OpenProjectBinding | null): Promise<{ bytes: Uint8Array; contentType: string }> {
+  if (!pin) throw new Error("the machine that holds it is not connected");
+  const { dataUrl } = await window.ade.agentChat.getImageDataUrl(filePath, pin);
+  const match = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(dataUrl ?? "");
+  if (!match) throw new Error("ADE couldn't read the file on this machine");
+  const body = match[3] ?? "";
+  const bytes = match[2]
+    ? Uint8Array.from(atob(body), (char) => char.charCodeAt(0))
+    : new TextEncoder().encode(decodeURIComponent(body));
+  return { bytes, contentType: match[1] || "application/octet-stream" };
+}
+
 export function AgentChatPane({
   laneId,
   laneLabel,
@@ -14181,6 +14198,12 @@ export function AgentChatPane({
       return false;
     }
     const prepared = prepareDraftLaunch(snapshot);
+    // Only images can be read back from the machine that holds them; another file would be lost on the way.
+    const notImages = prepared.selectedAttachments.filter((file) => file.type === "file").map((file) => file.path.split(/[\\/]/).pop() || "file");
+    if (notImages.length) {
+      setError({ message: `A new ADE Cloud chat from here can carry images, not other files. Remove ${notImages.join(", ")} to start it.`, kind: "status" });
+      return false;
+    }
     let built: ReturnType<typeof buildChatCreateArgs>;
     try {
       built = buildDraftChatLaunch(prepared);
@@ -14191,16 +14214,25 @@ export function AgentChatPane({
     const laneName = configuredLane?.name.trim()
       || createDeterministicAutoLaneName(buildDraftLaunchNamingSeed(snapshot), { genericSuffix: autoLaneGenericSuffix() });
     const list = readAccountProjectList();
-    void startAccountCloudChat(buildAccountCloudDraftStart({
-      prepared,
-      chat: { create: built.createArgs, message: buildDraftChatMessageArgs(prepared, built.provider, prepared.interactionMode) },
-      origin: `https://${origin}`,
-      accountProjectId: (list.state === "ready" ? accountProjectForOrigin(list.projects, cloud.originUrl) : null)?.id ?? null,
-      laneName,
-      laneConfig: configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null,
-      sizeId: cloud.sizeId,
-      sizeChoice: cloud.sizeChoice,
-    }))
+    // The files sit on the machine the composer saved them to: each is read back from
+    // there (its pin) and sent to ADE Cloud before the start names it.
+    const filesPin = draftAttachmentOwnerBindingRef.current ?? draftExecutionBindingRef.current;
+    const files = prepared.selectedAttachments
+      .filter((file) => file.type !== "image-url")
+      .map((file) => ({ name: file.path.split(/[\\/]/).pop() || "file", read: () => readMachineFile(file.path, filesPin) }));
+    void startAccountCloudChat({
+      ...buildAccountCloudDraftStart({
+        prepared,
+        chat: { create: built.createArgs, message: buildDraftChatMessageArgs(prepared, built.provider, prepared.interactionMode) },
+        origin: `https://${origin}`,
+        accountProjectId: (list.state === "ready" ? accountProjectForOrigin(list.projects, cloud.originUrl) : null)?.id ?? null,
+        laneName,
+        laneConfig: configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null,
+        sizeId: cloud.sizeId,
+        sizeChoice: cloud.sizeChoice,
+      }),
+      ...(files.length ? { files } : {}),
+    })
       .catch((startError: unknown) => setError({ message: errorMessage(startError), kind: "status" }));
     clearPromptSuggestionForSession(selectedSessionId);
     setError(null);

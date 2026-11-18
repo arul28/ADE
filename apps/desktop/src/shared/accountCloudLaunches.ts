@@ -37,6 +37,8 @@ export { CLOUD_REMOTE_SIGN_IN, cloudRemoteSignInOf, cloudRemoteSignInRefusal } f
 
 export type AccountCloudLaunchesBridge = {
   start: (launch: CloudLaunchStartRequest) => Promise<CloudLaunchRecord>;
+  /** A file of the first message, before `start` names it by `fileId` (`PUT /cloud/launches/:id/files/:fileId`). */
+  uploadFile?: (launchId: string, fileId: string, bytes: Uint8Array, contentType: string) => Promise<{ fileId: string; sizeBytes: number }>;
   status: (launchId: string) => Promise<CloudLaunchRecord>;
   active: () => Promise<CloudLaunchList>;
   cancel: (launchId: string) => Promise<CloudLaunchRecord>;

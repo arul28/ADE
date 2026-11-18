@@ -431,6 +431,7 @@ export function createWebCloudLaunchesNamespace(
   };
   return {
     start: (launch) => api().startLaunch(launch),
+    uploadFile: (launchId, fileId, bytes, contentType) => api().uploadLaunchFile(launchId, fileId, bytes, contentType),
     status: (launchId) => api().launchStatus(launchId),
     active: () => api().activeLaunches(),
     cancel: (launchId) => api().cancelLaunch(launchId),
