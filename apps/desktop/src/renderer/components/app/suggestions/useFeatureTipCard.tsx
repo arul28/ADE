@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../../ui/notice/appBannerStore";
-import { adeTipGroup, machineTipOrder, runTipAction, tipActionAvailable, type AdeTip } from "../../../onboarding/adeTips";
+import { adeTipGroup, machineTipOrder, runTipAction, tipOfferedAsCard, type AdeTip } from "../../../onboarding/adeTips";
 import {
   answerTipCard,
   claimTipCard,
@@ -19,7 +19,7 @@ import { useGoTo } from "../../onboarding/spotlight/useGoTo";
  * It asks for the corner a while into a project session, so the project
  * settles first and a situational suggestion with a real signal gets it
  * first, then again whenever the next tip is allowed (`nextTipCardAt`: up to
- * three a day, two hours apart). The rest of the rules are `claimTipCard`'s.
+ * two a week, two days apart, within the shared unasked budget). The rest of the rules are `claimTipCard`'s.
  * Test mode asks after a few seconds.
  *
  * Cost: one pending timer while a project is open; nothing renders until a tip shows.
@@ -31,7 +31,7 @@ const ASK_AFTER_TEST_MS = 4_000;
 /** The tip to offer next: the first in this computer's random order not tried or shown yet. */
 function nextTip(): AdeTip | null {
   const done = doneTipIds();
-  return machineTipOrder().find((tip) => tipActionAvailable(tip.action) && !done.has(tip.id)) ?? null;
+  return machineTipOrder().find((tip) => tipOfferedAsCard(tip) && !done.has(tip.id)) ?? null;
 }
 
 export function useFeatureTipCard(enabled: boolean): void {

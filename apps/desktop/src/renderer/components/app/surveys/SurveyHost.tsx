@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import type { ProductSurvey } from "../../../../shared/types/productSurveys";
 import { onboardingSettledBeforeThisLaunch } from "../../../onboarding/onboardingProgress";
+import { markUnaskedShown, unaskedAllowed } from "../../../onboarding/unaskedBudget";
 
 const SurveyCard = lazy(() => import("./SurveyCard"));
 
@@ -20,7 +21,9 @@ const ASK_AFTER_USE_MS = 10 * 60_000;
  * window gets one per launch). Use is time with the window focused, counted
  * with one timer that runs only while it is: no poll, no subscription, and
  * the card's code loads only when there is a survey to show. Never during the
- * first session's onboarding.
+ * first session's onboarding, and only within the shared unasked budget
+ * (`unaskedBudget.ts`: one unasked thing a day, none in a new account's first
+ * three days), which a survey that shows then spends.
  *
  * Desktop only: the hosted web client has no `surveys` bridge.
  */
@@ -48,9 +51,13 @@ export function SurveyHost(): JSX.Element | null {
     const ask = () => {
       timer = null;
       stopCounting();
+      // Asked before the service picks one, so a survey is never used up on a day it may not show.
+      if (!unaskedAllowed()) return;
       bridge.getEligible().then(
         (next) => {
-          if (!cancelled && next && onboardingSettledBeforeThisLaunch()) setSurvey(next);
+          if (cancelled || !next || !onboardingSettledBeforeThisLaunch() || !unaskedAllowed()) return;
+          markUnaskedShown();
+          setSurvey(next);
         },
         () => undefined,
       );

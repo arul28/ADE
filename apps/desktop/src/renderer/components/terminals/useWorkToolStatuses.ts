@@ -44,6 +44,7 @@ import {
   type WorkToolAvailability,
   type WorkToolDefinition,
 } from "./workTools";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 import { withChatPin } from "../chat/chatMachinePin";
 
 /**
@@ -850,7 +851,7 @@ export function useWorkToolStatuses(args: {
         ? browserStatusLineForRemoteChat(browserLine, remoteChatMachineName)
         : browserLine, (browserFacts?.tabs.length ?? 0) > 1 ? activeBrowserTab?.title?.trim() || null : null),
       git: withDetail(gitLine, gitDetail(lane, gitLine.line)),
-      files: withDetail(filesStatusLine(lane), lane?.name ?? null),
+      files: withDetail(filesStatusLine(lane), lane ? laneDisplayName(lane) : null),
       ios: offline ? IDLE : withDetail(iosStatusLine(appleDevice), deviceOriginDetail(appleDevice?.origin)),
       android: offline ? IDLE : withDetail(androidStatusLine(androidDevice), androidDevice ? [androidDevice.avdName, deviceOriginDetail(androidDevice.origin)].filter(Boolean).join(" · ") : null),
       "app-control": offline ? IDLE : withDetail(appControlStatusLine(appControlSession), appControlDetail(appControlSession)),

@@ -180,6 +180,7 @@ export function DraftMachinePicker({
       >
         <span
           data-draft-machine-picker
+          data-onboarding-anchor="run-on"
           className="inline-flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md border border-fg/[0.07] bg-fg/[0.03] px-2 font-sans text-[11px] font-medium text-muted-fg/75"
           aria-label={`Runs on ${displayed.name}`}
         >
@@ -236,6 +237,7 @@ export function DraftMachinePicker({
           <button
             type="button"
             data-draft-machine-picker
+            data-onboarding-anchor="run-on"
             aria-label={triggerAriaLabel}
             disabled={disabled}
             onPointerDown={(event) => event.preventDefault()}

@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { ADE_SUGGESTIONS, isSuggestionId, type AdeSuggestionId } from "./adeTipsSuggestions";
 import { createLocalStore, finiteNumber, storedRecord } from "./localStore";
 import { isTourOpen, onboardingSettledBeforeThisLaunch, subscribeOnboardingProgress } from "./onboardingProgress";
+import { markUnaskedShown, nextUnaskedAt, subscribeUnaskedBudget } from "./unaskedBudget";
 
 /**
  * The rules every situational suggestion (tier 3 of onboarding) shares, and
@@ -25,12 +26,18 @@ import { isTourOpen, onboardingSettledBeforeThisLaunch, subscribeOnboardingProgr
  * Feature tips (tier 2 coming to the user): now and then, one of ADE Tips'
  * tips the user has not tried shows as the same corner card. They take the
  * corner, one card at a time and never during onboarding, but keep their own
- * pace: up to three a day, two hours apart, never within half an hour of a
+ * pace: up to two a week, two days apart, never within half an hour of a
  * suggestion, each tip once, and off from ADE Tips. They do not use up the
  * suggestions' once-per-launch slot.
  *
- * Per computer, like the rest of onboarding: this renderer's localStorage,
- * never synced. Only ids, signal keys and times are stored.
+ * Both sit under the shared unasked budget (`unaskedBudget.ts`): a tip card
+ * waits for it (one unasked thing a day, none in a new account's first three
+ * days); a suggestion answers a real signal, so it is not held back, but it
+ * spends the budget.
+ *
+ * Stored per computer in this renderer's localStorage; only the tips already
+ * offered or tried follow the account (`onboardingSync.ts`). Only ids, signal
+ * keys and times are stored.
  */
 
 export const SUGGESTIONS_STORAGE_KEY = "ade.suggestions.v1";
@@ -41,10 +48,10 @@ const LEGACY_LANE_TEMPLATE_SNOOZE_MS = 14 * 24 * 3_600_000;
 const COOLDOWN_MS = 4 * 3_600_000;
 const NOT_NOW_SNOOZE_MS = 14 * 24 * 3_600_000;
 const MAX_SHOWN = 60;
-/** Up to three feature tip cards a day, at least two hours apart. */
-const TIP_CARDS_PER_DAY = 3;
-const TIP_DAY_MS = 24 * 3_600_000;
-const TIP_CARD_GAP_MS = 2 * 3_600_000;
+/** Up to two feature tip cards a week, at least two days apart. */
+const TIP_CARDS_PER_WINDOW = 2;
+const TIP_WINDOW_MS = 7 * 24 * 3_600_000;
+const TIP_CARD_GAP_MS = 2 * 24 * 3_600_000;
 /** No tip card within half an hour of a suggestion. */
 const TIP_AFTER_SUGGESTION_MS = 30 * 60_000;
 
@@ -54,7 +61,7 @@ type KindState = {
 };
 
 type TipCardState = {
-  /** When the recent tip cards showed (the last day's, newest last). */
+  /** When the recent tip cards showed (the last week's, newest last). */
   shownAt: number[];
   /** Tip ids that showed as a card or were tried from ADE Tips: never offered again. */
   done: string[];
@@ -105,7 +112,7 @@ function parseState(stored: unknown): SuggestionsState {
   const rawTips = storedRecord(record.tips) ?? {};
   const tips: TipCardState = {
     shownAt: Array.isArray(rawTips.shownAt)
-      ? rawTips.shownAt.filter((at): at is number => finiteNumber(at) !== undefined).slice(-TIP_CARDS_PER_DAY)
+      ? rawTips.shownAt.filter((at): at is number => finiteNumber(at) !== undefined).slice(-TIP_CARDS_PER_WINDOW)
       : [],
     done: strings(rawTips.done),
     off: rawTips.off === true,
@@ -293,6 +300,7 @@ export function claimSuggestion(id: AdeSuggestionId, signalKey: string, scopeKey
   claimCorner(key, "suggestion");
   const current = state();
   write({ ...current, lastShownAt: now, shown: { ...current.shown, [key]: now } });
+  markUnaskedShown(now);
   return true;
 }
 
@@ -381,20 +389,39 @@ export function markTipTried(tipId: string): void {
   if (!done.includes(tipId)) updateTips({ done: [...done, tipId] });
 }
 
+/** Tips offered or tried on another computer or in ADE Web (`onboardingSync.ts`): not offered here either. */
+export function adoptDoneTipIds(tipIds: readonly string[]): void {
+  const { done } = state().tips;
+  const known = new Set(done);
+  const added = tipIds.filter((id) => !known.has(id));
+  if (added.length) updateTips({ done: [...done, ...added] });
+}
+
+/** Another account signed in here: its tips replace the ones this computer held for the last one. */
+export function replaceDoneTipIds(tipIds: readonly string[]): void {
+  updateTips({ done: [...new Set(tipIds)] });
+}
+
+/** Tells the listener when the tips offered or tried may have changed. */
+export function subscribeTipProgress(listener: () => void): () => void {
+  return store.subscribe(listener);
+}
+
 /**
- * When the next tip card may show (0: now), or null when none may today. Up
- * to three in any 24 hours, two hours apart; never over a suggestion that
- * showed in the last half hour. The caller waits that long before asking.
+ * When the next tip card may show (0: now), or null when tip cards are off.
+ * Up to two in any week, two days apart; never over a suggestion that showed
+ * in the last half hour, and never before the shared unasked budget allows.
+ * The caller waits that long before asking.
  */
 export function nextTipCardAt(now = Date.now()): number | null {
   if (suggestionsTestMode()) return 0;
   const { tips, lastShownAt } = state();
   if (tips.off) return null;
-  const today = tips.shownAt.filter((at) => now - at < TIP_DAY_MS);
-  const afterGap = today.length ? Math.max(...today) + TIP_CARD_GAP_MS : 0;
-  const afterDay = today.length >= TIP_CARDS_PER_DAY ? Math.min(...today) + TIP_DAY_MS : 0;
+  const recent = tips.shownAt.filter((at) => now - at < TIP_WINDOW_MS);
+  const afterGap = recent.length ? Math.max(...recent) + TIP_CARD_GAP_MS : 0;
+  const afterWindow = recent.length >= TIP_CARDS_PER_WINDOW ? Math.min(...recent) + TIP_WINDOW_MS : 0;
   const afterSuggestion = lastShownAt ? lastShownAt + TIP_AFTER_SUGGESTION_MS : 0;
-  return Math.max(0, afterGap, afterDay, afterSuggestion);
+  return Math.max(0, afterGap, afterWindow, afterSuggestion, nextUnaskedAt());
 }
 
 /**
@@ -419,8 +446,9 @@ export function claimTipCard(tipId: string): boolean {
     if (at == null || at > now) return false;
   }
   claimCorner(key, "tip");
-  const shownAt = [...current.tips.shownAt.filter((time) => now - time < TIP_DAY_MS), now].slice(-TIP_CARDS_PER_DAY);
+  const shownAt = [...current.tips.shownAt.filter((time) => now - time < TIP_WINDOW_MS), now].slice(-TIP_CARDS_PER_WINDOW);
   write({ ...current, tips: { ...current.tips, shownAt, done: [...current.tips.done, tipId] } });
+  markUnaskedShown(now);
   return true;
 }
 
@@ -451,6 +479,7 @@ function getVersion(): number {
     };
     store.subscribe(bump);
     subscribeOnboardingProgress(bump);
+    subscribeUnaskedBudget(bump);
   }
   return version;
 }
@@ -459,9 +488,11 @@ function subscribe(listener: () => void): () => void {
   getVersion();
   const offStore = store.subscribe(listener);
   const offOnboarding = subscribeOnboardingProgress(listener);
+  const offBudget = subscribeUnaskedBudget(listener);
   return () => {
     offStore();
     offOnboarding();
+    offBudget();
   };
 }
 

@@ -1,7 +1,10 @@
 import { useEffect, useRef } from "react";
+import { useLocation } from "react-router-dom";
 import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { markOnboardingStarted } from "../../onboarding/onboardingProgress";
 import { useAppStore } from "../../state/appStore";
+import { LANE_SHARE_GUEST_ROUTE } from "../laneShare/guest/laneShareGuestRoute";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { DIALOG_SELECTOR, MODAL_DIALOG_SELECTOR } from "../ui/overlayState";
 import { GateBackdrop } from "./GateBackdrop";
@@ -40,45 +43,54 @@ function escapeBelongsToInnerLayer(event: KeyboardEvent, gate: HTMLElement | nul
  * - the gate was already open when the app loaded (a reload during setup), so
  *   setup never finished here.
  *
- * Desktop only: the hosted web client controls other computers, and setup is
- * about the one it runs on. Over a project tab bound to another machine the
- * agents card is left out (`useFirstRunSteps`' `skipAgents`): its status and
- * sign-ins would go to that machine.
+ * In ADE Web it is also the welcome a new account sees on its first visit:
+ * the welcome card alone (`welcomeOnly`), since the agents and projects cards
+ * set up the computer ADE runs on and the web has none of its own. Over a
+ * project tab bound to another machine the agents card is left out
+ * (`useFirstRunSteps`' `skipAgents`): its status and sign-ins would go to
+ * that machine.
  */
 export function OnboardingBootstrap() {
   const remoteTab = useAppStore((state) => state.projectBinding?.kind === "remote");
+  const web = isWebClientMode();
   const steps = useFirstRunSteps({
-    enabled: !isWebClientMode(),
+    welcomeOnly: web,
     skipAgents: remoteTab,
-    onFinish: showFirstRunProjects,
+    onFinish: web ? undefined : showFirstRunProjects,
   });
-  const { phase, restart, skip } = steps;
+  const { phase, restart, dismiss } = steps;
+  // Someone opening a lane shared with them came for that lane: the welcome waits until they leave its page.
+  const onSharedLanePage = useLocation().pathname.startsWith(LANE_SHARE_GUEST_ROUTE);
   const gateRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (isWebClientMode()) return undefined;
     const replay = () => {
       // A replay finds projects again: some were added since the last run.
-      void prefetchOnboardingDiscovery({ fresh: true }).catch(() => undefined);
+      if (!web) void prefetchOnboardingDiscovery({ fresh: true }).catch(() => undefined);
       restart();
     };
     window.addEventListener(ADE_WELCOME_VIDEO_REPLAY_EVENT, replay);
     return () => window.removeEventListener(ADE_WELCOME_VIDEO_REPLAY_EVENT, replay);
-  }, [restart]);
+  }, [restart, web]);
 
-  const open = phase === "welcome" || phase === "agents" || phase === "projects";
+  const open = !onSharedLanePage && (phase === "welcome" || phase === "agents" || phase === "projects");
 
-  // Escape skips setup, as the welcome card's Skip does.
+  // ADE Web: the welcome counts as given once it is on screen, not when it was found due.
+  useEffect(() => {
+    if (open && web) markOnboardingStarted();
+  }, [open, web]);
+
+  // Escape closes setup; unlike the Skip link it never skips the tour.
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       if (escapeBelongsToInnerLayer(event, gateRef.current)) return;
-      skip();
+      dismiss();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, skip]);
+  }, [open, dismiss]);
 
   if (!open) return null;
 

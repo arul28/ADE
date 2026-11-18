@@ -42,6 +42,7 @@ import {
 } from "../../shared/accountSettingsScope";
 import type {
   AccountSettingRow,
+  AccountSettingsPullState,
   AccountSettingsResult,
   AccountSettingsWriteOptions,
 } from "../../shared/types/accountSettings";
@@ -251,7 +252,7 @@ export type AccountSettingsApi = {
   set(
     args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
   ): Promise<AccountSettingsResult<null>>;
-  sync(): Promise<AccountSettingsResult<null>>;
+  sync(): Promise<AccountSettingsResult<AccountSettingsPullState>>;
   /** Fired when the brain persists account rows pulled from the relay. */
   onChanged?(listener: () => void): () => void;
 };

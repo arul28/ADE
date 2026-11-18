@@ -548,6 +548,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "onboarding_projects_shown",
   "onboarding_completed",
   "onboarding_skipped",
+  // The in-project tour: its finish card closed, or Skip tour.
+  "onboarding_tour_completed",
+  "onboarding_tour_skipped",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
