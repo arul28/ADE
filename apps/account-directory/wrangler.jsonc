@@ -286,6 +286,9 @@
         "STRIPE_EXTRA_HOURS_MAX_PRICE_ID": "price_1UbMTkPWulQjqSYPhPcWm3l6",
         "STRIPE_DISK_PRICE_ID": "price_1UbMTkPWulQjqSYPQYFuKXln",
         "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
+        "STRIPE_PHONE_MINUTE_PRICE_ID": "price_1UdF4HPWulQjqSYPydFHhXGd",
+        "STRIPE_PHONE_METER_EVENT": "ade_cloud_phone_minutes",
+        "CLOUD_PHONE_ACCESS": "all",
         "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaNNNPWulQjqSYPYyVgxCA6",
         // GitHub App sign-in, restated for the same reason. The two secrets
         // are set with `wrangler secret put … --env production`.
