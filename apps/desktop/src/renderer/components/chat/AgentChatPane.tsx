@@ -5552,7 +5552,11 @@ export function AgentChatPane({
     playComposerDock(composerDockRef.current, handoff.composer);
     playFirstMessageFlight(shellRef.current, handoff.text);
     // The draft's mode switcher morphs into this chat's header.
-    playDepartingDraftChrome(handoff.departing, shellRef.current?.querySelector<HTMLElement>(CHAT_SHELL_HEADER_SELECTOR));
+    playDepartingDraftChrome(
+      handoff.departing,
+      lockSessionId,
+      shellRef.current?.querySelector<HTMLElement>(CHAT_SHELL_HEADER_SELECTOR),
+    );
   }, [lockSessionId]);
   useLayoutEffect(() => {
     const pending = pendingComposerHandoffAnimationRef.current;
@@ -5566,6 +5570,7 @@ export function AgentChatPane({
     playFirstMessageFlight(shell, pending.handoff.text);
     playDepartingDraftChrome(
       pending.handoff.departing,
+      pending.sessionId,
       shell.querySelector<HTMLElement>(CHAT_SHELL_HEADER_SELECTOR),
     );
   }, [lockSessionId, optimisticOutgoingMessage]);
@@ -11878,9 +11883,10 @@ export function AgentChatPane({
         cancelQueuedEventFlush();
         flushQueuedEvents();
       } else {
-        // The reply's first words replace the draft: the send's animations
-        // (draft copies, the Work area's dissolve) end in the same frame.
-        if (firstTextOfTurn && envelope.sessionId === selectedSessionIdRef.current) settleSendHandoff();
+        // The reply's first words replace the draft: this chat's send
+        // animations (draft copies, the Work area's dissolve) end in the
+        // same frame.
+        if (firstTextOfTurn && envelope.sessionId === selectedSessionIdRef.current) settleSendHandoff(envelope.sessionId);
         scheduleQueuedEventFlush(firstTextOfTurn);
       }
       // After the flush is scheduled, so its paint mark lands after that frame.

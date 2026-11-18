@@ -437,8 +437,9 @@ rest fades and drops 10 px (260 ms). Transform and opacity only (`contain:
 layout style`); unplayed copies remove themselves after the TTL.
 
 **The reply ends the send animations.** When the shown chat's reply shows the
-first text of its turn (`isFirstTextOfTurn`, `lib/chatSessionEvents.ts`) while a
-draft copy is still on screen, `settleSendHandoff` removes the copies and
+first text of its turn (`isFirstTextOfTurn`, `lib/chatSessionEvents.ts`) while
+that chat's draft copy is still on screen (copies are keyed by the chat that
+played them), `settleSendHandoff` removes the copies and
 finishes the `WorkViewArea` dissolve (`onSendHandoffSettle`) in the same frame,
 so a quick reply is never drawn under a fade or a blur. That first text also
 flushes in the next frame, not at the next work beat. A reply that comes after

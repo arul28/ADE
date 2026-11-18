@@ -463,7 +463,7 @@ describe("departing draft chrome", () => {
     expect(usageCopy!.querySelector("[data-draft-depart]")).toBeNull();
 
     const handoff = takeComposerDockOrigin("session-2");
-    playDepartingDraftChrome(handoff?.departing);
+    playDepartingDraftChrome(handoff?.departing, "session-2");
     await vi.waitFor(() => expect(animations).toHaveLength(2));
     const [rise, fade] = animations;
     expect(rise!.target).toBe(switcherCopy);
@@ -485,7 +485,7 @@ describe("departing draft chrome", () => {
     header.textContent = "New chat";
     document.body.appendChild(header);
 
-    playDepartingDraftChrome(takeComposerDockOrigin("session-5")?.departing, header);
+    playDepartingDraftChrome(takeComposerDockOrigin("session-5")?.departing, "session-5", header);
 
     // Hidden before the chat's first paint: never header and switcher at once.
     expect(header.style.visibility).toBe("hidden");
@@ -540,7 +540,7 @@ describe("departing draft chrome", () => {
     const header = document.createElement("div");
     header.setAttribute("data-chat-shell-header", "");
     document.body.appendChild(header);
-    playDepartingDraftChrome(expired, header);
+    playDepartingDraftChrome(expired, "session-6", header);
     expect(header.style.visibility).toBe("");
     expect(document.querySelector("[data-chat-draft-departing]")).toBeNull();
 
