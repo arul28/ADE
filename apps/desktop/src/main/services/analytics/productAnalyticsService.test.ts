@@ -1366,6 +1366,13 @@ describe("productAnalyticsService", () => {
     expect(harness.messages[0]).toMatchObject({
       properties: { is_internal: true, environment: "development", release_channel: "development" },
     });
+    // The event is internal. The account is not: `$identify` never lowers
+    // the person flag, so a development sign-in must not set it.
+    harness.service.identifyAccount("clerk_user_real_1");
+    const identify = harness.messages.find((message) => message.event === "$identify") as
+      | { properties: { $set: Record<string, unknown> } }
+      | undefined;
+    expect(identify?.properties.$set).not.toHaveProperty("is_internal");
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 

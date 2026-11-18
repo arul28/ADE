@@ -716,24 +716,25 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   let pendingIngressDrops = 0;
   const optOutMarkerPath = `${args.stateFilePath}.disabled`;
   // Team installs mark themselves with ADE_ANALYTICS_INTERNAL=1 or an empty
-  // `<state file>.internal` marker, so dashboards can leave them out.
-  let internalInstall: boolean | null = null;
-  const isInternalInstall = (): boolean => {
-    if (internalInstall == null) {
-      // A development runtime that is allowed to send still says so. CI never
-      // sends (see `isRuntimeDisabled`); the flag is here for the tag if a
-      // caller inspects it anyway.
-      internalInstall = process.env.ADE_ANALYTICS_INTERNAL === "1"
-        || fs.existsSync(`${args.stateFilePath}.internal`)
-        || isAutomatedTelemetryEnvironment()
-        || args.runtimeMode === "desktop_development"
-        || isTruthyEnvFlag(process.env.ADE_DEV_BRAIN)
-        || releaseChannel === "development";
+  // `<state file>.internal` marker. That is the only thing `$identify` may
+  // raise on the person: a development sign-in must not, because the flag is
+  // never lowered and the person filter would then hide their real usage.
+  let teamInstall: boolean | null = null;
+  const isTeamInstall = (): boolean => {
+    if (teamInstall == null) {
+      teamInstall = process.env.ADE_ANALYTICS_INTERNAL === "1"
+        || fs.existsSync(`${args.stateFilePath}.internal`);
     }
-    return internalInstall;
+    return teamInstall;
   };
+  const isInternalEvent = (): boolean =>
+    isTeamInstall()
+    || isAutomatedTelemetryEnvironment()
+    || args.runtimeMode === "desktop_development"
+    || isTruthyEnvFlag(process.env.ADE_DEV_BRAIN)
+    || releaseChannel === "development";
   const telemetryProperties = (): Record<string, unknown> => ({
-    is_internal: isInternalInstall(),
+    is_internal: isInternalEvent(),
     release_channel: releaseChannel,
     environment: telemetryEnvironment({ releaseChannel, runtimeMode: args.runtimeMode }),
     ...(isAdeCloudComputer() ? { ade_cloud: true } : {}),
@@ -991,12 +992,12 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
               // distinct id stays the hash every ADE client and the sign-up
               // webhook use, which keeps one person one person.
               clerk_user_id: normalizedUserId,
-              // Only ever raised, never lowered: the account directory marks
-              // ADE's own accounts internal from Clerk, and a sign-in on an
-              // unmarked machine must not undo that (recording and every
-              // person-filtered insight key off it).
-              ...(isInternalInstall() ? { is_internal: true } : {}),
-              environment: telemetryEnvironment({ releaseChannel, runtimeMode: args.runtimeMode }),
+              // Only ever raised, never lowered, and only for an explicit team
+              // install. The account directory marks ADE's own accounts
+              // internal from Clerk, and a sign-in on an unmarked machine
+              // must not undo that. A development runtime tags its events
+              // internal without marking the account.
+              ...(isTeamInstall() ? { is_internal: true } : {}),
             },
             $geoip_disable: true,
           },

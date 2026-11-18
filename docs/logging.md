@@ -667,13 +667,15 @@ adds an event.
   (`scripts/posthog/dashboard-spec.mjs`): `interactive != false`, and, for
   builds before 1.2.128 that send no `interactive`, none of those event
   names, automation runs or automatic feature uses either.
-- `is_internal` — `true` on an ADE team install, marked with
-  `ADE_ANALYTICS_INTERNAL=1` in the environment or an empty
-  `secrets/product-analytics.json.internal` file beside the state file, and
-  on a development runtime that is allowed to send (an unpackaged desktop,
-  `ADE_DEV_BRAIN=1`, or `release_channel: development`). Read once per
-  process. Desktop `$identify` also sets it on the person, and only ever
-  raises it. iOS sets it only for Apple's review farm (below). A workflow
+- `is_internal` — `true` on the event for an ADE team install
+  (`ADE_ANALYTICS_INTERNAL=1` or an empty
+  `secrets/product-analytics.json.internal` file beside the state file) and
+  for a development runtime that is allowed to send (an unpackaged desktop,
+  `ADE_DEV_BRAIN=1`, or `release_channel: development`). Desktop `$identify`
+  raises the person flag only for the team install, and only ever raises it.
+  A development sign-in does not mark the account: the flag is never lowered,
+  so the person filter would then hide that account's later production use.
+  iOS sets the event property only for Apple's review farm (below). A workflow
   does not send, so it never needs the flag.
 - `environment` — `production` (stable), `beta`, `alpha`, `development`, or
   `ci`. The same value Sentry uses. Real installs send the first four;

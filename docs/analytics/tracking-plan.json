@@ -12,6 +12,8 @@
       "platform",
       "arch",
       "release_channel",
+      "environment",
+      "ade_cloud",
       "machine_id",
       "project_id",
       "session_id",
@@ -26,7 +28,10 @@
       "build_number",
       "distribution",
       "release_channel",
-      "machine_id"
+      "environment",
+      "machine_id",
+      "is_internal",
+      "review_context"
     ],
     "marketing": [
       "$referrer",
@@ -599,9 +604,12 @@
       ],
       "owner": "apps/ios/ADE/Services/ProductAnalytics.swift",
       "source": "ios",
-      "purpose": "How an iOS account sign-in ended.",
+      "purpose": "How an iOS account sign-in ended. A failure also carries provider, reason, and error_code; a success carries outcome only.",
       "properties": [
-        "outcome"
+        "outcome",
+        "provider",
+        "reason",
+        "error_code"
       ]
     },
     {
