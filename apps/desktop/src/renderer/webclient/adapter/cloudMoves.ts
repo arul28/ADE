@@ -1,21 +1,29 @@
-import { cloudCatalogOf } from "../../../shared/adeCloud";
+import { cloudCatalogOf, type CloudCatalog } from "../../../shared/adeCloud";
 import type { CloudApiClient } from "../../../shared/cloudApiClient";
 import { cloudLaneJobStageIds, type CloudLaneJobPhase, type CloudLaneJobSnapshot, type CloudLaneJobStage, type CloudLaneJobStageId } from "../../../shared/cloudLaneLife";
-import { cloudTier, isCloudTierId, type CloudTierId } from "../../../shared/cloudTiers";
-import type { CloudMoveRecord } from "../../../../../account-directory/src/cloud/contract";
+import { cloudTier, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import type { CloudInstance, CloudMoveRecord } from "../../../../../account-directory/src/cloud/contract";
 
 /**
  * ADE Web's moves of a lane's computer to the other kind (Standard ↔ Full):
  * ADE's server runs them (`POST /cloud/instances/:id/move`, `moves.ts`), so
  * the web needs no computer of the person's. Each move reads as the desktop's
  * lane job (`CloudLaneJobSnapshot`), so the same cards show it. A size change
- * in place still runs in the desktop app.
+ * of the same kind goes to `resizeInPlace` (`cloudLaneLifeWeb.ts`).
  *
  * Followed by a read every few seconds while one runs, and none otherwise.
  */
 
 const POLL_MS = 4_000;
-const RESIZE_ON_DESKTOP = "Changing the size in place needs the ADE desktop app. Moving to the other kind works here.";
+
+export type WebCloudResizeInPlace = (args: {
+  computer: CloudInstance;
+  tier: CloudTier;
+  catalog: CloudCatalog;
+  timing: "idle" | "now";
+  diskGb?: unknown;
+  requestedByChat?: unknown;
+}) => CloudLaneJobSnapshot;
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const isLive = (record: CloudMoveRecord) => record.state !== "done" && record.state !== "failed" && record.state !== "cancelled";
@@ -88,7 +96,11 @@ export function laneJobOfMove(record: CloudMoveRecord, laneName?: string | null)
   };
 }
 
-export function createWebCloudMoves(api: () => CloudApiClient | null) {
+export function createWebCloudMoves(api: () => CloudApiClient | null, options: {
+  resizeInPlace: WebCloudResizeInPlace;
+  /** A size change in place runs for this computer. */
+  resizing: (instanceId: string) => boolean;
+}) {
   const listeners = new Set<(job: CloudLaneJobSnapshot) => void>();
   /** The moves this tab follows, with the last record of each. */
   const followed = new Map<string, CloudMoveRecord>();
@@ -121,6 +133,9 @@ export function createWebCloudMoves(api: () => CloudApiClient | null) {
     schedule();
   };
 
+  const moving = (instanceId: string): boolean =>
+    [...followed.values()].some((record) => isLive(record) && record.sourceInstanceId === instanceId);
+
   const need = () => {
     const client = api();
     if (!client) throw new Error("Sign in to ADE to change your ADE Cloud lanes.");
@@ -129,15 +144,21 @@ export function createWebCloudMoves(api: () => CloudApiClient | null) {
 
   return {
     async changeTier(raw: unknown): Promise<CloudLaneJobSnapshot> {
-      const args = raw && typeof raw === "object" ? raw as { instanceId?: unknown; sizeId?: unknown; timing?: unknown } : {};
+      const args = raw && typeof raw === "object" ? raw as { instanceId?: unknown; sizeId?: unknown; timing?: unknown; diskGb?: unknown; requestedByChat?: unknown } : {};
       const instanceId = typeof args.instanceId === "string" ? args.instanceId.trim() : "";
       if (!instanceId) throw new Error("Name the computer.");
       if (!isCloudTierId(args.sizeId)) throw new Error("Pick a size.");
       const client = need();
+      if (options.resizing(instanceId) || moving(instanceId)) {
+        throw new Error("A change is already running for this lane.");
+      }
       const [computer, account] = await Promise.all([client.computer(instanceId), client.account()]);
-      const tier = cloudTier(cloudCatalogOf(account), args.sizeId);
+      const catalog = cloudCatalogOf(account);
+      const tier = cloudTier(catalog, args.sizeId);
       if (!tier) throw new Error("ADE Cloud doesn't offer that size now.");
-      if ((computer.type === "vm" ? "vm" : "default") === tier.type) throw new Error(RESIZE_ON_DESKTOP);
+      if ((computer.type === "vm" ? "vm" : "default") === tier.type) {
+        return options.resizeInPlace({ computer, tier, catalog, timing: args.timing === "now" ? "now" : "idle", diskGb: args.diskGb, requestedByChat: args.requestedByChat });
+      }
       const record = await client.startMove(instanceId, {
         moveId: crypto.randomUUID(),
         to: tier.type === "vm" ? "full" : "standard",
@@ -149,6 +170,8 @@ export function createWebCloudMoves(api: () => CloudApiClient | null) {
       schedule();
       return laneJobOfMove(record);
     },
+    /** A move of this computer runs (as this tab last read it). */
+    moving,
     async listJobs(): Promise<CloudLaneJobSnapshot[]> {
       const moves = await api()?.moves().catch(() => null);
       for (const record of moves ?? []) followed.set(record.moveId, record);

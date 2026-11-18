@@ -102,7 +102,7 @@ export async function deleteCloudLaneWithCheck(input: CloudLaneDeleteOptions & {
     });
     return false;
   };
-  // The web app (and an older preload) can't delete a lane's computer: say so before any dialog.
+  // An older preload can't delete a lane's computer: say so before any dialog.
   if (!cloudLaneLifeAvailable()) return fail(new Error(CLOUD_LANE_LIFE_UNAVAILABLE));
   // A second click while one runs: the first one's toast and row already say where it is.
   const phase = deletes.get(instanceId);

@@ -12,6 +12,7 @@ import type {
 import type { CloudSignInStatus } from "../../../shared/cloudSignIns";
 import { createWebCloudBilling, type CloudBillingAccountClient } from "./cloudBilling";
 import { createWebCloudMoves } from "./cloudMoves";
+import { createWebCloudLaneLife, createWebCloudResizes } from "./cloudLaneLifeWeb";
 import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import type { AdapterInfra } from "./types";
 import { runAdeCloudAccountCall } from "../../../shared/adeCloud/accountCalls";
@@ -48,15 +49,16 @@ import type { CloudAccessIpcAnswer } from "../../../shared/adeCloudMachine";
  * A chat on a new computer starts there as well (`POST /cloud/launches`,
  * `accountCloudLaunches.ts`).
  *
+ * The life of a lane's computer goes through the account server too
+ * (`laneLife`): the work check, push all work, delete lane, free it (the
+ * server runs the free), and a size change in place (run in this tab,
+ * `cloudLaneLifeWeb.ts`). A move to the other kind runs on the server, so
+ * the web starts and follows it (`cloudMoves.ts`).
+ *
  * What only the desktop app can do stays out, so each caller's own guard
- * hides it: most of the life of a lane's computer (`laneLife`: delete, free,
- * a resize in place), saving a key or a Claude pass. A move to the other
- * kind runs on the server, so the web starts and follows it (`cloudMoves.ts`). A delete refuses with a plain sentence: the desktop
- * first checks the lane's work for changes not on GitHub. The account's cloud
- * sign-ins (saved keys, passes) are read, never written.
+ * hides it: saving a key or a Claude pass. The account's cloud sign-ins
+ * (saved keys, passes) are read, never written.
  */
-
-const DELETE_ON_DESKTOP = "Delete computers in the ADE desktop app. It first checks each lane for work that isn't on GitHub yet.";
 
 function isMachinesResult(value: unknown): value is CloudMachinesResult {
   if (!value || typeof value !== "object") return false;
@@ -173,7 +175,11 @@ export function createWebCloudNamespace(
 ): NonNullable<Window["ade"]["cloud"]> {
   const { client, commands } = infra;
   const billing = createWebCloudBilling(accountClient);
-  const moves = createWebCloudMoves(() => accountClient.cloudApi());
+  const cloudApi = () => accountClient.cloudApi();
+  // Each one waits for the others: one change at a time per computer.
+  const life = createWebCloudLaneLife({ api: cloudApi, changing: (instanceId) => resizes.isLive(instanceId) || moves.moving(instanceId) });
+  const resizes = createWebCloudResizes({ api: cloudApi, agentWork: (instanceId) => life.agentWork(instanceId) });
+  const moves = createWebCloudMoves(cloudApi, { resizeInPlace: (args) => resizes.start(args), resizing: (instanceId) => resizes.isLive(instanceId) });
   /** A computer of the account answers on this connection. */
   const computerOnline = () => client.getStatus().readiness === "ready";
 
@@ -253,12 +259,17 @@ export function createWebCloudNamespace(
   /**
    * Through the account server with this browser's account token, with the
    * desktop's sentences (`cloudMachines.ts`). Without account sign-in here,
-   * sleep and wake still go through a connected computer. A delete stays in
-   * the desktop app (see `DELETE_ON_DESKTOP`).
+   * sleep and wake still go through a connected computer. A delete is the
+   * desktop's too: no work check here (a lane's delete checks first, `laneLife`).
    */
   const machineAction = async (args: CloudMachineActionArgs): Promise<CloudMachineActionResult | null> => {
-    if (args.action === "delete") return { ok: false, blocker: null, message: DELETE_ON_DESKTOP };
     const api = accountClient.cloudApi();
+    if (args.action === "delete") {
+      const instanceId = typeof args?.instanceId === "string" ? args.instanceId.trim() : "";
+      if (!api) return { ok: false, blocker: null, message: "Sign in to your ADE account here to change this computer." };
+      if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
+      return await life.deleteComputer(instanceId);
+    }
     if (!api) {
       if (args.action !== "sleep" && args.action !== "wake") {
         return { ok: false, blocker: null, message: "Sign in to your ADE account here to change this computer." };
@@ -302,13 +313,24 @@ export function createWebCloudNamespace(
       if (!api) throw new Error("Account sign-in isn't configured for this web client.");
       return await api.sendSignInCode(instanceId, jobId, code);
     },
-    // The account's lanes kept without a computer, straight from the account
-    // server (no computer needed). The rest of a lane's life (delete, free,
-    // size) runs in the desktop app.
+    // A lane's computer, all through the account server (no computer of the person's needed).
     laneLife: (async ({ method, args }: { method: string; args?: unknown }) => {
       const api = accountClient.cloudApi();
       if (!api) throw new Error("Sign in to ADE to see your ADE Cloud lanes.");
+      const record = args && typeof args === "object" ? args as Record<string, unknown> : {};
+      const instanceId = typeof record.instanceId === "string" ? record.instanceId.trim() : "";
+      const jobId = typeof record.jobId === "string" ? record.jobId : "";
+      const needInstance = () => {
+        if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that computer.");
+        return instanceId;
+      };
       switch (method) {
+        case "workState":
+          return await life.workState(needInstance());
+        case "deleteLane":
+          return await life.deleteLane({ instanceId: needInstance(), skipCheck: record.skipCheck === true, keepChats: record.keepChats === true });
+        case "freeLane":
+          return await life.freeLane({ instanceId: needInstance() });
         case "lanesWithoutComputer":
           return await api.lanesWithoutComputer();
         case "forgetLaneWithoutComputer": {
@@ -316,24 +338,38 @@ export function createWebCloudNamespace(
           if (typeof laneId !== "string" || !laneId.trim()) throw new Error("ADE doesn't know that lane.");
           return { forgotten: (await api.forgetLaneWithoutComputer(laneId.trim())).forgotten === true };
         }
-        // A move to the other kind runs on ADE's server, so the web starts and follows it (`cloudMoves.ts`).
+        // A move to the other kind runs on ADE's server (`cloudMoves.ts`); one of the same kind runs here.
         case "changeTier":
           return await moves.changeTier(args);
         case "listJobs":
-          return await moves.listJobs();
+          return [...resizes.list(), ...await moves.listJobs()];
         case "cancelJob":
-          return await moves.cancelJob(args);
+          return resizes.has(jobId) ? resizes.cancel(jobId) : await moves.cancelJob(args);
         case "retryJob":
-          return await moves.retryJob(args);
+          return resizes.has(jobId) ? resizes.retry(jobId) : await moves.retryJob(args);
         case "dismissJob":
-          return await moves.dismissJob(args);
+          return resizes.has(jobId) ? resizes.dismiss(jobId) : await moves.dismissJob(args);
         default:
           // The same sentence as `CLOUD_LANE_LIFE_UNAVAILABLE` (cloudLaneActions.ts).
           throw new Error("Do this in the ADE desktop app. This window can't change ADE Cloud lanes.");
       }
     }) as NonNullable<Window["ade"]["cloud"]>["laneLife"],
-    // A server move's progress, read while one runs.
-    onLaneJob: (cb) => moves.onLaneJob(cb),
+    // A server move's progress, read while one runs, and a resize's from this tab.
+    onLaneJob: (cb) => {
+      const offMoves = moves.onLaneJob(cb);
+      const offResizes = resizes.onLaneJob(cb);
+      return () => {
+        offMoves();
+        offResizes();
+      };
+    },
+    // Every lane's work on the computer, pushed (`ade cloud push-work`); it wakes a resting computer.
+    pushAllWork: async (instanceId: string) => {
+      const id = typeof instanceId === "string" ? instanceId.trim() : "";
+      if (!isCloudInstanceId(id)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
+      if (!accountClient.cloudApi()) return { ok: false, blocker: null, message: "Sign in to your ADE account here to change this computer." };
+      return await life.pushAllWork(id);
+    },
     // A lane's saved work at rest (`laneBackups.ts`): the list and its patch only; the bundle stays native.
     laneBackups: async (laneId?: string | null) => (await accountClient.cloudApi()?.laneBackups(laneId ?? null)) ?? [],
     saveLaneBackupPatch: async (machineKey: string, laneId: string) => {
@@ -372,8 +408,10 @@ export function createWebCloudNamespace(
       read: async (args) => await savedChatRead<CloudSavedChatPage>("saved_chats_read", { ...args })
         ?? await accountClient.cloudApi()?.savedChat(args).catch(() => null)
         ?? null,
-      delete: async () => {
-        throw new Error("Delete a saved chat in the ADE desktop app.");
+      delete: async ({ machineKey, chatId }) => {
+        const api = accountClient.cloudApi();
+        if (!api) throw new Error("Sign in to ADE to delete a saved chat.");
+        await api.deleteSavedChat(machineKey, chatId);
       },
     },
     // The connected machine answers for the account: read again when this tab's connection changes.
