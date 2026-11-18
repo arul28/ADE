@@ -112,6 +112,10 @@ struct DuoWindowPresentations: ViewModifier {
   private var settings: some View {
     ConnectionSettingsView(syncService: syncService, openPage: $settingsOpenPage)
       .environmentObject(appUpdateAdvisor)
+      // A cloud lane's delete asked from a page pushed inside Settings opens
+      // over this sheet. A host on the pushed page itself leaves on the push
+      // (`onDisappear`), and the root under this sheet can't present.
+      .cloudLaneActionsHost()
   }
 
   private var linear: some View {

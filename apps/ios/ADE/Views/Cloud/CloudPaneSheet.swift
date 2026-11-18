@@ -296,8 +296,11 @@ final class CloudPaneStore: ObservableObject {
       if selectedId == nil || machine(selectedId!) == nil { selectedId = machines.first?.instanceId }
       phase = .loaded
     } catch {
-      // The computer can't answer for the account: read it directly.
-      if machines.isEmpty {
+      // The computer can't answer for the account: read it directly. With a
+      // sign-in, also over a list already shown: the computer that answered
+      // before may be the one that just went to sleep, and its old row
+      // would keep showing it awake.
+      if machines.isEmpty || AccountService.shared.isSignedIn {
         await reloadDirect()
         return
       }
@@ -457,11 +460,12 @@ final class CloudPaneStore: ObservableObject {
   /// (no computer of the person's own needed).
   var canManage: Bool { canWrite || AccountService.shared.isSignedIn }
 
-  /// Sleep, wake and a no-lane delete go through the connected computer when
-  /// one runs this page and lets the phone write (as before); otherwise the
-  /// phone asks the account server itself. Every other action always asks
-  /// the account server: it is the account's, the same from any device.
-  private var writesThroughComputer: Bool { !isDirect && canWrite }
+  /// Every action asks the account server with the phone's own sign-in: it
+  /// is the account's, the same from any device. Only a phone that isn't
+  /// signed in to ADE sends sleep, wake and a no-lane delete through the
+  /// connected computer. Through the computer, a sleep of that same computer
+  /// never answered: it slept mid-call and the page kept showing it awake.
+  private var writesThroughComputer: Bool { !isDirect && canWrite && !AccountService.shared.isSignedIn }
 
   /// The account server's rows from the last direct read, by id.
   @Published private(set) var serverInstances: [String: CloudServerInstance] = [:]
