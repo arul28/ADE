@@ -69,10 +69,13 @@ extension WorkRootListScreen {
     // The focused machine off past its reconnect window (or disconnected):
     // its chats, sessions and lanes are not listed until it is back.
     let focusedListed = inputs.primaryListsWork
+    // The account view (no computer's copy open) has no local projection; its
+    // rows are all other computers' (ADE Cloud lanes asleep or awake), which
+    // `inputs` already matched to the open account project.
     let remoteMerge = workMergeRemoteMachineRows(
       sessions: focusedListed ? activeRosterProjection.sessions : [],
       lanes: focusedListed ? activeRosterProjection.lanes : [],
-      remote: localProjectionIsCurrent ? inputs.remoteMachineRepos : [],
+      remote: localProjectionIsCurrent || syncService.isAccountProjectScope ? inputs.remoteMachineRepos : [],
       focused: activeRoster
     )
     syncService.setWorkListRemoteChats(remoteMerge.remoteChats)

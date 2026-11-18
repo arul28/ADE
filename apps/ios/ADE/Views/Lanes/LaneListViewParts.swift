@@ -825,7 +825,11 @@ extension LanesTabView {
         try await syncService.refreshLaneSnapshots(includeDecorations: includeDecorations)
       }
       let loadedSnapshots = laneSnapshotsByHubRule(
-        try await syncService.fetchLaneListSnapshots(includeArchived: true),
+        laneSnapshotsWithoutCloudMainCheckout(
+          try await syncService.fetchLaneListSnapshots(includeArchived: true),
+          machineKey: syncService.focusedMachineKey,
+          sync: syncService
+        ),
         roster: syncService.activeProject.flatMap { syncService.rosterProject(for: $0) }
       )
       let loadedPullRequests = try await syncService.fetchPullRequestListItems()

@@ -88,8 +88,10 @@ final class LaneRemoteMachinesModel: ObservableObject {
       let read = isLive
         ? (lastRead[key] ?? laneRemoteRosterSnapshots(repo))
         : laneRemoteRosterSnapshots(repo)
-      // Badge counts by the Hub's rule, from that machine's roster.
-      let snapshots = read.map { snapshot -> LaneListSnapshot in
+      // Badge counts by the Hub's rule, from that machine's roster. An ADE
+      // Cloud lane computer's main checkout is only its lane's clone: left out,
+      // as on desktop (`crossMachineLanes.ts`).
+      let snapshots = laneSnapshotsWithoutCloudMainCheckout(read, machineKey: repo.machineKey, sync: sync).map { snapshot -> LaneListSnapshot in
         guard let rosterLaneId = workParseRemoteLaneId(snapshot.lane.id)?.laneId else { return snapshot }
         var next = snapshot
         next.runtime = laneRuntimeByHubRule(snapshot.runtime, rosterLaneId: rosterLaneId, chats: repo.chats)
@@ -168,6 +170,14 @@ func laneRuntimeByHubRule(
   next.endedCount = max(0, sessions - running - awaiting)
   next.sessionCount = sessions
   return next
+}
+
+/// A machine's lanes minus its main checkout when the machine is an ADE Cloud
+/// lane computer: that computer exists for its one lane.
+@MainActor
+func laneSnapshotsWithoutCloudMainCheckout(_ snapshots: [LaneListSnapshot], machineKey: String?, sync: SyncService) -> [LaneListSnapshot] {
+  guard sync.isCloudFleetKey(machineKey) else { return snapshots }
+  return snapshots.filter { $0.lane.laneType != "primary" }
 }
 
 /// The focused machine's lane rows with badge counts by the Hub's rule, from
