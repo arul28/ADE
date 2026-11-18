@@ -1224,6 +1224,50 @@ describe("RemoteConnectionService", () => {
     expect(service.snapshot().connectedCount).toBe(0);
   });
 
+  it("stops a machine call whose machine is removed while the call waits", async () => {
+    const accountOwned = {
+      ...target("account-owned-call-cancel", 1_700_000_000),
+      accountOwnerUserId: "account-1",
+    };
+    let targets = [accountOwned];
+    const registry = {
+      list: vi.fn(() => targets),
+      get: vi.fn((id: string) => targets.find((entry) => entry.id === id) ?? null),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => ({
+        ...accountOwned,
+        ...patch,
+      })),
+      remove: vi.fn(() => {
+        targets = [];
+        return true;
+      }),
+    } as unknown as RemoteTargetRegistry;
+    const callMachineForTarget = vi.fn(async () => ({ entries: [] }));
+    const pool = {
+      connect: vi.fn(async (entry: RemoteRuntimeTarget) => connectResult(entry)),
+      disconnect: vi.fn(),
+      callMachineForTarget,
+      onHostStorageWait: vi.fn(() => () => {}),
+      onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
+      onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
+    } as unknown as RemoteConnectionPool;
+    let answerOwnerCheck!: (owner: string) => void;
+    const service = new RemoteConnectionService(registry, pool, {
+      getAuthorizedAccountOwnerId: vi.fn(
+        () => new Promise<string>((resolve) => { answerOwnerCheck = resolve; }),
+      ),
+    });
+
+    const pendingBrowse = service.browseDirectories(accountOwned.id, {});
+    expect(service.removeTarget(accountOwned.id)).toBe(true);
+    answerOwnerCheck("account-1");
+
+    await expect(pendingBrowse).rejects.toThrow();
+    expect(callMachineForTarget).not.toHaveBeenCalled();
+  });
+
   it("never opens the pool for an unauthorized account-owned target but preserves local autoconnect", async () => {
     const accountOwned = {
       ...target("account-owned", 1_700_000_000),

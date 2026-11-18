@@ -2409,14 +2409,23 @@ export class RemoteConnectionService {
     params: Record<string, unknown>,
     options: { retryOnConnectionError?: boolean; timeoutMs?: number } = {},
   ): Promise<unknown> {
+    // Taken before the first await, as in requireTargetForImplicitUse: a
+    // Remove during the held-reconnect wait must cancel this call.
+    const disconnectGeneration = this.getDisconnectGeneration(target.id);
     await this.assertAccountOwnershipAuthorized(target);
     await this.waitForHeldReconnect(target.id);
     const personFixGate = this.personFixGate(target.id);
     if (personFixGate) await personFixGate;
-    this.assertImplicitReconnectAllowed(target.id);
+    const current = this.requireTarget(target.id);
+    if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
+      throw new Error(
+        "Remote target was disconnected before ADE finished connecting.",
+      );
+    }
+    this.assertImplicitReconnectAllowed(current.id);
     try {
       const result = await this.pool.callMachineForTarget(
-        target,
+        current,
         method,
         params,
         options,
