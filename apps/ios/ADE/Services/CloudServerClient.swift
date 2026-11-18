@@ -412,6 +412,12 @@ struct CloudServerClient {
     _ = try await send("POST", "cloud/instances/\(segment(instanceId))/start", body: Data("{}".utf8), timeout: 120)
   }
 
+  /// A person's update (`POST /cloud/instances/:id/update`): the computer
+  /// moves to its channel's image and restarts on it. It wakes a sleeping one.
+  func update(instanceId: String) async throws {
+    _ = try await send("POST", "cloud/instances/\(segment(instanceId))/update", body: Data(#"{"reason":"manual"}"#.utf8), timeout: 120)
+  }
+
   /// "Keep it": the idle cleanup's clock starts again, with no wake.
   func keep(instanceId: String) async throws {
     _ = try await send("POST", "cloud/instances/\(segment(instanceId))/keep", body: Data("{}".utf8))

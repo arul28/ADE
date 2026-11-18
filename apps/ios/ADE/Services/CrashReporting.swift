@@ -81,6 +81,9 @@ enum CrashReporting {
       options.beforeBreadcrumb = { crumb in ADECrashScrubber.scrub(crumb) }
       // The budget decides first, on the raw event; the scrubber only cleans.
       options.beforeSend = { event in
+        // A build below its minimum is no longer supported: nobody fixes
+        // what it reports (`ClientUpdateGate.swift`).
+        if PhoneUpdateGateFlag.isBlocked { return nil }
         if isIdleRunLoopAppHang(event) || isNoiseHang(event) { return nil }
         groupAppHang(event)
         guard ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event)) else { return nil }

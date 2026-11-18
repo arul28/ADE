@@ -340,6 +340,11 @@ struct ContentView: View {
           .environmentObject(syncService)
       }
     }
+    // Over everything on this machine's tabs while its ADE is below its
+    // track's minimum. Other machines, the Hub and Settings stay reachable.
+    .overlay {
+      FocusedMachineUpdateGate()
+    }
   }
 
   // The root tabs are declared with `Tab`, the API Apple's adaptable sidebar
