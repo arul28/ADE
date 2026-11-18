@@ -19,7 +19,7 @@ import {
   codexSubagentConfigTomlLines,
   type HarnessSubagentLaunch,
 } from "../../../shared/harnessSubagentLaunch";
-import type { ApiCredentialSummary } from "../../../shared/types/apiCredentials";
+import { DEFAULT_API_CREDENTIAL_ID, type ApiCredentialSummary } from "../../../shared/types/apiCredentials";
 import {
   adeUpstreamId,
   removeCliProxyApiUpstreams,
@@ -324,6 +324,9 @@ export function removeCredentialLaunchHome(
   removePrivateTree(legacyCredentialConfigHome(adeHome, normalizedProvider, normalizedCredentialId), cleanup);
   removePrivateTree(legacyFlatCredentialConfigHome(adeHome, normalizedProvider, normalizedCredentialId), cleanup);
   forgetRouteSecretsForSource(`${normalizedProvider}:${normalizedCredentialId}`, adeHome, cleanup);
+  // An OpenCode source falls back to the provider's default key (`harnessRouteLaunch.ts`)
+  // and keeps that copy under the provider alone. The next launch reads its login again.
+  if (normalizedCredentialId === DEFAULT_API_CREDENTIAL_ID) forgetRouteSecretsForSource(normalizedProvider, adeHome, cleanup);
 
   const presets = (readPresets ?? readHarnessPresetsFromMachine)(adeHome);
   if (!presets) return;

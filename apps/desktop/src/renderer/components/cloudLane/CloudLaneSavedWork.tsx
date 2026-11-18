@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { ClockCounterClockwise, DownloadSimple, GitBranch, Trash } from "@phosphor-icons/react";
 import type { CloudLaneBackup } from "../../../../../account-directory/src/cloud/contract";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+import { fetchAccountStatus, subscribeAccountStatus } from "../../lib/account";
 import { ipcErrorMessage } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
@@ -29,12 +30,15 @@ import "./cloudLane.css";
  * when there is no saved work.
  */
 
-/** The account's saved lane work, read once for every line on screen. */
-type BackupsSnapshot = { list: readonly CloudLaneBackup[]; at: number } | null;
+/** The account's saved lane work, read once for every line on screen, for the account that read it. */
+type BackupsSnapshot = { list: readonly CloudLaneBackup[]; at: number; userId: string | null } | null;
 /** A read this recent serves a line that mounts now; a newer mount after it reads again. */
 const BACKUPS_FRESH_MS = 30_000;
 let backupsSnapshot: BackupsSnapshot = null;
 let backupsReading: Promise<void> | null = null;
+/** Goes up when the signed-in account changes: a read from before is dropped. */
+let backupsGeneration = 0;
+let accountWatched = false;
 const backupsListeners = new Set<() => void>();
 
 function setBackups(next: BackupsSnapshot): void {
@@ -42,19 +46,40 @@ function setBackups(next: BackupsSnapshot): void {
   for (const listener of backupsListeners) listener();
 }
 
+/** Another account (or none) signed in: the old account's lanes and branches go at once. */
+function noteAccount(userId: string | null): void {
+  if (!backupsSnapshot && !backupsReading) return;
+  if (backupsSnapshot && backupsSnapshot.userId === userId) return;
+  backupsGeneration += 1;
+  backupsReading = null;
+  setBackups(null);
+  if (userId && backupsListeners.size) readBackupsIfStale();
+}
+
 function readBackupsIfStale(): void {
   const read = window.ade?.cloud?.laneBackups;
   if (!read || backupsReading || (backupsSnapshot && Date.now() - backupsSnapshot.at < BACKUPS_FRESH_MS)) return;
-  backupsReading = read(null).then(
-    (list) => setBackups({ list, at: Date.now() }),
-    // Not readable now: show nothing; the next mount tries again.
-    () => setBackups(backupsSnapshot ? { ...backupsSnapshot, at: 0 } : null),
-  ).finally(() => {
-    backupsReading = null;
+  const generation = backupsGeneration;
+  const reading: Promise<void> = fetchAccountStatus().then(async (status) => {
+    const userId = status.userId ?? null;
+    if (generation !== backupsGeneration) return;
+    if (backupsSnapshot && backupsSnapshot.userId !== userId) setBackups(null);
+    const list = await read(null).catch(() => null);
+    if (generation !== backupsGeneration) return;
+    // Not readable now: show nothing new; the next mount tries again.
+    if (list) setBackups({ list, at: Date.now(), userId });
+    else if (backupsSnapshot) setBackups({ ...backupsSnapshot, at: 0 });
+  }).finally(() => {
+    if (backupsReading === reading) backupsReading = null;
   });
+  backupsReading = reading;
 }
 
 function subscribeBackups(listener: () => void): () => void {
+  if (!accountWatched) {
+    accountWatched = true;
+    subscribeAccountStatus((status) => noteAccount(status.userId ?? null));
+  }
   backupsListeners.add(listener);
   return () => {
     backupsListeners.delete(listener);

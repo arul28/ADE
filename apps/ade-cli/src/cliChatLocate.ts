@@ -302,7 +302,8 @@ async function restingCloudComputers(
     const box = machines.find((entry) => asString(entry.machineKey) === machine.key);
     const instanceId = box ? asString(box.instanceId) : null;
     const state = box ? asString(box.state) : null;
-    if (instanceId && state !== "running") resting.push({ machine: machine.name, instanceId });
+    // Only a computer that sleeps: one that is starting (an update, a restart) answers soon by itself.
+    if (instanceId && (state === "asleep" || state === "stopped")) resting.push({ machine: machine.name, instanceId });
   }
   return resting;
 }

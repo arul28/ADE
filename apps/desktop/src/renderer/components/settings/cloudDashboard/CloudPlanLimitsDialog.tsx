@@ -188,7 +188,7 @@ export function CloudPlanLimitsDialog({
                 <ComputerFacts computer={computer} />
               </div>
             ))}
-            <p className="adecd-plan-fine">Delete them from Lanes and computers on this page. Their lanes' work that isn't on GitHub stays saved in ADE Cloud.</p>
+            <p className="adecd-plan-fine">Delete them from Lanes and computers on this page. Before a delete, ADE shows the lane's work that isn't on GitHub and offers to push it.</p>
           </div>
         )}
 
