@@ -19,6 +19,7 @@
 import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
 
 import { IPC } from "../../../shared/ipc";
+import { markExpected } from "../../../shared/expectedError";
 import { CloudApiError, createCloudApiClient, type CloudApiClient } from "../../../shared/cloudApiClient";
 import { adeCloudBinding, isAdeCloudBinding } from "../../../shared/adeCloud/binding";
 import type { RemoteOpenProjectBinding } from "../../../shared/types";
@@ -73,7 +74,11 @@ export function registerAdeCloudReadIpc(args: {
         error: error instanceof Error ? error.name : "unknown",
         status: error instanceof CloudApiError ? error.status : null,
       });
-      throw new Error("ADE couldn't load this from your ADE account. Try again.");
+      const failure = new Error("ADE couldn't load this from your ADE account. Try again.");
+      // No answer (offline, a network still coming up at launch) or the
+      // server busy: the reader tries again, and it is not an ADE fault.
+      const noAnswer = !(error instanceof CloudApiError) || error.status === 0 || error.status === 429 || error.status >= 502;
+      throw noAnswer ? markExpected(failure, "network") : failure;
     }
   };
 

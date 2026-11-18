@@ -37119,7 +37119,9 @@ export function createAgentChatService(args: {
             });
           }
           reportProviderRuntimeAuthFailure("claude", CLAUDE_RUNTIME_AUTH_ERROR);
-        } else {
+        } else if (!(runtime.sdkSessionId && isClaudeStaleSessionError(effectiveError))) {
+          // A thread Claude no longer has (a restored or moved chat) is not
+          // Claude failing: the recovery below opens a new thread.
           reportProviderRuntimeFailure("claude", errorMessage, {
             stderrTail: claudeSubprocessReaper.stderrTail(managed.session.id) ?? null,
           });

@@ -52,6 +52,8 @@ function firstLoadErrorClass(error: unknown): string {
   if (/can't reach|transport unavailable/i.test(message)) return "machine_unreachable";
   if (/service connection (?:closed|failed)/i.test(message)) return "connection_lost";
   if (/timed? out|timeout/i.test(message)) return "timeout";
+  // A browser fetch that got no answer (ADE Web offline or on a dropped network).
+  if (/failed to fetch|networkerror|load failed|network request failed/i.test(message)) return "network";
   return "other";
 }
 
@@ -128,7 +130,8 @@ export function runFirstLoadWithRetry(args: {
     // One that is connected, or this computer's own service, should have
     // answered by now, so a machine that comes back and still fails gets its
     // issue then.
-    if (fields.errorClass === "update_in_progress" || (targetId && connection?.state !== "connected")) {
+    const offline = fields.errorClass === "network" || (typeof navigator !== "undefined" && navigator.onLine === false);
+    if (fields.errorClass === "update_in_progress" || offline || (targetId && connection?.state !== "connected")) {
       if (!waitingReported) forwardSignalToSentry("work.first_load_waiting", fields, surface);
       waitingReported = true;
       return;
