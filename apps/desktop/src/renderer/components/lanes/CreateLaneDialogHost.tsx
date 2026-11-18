@@ -33,6 +33,8 @@ import {
   type LaneMachineOption,
 } from "./laneMachines";
 import { stripRemotePrefix, type LaneBranchOption } from "./laneUtils";
+import { useAccountGithubBranches } from "../../lib/useAccountGithubReads";
+import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
 import type {
   BranchPullRequest,
   ChatLaunchLaneConfig,
@@ -348,6 +350,13 @@ const NO_MACHINES: LaneMachineOption[] = [];
  * The ref a new ADE Cloud computer can check out: a fresh clone has only the
  * remote's branches, so a local branch goes by its remote copy's name.
  */
+/** The repository on GitHub for an origin; account origins come without a scheme (`github.com/owner/repo`). */
+function githubRepoOfOrigin(originUrl: string | null): { owner: string; name: string } | null {
+  const raw = originUrl?.trim() ?? "";
+  if (!raw) return null;
+  return githubRepoRefFromRemoteUrl(raw.includes("://") || /^[^/]*:/.test(raw) ? raw : `https://${raw}`);
+}
+
 function cloudBranchRef(branchName: string, branches: LaneBranchOption[]): string {
   const branch = branches.find((candidate) => candidate.name === branchName);
   if (!branch || branch.isRemote) return branchName;
@@ -736,6 +745,32 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
    */
   const adeCloudFixed = configureForChat && adeCloudTierId != null;
   const adeCloudOnLane = adeCloudFixed || (!configureForChat && adeCloudPicked);
+  /*
+   * An ADE Cloud lane starts from the pushed copy on GitHub. With no copy of
+   * the project to list branches from (an ADE Cloud tab, which has no main
+   * checkout, or no copy online), or one that listed none, the branches are
+   * the repository's on GitHub: the account's own GitHub read, no machine.
+   */
+  const copyListsBranches = Boolean(targetPin ?? readerPin) && primaryLane != null
+    && (createBranchesLoading || createBranches.length > 0);
+  const githubBranchesWanted = open && adeCloudOnLane && !copyListsBranches;
+  const githubBranchRepo = useMemo(() => githubRepoOfOrigin(repoOriginUrl), [repoOriginUrl]);
+  const githubBranches = useAccountGithubBranches(githubBranchesWanted ? githubBranchRepo : null);
+  const githubBranchOptions = useMemo<LaneBranchOption[]>(
+    () => githubBranches.branches.map((branch) => ({
+      // As a copy lists its remote branches, so the launch names the pushed copy.
+      name: `origin/${branch.name}`,
+      isCurrent: false,
+      isRemote: true,
+      upstream: null,
+      lastCommitSha: branch.sha,
+    })),
+    [githubBranches.branches],
+  );
+  const formBranches = githubBranchesWanted ? githubBranchOptions : createBranches;
+  const formBranchesLoading = githubBranchesWanted
+    ? githubBranches.loading && githubBranchOptions.length === 0
+    : createBranchesLoading;
   const handleChooseAdeCloud = useCallback(() => handleSelectMachine(ADE_CLOUD_MACHINE_ID), [handleSelectMachine]);
   const adeCloudDialog = useMemo<CreateLaneAdeCloud | null>(() => {
     if (!adeCloudFixed && (configureForChat || !adeCloud.offered)) return null;
@@ -838,7 +873,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
         name: createLaneName.trim(),
         start: createMode === "new" ? createStart : null,
         branchRef: createMode === "existing"
-          ? (adeCloudFixed ? cloudBranchRef(createImportBranch, createBranches) : createImportBranch)
+          ? (adeCloudFixed ? cloudBranchRef(createImportBranch, formBranches) : createImportBranch)
           : "",
         ...(typedBranch ? { branchName: typedBranch } : {}),
         templateId: selectedTemplateId || null,
@@ -881,7 +916,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
         title: name,
         prompt: "",
         laneConfig: createMode === "existing"
-          ? { mode: "existing" as const, branchRef: cloudBranchRef(createImportBranch, createBranches), templateId: selectedTemplateId || null, color: createSelectedColor }
+          ? { mode: "existing" as const, branchRef: cloudBranchRef(createImportBranch, formBranches), templateId: selectedTemplateId || null, color: createSelectedColor }
           : {
             mode: "new" as const,
             start: createStart,
@@ -1017,7 +1052,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     adeCloud.sizeChoice,
     adeCloud.account,
     repoOriginUrl,
-    createBranches,
+    formBranches,
     adeCloudFixed,
   ]);
   const handleCreateSubmit = useCallback(async () => {
@@ -1048,7 +1083,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       createImportBranch={createImportBranch}
       setCreateImportBranch={setCreateImportBranch}
       projectRoot={activeProjectRoot}
-      createBranches={createBranches}
+      createBranches={formBranches}
       lanes={lanes}
       onSubmit={handleCreateSubmit}
       machineRequired={!configureForChat}
@@ -1071,7 +1106,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       setSelectedLinearIssue={handleSetCreateLinearIssue}
       branchPullRequests={createBranchPullRequests}
       currentGitUserName={createGitUserName}
-      loadingBranches={createBranchesLoading}
+      loadingBranches={formBranchesLoading}
       onOpenLinearSettings={onOpenLinearSettings}
       onNavigateToTemplates={onNavigateToTemplates}
       selectedMachineId={selectedMachineId}

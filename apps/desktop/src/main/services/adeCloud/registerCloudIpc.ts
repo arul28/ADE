@@ -27,7 +27,7 @@ import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { IPC } from "../../../shared/ipc";
 import { CloudApiError, createCloudApiClient } from "../../../shared/cloudApiClient";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer } from "../../../shared/adeCloudMachine";
-import { CLOUD_CHAT_MESSAGE_MAX_CHARS, cloudChatMessageSettingsOf, isCloudRefusalCode, type CloudCarriedSignIns, type CloudLaunchRecord } from "../../../../../account-directory/src/cloud/contract";
+import { CLOUD_CHAT_MESSAGE_MAX_CHARS, cloudChatMessageSettingsOf, isCloudRefusalCode, type CloudCarriedSignIns, type CloudLaunchRecord, type CloudModelCatalog } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudRemoteSignInStatus } from "../../../shared/accountCloudLaunches";
 import { readCloudSignInEnd, type CloudSignInEndList, type CloudSignInSettingRead } from "./cloudSignInEndWarning";
 import type { CloudSignInEnd } from "../../../shared/cloudSignIns";
@@ -329,6 +329,13 @@ export function registerCloudIpc(args: {
       return null;
     });
     return answer?.carried ?? null;
+  });
+  // The models a chat on ADE Cloud can run, for the composer's picker while
+  // ADE Cloud is the destination: no computer of the person's own needs to be
+  // online. The same list for every account, so no pin.
+  ipcMain.handle(IPC.cloudModelCatalog, async (event): Promise<CloudModelCatalog | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudModelCatalog)) return null;
+    return await accountApi().modelCatalog();
   });
   for (const [channel, action, toArgs] of cloudSignInHandlers) {
     ipcMain.handle(channel, async (event, arg?: Record<string, unknown>): Promise<CloudSignInStatus | null> => {
