@@ -18,7 +18,7 @@ CLI: `apps/ade-cli/src/cliCloudIphone.ts`. Shapes:
 The Worker var `CLOUD_PHONE_ACCESS` decides who has it, with no app release:
 
 - `beta` (the default): only accounts the owner adds to `cloud_phone_beta`
-  (migration `0045_cloud_phone_beta.sql`; one row per `user_id`, with the
+  (migration `0047_cloud_phone_beta.sql`; one row per `user_id`, with the
   `email` the owner typed). Everyone else reads `access: "soon"`, and start
   and view calls answer 403 `phone_not_on_account`. Taking an account off the
   list stops its running phone.
@@ -43,11 +43,13 @@ answers 402 `phone_free_held`. A phone start settles those checks itself, as a
 computer's start does, once the account may use the phone at all
 (`routePhone`), so calling the phone route alone can't skip them.
 
-- Every phone is a `cloud_phones` row (migration `0046_cloud_phone_usage.sql`):
+- Every phone is a `cloud_phones` row (migration `0048_cloud_phone_usage.sql`):
   NoMac's billed seconds and cost, live or ended, and whether the account was on
   free rules, counted in the period it started in. NoMac's signed webhook
   (`POST /cloud/nomac/webhook`, `NOMAC_WEBHOOK_SECRET`) settles rows this Worker
-  made (another environment's phones are left alone); a delivery whose work
+  made, and recovers a phone with no row (its start's answer was lost) when its
+  `ade:<userId>` label names a live account here (another environment's phones
+  are left alone); a delivery whose work
   fails is given back, so NoMac's retry is done. The ten-minute check reads
   every live phone again, so a missed delivery can't leave one counted forever.
   Used minutes are the period's billed minutes plus the running phone's time so
@@ -274,7 +276,7 @@ one sentence. The screen reads as text: one element per line,
   account; without it the link itself is the permission (2 hours, that phone
   only).
 
-**Migration.** Apply `0045_cloud_phone_beta.sql` and `0046_cloud_phone_usage.sql`
+**Migration.** Apply `0047_cloud_phone_beta.sql` and `0048_cloud_phone_usage.sql`
 before the Worker that reads them
 deploys (the production deploy script does):
 

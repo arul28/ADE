@@ -484,8 +484,8 @@ email log line has the subject or a lane name.
 ### The ADE Cloud iPhone
 
 An iOS Simulator at NoMac, one per account, driven from any machine with
-`ade apple` (`src/cloud/phones.ts`, migrations `0045_cloud_phone_beta.sql` and
-`0046_cloud_phone_usage.sql`, shapes in `contract.ts`). Who may use it is the
+`ade apple` (`src/cloud/phones.ts`, migrations `0047_cloud_phone_beta.sql` and
+`0048_cloud_phone_usage.sql`, shapes in `contract.ts`). Who may use it is the
 var `CLOUD_PHONE_ACCESS`: `beta` (the default: only accounts the owner adds;
 everyone else reads `soon`), `all`, or `off`. `CLOUD_PHONES_PAUSED=1` refuses
 new phones (503 `phone_paused`) while running ones finish. The launch plan is
@@ -523,7 +523,7 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   minutes; unset, the switch isn't offered. The
   account key stays in this Worker; a brain gets a token for one phone (2 hours)
   that cannot start, list or stop phones. Apply
-  `0045_cloud_phone_beta.sql` before the Worker that reads it deploys.
+  `0047_cloud_phone_beta.sql` before the Worker that reads it deploys.
 - The owner adds accounts with `POST /cloud/owner/phone-beta`, below.
 
 ### Payments

@@ -72,11 +72,11 @@
   // (src/cloud/phones.ts); required, and only this Worker holds it. The
   // optional embed secret (`nme_…`) signs each view link for the account.
   // Set both out of band, here and with `--env production`. Apply
-  // migrations/0045_cloud_phone_beta.sql before the Worker that reads it
+  // migrations/0047_cloud_phone_beta.sql before the Worker that reads it
   // deploys. Unset NOMAC_API_KEY, the phone reads `off` and answers "not set
   // up"; without the embed secret a view link is its own permission. The
   // webhook secret is the one NoMac shows once when the webhook to
-  // /cloud/nomac/webhook is made. Apply migrations/0046_cloud_phone_usage.sql
+  // /cloud/nomac/webhook is made. Apply migrations/0048_cloud_phone_usage.sql
   // first too. Vars (here and under env.production): CLOUD_PHONE_ACCESS
   // (`beta` by default, `all` at launch, `off`), CLOUD_PHONES_PAUSED (`1`
   // stops new phones), STRIPE_PHONE_MINUTE_PRICE_ID and

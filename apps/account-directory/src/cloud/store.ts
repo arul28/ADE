@@ -244,7 +244,7 @@ export type AccountRow = {
   /** Refused the free plan: its computer already gave another account free hours (`freePlan.ts`). Free hours are 0 while set. */
   free_refused_at: number | null;
   /**
-   * The ADE Cloud iPhone (migration 0046, `phones.ts`): extra minutes and the
+   * The ADE Cloud iPhone (migration 0048, `phones.ts`): extra minutes and the
    * minutes warnings. Absent before the migration. `phone_extra_enabled` is
    * one of `PHONE_EXTRA` (on, off, or was on until the plan ended).
    */

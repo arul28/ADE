@@ -96,7 +96,7 @@ type NomacSession = {
 
 type NomacAnswer = { status: number; body: Record<string, unknown> | null };
 
-/** A `cloud_phones` row (migration 0046). */
+/** A `cloud_phones` row (migration 0048). */
 export type PhoneRow = {
   phone_id: string;
   user_id: string;
@@ -234,16 +234,30 @@ async function savePhone(env: Pick<CloudEnv, "DB">, userId: string, session: Nom
   ).run();
 }
 
+/** The ADE account a NoMac label names (`ade:<userId>`), or null for a label ADE did not make. */
+function userIdOfLabel(label: unknown): string | null {
+  return typeof label === "string" && label.startsWith("ade:") && label.length > 4 ? label.slice(4) : null;
+}
+
 /**
- * NoMac's answer for a phone this Worker already keeps; one it doesn't know
- * (another environment's, or one whose start hasn't saved yet) is left alone.
+ * NoMac's answer for a phone this Worker keeps. A phone with no row yet (its
+ * start's answer was lost, or the save failed) is recovered when its label
+ * names a live account this Worker has, so its minutes are still counted; another
+ * environment's phones (accounts this Worker doesn't have) are left alone.
  * Answers the row's account and its state before, or null.
  */
 async function updatePhone(env: Pick<CloudEnv, "DB">, session: NomacSession, now: number): Promise<{ userId: string; wasEnded: boolean } | null> {
   const known = await env.DB.prepare("select user_id, state from cloud_phones where phone_id = ?").bind(session.id).first<{ user_id: string; state: string }>();
-  if (!known) return null;
-  await savePhone(env, known.user_id, session, now);
-  return { userId: known.user_id, wasEnded: known.state === "ended" };
+  if (known) {
+    await savePhone(env, known.user_id, session, now);
+    return { userId: known.user_id, wasEnded: known.state === "ended" };
+  }
+  const userId = userIdOfLabel(session.label);
+  const account = userId ? await env.DB.prepare("select plan, stripe_status from cloud_accounts where user_id = ? and deleted_at is null").bind(userId).first<Pick<AccountRow, "plan" | "stripe_status">>() : null;
+  if (!userId || !account) return null;
+  await savePhone(env, userId, session, now, accountRules(account) === "free");
+  logCloud("cloud.phone_recovered", { userId, phoneId: session.id });
+  return { userId, wasEnded: false };
 }
 
 /** The phones an account started in `[since, before)`. Billing counts only their settled minutes (`settledPhoneMinutes`). */
