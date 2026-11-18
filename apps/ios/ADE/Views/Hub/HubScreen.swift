@@ -112,6 +112,12 @@ struct HubScreen: View {
     syncService.connectionState == .connected
   }
 
+  /// A computer is on its way: the focused one or any in the fleet.
+  private var hubComputerConnecting: Bool {
+    let inputs = accountStatusInputs
+    return inputs.focusedState == .connecting || inputs.anyFleetMachineConnecting
+  }
+
   private var hubIsActive: Bool {
     syncService.shouldShowProjectHub && openChatTarget == nil
   }
@@ -419,8 +425,12 @@ struct HubScreen: View {
     DuoHomeWide(
       presentations: hubOverviewPresentations,
       actions: hubToolbarActions,
-      // Local folders of other reachable computers have agents too.
-      showsOverview: canShowProjects || !hubOverviewPresentations.isEmpty,
+      // Local folders of other reachable computers have agents too. Only a
+      // computer that is really connecting says so; with none (an account
+      // that runs on ADE Cloud, or a machine that dropped) the list shows
+      // its empty state instead of "Connecting" forever.
+      showsOverview: canShowProjects || !hubOverviewPresentations.isEmpty
+        || !hubComputerConnecting,
       onOpenAgent: { item in
         openHubChat(item.row.chat, lane: item.lane, project: item.project)
       },

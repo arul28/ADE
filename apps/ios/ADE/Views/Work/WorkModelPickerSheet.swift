@@ -325,11 +325,16 @@ struct WorkModelPickerSheet: View {
       if case .providerGroup(let key, _) = selection {
         await refreshCatalog(for: key)
       }
-      // The host lists OpenCode only once it has read OpenCode's models for
-      // this project. A group that is not listed has no tile to tap, so its
-      // per-group refresh never runs: ask for it here.
-      if cloudCatalog == nil, rawCatalogGroups?.contains(where: { $0.key == "opencode" }) != true {
-        await refreshCatalog(for: "opencode")
+      // The host lists a provider whose models come from its own CLI or a
+      // probe (OpenCode, Cursor, Droid, Pi, the ACP providers…) only once it
+      // has read them. A group that is not listed has no tile to tap, so its
+      // per-group refresh never runs: ask for each missing one here. One at a
+      // time, so the last catalog applied is the most complete.
+      if cloudCatalog == nil {
+        for key in Self.refreshableGroupKeys where rawCatalogGroups?.contains(where: { $0.key == key }) != true {
+          guard !Task.isCancelled else { return }
+          await refreshCatalog(for: key)
+        }
       }
     }
     // The scoped catalog is cached, so a change to either scoping input must
@@ -733,17 +738,16 @@ struct WorkModelPickerSheet: View {
   }
 
   @MainActor
+  /// Groups whose models the host reads from the provider itself
+  /// (`AgentChatModelCatalogRefreshProvider`); Claude and Codex always list.
+  static let refreshableGroupKeys = [
+    "opencode", "cursor", "droid", "pi", "muse", "qwen", "kimi", "grok",
+    "copilot", "devin", "antigravity", "lmstudio", "ollama",
+  ]
+
   private func refreshCatalog(for groupKey: String) async {
-    guard cloudCatalog == nil else { return }
-    let refreshProvider: String?
-    switch groupKey {
-    case "opencode", "cursor", "droid", "pi", "muse", "lmstudio", "ollama",
-         "qwen", "kimi", "grok", "copilot", "devin", "antigravity":
-      refreshProvider = groupKey
-    default:
-      refreshProvider = nil
-    }
-    guard let refreshProvider else { return }
+    guard cloudCatalog == nil, Self.refreshableGroupKeys.contains(groupKey) else { return }
+    let refreshProvider = groupKey
     do {
       let hostCatalog = try await modelCatalog(mode: "refresh-stale", refreshProvider: refreshProvider)
       guard !Task.isCancelled else { return }
