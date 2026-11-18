@@ -233,6 +233,7 @@ import { reconcileDraftModelControls } from "./draftModelControls";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { useLaneGitRemote } from "./useLaneGitRemote";
 import { familiesFromStatus, familiesWithoutRuntime } from "../shared/ModelPicker/useProviderAuthStatus";
+import { isPiRoutedModel } from "../shared/ModelPicker/modelFacts";
 import {
   AgentChatMessageList,
   ChatInfoHostContext,
@@ -18623,6 +18624,19 @@ export function AgentChatPane({
     const ids = adeCloudModelCatalog.providers.flatMap((provider) => provider.models.map((model) => model.id));
     return ids.length > 0 ? filterCursorModelIdsForDraftKind([...new Set(ids)], workDraftKind, modelCatalogScopeKey) : null;
   }, [adeCloudModelCatalog, modelCatalogScopeKey, workDraftKind]);
+  // ADE Cloud signs a provider in on its own computer (a pass the account
+  // keeps, or the setup card's sign-in step), so the sign-ins of the tab's
+  // machine, which may be offline, don't gate the picker: every provider ADE
+  // Cloud lists is one to pick, and a click selects its model.
+  const adeCloudProviderAuthStatus = useMemo<Partial<Record<ProviderFamily, "ok">> | null>(() => {
+    if (!adeCloudModelIds) return null;
+    const status: Partial<Record<ProviderFamily, "ok">> = {};
+    for (const id of adeCloudModelIds) {
+      const descriptor = resolveScopedModelDescriptor(id, modelCatalogScopeKey);
+      if (descriptor) status[isPiRoutedModel(descriptor) ? "pi" : descriptor.family] = "ok";
+    }
+    return Object.keys(status).length > 0 ? status : null;
+  }, [adeCloudModelIds, modelCatalogScopeKey]);
   const adeCloudLaneComputers = adeCloud.computers;
   const adeCloudIndex = adeCloud.index;
   // Every ADE Cloud computer (a lane's, a CTO home, one made without a lane)
@@ -21370,7 +21384,12 @@ export function AgentChatPane({
     : adeCloudMode && !selectedSessionId && adeCloudModelIds
       ? adeCloudModelIds
       : effectiveAvailableModelIds;
-  const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudSessionActive;
+  // A new chat on ADE Cloud offers only the models ADE Cloud runs, each one to
+  // pick (see `adeCloudProviderAuthStatus`), as Cursor Cloud narrows to its own.
+  const adeCloudDraftAuthStatus = adeCloudMode && !selectedSessionId && !cursorCloudSessionActive && adeCloudModelIds
+    ? adeCloudProviderAuthStatus
+    : null;
+  const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudSessionActive || adeCloudDraftAuthStatus != null;
 
   const compactionIdleMode = selectedSession?.compactionIdleMode;
   const selectedProvider = selectedSession?.provider ?? "";
@@ -21602,8 +21621,12 @@ export function AgentChatPane({
             catalogScopeKey={modelCatalogScopeKey}
             constrainModelSelection={composerConstrainModelSelection}
             modelUnavailableMessage={cursorCloudSessionActive ? undefined : constrainedModelSelectionError ?? undefined}
-            {...(restingModelPicker || !modelPickerProviderAuthStatus ? {} : { providerAuthStatus: modelPickerProviderAuthStatus })}
-            {...(modelPickerProviderRuntimeMissing && !restingModelPicker ? { providerRuntimeMissing: modelPickerProviderRuntimeMissing } : {})}
+            {...(adeCloudDraftAuthStatus
+              ? { providerAuthStatus: adeCloudDraftAuthStatus, providerRuntimeMissing: {} }
+              : {
+                ...(restingModelPicker || !modelPickerProviderAuthStatus ? {} : { providerAuthStatus: modelPickerProviderAuthStatus }),
+                ...(modelPickerProviderRuntimeMissing && !restingModelPicker ? { providerRuntimeMissing: modelPickerProviderRuntimeMissing } : {}),
+              })}
             onRuntimeCatalogRefreshed={() => {
               setRuntimeCatalogVersion((version) => version + 1);
             }}
