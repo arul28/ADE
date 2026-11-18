@@ -207,6 +207,39 @@ final class MachineConnection {
     }
   }
 
+  /// The ping `probeLink` waits on.
+  private var linkProbeTask: Task<Void, Never>?
+
+  /// Checks a link that reads live but may be dead: a request went
+  /// unanswered, or the account says this ADE Cloud computer is asleep. A
+  /// computer put to sleep can leave the relay's half of the pair open, so
+  /// no close comes and heartbeat silence takes minutes. Ping it; with no
+  /// answer in a few seconds, close the link the way heartbeat silence
+  /// does. The run loop dials again with backoff, and an asleep computer
+  /// lists its saved work meanwhile. A machine that answers keeps its link.
+  func probeLink(trigger: String) {
+    guard phase == .live, socket != nil, linkProbeTask == nil else { return }
+    let probeGeneration = generation
+    let sentAt = ProcessInfo.processInfo.systemUptime
+    let timeout = syncService?.transportProbeTimeoutNanoseconds ?? SyncSocketTiming.transportProbeTimeoutNanoseconds
+    send(type: "heartbeat", requestId: nil, payload: [
+      "kind": "ping",
+      "sentAt": ISO8601DateFormatter().string(from: Date()),
+      "dbVersion": 0,
+    ])
+    linkProbeTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: timeout)
+      guard let self else { return }
+      self.linkProbeTask = nil
+      guard !Task.isCancelled, self.generation == probeGeneration, let socket = self.socket,
+            self.lastInboundUptime < sentAt
+      else { return }
+      machineConnectionLog.notice("fleet probe unanswered machine=\(self.machineKey, privacy: .public) trigger=\(trigger, privacy: .public)")
+      self.heartbeatClosedSocket = socket
+      socket.cancel(with: .goingAway, reason: nil)
+    }
+  }
+
   /// Let a connection that ran out of retries dial again (the caller starts
   /// it). A no-op for any other connection.
   func resumeAfterGivingUp() {
@@ -624,6 +657,8 @@ final class MachineConnection {
         try? await Task.sleep(nanoseconds: timeoutNanoseconds)
         guard !Task.isCancelled else { return }
         self?.resolve(requestId: requestId, result: .failure(SyncRequestTimeout.error(message: timeoutMessage)))
+        // No answer may mean a dead link that reads live (`probeLink`).
+        self?.probeLink(trigger: "request_timeout")
       }
       pending[requestId] = PendingRequest(continuation: continuation, timeoutTask: timeoutTask, accept: accept)
       if !send(type: type, requestId: requestId, payload: payload, projectId: projectId) {

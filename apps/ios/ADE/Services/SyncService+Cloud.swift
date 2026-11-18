@@ -1,7 +1,7 @@
 import Foundation
 import OSLog
 
-private let cloudServerLog = Logger(subsystem: "com.ade.ios", category: "cloud")
+let cloudServerLog = Logger(subsystem: "com.ade.ios", category: "cloud")
 
 // The phone's ADE Cloud page talks to whichever ADE machine it is connected to,
 // through `cloud.read` and `cloud.write`: the same actions as
@@ -736,6 +736,14 @@ extension SyncService {
       cloudServerInstances = instances.filter { !$0.isGone }
       // Note these computers as ADE Cloud: every machine row names them "ADE Cloud".
       CloudLaneComputerLabels.noteServerInstances(cloudServerInstances)
+      // The focused cloud computer is no longer on the account server: the
+      // account's machine list still names it until it reads again, and that
+      // read is how the phone leaves it (`resolveCloudMachineKeys`).
+      if let focusedKey = focusedMachineKey, isCloudFleetKey(focusedKey),
+         cloudServerInstance(fleetKey: focusedKey) == nil,
+         AccountService.shared.machine(forFleetKey: focusedKey) != nil {
+        Task { await AccountService.shared.loadMachines() }
+      }
     }
     if let chats { cloudSavedChats = chats }
     guard instances != nil || chats != nil else { return }
@@ -748,6 +756,7 @@ extension SyncService {
       resolveCloudMachineKeys()
     }
     machineFleet?.cloudServerChanged()
+    probeFocusedLinkIfCloudComputerRests()
     leaveDeletedFocusedCloudComputer()
   }
 
@@ -773,7 +782,19 @@ extension SyncService {
     UserDefaults.standard.set(seen, forKey: Self.seenCloudFleetKeysDefaultsKey)
   }
 
-  @MainActor private enum DeletedFocusedCloudComputer { static var left: Set<String> = [] }
+  /// The focused machine was an ADE Cloud computer the account has since
+  /// deleted: this phone saw it as one, and the account's computers no
+  /// longer include it. Its cached lanes and chats belong to a computer
+  /// that is gone, so they are not listed.
+  var focusedIsDeletedCloudComputer: Bool {
+    guard let focusedKey = focusedMachineKey, !cloudMachineFleetKeys.contains(focusedKey) else { return false }
+    return (UserDefaults.standard.stringArray(forKey: Self.seenCloudFleetKeysDefaultsKey) ?? []).contains(focusedKey)
+  }
+
+  /// The deleted focused computers this launch has left. Once left (and no
+  /// longer linked), `forgetDeletedCloudComputerPairings` forgets that pairing
+  /// too, focused or not.
+  @MainActor enum DeletedFocusedCloudComputer { static var left: Set<String> = [] }
 
   /// The project open on this phone was on an ADE Cloud computer the account
   /// has since deleted (its lane was deleted, here or on another device). A
@@ -786,18 +807,35 @@ extension SyncService {
   func leaveDeletedFocusedCloudComputer() {
     let account = AccountService.shared
     guard let focusedKey = focusedMachineKey,
-          !projectHubPresented,
-          activeAccountProjectId == nil,
-          connectionState != .connected,
           account.machinesState == .loaded,
           account.machine(forFleetKey: focusedKey) == nil,
-          !cloudMachineFleetKeys.contains(focusedKey),
-          (UserDefaults.standard.stringArray(forKey: Self.seenCloudFleetKeysDefaultsKey) ?? []).contains(focusedKey)
+          focusedIsDeletedCloudComputer
     else { return }
+    // The relay can hold a deleted computer's link half-open: prove it is
+    // gone first. The drop calls this again.
+    if connectionState == .connected {
+      probeFocusedLinkIfCloudComputerRests()
+      return
+    }
     // Once per computer per launch: a person who opens it again stays.
     guard DeletedFocusedCloudComputer.left.insert(focusedKey).inserted else { return }
-    cloudServerLog.notice("cloud_server focused_computer=deleted action=show_hub")
-    showProjectHub()
+    // Another live computer takes the focus (its projects stay on the Hub);
+    // with none, the Hub shows instead of the deleted computer's lanes.
+    if let next = machineFleet?.machines.first(where: { $0.state == .live && !isCloudFleetKey($0.machineKey) })?.machineKey {
+      cloudServerLog.notice("cloud_server focused_computer=deleted action=focus_live_machine")
+      Task { @MainActor [weak self] in
+        // The deleted computer is no longer focused: drop its pairing.
+        guard await self?.switchFocus(toMachineKey: next) == true else { return }
+        self?.forgetDeletedCloudComputerPairings()
+      }
+    } else {
+      if !projectHubPresented, activeAccountProjectId == nil {
+        cloudServerLog.notice("cloud_server focused_computer=deleted action=show_hub")
+        showProjectHub()
+      }
+      // Its pairing goes too, or it reconnects to a computer that is gone.
+      forgetDeletedCloudComputerPairings()
+    }
   }
 
   /// Wakes an ADE Cloud computer through the account server, with no other

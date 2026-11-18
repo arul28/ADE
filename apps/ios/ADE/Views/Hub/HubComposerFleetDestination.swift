@@ -48,6 +48,8 @@ struct HubComposerCopy: Equatable, Identifiable {
   /// The account machine key, when the account lists the computer.
   let accountMachineKey: String?
   let project: MobileProjectSummary
+  /// On an ADE Cloud lane computer: every one of them is the one ADE Cloud.
+  var isCloud = false
 
   /// One computer can hold two folders of a project, and two computers can
   /// share a name: the folder on its computer is the identity.
@@ -121,6 +123,25 @@ func hubComposerDefaultCopy(
     ?? entry.copies.first { $0.machineKey == nil } ?? entry.copies.first
 }
 
+/// Pure: the destinations a project offers, one per computer, with every
+/// ADE Cloud lane computer folded into one ADE Cloud (the picked one when one
+/// is, else the first), where the first of them stood. Its lanes then list
+/// together (`cloudLaneChoices`).
+func hubComposerDestinationCopies(
+  _ copies: [HubComposerCopy],
+  isPicked: (HubComposerCopy) -> Bool
+) -> [HubComposerCopy] {
+  let cloud = copies.filter(\.isCloud)
+  guard cloud.count > 1, let representative = cloud.first(where: isPicked) ?? cloud.first else { return copies }
+  var placed = false
+  return copies.compactMap { copy in
+    guard copy.isCloud else { return copy }
+    if placed { return nil }
+    placed = true
+    return representative
+  }
+}
+
 /// The computers of the chosen project, as small chips under its row.
 struct HubComposerStartOnChips: View {
   let copies: [HubComposerCopy]
@@ -142,7 +163,7 @@ struct HubComposerStartOnChips: View {
               HStack(spacing: 5) {
                 Image(systemName: machineSymbol(machineKey: copy.machineKey, name: copy.machineName))
                   .font(.system(size: 10.5))
-                Text(copy.machineName)
+                Text(label(copy))
                   .font(.system(size: 12.5, weight: selected ? .semibold : .regular))
                   .lineLimit(1)
               }
@@ -155,7 +176,7 @@ struct HubComposerStartOnChips: View {
               )
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Start on \(copy.machineName)")
+            .accessibilityLabel("Start on \(label(copy))")
             .accessibilityAddTraits(selected ? .isSelected : [])
           }
         }
@@ -164,5 +185,25 @@ struct HubComposerStartOnChips: View {
     .padding(.leading, 39)
     .padding(.trailing, 8)
     .padding(.bottom, 6)
+  }
+
+  /// The computer's name; with the folder too when that computer holds two
+  /// folders of the project (or two computers share a name).
+  private func label(_ copy: HubComposerCopy) -> String {
+    let others = copies.filter { $0.id != copy.id && $0.machineName == copy.machineName }
+    guard !others.isEmpty, let parts = Self.pathParts(copy) else { return copy.machineName }
+    // The shortest path ending none of the others share ("ADE", else "Projects/ADE").
+    let otherParts = others.compactMap(Self.pathParts)
+    var count = 1
+    while count < parts.count,
+          otherParts.contains(where: { Array($0.suffix(count)) == Array(parts.suffix(count)) }) {
+      count += 1
+    }
+    return "\(copy.machineName) · \(parts.suffix(count).joined(separator: "/"))"
+  }
+
+  private static func pathParts(_ copy: HubComposerCopy) -> [String]? {
+    let parts = (copy.project.rootPath ?? "").split(whereSeparator: { $0 == "/" || $0 == "\\" }).map(String.init)
+    return parts.isEmpty ? nil : parts
   }
 }

@@ -306,6 +306,31 @@ final class ChatThreadEngineTests: XCTestCase {
     XCTAssertEqual(sequences, [50, 51])
   }
 
+  func testEmptySnapshotKeepsCachedRowsUnlessHistoryWasReset() async {
+    let store = makeStore()
+    await store.append(key.logKey, events: [user(1, "kept"), text(2, "kept answer")].map(stored), generation: 1)
+    await store.flush()
+    let engine = makeEngine(store: store)
+    await engine.loadCache()
+    _ = await engine.flush()
+
+    // A host that could not fit its tail (one event over the size cap) sends
+    // an empty gap snapshot of the same history: the thread must not blank.
+    await engine.ingest(snapshot([], generation: 1, gap: true))
+    _ = await engine.flush()
+    let kept = await engine.currentFrame
+    XCTAssertEqual(texts(kept), ["user:kept", "assistant:kept answer"])
+    await engine.flushPersistence()
+    let storedAfterEmpty = await storedSequences(store)
+    XCTAssertEqual(storedAfterEmpty, [1, 2])
+
+    // A new history generation (the chat was cleared) still empties it.
+    await engine.ingest(snapshot([], generation: 2))
+    _ = await engine.flush()
+    let cleared = await engine.currentFrame
+    XCTAssertEqual(texts(cleared), [])
+  }
+
   func testHoleBetweenCacheAndSnapshotIsTreatedAsGap() async {
     let engine = makeEngine()
     await engine.ingest(.cached(meta: nil, events: [user(1, "cached"), text(2, "cached answer")].map(stored)))

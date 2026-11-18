@@ -98,6 +98,8 @@ struct CloudServerInstance: Decodable, Equatable {
   /// Already starting: its ADE answers soon, with no wake of its own.
   var isComingUp: Bool { status == "starting" || status == "waking" }
   var isGone: Bool { status == "deleted" }
+  /// Asleep or stopped: not running, not coming up, not deleted.
+  var isResting: Bool { status != "running" && !isComingUp && !isGone }
 }
 
 /// Whether the computer that saved a chat still exists (`CloudChatComputer`).

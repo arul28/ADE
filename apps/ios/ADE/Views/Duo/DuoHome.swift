@@ -148,9 +148,38 @@ func duoHomeMachines(syncService: SyncService, fleet: MachineFleet) -> [DuoHomeM
       isLive: health.transport == .connected
     )
   ]
+  // ADE Cloud is one machine however many lane computers it has: they fold
+  // into one row (the focused row when the phone is on one of them), "Live"
+  // when any is, else "Asleep" while the account says they all rest.
+  let focusedIsCloud = syncService.isCloudFleetKey(syncService.focusedMachineKey)
+  var cloud: (projects: Int, working: Int, live: Bool, asleep: Bool, state: MachineFleet.MachineState?) =
+    (0, 0, false, true, nil)
+  var hasCloud = false
   for machine in fleet.machines {
     let working = machine.projects.reduce(0) { partial, project in
       partial + project.chats.filter(\.countsTowardRunning).count
+    }
+    let asleep = machine.state != .live
+      && syncService.cloudServerInstance(fleetKey: machine.machineKey)?.isResting == true
+    if syncService.isCloudFleetKey(machine.machineKey) {
+      if focusedIsCloud {
+        rows[0].projectCount += machine.projects.count
+        rows[0].workingCount += working
+        // ADE Cloud is up while any of its computers is, the focused one or not.
+        if machine.state == .live, !rows[0].isLive {
+          rows[0].statusWord = duoMachineFleetStateWord(machine.state)
+          rows[0].tone = duoMachineFleetStateTone(machine.state)
+          rows[0].isLive = true
+        }
+        continue
+      }
+      hasCloud = true
+      cloud.projects += machine.projects.count
+      cloud.working += working
+      cloud.live = cloud.live || machine.state == .live
+      cloud.asleep = cloud.asleep && asleep
+      if cloud.state == nil || machine.state == .live { cloud.state = machine.state }
+      continue
     }
     rows.append(
       DuoHomeMachine(
@@ -162,6 +191,45 @@ func duoHomeMachines(syncService: SyncService, fleet: MachineFleet) -> [DuoHomeM
         workingCount: working,
         isLive: machine.state == .live
       )
+    )
+  }
+  // Every signed-in account has ADE Cloud, so it lists even before this
+  // phone has linked one of its computers. The account's read says how many
+  // are awake (nothing is woken to ask).
+  let instances = syncService.cloudServerInstances
+  let awake = instances.filter { $0.isAwake || $0.isComingUp }.count
+  if !focusedIsCloud, hasCloud || AccountService.shared.isSignedIn {
+    let word: String
+    let tone: ADEKitTone
+    if cloud.live, let state = cloud.state {
+      word = duoMachineFleetStateWord(state)
+      tone = duoMachineFleetStateTone(state)
+    } else if awake > 0 {
+      word = "\(awake) awake"
+      tone = .ok
+    } else if hasCloud, !cloud.asleep, let state = cloud.state {
+      word = duoMachineFleetStateWord(state)
+      tone = duoMachineFleetStateTone(state)
+    } else {
+      // An empty list is only believed once the account answered.
+      if instances.isEmpty, !hasCloud {
+        word = syncService.cloudServerReadFinished ? "No lanes" : "Checking"
+      } else {
+        word = "Asleep"
+      }
+      tone = .neutral
+    }
+    rows.insert(
+      DuoHomeMachine(
+        id: "duo-ade-cloud",
+        name: ADECloudMachine.name,
+        statusWord: word,
+        tone: tone,
+        projectCount: cloud.projects,
+        workingCount: cloud.working,
+        isLive: cloud.live
+      ),
+      at: 1
     )
   }
   return rows

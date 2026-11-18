@@ -190,10 +190,13 @@ func settingsMachines(
   for machine in account.machines {
     // ADE Cloud is one machine: its lane computers show as one row
     // (`SettingsCloudMachineRow`), never one row each.
-    if settingsMachineIsCloud(machine, syncService: syncService) { continue }
     let identity = nonEmptyTrimmed(machine.deviceId)
     let dedupeKey = (identity ?? machine.machineKey).lowercased()
-    guard seen.insert(dedupeKey).inserted else { continue }
+    // Marked seen first, so its saved pairing below adds no row of its own
+    // (it read as the computer's instance id).
+    guard seen.insert(dedupeKey).inserted,
+          !settingsMachineIsCloud(machine, syncService: syncService)
+    else { continue }
     let key = pairedKey(identity: identity)
     let lastSeen = machineLastSeenDate(epochMilliseconds: machine.lastSeenAt)
     let isAsleep = syncMachinePresence(
