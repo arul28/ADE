@@ -84,7 +84,7 @@ phones. At launch scale that is a NoMac call per open pane per 20 s.
 
 - Stripe: one metered price on a new meter `ade_cloud_phone_minutes` at
   $0.025, added to every paid subscription (`scripts/stripe-setup.mjs`,
-  `billing.ts`, like the extra-hours prices).
+  `phoneBilling.ts`, like the extra-hours prices).
 - A start with no included minutes left: Free is refused (as today). Paid
   starts with a spend cap and time limit set to what the monthly limit has
   left (or 2 hours with no limit), so NoMac still stops it at the limit.

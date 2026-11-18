@@ -40,6 +40,7 @@ import {
 import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
 import { AppleDevicePicker } from "./AppleDevicePicker";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
+import { AppleDeviceConfirmBar } from "./AppleDeviceConfirmBar";
 import { AppleDeviceRail } from "./AppleDeviceRail";
 import { DEVICE_RAIL_WIDTH } from "../device/DeviceRail";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
@@ -84,7 +85,7 @@ import { appleDuoDisplayOrientation, useAppleDuoPosture } from "./useAppleDuoPos
 import { appleDuoHeldOrientation, appleDuoInTent, appleDuoScreenName } from "../../../shared/appleOrientation";
 import { useAppleRenderRequests } from "./useAppleRenderRequests";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
-import { isInParkedSurface } from "../../lib/parkedSurface";
+import { usePaneOffScreen } from "../../lib/parkedSurface";
 import { useTicker } from "../../lib/ticker";
 import { confirmAppleDeviceRelease } from "./appleReleaseConfirm";
 import { DEVICE_DRAWER_DOCK_CLASS } from "../device/DeviceToolsDrawerShell";
@@ -282,7 +283,8 @@ function AppleDevicePaneOnMachine({
   const [confirmSwitch, setConfirmSwitch] = useState(false);
   const [screenshotPending, setScreenshotPending] = useState(false);
   const [bodyWidth, setBodyWidth] = useState(720);
-  const [hidden, setHidden] = useState(false);
+  // The pane stops the stream when the PANE is off screen, not the window.
+  const hidden = usePaneOffScreen(bodyRef);
 
   const {
     status,
@@ -333,41 +335,6 @@ function AppleDevicePaneOnMachine({
     });
     observer.observe(node);
     return () => observer.disconnect();
-  }, []);
-
-  /**
-   * The pane stops the stream when the PANE is not on screen. Not when the
-   * window is behind another one.
-   *
-   * Round 2 also paused on `document.visibilityState`, which on macOS goes
-   * "hidden" the moment any other app's window covers this one — and the
-   * matching `visibilitychange` does not reliably fire on the way back. The
-   * result, reproduced on the dev app in the round-3 test: a pane opened while
-   * another window was in front sat on the loading card forever, over a
-   * simulator that was booted and streaming the whole time. Minimising or
-   * closing the pane unmounts this component, which stops the stream through
-   * the lease; that is the case the visibility check was really for.
-   */
-  useEffect(() => {
-    const node = bodyRef.current;
-    let offScreen = false;
-    const apply = () => setHidden(offScreen);
-    let observer: IntersectionObserver | null = null;
-    if (node && typeof IntersectionObserver === "function") {
-      observer = new IntersectionObserver((entries) => {
-        const entry = entries[0];
-        if (!entry) return;
-        // A parked surface (another project or tab on screen) reports as not
-        // intersecting, but keeps its stream so switching back shows it live.
-        offScreen = !entry.isIntersecting && !isInParkedSurface(node);
-        apply();
-      });
-      observer.observe(node);
-    }
-    apply();
-    return () => {
-      observer?.disconnect();
-    };
   }, []);
 
   const deviceUdidRef = useRef(deviceUdid);
@@ -1498,22 +1465,21 @@ function AppleDevicePaneOnMachine({
           ) : null}
 
           {confirmSwitch ? (
-            <div className="absolute inset-x-0 bottom-0 z-20 flex min-w-0 flex-wrap items-center gap-2 border-t border-border bg-surface px-3 py-2 font-sans text-xs text-fg">
-              {/* What "switch" does depends on who made the device: ADE's own
-                  is deleted now, with its apps and data; the user's stays
-                  installed and is only given back. */}
-              <span className="min-w-0 flex-1">
-                {laneDevice && isAdeOwnedLaneDevice(laneDevice.origin)
-                  ? `Delete ${laneDevice.name} and pick another? ADE made it, so its apps and data go with it.`
-                  : "Give up this device and pick another? It stays installed."}
-              </span>
+            /* What "switch" does depends on who made the device: ADE's own
+               is deleted now, with its apps and data; the user's stays
+               installed and is only given back. */
+            <AppleDeviceConfirmBar
+              sentence={laneDevice && isAdeOwnedLaneDevice(laneDevice.origin)
+                ? `Delete ${laneDevice.name} and pick another? ADE made it, so its apps and data go with it.`
+                : "Give up this device and pick another? It stays installed."}
+            >
               <Button variant="ghost" size="sm" onClick={() => setConfirmSwitch(false)}>
                 Keep it
               </Button>
               <Button variant="danger" size="sm" onClick={switchDevice}>
                 {laneDevice && isAdeOwnedLaneDevice(laneDevice.origin) ? "Delete and switch" : "Switch device"}
               </Button>
-            </div>
+            </AppleDeviceConfirmBar>
           ) : null}
 
           <AppleRecordingSavedRow

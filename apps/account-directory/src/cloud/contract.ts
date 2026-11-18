@@ -206,11 +206,10 @@ export const CLOUD_PATHS = {
   /**
    * The ADE Cloud iPhone (`phones.ts`): `GET` its `CloudPhoneState`; `POST`
    * `{ device? }` starts the account's phone or answers its live one
-   * (`CloudPhoneStart`); `DELETE` stops it. `/token` and `/view` (`POST`)
-   * hand out a fresh phone token and a view link for the live phone.
+   * (`CloudPhoneStart`, a fresh token each time); `DELETE` stops it. `/view` (`POST`)
+   * hands out a view link for the live phone.
    */
   phone: "/cloud/phone",
-  phoneToken: "/cloud/phone/token",
   phoneView: "/cloud/phone/view",
   /** `POST { enabled, monthlyLimitUsd? }`: extra iPhone minutes on a paid plan (`CloudAccountState.phone.extra`). */
   billingExtraPhone: "/cloud/billing/extra-phone",
@@ -2529,6 +2528,7 @@ export type CloudEventWakeInternalResult = { subscribed: boolean; woken: number 
 /** The phone models a cloud iPhone can be (NoMac's device names). */
 export const CLOUD_PHONE_DEVICES = ["iphone", "iphone-pro-max", "ipad"] as const;
 export type CloudPhoneDevice = (typeof CLOUD_PHONE_DEVICES)[number];
+export const isCloudPhoneDevice = (value: unknown): value is CloudPhoneDevice => (CLOUD_PHONE_DEVICES as readonly unknown[]).includes(value);
 
 /**
  * Who may use the ADE Cloud iPhone. `on`: the owner added this account to the
@@ -2568,7 +2568,7 @@ export type CloudPhoneState = {
 /** A token for one phone, for the brain that drives it. It cannot start, list or stop phones. */
 export type CloudPhoneToken = { token: string; expiresAt: number };
 
-/** `POST /cloud/phone` and `POST /cloud/phone/token`. */
+/** `POST /cloud/phone`: the phone it started, or the live one, with a fresh token. */
 export type CloudPhoneStart = {
   phone: CloudPhoneSummary;
   /** True when the account's live phone answered instead of a new one. */

@@ -48,8 +48,6 @@ export type CloudPhoneFrames = {
   scroll: (x: number, y: number, deltaX: number, deltaY: number) => void;
   key: (key: string) => void;
   home: () => void;
-  /** False in ADE Web, where only a flat iframe can show the phone. */
-  available: boolean;
 };
 
 export function useCloudPhoneFrames({ url, family, pointSize, hidden }: UseCloudPhoneFramesArgs): CloudPhoneFrames {
@@ -229,6 +227,5 @@ export function useCloudPhoneFrames({ url, family, pointSize, hidden }: UseCloud
     scroll,
     key,
     home,
-    available,
   };
 }

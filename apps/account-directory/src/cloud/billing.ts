@@ -6,7 +6,6 @@ import { unlockFreePlanWithCard } from "./freePlanGithub";
 import { claimCardForFreeUnlock, isCloudBlocked } from "./blocks";
 import { accountEmail, sendCloudEmail } from "./email";
 import { json } from "./http";
-import { settledPhoneUsage, stopPhoneOverAllowance } from "./phones";
 import { cloudReturnPageHtml } from "./returnPage";
 import { checkPlanCleanupPick, planCleanupFor, planCleanupTargetOf, recordPlanCleanupPick, waitingPlanOf, warnPlanCleanupAhead } from "./planCleanup";
 import { CENT_MICROS, EXTRA_DISK_MONTH_DAYS, extraDiskGbDaysIn, extraDiskMonthFits, extraDiskMonthMicros, utcDay, type CloudPaidPlanId } from "./plans";
@@ -93,9 +92,9 @@ export class CloudBillingError extends Error {
 /** A plan switch retried inside this window reuses its Stripe idempotency key, so it switches once. */
 const PLAN_CHANGE_RETRY_WINDOW_MS = 10 * 60_000;
 
-const unavailable = () => new CloudBillingError("billing_unavailable", "ADE Cloud can't reach billing right now. Try again soon.", 503);
+export const unavailable = () => new CloudBillingError("billing_unavailable", "ADE Cloud can't reach billing right now. Try again soon.", 503);
 
-class StripeRequestError extends Error {
+export class StripeRequestError extends Error {
   constructor(readonly status: number, readonly stripeMessage: string) {
     super(`stripe answered ${status}`);
     this.name = "StripeRequestError";
@@ -104,7 +103,7 @@ class StripeRequestError extends Error {
 
 type StripeObject = Record<string, unknown>;
 
-async function stripeRequest(
+export async function stripeRequest(
   env: Pick<CloudEnv, "STRIPE_SECRET_KEY">,
   method: "GET" | "POST" | "DELETE",
   path: string,
@@ -434,7 +433,7 @@ type SubscriptionItem = { id: string; price: string | null; meter: string | null
 const meterOfPrice = (price: unknown): string | null => idOf(objectOf(objectOf(price)?.recurring)?.meter);
 
 /** The subscription's items: which one is the plan, and the price (and meter) of each. */
-async function subscriptionItems(env: CloudEnv, subscriptionId: string): Promise<SubscriptionItem[]> {
+export async function subscriptionItems(env: CloudEnv, subscriptionId: string): Promise<SubscriptionItem[]> {
   const subscription = await stripeRequest(env, "GET", `/subscriptions/${encodeURIComponent(subscriptionId)}`);
   const items = (objectOf(subscription.items)?.data as StripeObject[] | undefined) ?? [];
   return items.flatMap((item) => {
@@ -895,7 +894,7 @@ export async function cancelAccountSubscription(
   } catch (error) {
     if (!(error instanceof StripeRequestError && error.status === 404)) throw error;
   }
-  await env.DB.prepare("update cloud_accounts set plan = 'free', stripe_subscription_id = null, stripe_status = null, extra_enabled = 0, extra_owed_milli = 0, extra_disk_state = 'off', cancel_at_period_end = 0, updated_at = ? where user_id = ?")
+  await env.DB.prepare("update cloud_accounts set plan = 'free', stripe_subscription_id = null, stripe_status = null, extra_enabled = 0, extra_owed_milli = 0, extra_disk_state = 'off', phone_extra_enabled = 0, cancel_at_period_end = 0, updated_at = ? where user_id = ?")
     .bind(now, account.user_id).run();
   logCloud(reason === "blocked_account" ? "cloud.subscription_cancelled_for_blocked_account" : "cloud.subscription_cancelled_for_deleted_account", { userId: account.user_id });
 }
@@ -1289,7 +1288,7 @@ export async function handleCloudBillingPublicRequest(request: Request, env: Clo
 /* ---- Extra hours to the meter ---- */
 
 /** Stripe refused a report because this identifier was already counted. */
-const isDuplicateReport = (error: unknown): boolean =>
+export const isDuplicateReport = (error: unknown): boolean =>
   error instanceof StripeRequestError && error.status === 400 && /identifier/i.test(error.stripeMessage) && /(already|duplicate|exists)/i.test(error.stripeMessage);
 
 /**
@@ -1509,153 +1508,4 @@ export async function checkExtraDiskLimits(env: CloudEnv, now: number): Promise<
     });
   }
   return over;
-}
-
-/* ---- Extra ADE Cloud iPhone minutes (`phones.ts`) ---- */
-
-/**
- * Makes sure the subscription bills extra iPhone minutes. Read again after a
- * 5xx and tried once more under a key of its own, as the extra-hours item is.
- */
-async function ensurePhoneMinutesItem(env: CloudEnv, account: AccountRow, now: number): Promise<void> {
-  const subscriptionId = account.stripe_subscription_id;
-  const price = env.STRIPE_PHONE_MINUTE_PRICE_ID?.trim();
-  if (!subscriptionId || !price || !env.STRIPE_PHONE_METER_EVENT?.trim()) {
-    reportCloudFailure("cloud.extra_phone_not_configured", { userId: account.user_id });
-    throw unavailable();
-  }
-  const holds = async () => (await subscriptionItems(env, subscriptionId)).some((item) => item.price === price);
-  try {
-    if (await holds()) return;
-    const key = `ade-cloud-phone-item-${subscriptionId}-${price}`;
-    const create = (idempotencyKey: string) => stripeRequest(env, "POST", "/subscription_items", { subscription: subscriptionId, price }, idempotencyKey);
-    await create(key).catch(async (error: unknown) => {
-      if (!(error instanceof StripeRequestError) || error.status < 500) throw error;
-      if (await holds()) return;
-      await create(`${key}-${now}`);
-    });
-    logCloud("cloud.extra_phone_item_added", { userId: account.user_id, subscriptionId });
-  } catch (error) {
-    if (error instanceof StripeRequestError) {
-      if (error.status === 409 && await holds()) return;
-      reportCloudFailure("cloud.extra_phone_item_failed", { status: error.status, message: error.stripeMessage });
-      throw unavailable();
-    }
-    throw error;
-  }
-}
-
-/**
- * Extra iPhone minutes on (paid plans only), with a monthly limit in cents or
- * none, or off. Turning them off keeps what was already used past the plan
- * owed for this period, so it is still billed; nothing new is used after.
- */
-export async function setExtraPhoneMinutes(
-  env: CloudEnv,
-  userId: string,
-  choice: { enabled: true; monthlyLimitCents: number | null } | { enabled: false },
-  now: number,
-): Promise<void> {
-  const account = await loadAccount(env, userId, now);
-  if (choice.enabled) {
-    if (accountRules(account) !== "paid") throw new CloudBillingError("needs_paid_plan", "Extra iPhone minutes need a paid plan.", 403);
-    await ensurePhoneMinutesItem(env, account, now);
-    await env.DB.prepare(`
-      update cloud_accounts set phone_extra_enabled = 1, phone_extra_limit_cents = ?,
-        phone_extra_reported_minutes = case when phone_extra_period_start is ? then phone_extra_reported_minutes else 0 end,
-        phone_extra_owed_minutes = 0, phone_extra_period_start = ?, updated_at = ?
-      where user_id = ?
-    `).bind(choice.monthlyLimitCents, account.period_start, account.period_start, now, userId).run();
-    logCloud("cloud.extra_phone_on", { userId, limitCents: choice.monthlyLimitCents });
-    await stopPhonePastChoice(env, userId, now);
-    return;
-  }
-  const usage = await settledPhoneUsage(env, account, now);
-  const owed = account.phone_extra_enabled === 1 ? usage.extra.billableMinutes : 0;
-  const samePeriod = account.phone_extra_period_start === account.period_start;
-  // The sent count is the row's own (the meter may have moved it since the read above).
-  await env.DB.prepare(`
-    update cloud_accounts set phone_extra_enabled = 0, phone_extra_owed_minutes = ?,
-      phone_extra_reported_minutes = case when phone_extra_period_start is ? then phone_extra_reported_minutes else 0 end,
-      phone_extra_period_start = ?, updated_at = ?
-    where user_id = ?
-  `).bind(
-    owed > 0 ? owed : samePeriod ? account.phone_extra_owed_minutes ?? 0 : 0,
-    account.period_start,
-    account.period_start,
-    now,
-    userId,
-  ).run();
-  logCloud("cloud.extra_phone_off", { userId, owedMinutes: owed });
-  await stopPhonePastChoice(env, userId, now);
-}
-
-/** After the switch goes off or its limit drops: the running phone stops if the account may use no more (never fails the change). */
-async function stopPhonePastChoice(env: CloudEnv, userId: string, now: number): Promise<void> {
-  try {
-    await stopPhoneOverAllowance(env, userId, now);
-  } catch (error) {
-    reportCloudFailure("cloud.extra_phone_stop_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
-  }
-}
-
-/**
- * Extra iPhone minutes to their meter, from NoMac's settled minutes only. One
- * report per account and tick carries the minutes not yet sent, identified by
- * where it starts (the minutes already sent this period). A crash after Stripe
- * took it but before the row was saved sends a report with the same start
- * again, which Stripe drops (a repeated identifier), and the row moves on: a
- * minute is never billed twice, at worst a few go unbilled. The row is
- * compared before it is saved: a renewal that reset the period meanwhile wins.
- */
-export async function reportExtraPhoneMinutes(env: CloudEnv, now = Date.now()): Promise<void> {
-  const eventName = env.STRIPE_PHONE_METER_EVENT?.trim();
-  if (!eventName || !env.STRIPE_SECRET_KEY?.trim()) return;
-  const rows = await env.DB.prepare(`
-    select * from cloud_accounts
-    where (phone_extra_enabled = 1 or phone_extra_owed_minutes > 0) and plan = 'paid' and coalesce(stripe_status, '') <> 'past_due'
-  `).all<AccountRow>();
-  for (const account of (rows.results ?? []).filter((row) => row.stripe_customer_id && row.stripe_subscription_id)) {
-    try {
-      const usage = await settledPhoneUsage(env, account, now);
-      const samePeriod = account.phone_extra_period_start === account.period_start;
-      const reported = samePeriod ? account.phone_extra_reported_minutes ?? 0 : 0;
-      const billable = usage.extra.billableMinutes;
-      if (billable > reported) {
-        try {
-          await stripeRequest(env, "POST", "/billing/meter_events", {
-            event_name: eventName,
-            identifier: `ade-phone:${account.stripe_subscription_id}:${account.period_start}:from-${reported}`,
-            "payload[stripe_customer_id]": account.stripe_customer_id as string,
-            "payload[value]": String(billable - reported),
-          });
-        } catch (error) {
-          if (!isDuplicateReport(error)) {
-            reportCloudFailure("cloud.phone_meter_report_failed", { userId: account.user_id, status: error instanceof StripeRequestError ? error.status : null });
-            continue;
-          }
-        }
-        await env.DB.prepare(`
-          update cloud_accounts set phone_extra_reported_minutes = ?, phone_extra_period_start = ?,
-            phone_extra_owed_minutes = ?, updated_at = ?
-          where user_id = ? and period_start = ? and phone_extra_period_start is ? and phone_extra_reported_minutes = ?
-        `).bind(
-          billable,
-          account.period_start,
-          samePeriod ? account.phone_extra_owed_minutes ?? 0 : 0,
-          now,
-          account.user_id,
-          account.period_start,
-          account.phone_extra_period_start ?? null,
-          account.phone_extra_reported_minutes ?? 0,
-        ).run();
-      } else if (account.phone_extra_enabled !== 1 && (account.phone_extra_owed_minutes ?? 0) > 0 && (!samePeriod || reported >= (account.phone_extra_owed_minutes ?? 0))) {
-        // Off, and everything owed is sent (or it was another period's): the row stops being read each tick.
-        await env.DB.prepare("update cloud_accounts set phone_extra_owed_minutes = 0, updated_at = ? where user_id = ? and phone_extra_enabled = 0 and phone_extra_owed_minutes = ?")
-          .bind(now, account.user_id, account.phone_extra_owed_minutes ?? 0).run();
-      }
-    } catch (error) {
-      reportCloudFailure("cloud.phone_meter_account_failed", { userId: account.user_id, message: error instanceof Error ? error.message : "unknown" });
-    }
-  }
 }

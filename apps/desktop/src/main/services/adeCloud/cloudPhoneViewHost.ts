@@ -29,6 +29,7 @@ import type {
   CloudPhoneViewStateEvent,
 } from "../../../shared/types/cloudPhoneView";
 import type { Logger } from "../logging/logger";
+import { CLOUD_PHONE_MODELS } from "../../../shared/cloudPhone";
 
 type Point = { width: number; height: number };
 
@@ -49,7 +50,6 @@ type View = {
   sender: WebContents;
   /** Removed when the view closes, so re-opening views does not stack listeners. */
   onSenderDestroyed: () => void;
-  family: CloudPhoneViewDeviceFamily;
   /** The screen in points, which input arrives in. */
   points: Point;
   /** Painted frames in a row that matched the last one sent: past a threshold the page paints slower. */
@@ -95,13 +95,10 @@ const WINDOW_SIZE: Record<CloudPhoneViewDeviceFamily, Point> = {
   ipad: { width: 1001, height: 1452 },
 };
 
-/**
- * The phone's own coordinate space, which is what the 3D view sends.
- * iPhone 17 Pro is 402×874 points; iPad Pro 11-inch is 834×1210.
- */
+/** The phone's own coordinate space when the opener names none (`CLOUD_PHONE_MODELS`). */
 const DEVICE_POINTS: Record<CloudPhoneViewDeviceFamily, Point> = {
-  iphone: { width: 402, height: 874 },
-  ipad: { width: 834, height: 1210 },
+  iphone: CLOUD_PHONE_MODELS.iphone.points,
+  ipad: CLOUD_PHONE_MODELS.ipad.points,
 };
 
 const OFFSCREEN_FPS = 30;
@@ -258,6 +255,17 @@ function cropFor(measure: CanvasMeasure, imageSize: { width: number; height: num
   const width = right - left;
   const height = bottom - top;
   return width > 0 && height > 0 ? { x: left, y: top, width, height } : null;
+}
+
+/** The hidden offscreen windows that paint phones: never an ADE window. */
+const phoneWindows = new WeakSet<BrowserWindow>();
+
+/**
+ * True for a window that only paints a cloud iPhone offscreen. `main.ts`
+ * leaves these out wherever it counts or picks ADE's own windows.
+ */
+export function isCloudPhoneViewWindow(win: BrowserWindow): boolean {
+  return phoneWindows.has(win);
 }
 
 export function createCloudPhoneViewHost(args: { logger: Logger }): CloudPhoneViewHost {
@@ -487,12 +495,12 @@ export function createCloudPhoneViewHost(args: { logger: Logger }): CloudPhoneVi
         nodeIntegration: false,
       },
     });
+    phoneWindows.add(window);
     const view: View = {
       id,
       window,
       sender: openArgs.sender,
       onSenderDestroyed: () => closeView(id),
-      family: openArgs.deviceFamily,
       points: readPoints(openArgs.pointSize) ?? DEVICE_POINTS[openArgs.deviceFamily],
       unchanged: 0,
       slowed: false,

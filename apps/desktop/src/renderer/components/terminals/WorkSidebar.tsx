@@ -709,6 +709,7 @@ export function WorkSidebar({
       tile={openTile}
       mode={barMode}
       machines={toolMachines.machines}
+      cloudIphone={toolMachines.cloudIphone}
       canChoose={catalogState.canChoose}
       viewOnly={catalogState.viewOnly}
       chooseUnavailableReason={catalogState.chooseUnavailableReason}

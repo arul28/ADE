@@ -1,18 +1,22 @@
 import { useEffect, useRef, useState, type ReactNode, useCallback } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import {
-  CLOUD_PHONE_DEVICE_TYPE_NAME,
-  CLOUD_PHONE_POINT_SIZE,
+  CLOUD_PHONE_DEVICES,
+  CLOUD_PHONE_MODELS,
+  cloudPhoneDeviceOf,
+  type CloudPhoneDevice,
   type CloudPhoneStatusView,
-  type CloudPhoneViewLink,
+  type CloudPhoneView,
 } from "../../../shared/cloudPhone";
 import { ipcErrorMessage } from "../../lib/format";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { usePaneOffScreen } from "../../lib/parkedSurface";
 import { showToast } from "../app/toast/toastStore";
 import { DEVICE_RAIL_WIDTH } from "../device/DeviceRail";
 import { RecordingPill } from "../shared/RecordingReceipt";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import { Button } from "../ui/Button";
+import { AppleDeviceConfirmBar } from "./AppleDeviceConfirmBar";
 import { AppleDeviceLoadingCard } from "./AppleDeviceLoadingCard";
 import { PaneMessage } from "./AppleDevicePane";
 import { AppleDeviceRail } from "./AppleDeviceRail";
@@ -32,13 +36,19 @@ import { useCloudPhoneFrames } from "./useCloudPhoneFrames";
  * main process (`useCloudPhoneFrames`). ADE Web has no main process to paint
  * it, so its pane (no rail) shows the link in a flat iframe instead.
  *
- * No timer while the phone runs: the picture is the live state. A slow read
- * (every 20 s while the pane is open and no phone runs) picks up a phone an
- * agent starts, since the brain sends no event for one.
+ * No timer on the desktop while the phone runs: the picture is the live state
+ * and says when the phone ends. ADE Web's iframe sends no such news, so its
+ * pane reads every 30 s while the phone runs. A slow read (every 20 s while
+ * the pane is open and no phone runs, or the last read failed) picks up a
+ * phone an agent starts, since the brain sends no event for one.
  */
 
 const IDLE_READ_MS = 20_000;
 const STARTING_READ_MS = 3_000;
+/** While the phone runs, where nothing says it ended (the web pane's iframe). */
+const LIVE_READ_MS = 30_000;
+/** A view link that could not be fetched is asked for again after this. */
+const LINK_RETRY_MS = 10_000;
 
 const END_REASONS: Readonly<Record<string, string>> = {
   idle: "It stopped after 5 minutes with nothing to do.",
@@ -50,7 +60,7 @@ const END_REASONS: Readonly<Record<string, string>> = {
   no_capacity: "No cloud iPhone was free.",
 };
 
-function useCloudPhoneStatus(pin: OpenProjectBinding | null, hidden: boolean) {
+function useCloudPhoneStatus(pin: OpenProjectBinding | null, hidden: boolean, readWhileLive: boolean) {
   const [status, setStatus] = useState<CloudPhoneStatusView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pinRef = useRef(pin);
@@ -76,20 +86,34 @@ function useCloudPhoneStatus(pin: OpenProjectBinding | null, hidden: boolean) {
   const pinKey = pin?.key ?? null;
   useEffect(() => { void refresh(); }, [pinKey, refresh]);
   const phoneState = status?.phone?.state ?? null;
+  // Not read yet or the last read failed: again, slowly. Then by the phone's
+  // state: often while it starts, slowly while it is off, and while it runs
+  // only where nothing else says it ended (`readWhileLive`).
+  const cadence = !status || error ? IDLE_READ_MS
+    : status.access !== "on" ? null
+      : phoneState === "starting" ? STARTING_READ_MS
+        : phoneState === "ready" ? (readWhileLive ? LIVE_READ_MS : null)
+          : IDLE_READ_MS;
   useEffect(() => {
-    if (hidden || status?.access !== "on" || phoneState === "ready") return undefined;
-    const timer = window.setInterval(() => { void refresh(); }, phoneState === "starting" ? STARTING_READ_MS : IDLE_READ_MS);
+    if (hidden || cadence == null) return undefined;
+    const timer = window.setInterval(() => { void refresh(); }, cadence);
     return () => window.clearInterval(timer);
-  }, [hidden, phoneState, refresh, status?.access]);
+  }, [cadence, hidden, refresh]);
   return { status, error, refresh };
 }
 
-/** The view link for the live phone, fetched once per phone and again before it expires. */
-function useCloudPhoneLink(pin: OpenProjectBinding | null, phoneId: string | null): { link: CloudPhoneViewLink | null; error: string | null } {
-  const [link, setLink] = useState<CloudPhoneViewLink | null>(null);
+/**
+ * The view link for the live phone, fetched once per phone and again before it
+ * expires; a failed fetch is tried again after 10 s. Not fetched while the pane
+ * is hidden: it waits until the pane shows.
+ */
+function useCloudPhoneLink(pin: OpenProjectBinding | null, phoneId: string | null, hidden: boolean): { link: CloudPhoneView | null; error: string | null } {
+  const [link, setLink] = useState<CloudPhoneView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pinRef = useRef(pin);
   pinRef.current = pin;
+  const hiddenRef = useRef(hidden);
+  hiddenRef.current = hidden;
   const pinKey = pin?.key ?? null;
   useEffect(() => {
     setLink(null);
@@ -98,13 +122,20 @@ function useCloudPhoneLink(pin: OpenProjectBinding | null, phoneId: string | nul
     let cancelled = false;
     let timer: number | undefined;
     const fetchLink = () => {
+      if (hiddenRef.current) {
+        timer = window.setTimeout(fetchLink, LINK_RETRY_MS);
+        return;
+      }
       void window.ade?.cloudPhone?.view({ control: true }, pinRef.current).then((next) => {
         if (cancelled) return;
         setLink(next);
+        setError(null);
         // A minute before it expires, a fresh one (the page reconnects by itself).
         timer = window.setTimeout(fetchLink, Math.max(60_000, next.expiresAt - Date.now() - 60_000));
       }, (caught: unknown) => {
-        if (!cancelled) setError(caught instanceof Error ? ipcErrorMessage(caught) : String(caught));
+        if (cancelled) return;
+        setError(caught instanceof Error ? ipcErrorMessage(caught) : String(caught));
+        timer = window.setTimeout(fetchLink, LINK_RETRY_MS);
       });
     };
     fetchLink();
@@ -116,12 +147,115 @@ function useCloudPhoneLink(pin: OpenProjectBinding | null, phoneId: string | nul
   return { link, error };
 }
 
-/** The phone models a cloud iPhone can be, for "Switch device". */
-const CLOUD_PHONE_MODELS: ReadonlyArray<{ id: "iphone" | "iphone-pro-max" | "ipad"; label: string }> = [
-  { id: "iphone", label: "iPhone 17 Pro" },
-  { id: "iphone-pro-max", label: "iPhone 17 Pro Max" },
-  { id: "ipad", label: "iPad Pro 11-inch" },
-];
+/**
+ * Everything both panes share: the account's phone, its link, its model, and
+ * Start / Stop. Always on the chat's machine (`pin`). `readWhileLive`: a pane
+ * with no ended event from the picture reads the phone while it runs.
+ */
+function useCloudPhoneControl(pin: OpenProjectBinding | null, hidden: boolean, options: { readWhileLive?: boolean } = {}) {
+  const { status, error: statusError, refresh } = useCloudPhoneStatus(pin, hidden, options.readWhileLive === true);
+  const phone = status?.phone ?? null;
+  const ready = phone?.state === "ready";
+  const { link, error: linkError } = useCloudPhoneLink(pin, ready ? phone.id : null, hidden);
+  const device = cloudPhoneDeviceOf(phone?.device);
+  const [error, setError] = useState<unknown>(null);
+  const [busy, setBusy] = useState<"start" | "stop" | null>(null);
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+
+  const run = async (what: "start" | "stop", nextDevice?: CloudPhoneDevice) => {
+    const api = window.ade.cloudPhone;
+    if (busy) return;
+    setBusy(what);
+    setError(null);
+    try {
+      if (what === "start") await api.start(nextDevice ? { device: nextDevice } : {}, pinRef.current);
+      else await api.stop(pinRef.current);
+    } catch (caught) {
+      setError(caught);
+    } finally {
+      setBusy(null);
+      void refresh();
+    }
+  };
+
+  const minutes = status?.minutes ?? null;
+  return {
+    status,
+    refresh,
+    phone,
+    ready,
+    link,
+    /** What the strip shows first: a failed Start/Stop or capture, else a failed read. */
+    failure: error ?? (statusError ? new Error(statusError) : null) ?? (linkError ? new Error(linkError) : null),
+    pinRef,
+    device,
+    model: CLOUD_PHONE_MODELS[device],
+    family: device === "ipad" ? "ipad" as const : "iphone" as const,
+    minutes,
+    minutesLine: minutes ? `${minutes.left} of ${minutes.included} min left` : null,
+    off: !phone || phone.state === "ended",
+    error,
+    setError,
+    busy,
+    run,
+  };
+}
+
+type CloudPhoneControl = ReturnType<typeof useCloudPhoneControl>;
+
+/** The one line on top, as the local pane has: a failure, else a fact about the device. */
+function CloudPhoneStrip({ control, failure }: { control: CloudPhoneControl; failure: unknown }) {
+  const { status, phone, minutes, off, busy, run, setError } = control;
+  if (failure) return <AppleDeviceStatusStrip error={failure} onDismiss={() => setError(null)} />;
+  if (status?.access === "on" && off) {
+    const why = phone?.endReason ? ` ${END_REASONS[phone.endReason] ?? `It ended (${phone.endReason}).`}` : "";
+    // Start stays even with the plan's minutes used up: extra minutes may
+    // allow it, and when they don't the server's refusal shows here.
+    return (
+      <AppleDeviceNoticeStrip
+        sentence={minutes && minutes.left <= 0
+          ? `This period's ${minutes.included} ADE Cloud iPhone minutes are used up.${why}`
+          : `The ADE Cloud iPhone is off.${why}`}
+        actionLabel={busy === "start" ? "Starting" : "Start"}
+        busy={busy === "start"}
+        onAction={() => void run("start")}
+      />
+    );
+  }
+  if (phone?.stopNotice) return <AppleDeviceNoticeStrip sentence={phone.stopNotice} actionLabel="Stop" onAction={() => void run("stop")} />;
+  return null;
+}
+
+/** Every viewport but the live phone: reading, not on this account, off, or starting. */
+function cloudPhoneIdleViewport(control: CloudPhoneControl, showing: boolean): ReactNode | null {
+  const { status, off, minutesLine, model, family, ready, run } = control;
+  if (!status) return <PaneMessage title="ADE Cloud iPhone" description="Reading this account's cloud iPhone…" />;
+  if (status.access !== "on") {
+    return <PaneMessage title={status.access === "soon" ? "ADE Cloud iPhone is coming soon" : "ADE Cloud iPhone"} description={status.reason} />;
+  }
+  if (off) {
+    return (
+      <PaneMessage
+        title="ADE Cloud iPhone"
+        description={`${minutesLine ? `${minutesLine} this period. ` : ""}Agents start it with ade apple launch, which builds this lane's app on it.`}
+      />
+    );
+  }
+  if (!showing) {
+    return (
+      <AppleDeviceLoadingCard
+        name={model.deviceTypeName}
+        runtime="iOS 27 · ADE Cloud"
+        isNew
+        family={family}
+        stage={ready ? "streaming" : "starting"}
+        onRetry={() => void run("start")}
+      />
+    );
+  }
+  return null;
+}
 
 export function CloudIphonePanel(props: CloudIphonePanelProps) {
   // A bridge this host does not implement is still a callable stand-in on the
@@ -157,19 +291,16 @@ type CloudIphonePanelProps = {
  * Inspect, the tools drawer and Float are the local simulator's and are left
  * out rather than shown dead.
  */
-function CloudIphoneLive({ pin, sessionId, laneId, hidden = false }: CloudIphonePanelProps) {
-  const { status, error: statusError, refresh } = useCloudPhoneStatus(pin, hidden);
-  const phone = status?.phone ?? null;
-  const ready = phone?.state === "ready";
-  const { link, error: linkError } = useCloudPhoneLink(pin, ready ? phone.id : null);
-  const device = phone?.device ?? "iphone";
-  const family = device === "ipad" ? "ipad" : "iphone";
-  const points = CLOUD_PHONE_POINT_SIZE[device] ?? CLOUD_PHONE_POINT_SIZE.iphone!;
-  const deviceName = CLOUD_PHONE_DEVICE_TYPE_NAME[device] ?? "iPhone 17 Pro";
-  const frames = useCloudPhoneFrames({ url: link?.url ?? null, family, pointSize: points, hidden });
+function CloudIphoneLive({ pin, sessionId, laneId, hidden: hiddenProp = false }: CloudIphonePanelProps) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  // Off screen, the view stops painting and the status read stops, as the local pane's stream does.
+  // Parked too: the offscreen page only stops painting, so the phone is back at once.
+  const offScreen = usePaneOffScreen(bodyRef, { parked: true });
+  const hidden = hiddenProp || offScreen;
+  const control = useCloudPhoneControl(pin, hidden);
+  const { ready, link, device, model, family, minutesLine, off, refresh, run, setError, pinRef } = control;
+  const frames = useCloudPhoneFrames({ url: link?.url ?? null, family, pointSize: model.points, hidden });
 
-  const [error, setError] = useState<unknown>(null);
-  const [busy, setBusy] = useState<"start" | "stop" | null>(null);
   const [mode, setModeState] = useState<AppleViewMode>(() => readAppleViewMode(null));
   const [canUse3d, setCanUse3d] = useState(true);
   const [threeDisabledReason, setThreeDisabledReason] = useState<string | null>(null);
@@ -179,9 +310,6 @@ function CloudIphoneLive({ pin, sessionId, laneId, hidden = false }: CloudIphone
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [confirmSwitch, setConfirmSwitch] = useState(false);
   const [bodyWidth, setBodyWidth] = useState(720);
-  const bodyRef = useRef<HTMLDivElement | null>(null);
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
 
   useEffect(() => {
     const node = bodyRef.current;
@@ -213,26 +341,10 @@ function CloudIphoneLive({ pin, sessionId, laneId, hidden = false }: CloudIphone
     writeAppleViewMode(null, next);
   };
 
-  const run = async (what: "start" | "stop", device?: string) => {
-    const api = window.ade.cloudPhone;
-    if (busy) return;
-    setBusy(what);
-    setError(null);
-    try {
-      if (what === "start") await api.start(device ? { device } : {}, pinRef.current);
-      else await api.stop(pinRef.current);
-    } catch (caught) {
-      setError(caught);
-    } finally {
-      setBusy(null);
-      void refresh();
-    }
-  };
-
-  const switchDevice = async (next: string) => {
+  const switchDevice = async (next: CloudPhoneDevice) => {
     setConfirmSwitch(false);
-    if (next === device && phone && phone.state !== "ended") return;
-    if (phone && phone.state !== "ended") await run("stop");
+    if (next === device && !off) return;
+    if (!off) await run("stop");
     await run("start", next);
   };
 
@@ -243,7 +355,7 @@ function CloudIphoneLive({ pin, sessionId, laneId, hidden = false }: CloudIphone
         id: "cloud-iphone-screenshot",
         tone: "success",
         title: "Screenshot filed to the proof drawer",
-        message: result.artifactId ? `ADE Cloud iPhone · ${deviceName}` : "Saved, but this project has no proof drawer here.",
+        message: result.artifactId ? `ADE Cloud iPhone · ${model.label}` : "Saved, but this project has no proof drawer here.",
       }))
       .catch((caught: unknown) => setError(caught))
       .finally(() => setScreenshotPending(false));
@@ -269,7 +381,7 @@ function CloudIphoneLive({ pin, sessionId, laneId, hidden = false }: CloudIphone
             id: "cloud-iphone-recording",
             tone: "success",
             title: "Recording filed to the proof drawer",
-            message: `ADE Cloud iPhone · ${deviceName}`,
+            message: `ADE Cloud iPhone · ${model.label}`,
           });
         }
       })
@@ -279,90 +391,36 @@ function CloudIphoneLive({ pin, sessionId, laneId, hidden = false }: CloudIphone
       });
   };
 
-  const minutes = status?.minutes ?? null;
-  const minutesLine = minutes ? `${minutes.left} of ${minutes.included} min left` : null;
-  const off = !phone || phone.state === "ended";
   const live = ready && Boolean(link) && frames.state === "live";
-
-  // One line on top, as the local pane has: a failure, else a fact about the device.
-  let strip: ReactNode = null;
-  const failure = error ?? (statusError ? new Error(statusError) : null) ?? (linkError ? new Error(linkError) : null)
+  const failure = control.failure
     ?? (ready && frames.state === "error" ? new Error(frames.message ?? "The phone's screen could not be shown.") : null);
-  if (failure) {
-    strip = <AppleDeviceStatusStrip error={failure} onDismiss={() => setError(null)} />;
-  } else if (status?.access === "on" && off) {
-    const why = phone?.endReason ? ` ${END_REASONS[phone.endReason] ?? `It ended (${phone.endReason}).`}` : "";
-    strip = minutes && minutes.left <= 0
-      ? <AppleDeviceNoticeStrip sentence={`This period's ${minutes.included} ADE Cloud iPhone minutes are used up.${why}`} actionLabel="Refresh" onAction={() => void refresh()} />
-      : (
-        <AppleDeviceNoticeStrip
-          sentence={`The ADE Cloud iPhone is off.${why}`}
-          actionLabel={busy === "start" ? "Starting" : "Start"}
-          busy={busy === "start"}
-          onAction={() => void run("start")}
-        />
-      );
-  } else if (phone?.stopNotice) {
-    strip = <AppleDeviceNoticeStrip sentence={phone.stopNotice} actionLabel="Stop" onAction={() => void run("stop")} />;
-  }
 
-  let viewport: ReactNode;
-  if (!status) {
-    viewport = <PaneMessage title="ADE Cloud iPhone" description="Reading this account's cloud iPhone…" />;
-  } else if (status.access !== "on") {
-    viewport = <PaneMessage title="ADE Cloud iPhone is coming soon" description={status.reason} />;
-  } else if (off) {
-    viewport = (
-      <PaneMessage
-        title="ADE Cloud iPhone"
-        description={`${minutesLine ? `${minutesLine} this period. ` : ""}Agents start it with ade apple launch, which builds this lane's app on it.`}
-      />
-    );
-  } else if (!live) {
-    viewport = (
-      <AppleDeviceLoadingCard
-        name={deviceName}
-        runtime="iOS 27 · ADE Cloud"
-        isNew
-        family={family}
-        stage={ready ? "streaming" : "starting"}
-        onRetry={() => void run("start")}
-      />
-    );
-  } else {
-    viewport = (
-      <AppleDeviceStage
-        streamUrl={null}
-        streamToken={null}
-        screenSource={{ canvas: frames.canvas, pixelSize: frames.pixelSize }}
-        reconnectNonce={0}
-        mode={effectiveMode}
-        viewNonce={viewNonce}
-        family={family}
-        deviceTypeName={deviceName}
-        orientation="portrait"
-        devicePointSize={points}
-        interactive
-        onDeviceInput={({ phase, x, y }) => frames.input(phase, x, y)}
-        onDeviceScroll={({ x, y, deltaX, deltaY }) => frames.scroll(x, y, deltaX, deltaY)}
-        onDeviceKey={(event) => {
-          if (event.metaKey || event.ctrlKey || event.altKey) return false;
-          frames.key(event.key);
-          return true;
-        }}
-        onReaderStatus={() => undefined}
-        onDimensions={() => undefined}
-        onFrame={() => undefined}
-        frames={frames.canvas ? frames.frames : null}
-        onThreeUnavailable={(reason) => {
-          setCanUse3d(false);
-          setThreeDisabledReason(reason);
-        }}
-        railInset={DEVICE_RAIL_WIDTH}
-        className="bg-transparent"
-      />
-    );
-  }
+  const viewport = cloudPhoneIdleViewport(control, live) ?? (
+    <AppleDeviceStage
+      screenSource={{ canvas: frames.canvas, pixelSize: frames.pixelSize }}
+      mode={effectiveMode}
+      viewNonce={viewNonce}
+      family={family}
+      deviceTypeName={model.deviceTypeName}
+      orientation="portrait"
+      devicePointSize={model.points}
+      interactive
+      onDeviceInput={({ phase, x, y }) => frames.input(phase, x, y)}
+      onDeviceScroll={({ x, y, deltaX, deltaY }) => frames.scroll(x, y, deltaX, deltaY)}
+      onDeviceKey={(event) => {
+        if (event.metaKey || event.ctrlKey || event.altKey) return false;
+        frames.key(event.key);
+        return true;
+      }}
+      frames={frames.canvas ? frames.frames : null}
+      onThreeUnavailable={(reason) => {
+        setCanUse3d(false);
+        setThreeDisabledReason(reason);
+      }}
+      railInset={DEVICE_RAIL_WIDTH}
+      className="bg-transparent"
+    />
+  );
 
   return (
     <div
@@ -371,7 +429,7 @@ function CloudIphoneLive({ pin, sessionId, laneId, hidden = false }: CloudIphone
       data-apple-device-state={live ? "live" : off ? "off" : "starting"}
       className="relative flex h-full min-h-0 min-w-0 flex-col bg-surface"
     >
-      {strip}
+      <CloudPhoneStrip control={control} failure={failure} />
       <div ref={bodyRef} className="@container relative flex min-h-0 min-w-0 flex-1">
         <div className="ade-tool-picker-static relative flex min-h-0 min-w-0 flex-1 flex-col">
           {viewport}
@@ -379,7 +437,7 @@ function CloudIphoneLive({ pin, sessionId, laneId, hidden = false }: CloudIphone
           {live ? (
             <AppleDeviceRail
               containerWidth={bodyWidth}
-              deviceName={deviceName}
+              deviceName={model.deviceTypeName}
               deviceRuntime={`iOS 27 · ADE Cloud${minutesLine ? ` · ${minutesLine}` : ""}`}
               inputConnected={live}
               mode={effectiveMode}
@@ -402,23 +460,22 @@ function CloudIphoneLive({ pin, sessionId, laneId, hidden = false }: CloudIphone
           ) : null}
 
           {confirmSwitch ? (
-            <div className="absolute inset-x-0 bottom-0 z-20 flex min-w-0 flex-wrap items-center gap-2 border-t border-border bg-surface px-3 py-2 font-sans text-xs text-fg">
-              <span className="min-w-0 flex-1">Switch the cloud iPhone? Its apps and data go; the project and its build cache stay.</span>
-              {CLOUD_PHONE_MODELS.map((model) => (
+            <AppleDeviceConfirmBar sentence="Switch the cloud iPhone? Its apps and data go; the project and its build cache stay.">
+              {CLOUD_PHONE_DEVICES.map((id) => (
                 <Button
-                  key={model.id}
-                  variant={model.id === device ? "ghost" : "outline"}
+                  key={id}
+                  variant={id === device ? "ghost" : "outline"}
                   size="sm"
-                  disabled={model.id === device}
-                  onClick={() => void switchDevice(model.id)}
+                  disabled={id === device}
+                  onClick={() => void switchDevice(id)}
                 >
-                  {model.label}
+                  {CLOUD_PHONE_MODELS[id].label}
                 </Button>
               ))}
               <Button variant="ghost" size="sm" onClick={() => setConfirmSwitch(false)}>
                 Keep it
               </Button>
-            </div>
+            </AppleDeviceConfirmBar>
           ) : null}
 
           {recordingSince != null && live ? (
@@ -454,25 +511,15 @@ function cloudPhoneEmbedUrl(url: string): string {
  * Screenshot and Record need the desktop's offscreen view. The phone's screen
  * keeps its aspect and is centred in the tools pane.
  */
-function CloudIphoneFlat({ pin, hidden = false }: CloudIphonePanelProps) {
-  const { status, error: statusError, refresh } = useCloudPhoneStatus(pin, hidden);
-  const phone = status?.phone ?? null;
-  const ready = phone?.state === "ready";
-  const { link, error: linkError } = useCloudPhoneLink(pin, ready ? phone.id : null);
-  const device = phone?.device ?? "iphone";
-  const family = device === "ipad" ? "ipad" : "iphone";
-  const deviceName = CLOUD_PHONE_DEVICE_TYPE_NAME[device] ?? "iPhone 17 Pro";
-  const minutes = status?.minutes ?? null;
-  const minutesLine = minutes ? `${minutes.left} of ${minutes.included} min left` : null;
-  const off = !phone || phone.state === "ended";
+function CloudIphoneFlat({ pin, hidden: hiddenProp = false }: CloudIphonePanelProps) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const offScreen = usePaneOffScreen(rootRef, { parked: true });
+  // The iframe sends no news when the phone ends, so the status is read while it runs.
+  const control = useCloudPhoneControl(pin, hiddenProp || offScreen, { readWhileLive: true });
+  const { ready, link, model, off } = control;
   const live = ready && Boolean(link);
-
-  const [error, setError] = useState<unknown>(null);
-  const [busy, setBusy] = useState<"start" | "stop" | null>(null);
   const [frameBox, setFrameBox] = useState<{ width: number; height: number } | null>(null);
   const sizerRef = useRef<HTMLDivElement | null>(null);
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
 
   // Fit the phone's screen inside the pane without cropping it.
   useEffect(() => {
@@ -486,68 +533,12 @@ function CloudIphoneFlat({ pin, hidden = false }: CloudIphonePanelProps) {
     return () => observer.disconnect();
   }, [live]);
 
-  const run = async (what: "start" | "stop") => {
-    const api = window.ade.cloudPhone;
-    if (busy) return;
-    setBusy(what);
-    setError(null);
-    try {
-      if (what === "start") await api.start({}, pinRef.current);
-      else await api.stop(pinRef.current);
-    } catch (caught) {
-      setError(caught);
-    } finally {
-      setBusy(null);
-      void refresh();
-    }
-  };
+  const failure = control.failure;
 
-  // One line on top, as the desktop pane has: a failure, else a fact about the device.
-  let strip: ReactNode = null;
-  const failure = error ?? (statusError ? new Error(statusError) : null) ?? (linkError ? new Error(linkError) : null);
-  if (failure) {
-    strip = <AppleDeviceStatusStrip error={failure} onDismiss={() => setError(null)} />;
-  } else if (status?.access === "on" && off) {
-    const why = phone?.endReason ? ` ${END_REASONS[phone.endReason] ?? `It ended (${phone.endReason}).`}` : "";
-    strip = minutes && minutes.left <= 0
-      ? <AppleDeviceNoticeStrip sentence={`This period's ${minutes.included} ADE Cloud iPhone minutes are used up.${why}`} actionLabel="Refresh" onAction={() => void refresh()} />
-      : (
-        <AppleDeviceNoticeStrip
-          sentence={`The ADE Cloud iPhone is off.${why}`}
-          actionLabel={busy === "start" ? "Starting" : "Start"}
-          busy={busy === "start"}
-          onAction={() => void run("start")}
-        />
-      );
-  } else if (phone?.stopNotice) {
-    strip = <AppleDeviceNoticeStrip sentence={phone.stopNotice} actionLabel="Stop" onAction={() => void run("stop")} />;
-  }
-
-  let viewport: ReactNode;
-  if (!status) {
-    viewport = <PaneMessage title="ADE Cloud iPhone" description="Reading this account's cloud iPhone…" />;
-  } else if (status.access !== "on") {
-    viewport = <PaneMessage title="ADE Cloud iPhone is coming soon" description={status.reason} />;
-  } else if (off) {
-    viewport = (
-      <PaneMessage
-        title="ADE Cloud iPhone"
-        description={`${minutesLine ? `${minutesLine} this period. ` : ""}Agents start it with ade apple launch, which builds this lane's app on it.`}
-      />
-    );
-  } else if (!ready || !link) {
-    viewport = (
-      <AppleDeviceLoadingCard
-        name={deviceName}
-        runtime="iOS 27 · ADE Cloud"
-        isNew
-        family={family}
-        stage={ready ? "streaming" : "starting"}
-        onRetry={() => void run("start")}
-      />
-    );
-  } else {
-    const ratio = family === "ipad" ? 834 / 1210 : 402 / 874;
+  let viewport = cloudPhoneIdleViewport(control, live);
+  if (!viewport && link) {
+    const { width: pointWidth, height: pointHeight } = model.points;
+    const ratio = pointWidth / pointHeight;
     const width = frameBox ? Math.max(0, Math.min(frameBox.width, frameBox.height * ratio)) : null;
     viewport = (
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-4">
@@ -555,7 +546,7 @@ function CloudIphoneFlat({ pin, hidden = false }: CloudIphonePanelProps) {
           <div
             data-testid="cloud-iphone-flat"
             className="relative overflow-hidden bg-black ring-1 ring-inset ring-fg/[0.06]"
-            style={width ? { width, height: width / ratio } : { aspectRatio: `${402} / ${874}`, height: "100%" }}
+            style={width ? { width, height: width / ratio } : { aspectRatio: `${pointWidth} / ${pointHeight}`, height: "100%" }}
           >
             <iframe
               src={cloudPhoneEmbedUrl(link.url)}
@@ -572,12 +563,13 @@ function CloudIphoneFlat({ pin, hidden = false }: CloudIphonePanelProps) {
 
   return (
     <div
+      ref={rootRef}
       data-apple-pane=""
       data-testid="cloud-iphone-panel"
       data-apple-device-state={live ? "live" : off ? "off" : "starting"}
       className="relative flex h-full min-h-0 min-w-0 flex-col bg-surface"
     >
-      {strip}
+      <CloudPhoneStrip control={control} failure={failure} />
       <div className="relative flex min-h-0 min-w-0 flex-1">
         <div className="ade-tool-picker-static relative flex min-h-0 min-w-0 flex-1 flex-col">
           {viewport}

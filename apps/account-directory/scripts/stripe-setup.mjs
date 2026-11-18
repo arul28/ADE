@@ -274,7 +274,7 @@ const ensurePhonePrice = (product, meter) => ensurePrice(product, PHONE_LOOKUP_K
   "recurring[usage_type]": "metered",
   "recurring[meter]": meter.id,
   nickname: "ADE Cloud extra iPhone minutes",
-}, (price) => price.billing_scheme === "per_unit" && Number(price.unit_amount_decimal) === PHONE_MINUTE_CENTS && price.recurring?.meter === meter.id);
+}, (price) => price.billing_scheme === "per_unit" && price.currency === "usd" && price.recurring?.interval === "month" && Number(price.unit_amount_decimal) === PHONE_MINUTE_CENTS && price.recurring?.meter === meter.id);
 
 /**
  * The portal: change the card, cancel at the period end, see invoices. Plans

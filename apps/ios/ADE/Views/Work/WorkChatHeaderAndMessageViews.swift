@@ -113,7 +113,7 @@ struct WorkChatHeaderMenuModel: Equatable {
   /// The lane tools running now (the same set the pills show), for Tools ▸.
   var tools: [WorkChatToolMenuItem] = []
   /// The chat's machine advertises the ADE Cloud iPhone.
-  var showsCloudPhone: Bool = false
+  var showsCloudIphone: Bool = false
   /// The chat has a pull request to show.
   var hasPullRequest: Bool = false
   /// No PR yet, and one can be made for the chat's lane.
@@ -140,11 +140,11 @@ struct WorkChatToolsMenuItems: View {
   let hasPullRequest: Bool
   let canCreatePullRequest: Bool
   /// The chat's machine has the cloud iPhone commands.
-  var showsCloudPhone = false
+  var showsCloudIphone = false
   /// The tool the pane shows now, checked (wide displays only).
   var selected: DuoToolTab? = nil
   let onOpen: (DuoToolTab) -> Void
-  var onOpenCloudPhone: (() -> Void)? = nil
+  var onOpenCloudIphone: (() -> Void)? = nil
   var onCreatePullRequest: (() -> Void)? = nil
 
   var body: some View {
@@ -166,11 +166,11 @@ struct WorkChatToolsMenuItems: View {
         }
       }
     }
-    if showsCloudPhone, let onOpenCloudPhone {
+    if showsCloudIphone, let onOpenCloudIphone {
       Section {
         Button {
           ADEHaptics.light()
-          onOpenCloudPhone()
+          onOpenCloudIphone()
         } label: {
           Label("ADE Cloud iPhone", systemImage: "iphone.gen3")
           Text("Watch or use the cloud iPhone")
@@ -269,7 +269,7 @@ struct WorkChatHeaderMenu: View, Equatable {
   var session: TerminalSessionSummary?
   var onShowChatInfo: () -> Void
   var onOpenTool: (DuoToolTab) -> Void
-  var onOpenCloudPhone: () -> Void
+  var onOpenCloudIphone: () -> Void
   var onCreatePullRequest: () -> Void
   var onOpenLane: () -> Void
   var onRename: () -> Void
@@ -299,9 +299,9 @@ struct WorkChatHeaderMenu: View, Equatable {
             tools: model.tools,
             hasPullRequest: model.hasPullRequest,
             canCreatePullRequest: model.canCreatePullRequest,
-            showsCloudPhone: model.showsCloudPhone,
+            showsCloudIphone: model.showsCloudIphone,
             onOpen: onOpenTool,
-            onOpenCloudPhone: onOpenCloudPhone,
+            onOpenCloudIphone: onOpenCloudIphone,
             onCreatePullRequest: onCreatePullRequest
           )
         } label: {
@@ -339,7 +339,7 @@ struct WorkChatRailButtons: View {
   var session: TerminalSessionSummary?
   var onShowChatInfo: () -> Void
   var onOpenTool: (DuoToolTab) -> Void
-  var onOpenCloudPhone: () -> Void
+  var onOpenCloudIphone: () -> Void
   var onCreatePullRequest: () -> Void
   var onOpenLane: () -> Void
   var onRename: () -> Void
@@ -358,9 +358,9 @@ struct WorkChatRailButtons: View {
         tools: model.tools,
         hasPullRequest: model.hasPullRequest,
         canCreatePullRequest: model.canCreatePullRequest,
-        showsCloudPhone: model.showsCloudPhone,
+        showsCloudIphone: model.showsCloudIphone,
         onOpen: onOpenTool,
-        onOpenCloudPhone: onOpenCloudPhone,
+        onOpenCloudIphone: onOpenCloudIphone,
         onCreatePullRequest: onCreatePullRequest
       )
     } label: {

@@ -4615,7 +4615,9 @@ function cloudPhoneAgentGuard(runtime: AccountDomainRuntime): (args: unknown) =>
     if (level === "plan") throw new CloudPhoneError("This chat is in plan mode, so it doesn't use the ADE Cloud iPhone.", "declined");
     const automation = stamp.automation === true
       || (chatSessionId && chats ? Boolean((await chats.getSessionSummary(chatSessionId).catch(() => null))?.automationRunId) : false);
-    if (stamp.viaAdeMcp !== true && !automation && level !== "full-auto") return;
+    // A chat watched by a person goes ahead. An agent with no chat (a script, a
+    // terminal agent) has nobody to ask, so it is held to the limits too.
+    if (chatSessionId && stamp.viaAdeMcp !== true && !automation && level !== "full-auto") return;
     const allowed = await limits.read().then((read) => read.unattendedSpend, (error: unknown) => {
       runtime.logger.warn("cloud_phone.agent_limits_read_failed", { error: error instanceof Error ? error.message : String(error) });
       return false;

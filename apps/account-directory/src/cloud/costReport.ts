@@ -91,14 +91,17 @@ function daysInMonthOf(day: string): number {
  * read is reported and answers none, so the email it feeds still goes.
  */
 async function topAccountsThisMonth(env: CloudEnv, monthStart: string, limit: number, use: "all" | "free"): Promise<Array<{ user_id: string; cost: number }>> {
+  // The ADE Cloud iPhone's NoMac cost counts as in the month's estimate (`refreshCostEstimate`).
   const sql = use === "free"
     ? `select user_id, free_cost_micros as cost from cloud_computer_days where day >= ? and free_cost_micros > 0
-      union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ? and free = 1`
+      union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ? and free = 1
+      union all select user_id, cost_micros as cost from cloud_phones where created_at >= ? and free = 1`
     : `select user_id, cost_micros as cost from cloud_computer_days where day >= ?
-      union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ?`;
+      union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ?
+      union all select user_id, cost_micros as cost from cloud_phones where created_at >= ?`;
   try {
     const rows = await env.DB.prepare(`select user_id, sum(cost) as cost from (${sql}) group by user_id order by cost desc limit ?`)
-      .bind(monthStart, DISK_COST_MICROS_PER_GB_DAY, monthStart, limit).all<{ user_id: string; cost: number }>();
+      .bind(monthStart, DISK_COST_MICROS_PER_GB_DAY, monthStart, Date.parse(`${monthStart}T00:00:00Z`), limit).all<{ user_id: string; cost: number }>();
     return rows.results ?? [];
   } catch (error) {
     reportCloudFailure(use === "free" ? "cloud.free_cap_top_accounts_failed" : "cloud.owner_cost_top_accounts_failed", { message: error instanceof Error ? error.name : "unknown" });

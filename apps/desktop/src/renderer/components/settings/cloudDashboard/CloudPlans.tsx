@@ -100,6 +100,8 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   const previewFor = (plan: CloudPlanId): CloudPlanCleanup | null =>
     (account.downgradePreviews as Partial<Record<CloudPlanId, CloudPlanCleanup>> | undefined)?.[plan] ?? null;
   const showPhoneMinutes = columns.some((column) => column.facts.phoneMinutes != null);
+  // Coming soon until this account has the ADE Cloud iPhone (an older server sends no `phone`).
+  const phoneSoon = account.phone?.access !== "on";
   const currentExtraCents = cloudExtraHourCentsOf(current, catalog);
   // An account from before the new plans keeps its old hours and disk until its
   // period ends; the table lists the new ones, so the plan's column says so.
@@ -330,7 +332,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                     <li><HardDrives size={13} /><span><b className="kit-num" data-face="ui">{column.facts.diskGb} GB</b> disk</span></li>
                   )}
                   {showPhoneMinutes ? (
-                    <li title="Time on an iPhone simulator in the cloud, for agents to test your app. Coming soon."><DeviceMobile size={13} /><span><b className="kit-num" data-face="ui">{column.facts.phoneMinutes ?? "–"}</b> iOS Simulator <span className="adecd-nowrap">minutes <em>soon</em></span></span></li>
+                    <li title={`Time on an iPhone simulator in the cloud, for agents to test your app.${phoneSoon ? " Coming soon." : ""}`}><DeviceMobile size={13} /><span><b className="kit-num" data-face="ui">{column.facts.phoneMinutes ?? "–"}</b> iOS Simulator <span className="adecd-nowrap">minutes{phoneSoon ? <> <em>soon</em></> : null}</span></span></li>
                   ) : null}
                   {column.facts.extraPhoneMinuteCents != null ? (
                     <li title="Only if you turn extra iPhone minutes on"><DeviceMobile size={13} /><span><b className="kit-num" data-face="ui">{formatCloudCentsPerMinute(column.facts.extraPhoneMinuteCents)}</b> an extra iPhone minute</span></li>
@@ -385,7 +387,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
             {showPhoneMinutes ? (
               <div className="adecd-howto-item">
                 <span className="adecd-howto-icon"><DeviceMobile size={14} /></span>
-                <p><b>iOS Simulator minutes</b> <em className="adecd-howto-soon">soon</em>: time on an iPhone simulator in the cloud, for agents to test your app.</p>
+                <p><b>iOS Simulator minutes</b>{phoneSoon ? <> <em className="adecd-howto-soon">soon</em></> : null}: time on an iPhone simulator in the cloud, for agents to test your app.</p>
               </div>
             ) : null}
           </div>

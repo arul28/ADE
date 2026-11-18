@@ -364,6 +364,7 @@ function serverProviderFor(deps: CloudAccessDeps): CloudProvider {
     computer: deps.computer,
     fetch: deps.fetch,
     logger: deps.logger,
+    account: accessKey(deps),
   });
 }
 

@@ -2,8 +2,9 @@ import { expireChatMessages } from "./chatMessages";
 import { runLinearRenewalCron } from "./linearRenewal";
 import { captureCloudDay, type CloudWaitUntil } from "./analytics";
 import { cancelTimedWakes, type WakeBlock } from "./accountNotices";
-import { checkExtraDiskLimits, reportExtraDiskDays, reportExtraPhoneMinutes, type ExtraDiskOverLimit } from "./billing";
-import { runPhoneChecks } from "./phones";
+import { checkExtraDiskLimits, reportExtraDiskDays, type ExtraDiskOverLimit } from "./billing";
+import { reportExtraPhoneMinutes } from "./phoneBilling";
+import { runPhoneChecks, stopPhonesDue } from "./phones";
 import { sendCloudEmail } from "./email";
 import { laneFactsStatement } from "./lanesWithoutComputer";
 import { markRestedWithBackups } from "./laneBackups";
@@ -88,6 +89,10 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   // No provider either: a renewed Linear grant whose publish failed during the request is published here, so it is not lost.
   await runLinearRenewalCron(env, now).catch((error: unknown) => {
     reportCloudFailure("cloud.linear_renewal_cron_failed", { message: error instanceof Error ? error.message : "unknown" });
+  });
+  // NoMac only: a cloud iPhone whose paid-for minutes ran out stops on the minute (`phones.ts`).
+  await stopPhonesDue(env, now).catch((error: unknown) => {
+    reportCloudFailure("cloud.phone_stops_failed", { message: error instanceof Error ? error.message : "unknown" });
   });
   const key = env.AGENT37_API_KEY?.trim();
   if (!key) return;

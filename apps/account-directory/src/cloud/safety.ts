@@ -4,7 +4,7 @@ import { blockedUsersAmong, forgetNotBlocked, isCloudBlocked } from "./blocks";
 import { constantTimeEqual } from "../githubApp/seal";
 import { sha256Hex } from "../sinkUtils";
 import { fail, json, readJson } from "./http";
-import { OWNER_PHONE_BETA_PATH, handleOwnerPhoneBeta } from "./phones";
+import { OWNER_PHONE_BETA_PATH, handleOwnerPhoneBeta, stopAccountPhones } from "./phones";
 import { CloudProviderError, TRY_AGAIN_CODE, type CloudProvider } from "./provider";
 import {
   isPendingId,
@@ -241,6 +241,11 @@ export async function blockAccount(env: CloudEnv, provider: CloudProvider | null
       }
     }
   }
+
+  // Its ADE Cloud iPhone stops too: a phone token still drives it at NoMac otherwise.
+  await stopAccountPhones(env, userId, now, "account_blocked").catch((error: unknown) => {
+    reportCloudFailure("cloud.block_phone_stop_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+  });
 
   const account = await env.DB.prepare("select user_id, stripe_subscription_id from cloud_accounts where user_id = ?")
     .bind(userId).first<Pick<AccountRow, "user_id" | "stripe_subscription_id">>();

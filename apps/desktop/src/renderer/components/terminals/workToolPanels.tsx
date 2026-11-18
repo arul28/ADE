@@ -44,9 +44,9 @@ import {
 } from "./workTools";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolPickMachineState, WorkToolStartState } from "./workToolStartState";
-import { deviceKindRunsOnPlatform, type DeviceKind } from "../../../shared/types/deviceSources";
+import type { DeviceKind } from "../../../shared/types/deviceSources";
 import type { RemoteWorkCopyUse } from "../../../shared/chatRemoteWork";
-import { workCopyUseOn } from "./workToolCatalog";
+import { machineRunsKind, workCopyUseOn } from "./workToolCatalog";
 import type { ToolMachine } from "./useToolMachines";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
 import { isWebCodecsAvailable } from "../device/h264StreamPlayer";
@@ -253,7 +253,7 @@ function chatOnAdeCloud(machines: readonly ToolMachine[]): boolean {
 /** The machines other than the chat's that can run `kind`, offline ones too, one press each. */
 function PickMachine({ kind, deviceChoice }: WorkToolPanelProps & { kind: DeviceKind }) {
   const { choose } = deviceChoice;
-  const able = deviceChoice.machines.filter((machine) => !machine.isChat && deviceKindRunsOnPlatform(kind, machine.platform));
+  const able = deviceChoice.machines.filter((machine) => !machine.isChat && machineRunsKind(kind, machine));
   return (
     <WorkToolPickMachineState
       kind={kind}

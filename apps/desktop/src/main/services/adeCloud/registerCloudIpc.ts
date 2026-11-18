@@ -646,9 +646,16 @@ export function registerCloudIpc(args: {
   // older server has no such route: it says so in a plain sentence.
   ipcMain.handle(IPC.cloudSetExtraPhoneMinutes, async (event, arg: { enabled?: unknown; monthlyLimitUsd?: unknown }): Promise<CloudAccountState | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetExtraPhoneMinutes)) return null;
-    const limit = arg?.monthlyLimitUsd;
-    const choice = arg?.enabled === true
-      ? { enabled: true as const, monthlyLimitUsd: typeof limit === "number" && Number.isInteger(limit) ? limit : null }
+    // On or off is always said: a missing value is refused, never read as off.
+    if (typeof arg?.enabled !== "boolean") throw new Error("Say whether extra iPhone minutes are on or off.");
+    // No limit is only ever chosen (null); a limit that isn't whole dollars is refused, never read as none.
+    const raw = arg.monthlyLimitUsd ?? null;
+    const limit = typeof raw === "number" && Number.isInteger(raw) ? raw : null;
+    if (arg.enabled && raw !== null && limit === null) {
+      throw new Error("Pick a monthly limit in whole dollars, or none.");
+    }
+    const choice = arg.enabled
+      ? { enabled: true as const, monthlyLimitUsd: limit }
       : { enabled: false as const };
     const provider = await requireCloudProvider(credentials);
     if (!provider.setExtraPhoneMinutes) throw new Error("This ADE Cloud doesn't sell extra iPhone minutes yet.");

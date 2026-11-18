@@ -90,8 +90,9 @@ export async function deleteCloudAccount(
     // unblocked; abuse events and owner alerts stay for the owner. All re-keyed to the hash.
     env.DB.prepare("update cloud_free_card_claims set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("update cloud_blocks set user_id = ? where user_id = ?").bind(gone, userId),
-    // The ADE Cloud iPhone's phones stay for the cost report, under the hash.
-    env.DB.prepare("update cloud_phones set user_id = ? where user_id = ?").bind(gone, userId),
+    // The ADE Cloud iPhone's phones stay for the cost report, under the hash, and none counts as running
+    // (`deleteAccountPhone` stopped them at NoMac above).
+    env.DB.prepare("update cloud_phones set user_id = ?, state = 'ended', stop_at = null, ended_at = coalesce(ended_at, ?) where user_id = ?").bind(gone, Date.now(), userId),
     env.DB.prepare("update cloud_abuse_events set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("update cloud_owner_alerts set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("delete from cloud_cpu_reports where user_id = ?").bind(userId),

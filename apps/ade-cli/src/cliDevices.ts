@@ -190,19 +190,21 @@ async function chatDeviceAction(
  * choice can exist (an older brain, an agent CLI in a terminal, a session
  * this brain does not keep as a chat) it runs here; a choice that may exist
  * but cannot be read stops the command rather than run it on the wrong
- * machine.
+ * machine. `cloudIphone`: the chat chose the ADE Cloud iPhone (`ios@cloud`),
+ * which no machine runs; `cliCloudIphone.ts` runs the command as typed.
  */
-export async function withChatDeviceChoice(parsed: ParsedCli): Promise<ParsedCli> {
+export async function withChatDeviceChoice(parsed: ParsedCli): Promise<{ parsed: ParsedCli; cloudIphone: boolean }> {
+  const asTyped = { parsed, cloudIphone: false };
   const kind = deviceKindOfCommand(parsed.command[0]?.toLowerCase() ?? "");
   const chat = chatIdentity();
-  if (!kind || !chat || isAgentCliTerminal(chat)) return parsed;
+  if (!kind || !chat || isAgentCliTerminal(chat)) return asTyped;
   const options = parsed.options;
-  if (options.headless || options.machine || options.allMachines) return parsed;
+  if (options.headless || options.machine || options.allMachines) return asTyped;
   const flags = flagNamesOutsideFreeText(parsed.command);
-  if (["--machine", "--all-machines", "--machine-project", "--lane", "--lane-id"].some((flag) => flags.has(flag))) return parsed;
-  if (hasHelpFlag([...parsed.command])) return parsed;
+  if (["--machine", "--all-machines", "--machine-project", "--lane", "--lane-id"].some((flag) => flags.has(flag))) return asTyped;
+  if (hasHelpFlag([...parsed.command])) return asTyped;
   const sub = firstStandalonePositional(parsed.command.slice(1))?.toLowerCase() ?? "";
-  if (!sub || sub === "help") return parsed;
+  if (!sub || sub === "help") return asTyped;
   let sources: ChatDeviceSources;
   try {
     sources = await withTimeout(callChatDeviceAction(options, "getDeviceSources", {}, CHOICE_READ_TIMEOUT_MS), CHOICE_READ_TIMEOUT_MS + 1_000, "This machine's ADE");
@@ -210,7 +212,7 @@ export async function withChatDeviceChoice(parsed: ParsedCli): Promise<ParsedCli
     const reason = errorText(error);
     // No choice can exist: an older brain, a session that is no ADE chat here.
     if (isOlderBrainAnswer(reason) || /device choice is kept for ADE chats|sessionId is required|was not found|is not an agent chat session/i.test(reason)) {
-      return parsed;
+      return asTyped;
     }
     // Not "devices use …@here": that would undo the person's choice for a
     // brain that was only slow.
@@ -220,17 +222,17 @@ export async function withChatDeviceChoice(parsed: ParsedCli): Promise<ParsedCli
     );
   }
   const choice = sources[kind];
-  if (!choice) return parsed;
+  if (!choice) return asTyped;
   if (choice.kind === "cloud") {
     process.stderr.write("· ios@cloud (this chat's device: the ADE Cloud iPhone; ade devices use ios@here for this machine)\n");
-    return { ...parsed, command: [CLOUD_IPHONE_COMMAND, ...parsed.command.slice(1)] };
+    return { parsed, cloudIphone: true };
   }
   process.stderr.write(`· ${formatDeviceId({ kind, source: { kind: "machine", machine: deviceIdMachineSource({ name: choice.machineName, key: choice.machineKey }) } })} (this chat's device; ade devices use ${kind}@here for this machine)\n`);
   const end = parsed.command.indexOf("--");
   const command = end >= 0
     ? [...parsed.command.slice(0, end), "--machine", choice.machineKey, ...parsed.command.slice(end)]
     : [...parsed.command, "--machine", choice.machineKey];
-  return { ...parsed, command };
+  return { parsed: { ...parsed, command }, cloudIphone: false };
 }
 
 /* ── the account's machines ────────────────────────────────────────────── */
@@ -588,7 +590,8 @@ function formatDevicesList(value: DevicesList): string {
   const footer = [
     ...value.notes,
     value.devices.some((row) => row.id !== null && row.chosen) ? "* this chat's device for that kind." : null,
-    value.devices.some((row) => row.kind === "ios")
+    // A Mac's simulators only: the ADE Cloud iPhone is one phone per account, not a lane's own.
+    value.devices.some((row) => row.kind === "ios" && row.source !== "cloud")
       ? "ios: a chat drives its lane's own simulator, never one a Mac has booted already: ade apple start makes it there (--udid <udid> attaches an installed one)."
       : null,
     underRemoteMcp() ? MCP_DEVICE_HINT : "Pick one for this chat: ade devices use <id>. One command: --machine <name>.",
@@ -712,9 +715,6 @@ export async function runDevicesCommand(parsed: ParsedCli): Promise<{ output: st
 
 
 /* ── the ADE Cloud iPhone ──────────────────────────────────────────────── */
-
-/** The primary a cloud-iPhone `ade apple …` is rewritten to (`cliCloudIphone.ts` runs it). */
-export const CLOUD_IPHONE_COMMAND = "__cloud-iphone";
 
 type CloudIphoneStatusRead =
   | { ok: true; access: string; reason: string | null; minutes: { included: number; used: number; left: number } | null; phoneState: string | null }

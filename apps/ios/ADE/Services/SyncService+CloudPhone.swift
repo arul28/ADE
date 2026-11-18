@@ -6,7 +6,7 @@ import Foundation
 /// iPhone, the plan's minutes this period, and the phone while one is up.
 /// `access` is `on`, `soon` (the beta list) or `off` (not set up on the
 /// server); `supported` is true only with access `on`.
-struct CloudPhoneStatus: Decodable, Equatable {
+struct CloudIphoneStatus: Decodable, Equatable {
   struct Minutes: Decodable, Equatable {
     let included: Int
     let used: Int
@@ -74,7 +74,7 @@ struct CloudPhoneStatus: Decodable, Equatable {
 
 /// `cloudPhone.view`: the NoMac page that shows the phone, signed for this
 /// account. `expiresAt` is ms since 1970.
-struct CloudPhoneViewLink: Decodable, Equatable {
+struct CloudIphoneViewLink: Decodable, Equatable {
   let url: String
   let expiresAt: Double
   /// The link lets the person take control of the phone.
@@ -90,101 +90,101 @@ struct CloudPhoneViewLink: Decodable, Equatable {
   }
 }
 
-private struct CloudPhoneStopAnswer: Decodable {
+private struct CloudIphoneStopAnswer: Decodable {
   let stopped: Bool
 }
 
-private struct CloudPhoneScreenshotAnswer: Decodable {
+private struct CloudIphoneScreenshotAnswer: Decodable {
   let artifactId: String?
 }
 
 @MainActor
 extension SyncService {
   /// An ordinary read or a stop: the phone answers the status page quickly.
-  static let cloudPhoneRequestTimeoutNanoseconds: UInt64 = 20_000_000_000
+  static let cloudIphoneRequestTimeoutNanoseconds: UInt64 = 20_000_000_000
 
   /// A start can wait in line for a free phone for up to 6 minutes.
-  static let cloudPhoneStartTimeoutNanoseconds: UInt64 = 380_000_000_000
+  static let cloudIphoneStartTimeoutNanoseconds: UInt64 = 380_000_000_000
 
   /// Files the screenshot and downloads it on the host, so it takes longer.
-  static let cloudPhoneScreenshotTimeoutNanoseconds: UInt64 = 60_000_000_000
+  static let cloudIphoneScreenshotTimeoutNanoseconds: UInt64 = 60_000_000_000
 
   /// The machine the chat runs on advertises the ADE Cloud iPhone.
-  func supportsCloudPhone(sessionId: String) -> Bool {
+  func supportsCloudIphone(sessionId: String) -> Bool {
     supportsChatRemoteAction("cloudPhone.status", sessionId: sessionId)
   }
 
   /// The phone's state, the minutes left, and what agents can do with it.
-  func fetchCloudPhoneStatus(sessionId: String) async throws -> CloudPhoneStatus {
+  func fetchCloudIphoneStatus(sessionId: String) async throws -> CloudIphoneStatus {
     try decode(
-      try await sendCloudPhoneCommand(
+      try await sendCloudIphoneCommand(
         "cloudPhone.status",
         args: [:],
         sessionId: sessionId,
-        timeoutNanoseconds: Self.cloudPhoneRequestTimeoutNanoseconds
+        timeoutNanoseconds: Self.cloudIphoneRequestTimeoutNanoseconds
       ),
-      as: CloudPhoneStatus.self
+      as: CloudIphoneStatus.self
     )
   }
 
   /// A fresh link to the live phone, a control link by default.
-  func fetchCloudPhoneView(sessionId: String, control: Bool = true) async throws -> CloudPhoneViewLink {
+  func fetchCloudIphoneView(sessionId: String, control: Bool = true) async throws -> CloudIphoneViewLink {
     try decode(
-      try await sendCloudPhoneCommand(
+      try await sendCloudIphoneCommand(
         "cloudPhone.view",
         args: ["control": control],
         sessionId: sessionId,
-        timeoutNanoseconds: Self.cloudPhoneRequestTimeoutNanoseconds
+        timeoutNanoseconds: Self.cloudIphoneRequestTimeoutNanoseconds
       ),
-      as: CloudPhoneViewLink.self
+      as: CloudIphoneViewLink.self
     )
   }
 
   /// Starts the account's phone, or reuses the one already up.
-  func startCloudPhone(sessionId: String, device: String? = nil) async throws {
+  func startCloudIphone(sessionId: String, device: String? = nil) async throws {
     var args: [String: Any] = [:]
     if let device { args["device"] = device }
-    _ = try await sendCloudPhoneCommand(
+    _ = try await sendCloudIphoneCommand(
       "cloudPhone.start",
       args: args,
       sessionId: sessionId,
-      timeoutNanoseconds: Self.cloudPhoneStartTimeoutNanoseconds
+      timeoutNanoseconds: Self.cloudIphoneStartTimeoutNanoseconds
     )
   }
 
   /// Stops the account's phone. Its apps and their data go; the workspace stays.
   @discardableResult
-  func stopCloudPhone(sessionId: String) async throws -> Bool {
+  func stopCloudIphone(sessionId: String) async throws -> Bool {
     try decode(
-      try await sendCloudPhoneCommand(
+      try await sendCloudIphoneCommand(
         "cloudPhone.stop",
         args: [:],
         sessionId: sessionId,
-        timeoutNanoseconds: Self.cloudPhoneRequestTimeoutNanoseconds
+        timeoutNanoseconds: Self.cloudIphoneRequestTimeoutNanoseconds
       ),
-      as: CloudPhoneStopAnswer.self
+      as: CloudIphoneStopAnswer.self
     ).stopped
   }
 
   /// Takes a full-size screenshot and files it in the chat's proof drawer.
   /// Answers the proof's id, or nil when it could not be filed.
   @discardableResult
-  func captureCloudPhoneScreenshot(sessionId: String) async throws -> String? {
+  func captureCloudIphoneScreenshot(sessionId: String) async throws -> String? {
     try decode(
-      try await sendCloudPhoneCommand(
+      try await sendCloudIphoneCommand(
         "cloudPhone.screenshot",
         args: ["chatSessionId": sessionId],
         sessionId: sessionId,
-        timeoutNanoseconds: Self.cloudPhoneScreenshotTimeoutNanoseconds
+        timeoutNanoseconds: Self.cloudIphoneScreenshotTimeoutNanoseconds
       ),
-      as: CloudPhoneScreenshotAnswer.self
+      as: CloudIphoneScreenshotAnswer.self
     ).artifactId
   }
 
   /// One `cloudPhone.*` command, sent to the machine the chat runs on: a chat
   /// of another project on this machine, or of any project on another one.
   /// The phone is machine-wide there, so its own commands carry no lane.
-  private func sendCloudPhoneCommand(
+  private func sendCloudIphoneCommand(
     _ action: String,
     args: [String: Any],
     sessionId: String,

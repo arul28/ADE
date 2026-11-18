@@ -10,15 +10,15 @@ import WebKit
 
 /// The sheet: minutes left, start, stop, a screenshot, and the phone itself
 /// once it is ready.
-struct CloudPhoneSheet: View {
-  @StateObject private var model: CloudPhoneModel
+struct CloudIphoneSheet: View {
+  @StateObject private var model: CloudIphoneModel
   @Environment(\.dismiss) private var dismiss
   @Environment(\.scenePhase) private var scenePhase
   /// Bumped by Try again, and after Start or Stop, to restart the read loop.
   @State private var pollGeneration = 0
 
   init(sessionId: String, syncService: SyncService) {
-    _model = StateObject(wrappedValue: CloudPhoneModel(sessionId: sessionId, syncService: syncService))
+    _model = StateObject(wrappedValue: CloudIphoneModel(sessionId: sessionId, syncService: syncService))
   }
 
   var body: some View {
@@ -69,12 +69,12 @@ struct CloudPhoneSheet: View {
 
   // MARK: - Not on this account
 
-  private func accessContent(_ status: CloudPhoneStatus) -> some View {
+  private func accessContent(_ status: CloudIphoneStatus) -> some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 14) {
         VStack(alignment: .leading, spacing: 10) {
           ADEKitTag(text: status.access == "soon" ? "Coming soon" : "Not available")
-          Text(status.reason ?? cloudPhoneAccessFallback(status.access))
+          Text(status.reason ?? cloudIphoneAccessFallback(status.access))
             .font(.system(size: 13.5))
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -88,13 +88,13 @@ struct CloudPhoneSheet: View {
 
   // MARK: - Starting
 
-  private func startingContent(_ status: CloudPhoneStatus) -> some View {
+  private func startingContent(_ status: CloudIphoneStatus) -> some View {
     VStack(alignment: .leading, spacing: 14) {
       header(status)
       VStack(alignment: .leading, spacing: 10) {
         HStack(spacing: 10) {
           ProgressView()
-          Text(cloudPhoneStartingLine(status))
+          Text(cloudIphoneStartingLine(status))
             .font(.system(size: 14, weight: .medium))
             .foregroundStyle(ADEColor.textPrimary)
             .fixedSize(horizontal: false, vertical: true)
@@ -112,7 +112,7 @@ struct CloudPhoneSheet: View {
 
   // MARK: - Off
 
-  private func offContent(_ status: CloudPhoneStatus) -> some View {
+  private func offContent(_ status: CloudIphoneStatus) -> some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 14) {
         header(status)
@@ -120,7 +120,7 @@ struct CloudPhoneSheet: View {
           ADESettingsNotice(message: error, tone: .warn)
         }
         VStack(alignment: .leading, spacing: 12) {
-          if let line = cloudPhoneEndLine(status.phone) {
+          if let line = cloudIphoneEndLine(status.phone) {
             Text(line)
               .font(.system(size: 13.5))
               .foregroundStyle(ADEColor.textSecondary)
@@ -144,7 +144,7 @@ struct CloudPhoneSheet: View {
           }
           .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
           .disabled(model.starting)
-          Text("Starts an \(cloudPhoneDeviceName("iphone")) simulator in the cloud. Time on it comes out of the plan's iPhone minutes.")
+          Text("Starts an \(cloudIphoneDeviceName("iphone")) simulator in the cloud. Time on it comes out of the plan's iPhone minutes.")
             .font(.system(size: 12))
             .foregroundStyle(ADEColor.textMuted)
             .fixedSize(horizontal: false, vertical: true)
@@ -158,11 +158,11 @@ struct CloudPhoneSheet: View {
 
   // MARK: - Ready
 
-  private func readyContent(_ status: CloudPhoneStatus) -> some View {
+  private func readyContent(_ status: CloudIphoneStatus) -> some View {
     VStack(spacing: 10) {
       header(status)
         .padding(.horizontal, 16)
-      if let notice = cloudPhoneStopNotice(status) {
+      if let notice = cloudIphoneStopNotice(status) {
         Text(notice)
           .font(.system(size: 12))
           .foregroundStyle(ADEColor.warning)
@@ -183,15 +183,15 @@ struct CloudPhoneSheet: View {
   }
 
   private func phoneFrame(proxy: GeometryProxy, device: String?) -> some View {
-    let points = cloudPhonePointSize(device)
+    let points = cloudIphonePointSize(device)
     let aspect = points.width / points.height
     let width = max(1, min(proxy.size.width, proxy.size.height * aspect))
     let height = width / aspect
     return ZStack {
       RoundedRectangle(cornerRadius: 24, style: .continuous)
         .fill(Color.black)
-      if let link = model.link, let url = cloudPhoneViewURL(link.url), model.linkError == nil {
-        CloudPhoneWebView(url: url, loadError: $model.linkError)
+      if let link = model.link, let url = cloudIphoneViewURL(link.url), model.linkError == nil {
+        CloudIphoneWebView(url: url, loadError: $model.linkError)
       } else if model.linkLoading {
         ProgressView().tint(.white)
       } else if let error = model.linkError {
@@ -213,7 +213,7 @@ struct CloudPhoneSheet: View {
     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("\(cloudPhoneDeviceName(device)) screen")
+    .accessibilityLabel("\(cloudIphoneDeviceName(device)) screen")
   }
 
   private var controls: some View {
@@ -256,10 +256,10 @@ struct CloudPhoneSheet: View {
 
   // MARK: - Shared pieces
 
-  private func header(_ status: CloudPhoneStatus) -> some View {
+  private func header(_ status: CloudIphoneStatus) -> some View {
     HStack(spacing: 8) {
       ADEKitDot(tone: status.isReady ? .ok : (status.isStarting ? .warn : .neutral), size: 7)
-      Text(cloudPhoneDeviceName(status.phone?.device))
+      Text(cloudIphoneDeviceName(status.phone?.device))
         .font(.system(size: 13, weight: .semibold))
         .foregroundStyle(ADEColor.textPrimary)
         .lineLimit(1)
@@ -303,12 +303,12 @@ struct CloudPhoneSheet: View {
 /// The sheet's state: the status, the live link and the three actions. The
 /// read loop runs only while the sheet is on screen.
 @MainActor
-final class CloudPhoneModel: ObservableObject {
-  @Published private(set) var status: CloudPhoneStatus?
+final class CloudIphoneModel: ObservableObject {
+  @Published private(set) var status: CloudIphoneStatus?
   /// The first status read's failure, with Try again. Kept off when a later
   /// poll fails, so the phone on screen is not replaced by a notice.
   @Published private(set) var loadError: String?
-  @Published private(set) var link: CloudPhoneViewLink?
+  @Published private(set) var link: CloudIphoneViewLink?
   /// A failed link read, or the page's own failure. The web view writes it.
   @Published var linkError: String?
   @Published private(set) var linkLoading = false
@@ -323,11 +323,16 @@ final class CloudPhoneModel: ObservableObject {
   /// Only the newest read lands.
   private var statusRequest = 0
   private var linkRequest = 0
+  /// When the link is replaced (ms): a minute before it expires.
+  private var linkDueAt: Double = 0
 
   /// While it starts, or waits in line for a free phone.
   static let startingPollNanoseconds: UInt64 = 3_000_000_000
   /// While it is off: access can change on the account.
   static let offPollNanoseconds: UInt64 = 20_000_000_000
+  /// While it is ready: the page sends no news when the phone stops on its
+  /// own (idle, its time limit), so the status is read this often.
+  static let livePollMilliseconds: Double = 30_000
   /// A link is replaced this long before it stops working.
   static let linkRefreshLeadMilliseconds: Double = 60_000
   /// An answer that names no expiry is asked for again this often, never in
@@ -339,10 +344,11 @@ final class CloudPhoneModel: ObservableObject {
     self.service = syncService
   }
 
-  var supported: Bool { service.supportsCloudPhone(sessionId: sessionId) }
+  var supported: Bool { service.supportsCloudIphone(sessionId: sessionId) }
 
   /// Read while the sheet is up: every 3 s while it starts, every 20 s while
-  /// it is off, and never while it is ready (the page is the live state).
+  /// it is off, and every 30 s while it is ready, so a phone that stopped on
+  /// its own shows Start again. While ready the link is also kept alive.
   func run() async {
     guard supported else { return }
     if status == nil { await refreshStatus() }
@@ -350,8 +356,18 @@ final class CloudPhoneModel: ObservableObject {
       if status?.isReady == true {
         if link == nil, linkError == nil { await refreshLink() }
         guard link != nil, linkError == nil else { return }
-        await keepLinkFresh()
-        return
+        let untilLinkDue = linkDueAt - Date().timeIntervalSince1970 * 1000
+        if untilLinkDue > 0 {
+          let wait = min(untilLinkDue, Self.livePollMilliseconds)
+          do { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000)) } catch { return }
+          guard !Task.isCancelled else { return }
+          await refreshStatus()
+          // Ended: the off state reads on. Still on: the link waits its turn.
+          if status?.isReady != true || linkDueAt > Date().timeIntervalSince1970 * 1000 { continue }
+        }
+        await refreshLink()
+        guard link != nil, linkError == nil else { return }
+        continue
       }
       let startingNow = status?.isStarting == true || starting
       let wait = startingNow ? Self.startingPollNanoseconds : Self.offPollNanoseconds
@@ -366,7 +382,7 @@ final class CloudPhoneModel: ObservableObject {
     statusRequest += 1
     let request = statusRequest
     do {
-      let next = try await service.fetchCloudPhoneStatus(sessionId: sessionId)
+      let next = try await service.fetchCloudIphoneStatus(sessionId: sessionId)
       guard request == statusRequest else { return }
       status = next
       loadError = nil
@@ -388,35 +404,22 @@ final class CloudPhoneModel: ObservableObject {
     linkError = nil
     defer { if request == linkRequest { linkLoading = false } }
     do {
-      let next = try await service.fetchCloudPhoneView(sessionId: sessionId, control: true)
+      let next = try await service.fetchCloudIphoneView(sessionId: sessionId, control: true)
       guard request == linkRequest else { return }
-      guard cloudPhoneViewURL(next.url) != nil else {
+      guard cloudIphoneViewURL(next.url) != nil else {
         linkError = "The cloud answered with a link ADE can't open."
         return
       }
       link = next
+      // A minute before it expires; an answer that names no expiry is asked
+      // for again after a minute, never in a tight loop.
+      let now = Date().timeIntervalSince1970 * 1000
+      linkDueAt = next.expiresAt > 0
+        ? min(max(next.expiresAt - Self.linkRefreshLeadMilliseconds, now + Self.linkRetryWithoutExpiryMilliseconds), now + 86_400_000)
+        : now + Self.linkRetryWithoutExpiryMilliseconds
     } catch {
       guard request == linkRequest else { return }
       linkError = Self.message(for: error)
-    }
-  }
-
-  /// Keep the page's link alive: a fresh one a minute before it expires.
-  private func keepLinkFresh() async {
-    while !Task.isCancelled {
-      let expiresAt = link?.expiresAt ?? 0
-      let now = Date().timeIntervalSince1970 * 1000
-      let wait = expiresAt > 0
-        ? expiresAt - Self.linkRefreshLeadMilliseconds - now
-        : Self.linkRetryWithoutExpiryMilliseconds
-      if wait > 0 {
-        // A day at most: a bogus expiry must not trap the conversion.
-        let capped = min(wait, 86_400_000)
-        do { try await Task.sleep(nanoseconds: UInt64(capped * 1_000_000)) } catch { return }
-        guard !Task.isCancelled else { return }
-      }
-      await refreshLink()
-      guard link != nil, linkError == nil else { return }
     }
   }
 
@@ -426,7 +429,7 @@ final class CloudPhoneModel: ObservableObject {
     actionError = nil
     defer { starting = false }
     do {
-      try await service.startCloudPhone(sessionId: sessionId)
+      try await service.startCloudIphone(sessionId: sessionId)
       await refreshStatus()
     } catch {
       actionError = Self.message(for: error)
@@ -440,7 +443,7 @@ final class CloudPhoneModel: ObservableObject {
     actionError = nil
     defer { stopping = false }
     do {
-      _ = try await service.stopCloudPhone(sessionId: sessionId)
+      _ = try await service.stopCloudIphone(sessionId: sessionId)
       link = nil
       linkError = nil
       ADEHaptics.success()
@@ -457,7 +460,7 @@ final class CloudPhoneModel: ObservableObject {
     actionError = nil
     defer { screenshotting = false }
     do {
-      let artifactId = try await service.captureCloudPhoneScreenshot(sessionId: sessionId)
+      let artifactId = try await service.captureCloudIphoneScreenshot(sessionId: sessionId)
       ADEHaptics.success()
       toast = ADEToastMessage(
         text: artifactId == nil
@@ -491,7 +494,7 @@ final class CloudPhoneModel: ObservableObject {
 
 /// NoMac's control page in a web view that can go nowhere else: no new
 /// windows, no link previews, no page it did not come from.
-private struct CloudPhoneWebView: UIViewRepresentable {
+private struct CloudIphoneWebView: UIViewRepresentable {
   let url: URL
   @Binding var loadError: String?
 
@@ -539,7 +542,7 @@ private struct CloudPhoneWebView: UIViewRepresentable {
         decisionHandler(.allow)
         return
       }
-      guard let url = navigationAction.request.url, cloudPhoneAllowsNavigation(url) else {
+      guard let url = navigationAction.request.url, cloudIphoneAllowsNavigation(url) else {
         decisionHandler(.cancel)
         return
       }
@@ -551,11 +554,11 @@ private struct CloudPhoneWebView: UIViewRepresentable {
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-      loadError.wrappedValue = cloudPhonePageError(error)
+      loadError.wrappedValue = cloudIphonePageError(error)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-      loadError.wrappedValue = cloudPhonePageError(error)
+      loadError.wrappedValue = cloudIphonePageError(error)
     }
   }
 }
@@ -563,7 +566,7 @@ private struct CloudPhoneWebView: UIViewRepresentable {
 // MARK: - Words and sizes
 
 /// The phone's model, from the status's device id.
-func cloudPhoneDeviceName(_ device: String?) -> String {
+func cloudIphoneDeviceName(_ device: String?) -> String {
   switch device {
   case "ipad": return "iPad Pro 11-inch (M5)"
   case "iphone-pro-max": return "iPhone 17 Pro Max"
@@ -572,7 +575,7 @@ func cloudPhoneDeviceName(_ device: String?) -> String {
 }
 
 /// The phone's own points, the same shape the desktop's body draws.
-func cloudPhonePointSize(_ device: String?) -> CGSize {
+func cloudIphonePointSize(_ device: String?) -> CGSize {
   switch device {
   case "ipad": return CGSize(width: 834, height: 1210)
   case "iphone-pro-max": return CGSize(width: 440, height: 956)
@@ -581,7 +584,7 @@ func cloudPhonePointSize(_ device: String?) -> CGSize {
 }
 
 /// NoMac's viewer page, and nothing else.
-func cloudPhoneViewURL(_ raw: String) -> URL? {
+func cloudIphoneViewURL(_ raw: String) -> URL? {
   guard let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
         url.scheme?.lowercased() == "https",
         url.host?.lowercased() == "nomac.app",
@@ -591,12 +594,12 @@ func cloudPhoneViewURL(_ raw: String) -> URL? {
 }
 
 /// A page the viewer may navigate to: NoMac's own site only.
-func cloudPhoneAllowsNavigation(_ url: URL) -> Bool {
+func cloudIphoneAllowsNavigation(_ url: URL) -> Bool {
   url.scheme?.lowercased() == "https" && url.host?.lowercased() == "nomac.app"
 }
 
 /// Why the phone ended, in the phone's words.
-func cloudPhoneEndLine(_ phone: CloudPhoneStatus.Phone?) -> String? {
+func cloudIphoneEndLine(_ phone: CloudIphoneStatus.Phone?) -> String? {
   guard let phone, phone.state == "ended" else { return nil }
   switch phone.endReason {
   case "stopped": return "You stopped it."
@@ -608,15 +611,15 @@ func cloudPhoneEndLine(_ phone: CloudPhoneStatus.Phone?) -> String? {
 }
 
 /// The line under the header while the phone starts.
-func cloudPhoneStartingLine(_ status: CloudPhoneStatus, now: Date = Date()) -> String {
+func cloudIphoneStartingLine(_ status: CloudIphoneStatus, now: Date = Date()) -> String {
   if let queueUntil = status.phone?.queueUntil, queueUntil > now.timeIntervalSince1970 * 1000 {
-    return "Waiting for a free phone. It starts by \(cloudPhoneTime(queueUntil))."
+    return "Waiting for a free phone. It starts by \(cloudIphoneTime(queueUntil))."
   }
-  return "Starting the \(cloudPhoneDeviceName(status.phone?.device))…"
+  return "Starting the \(cloudIphoneDeviceName(status.phone?.device))…"
 }
 
 /// A sentence about the phone's coming stop, while one is up.
-func cloudPhoneStopNotice(_ status: CloudPhoneStatus) -> String? {
+func cloudIphoneStopNotice(_ status: CloudIphoneStatus) -> String? {
   guard status.isReady,
         let notice = status.phone?.stopNotice?.trimmingCharacters(in: .whitespacesAndNewlines),
         !notice.isEmpty
@@ -625,7 +628,7 @@ func cloudPhoneStopNotice(_ status: CloudPhoneStatus) -> String? {
 }
 
 /// "3:42 PM" in the phone's own clock.
-func cloudPhoneTime(_ ms: Double) -> String {
+func cloudIphoneTime(_ ms: Double) -> String {
   let formatter = DateFormatter()
   formatter.locale = Locale.current
   formatter.timeStyle = .short
@@ -634,14 +637,14 @@ func cloudPhoneTime(_ ms: Double) -> String {
 }
 
 /// Why the phone cannot be shown, when the host sends no sentence.
-func cloudPhoneAccessFallback(_ access: String) -> String {
+func cloudIphoneAccessFallback(_ access: String) -> String {
   access == "soon"
     ? "The ADE Cloud iPhone is coming soon. It isn't on this account yet."
     : "The ADE Cloud iPhone isn't available right now."
 }
 
 /// A page failure a person can read; a cancelled navigation is not one.
-func cloudPhonePageError(_ error: Error) -> String? {
+func cloudIphonePageError(_ error: Error) -> String? {
   let ns = error as NSError
   if ns.domain == NSURLErrorDomain, ns.code == NSURLErrorCancelled { return nil }
   return "The phone's page couldn't load. \(ns.localizedDescription)"

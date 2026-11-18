@@ -7,8 +7,8 @@ ADE Cloud computer. The Work tools pane shows it in 3D or flat on the desktop;
 ADE Web shows the same pane as a flat live view, and the ADE iPhone app shows it
 from a chat's Tools menu. The launch plan is `docs/plans/ade-cloud-iphone-launch.md`.
 
-Server: `apps/account-directory/src/cloud/phones.ts` (routes, minutes, beta
-list). Brain: `apps/desktop/src/main/services/adeCloud/cloudPhoneService.ts`.
+Server: `apps/account-directory/src/cloud/phones.ts` (routes, minutes, the
+guard, beta list) and `phoneBilling.ts` (extra minutes to Stripe). Brain: `apps/desktop/src/main/services/adeCloud/cloudPhoneService.ts`.
 CLI: `apps/ade-cli/src/cliCloudIphone.ts`. Shapes:
 `apps/account-directory/src/cloud/contract.ts` and
 `apps/desktop/src/shared/cloudPhone.ts`.
@@ -19,10 +19,13 @@ The Worker var `CLOUD_PHONE_ACCESS` decides who has it, with no app release:
 
 - `beta` (the default): only accounts the owner adds to `cloud_phone_beta`
   (migration `0045_cloud_phone_beta.sql`; one row per `user_id`, with the
-  `email` the owner typed). Everyone else reads `access: "soon"`, and start,
-  token and view calls answer 403 `phone_not_on_account`.
+  `email` the owner typed). Everyone else reads `access: "soon"`, and start
+  and view calls answer 403 `phone_not_on_account`. Taking an account off the
+  list stops its running phone.
 - `all`: every account reads `access: "on"`. The plan rules below still apply.
-- `off`, or `NOMAC_API_KEY` unset: `access: "off"`, and calls answer 503.
+- `off`, or `NOMAC_API_KEY` unset: `access: "off"`, and calls answer 503;
+  the ten-minute check stops phones still running. Stopping your own phone
+  (`DELETE /cloud/phone`) works whatever the access.
 - `CLOUD_PHONES_PAUSED=1` refuses new phones (503 `phone_paused`); running
   ones finish.
 - In ADE, the iPhone tool's "Runs on" row shows the "ADE Cloud" chip only for
@@ -37,16 +40,19 @@ Each plan includes `phoneMinutes` a billing period (`src/cloud/plans.ts`: Free
 60, Plus 80, Pro 300, Max 800). A free plan held by the free-plan checks (one
 per computer, a too-new GitHub account) gets 0, as with free hours, and a start
 answers 402 `phone_free_held`. A phone start settles those checks itself, as a
-computer's start does (`freePlanMomentOf` in `routes.ts`), so calling the phone
-route alone can't skip them.
+computer's start does, once the account may use the phone at all
+(`routePhone`), so calling the phone route alone can't skip them.
 
 - Every phone is a `cloud_phones` row (migration `0046_cloud_phone_usage.sql`):
   NoMac's billed seconds and cost, live or ended, and whether the account was on
-  free rules. NoMac's signed webhook (`POST /cloud/nomac/webhook`,
-  `NOMAC_WEBHOOK_SECRET`) settles it; the ten-minute check reads every live
-  phone again, so a missed delivery can't leave one counted forever. Used
-  minutes are the period's billed minutes plus the running phone's time so
-  far. The account read (`CloudAccountState.phone`) is D1 only.
+  free rules, counted in the period it started in. NoMac's signed webhook
+  (`POST /cloud/nomac/webhook`, `NOMAC_WEBHOOK_SECRET`) settles rows this Worker
+  made (another environment's phones are left alone); a delivery whose work
+  fails is given back, so NoMac's retry is done. The ten-minute check reads
+  every live phone again, so a missed delivery can't leave one counted forever.
+  Used minutes are the period's billed minutes plus the running phone's time so
+  far (two hours at most). The account read (`CloudAccountState.phone`) is D1
+  only.
 - **Free plan:** stops at its minutes (402 `phone_minutes_out`). There is no
   pay as you go on Free; a card saved for the free-hours check is never charged.
 - **Paid plans:** "Extra iPhone minutes" is its own switch in Settings › ADE
@@ -58,17 +64,30 @@ route alone can't skip them.
   price `STRIPE_PHONE_MINUTE_PRICE_ID` from `scripts/stripe-setup.mjs`), each
   report identified by where it starts (the minutes already sent): a crash
   after Stripe took one resends the same identifier, which Stripe drops, so a
-  minute is never billed twice (at worst a few go unbilled). Minutes used while
-  the switch was on stay owed after it goes off.
+  minute is never billed twice (at worst a few go unbilled). Minutes used under
+  the settings before a change stay owed: turning the switch off, or lowering
+  the limit, stops further use and never erases a minute already used
+  (`phoneBilling.ts`).
+- **Period changes:** a renewal, a cancel, a failed payment or going free starts
+  a new period while minutes of the old one may still settle. A phone from the
+  old period stops (the ten-minute check, or a new start). The old period's
+  extra minutes are billed after it ends, once none of its phones runs, at its
+  own plan's minutes (`phone_extra_included`, never fewer than the plan bought
+  now), so a downgrade at the renewal can't bill minutes the old plan included.
+  When a plan ends or its payment fails, extra minutes become "was on"
+  (`phone_extra_enabled = 2`): no new minute uses them, the ended period is
+  still billed for them, then they turn off, so buying a plan again never turns
+  them on by itself. A `past_due` account is billed once it pays (or its plan
+  ends).
 - **The guard:** every phone starts with NoMac's spend cap and time limit set
   to what the account may still use (the plan's minutes left, then extra
-  minutes left, two hours at most), so a phone stops by itself there. Those
-  limits are fixed at the start, so a running phone the account may no longer
-  pay for (extra minutes turned off or their limit lowered) is stopped at once,
-  and the ten-minute check stops any live phone whose account has no minutes
-  left (`stopPhoneOverAllowance`). ADE never pays NoMac for a minute nobody
-  pays for. A phone that starts just before the period ends counts in that
-  period; minutes it settles after the turn go unbilled (two hours at most).
+  minutes left, two hours at most), so a phone stops by itself there. NoMac
+  can't lower a running phone's limits, so when what the account may use
+  shrinks (extra minutes off, a lower limit, a new period, access removed, the
+  account blocked), `enforcePhoneAllowance` stops the phone at once if nothing
+  is left, or sets its `stop_at` to when its minutes run out; the minute tick
+  stops it then (`stopPhonesDue`). The ten-minute check runs the same for every
+  live phone. ADE never pays NoMac for a minute nobody pays for.
 - **Free-use cap:** a free-plan phone start is refused (503, never naming why)
   once the month's free use reached the owner's cap, as a free computer is.
 - **Agents:** a person and an attended chat use the phone freely within the
@@ -87,9 +106,9 @@ route alone can't skip them.
 - **Warnings:** an email at 80% and one when the minutes run out, once each a
   period; the wording says whether extra minutes keep the phone going. Settings
   shows the minutes and the extra-minutes card.
-- **Owner:** the phones' NoMac cost counts in the month's cost estimate and,
-  for free-plan phones, toward the free-use cap. NoMac's `credit.low` emails
-  the owner. Analytics: `ade_cloud_phone` (`started`, `ended`, `refused`).
+- **Owner:** the phones' NoMac cost counts in the month's cost estimate, in
+  the alerts' top accounts and, for free-plan phones, toward the free-use cap.
+  Blocking an account stops its phone. NoMac's `credit.low` emails the owner. Analytics: `ade_cloud_phone` (`started`, `ended`, `refused`).
 
 ## Architecture
 

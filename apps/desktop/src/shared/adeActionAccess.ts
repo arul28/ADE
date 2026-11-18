@@ -20,6 +20,9 @@
  * `live` marks what only the running brain can answer (`isLiveOnlyAdeAction`):
  * `"all"` for a whole domain, or the named actions.
  */
+
+import { CLOUD_PHONE_SPEND_ACTIONS, CLOUD_PHONE_USER_ONLY_ACTIONS } from "./cloudPhone";
+
 export type AdeActionAccess = "read" | "write";
 
 type AdeActionAccessTable = Readonly<
@@ -609,7 +612,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   cloud_phone: {
     live: "all",
     read: ["getStatus"],
-    write: ["start", "stop", "look", "act", "screenshot", "launch", "installApp", "control", "logs", "record", "runTests", "view"],
+    write: ["stop", ...CLOUD_PHONE_SPEND_ACTIONS, ...CLOUD_PHONE_USER_ONLY_ACTIONS],
   },
   ios_simulator: {
     live: "all",

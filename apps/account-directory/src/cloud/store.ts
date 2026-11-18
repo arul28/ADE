@@ -47,7 +47,7 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   CLOUD_PHONE_ACCESS?: string;
   /** `1`: no new ADE Cloud iPhones (running ones finish). */
   CLOUD_PHONES_PAUSED?: string;
-  /** Extra iPhone minutes' metered price and meter (`billing.ts`). Unset: extra minutes aren't sold. */
+  /** Extra iPhone minutes' metered price and meter (`phoneBilling.ts`). Unset: extra minutes aren't sold. */
   STRIPE_PHONE_MINUTE_PRICE_ID?: string;
   STRIPE_PHONE_METER_EVENT?: string;
   STRIPE_SECRET_KEY?: string;
@@ -191,7 +191,7 @@ export type ComputerRow = {
   idle_failed_count?: number | null;
   /** Files git ignores that a delete would lose (`CloudIgnoredFiles` as JSON). */
   ignored_files_json?: string | null;
-  /** The ADE version of its last brain start (migration 0045, `POST .../booted`). */
+  /** The ADE version of its last brain start (migration 0039, `POST .../booted`). */
   ade_version?: string | null;
   ade_version_at?: number | null;
   /** Comma list of `CLOUD_COMPUTER_FEATURES` from the last boot report; null: an older image. */
@@ -244,11 +244,14 @@ export type AccountRow = {
   /** Refused the free plan: its computer already gave another account free hours (`freePlan.ts`). Free hours are 0 while set. */
   free_refused_at: number | null;
   /** The ADE Cloud iPhone (migration 0046, `phones.ts`): extra minutes and the minutes warnings. Absent before the migration. */
+  /** 1 on; 0 off; 2 was on until the plan ended (or its payment failed): used for no new minute, still billed for its period (`phoneBilling.ts`). */
   phone_extra_enabled?: number;
   phone_extra_limit_cents?: number | null;
   phone_extra_reported_minutes?: number;
   phone_extra_owed_minutes?: number;
   phone_extra_period_start?: number | null;
+  /** The plan's iPhone minutes in that period, for its bill after it ends (`phoneBilling.ts`). */
+  phone_extra_included?: number | null;
   phone_warned_80_at?: number | null;
   phone_warned_zero_at?: number | null;
   phone_warned_period_start?: number | null;
@@ -741,6 +744,14 @@ export function groupByUser<T extends { user_id: string }>(rows: T[]): Map<strin
 
 /* ---- Accounts ---- */
 
+/**
+ * Extra iPhone minutes when the paid plan ends or its payment fails: on (1)
+ * becomes "was on" (2), so no new minute uses them and the ended period is
+ * still billed for them (`phoneBilling.ts` turns them off after). The SQL says the same.
+ */
+export const phoneExtraEnded = (account: Pick<AccountRow, "phone_extra_enabled">): number => (account.phone_extra_enabled === 1 ? 2 : account.phone_extra_enabled ?? 0);
+const PHONE_EXTRA_ENDED_SQL = "case when phone_extra_enabled = 1 then 2 else phone_extra_enabled end";
+
 /** {@link accountRules} is `paid`, as SQL on a `cloud_accounts` row. The two must say the same. */
 export const PAID_RULES_SQL = "(plan = 'paid' and coalesce(stripe_status, '') <> 'past_due')";
 
@@ -1118,9 +1129,12 @@ export async function rollPeriodIfDue(env: CloudEnv, account: AccountRow, now: n
   // `past_due` stays a paid account underneath: only a cancel ends the plan here.
   const nextPlan = cancelled ? "free" : account.plan === "paid" ? "paid" : "free";
   const rolled = await startFreshPeriod(env, account, { plan: nextPlan, start: period.start, end: period.end, included: "free" }, now, cancelled ? [
-    env.DB.prepare("update cloud_accounts set cancel_at_period_end = 0, extra_enabled = 0, phone_extra_enabled = 0, extra_disk_state = 'off', stripe_status = null, updated_at = ? where user_id = ?").bind(now, account.user_id),
+    env.DB.prepare(`update cloud_accounts set cancel_at_period_end = 0, extra_enabled = 0, extra_disk_state = 'off', stripe_status = null,
+      phone_extra_enabled = ${PHONE_EXTRA_ENDED_SQL}, updated_at = ? where user_id = ?`).bind(now, account.user_id),
   ] : [], { keepOldTerms: !cancelled && account.plan === "paid" });
-  return cancelled ? { ...rolled, cancel_at_period_end: 0, extra_enabled: 0, phone_extra_enabled: 0, extra_disk_state: "off", stripe_status: null } : rolled;
+  return cancelled
+    ? { ...rolled, cancel_at_period_end: 0, extra_enabled: 0, extra_disk_state: "off", stripe_status: null, phone_extra_enabled: phoneExtraEnded(account) }
+    : rolled;
 }
 
 export type CloudPlanChange = {
@@ -1220,6 +1234,7 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
     // Extra hours go off here, but what was already used is still owed.
     const owed = extraActive(account) ? extraOwedMilli(account, stashUsed) : account.extra_owed_milli;
     extras.push(["past_due_used_milli", stashUsed], ["past_due_period_end", stashPeriodEnd], ["past_due_included_milli", account.included_milli], ["extra_enabled", 0], ["extra_owed_milli", owed]);
+    extras.push(["phone_extra_enabled", phoneExtraEnded(account)]);
   }
   const updates: D1PreparedStatement[] = [];
   switch (transition?.kind) {
@@ -1237,8 +1252,8 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
       extras.push(...clearExtraReports);
       break;
     case "to_free":
-      // Bought again later, extra disk asks again.
-      extras.push(["extra_enabled", 0], ["extra_disk_state", "off"]);
+      // Bought again later, extra disk asks again; extra iPhone minutes are billed for the ended period, then off.
+      extras.push(["extra_enabled", 0], ["extra_disk_state", "off"], ["phone_extra_enabled", phoneExtraEnded(account)]);
       break;
   }
   // An upgrade, or back to the higher plan, inside a running period (no new period start): the

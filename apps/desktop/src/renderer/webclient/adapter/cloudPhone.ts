@@ -1,4 +1,4 @@
-import type { CloudPhoneStatusView, CloudPhoneViewLink } from "../../../shared/cloudPhone";
+import type { CloudPhoneStatusView, CloudPhoneView } from "../../../shared/cloudPhone";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 import type { AdapterInfra } from "./types";
 
@@ -38,7 +38,7 @@ export function createWebCloudPhoneNamespace(infra: Pick<AdapterInfra, "client" 
 
   return {
     status: (pin) => read<CloudPhoneStatusView>("status", {}, pin),
-    view: (args, pin) => write<CloudPhoneViewLink>("view", { ...(args ?? {}) }, pin),
+    view: (args, pin) => write<CloudPhoneView>("view", { ...(args ?? {}) }, pin),
     start: (args, pin) => write<unknown>("start", { ...(args ?? {}) }, pin),
     stop: (pin) => write<{ stopped: boolean }>("stop", {}, pin),
     screenshot: (args, pin) => write<{ artifactId: string | null }>("screenshot", { ...args }, pin),

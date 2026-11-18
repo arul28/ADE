@@ -2,7 +2,8 @@ import { authenticate } from "../callerToken";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { readBoundedJson } from "../sinkUtils";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
-import { CloudBillingError, accountReturnUrl, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours, setExtraPhoneMinutes, webReturnUrl, type BillingReturnUrlFor } from "./billing";
+import { CloudBillingError, accountReturnUrl, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours, webReturnUrl, type BillingReturnUrlFor } from "./billing";
+import { setExtraPhoneMinutes } from "./phoneBilling";
 import { parseSustainedCpuReport, recordSustainedCpu } from "./abuseSignals";
 import { buildAccountState } from "./accountState";
 import { routeSavedChats } from "./chats";
@@ -1392,6 +1393,12 @@ const BILLING_PATHS = new Set<string>([CLOUD_PATHS.billingCheckout, CLOUD_PATHS.
 /** The most a person may set as extra disk's monthly limit, in dollars. */
 const EXTRA_DISK_LIMIT_MAX_USD = 1000;
 
+/** A monthly limit in whole dollars from $1 to `EXTRA_DISK_LIMIT_MAX_USD`, or null when it isn't one. */
+function readMonthlyLimitUsd(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= EXTRA_DISK_LIMIT_MAX_USD ? value : null;
+}
+const LIMIT_SENTENCE = `Pick a monthly limit from $1 to ${EXTRA_DISK_LIMIT_MAX_USD}`;
+
 /**
  * Where Stripe sends the person back: this server's own page, or the hosted
  * web client when the request asks for it (`returnTo: "web"`). The web
@@ -1462,18 +1469,27 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
     }
     if (typeof body.enabled !== "boolean") return badRequest(UNREADABLE_REQUEST_MESSAGE);
     if (path === CLOUD_PATHS.billingExtraDisk) {
-      const limit = body.monthlyLimitUsd;
-      const limitOk = typeof limit === "number" && Number.isInteger(limit) && limit >= 1 && limit <= EXTRA_DISK_LIMIT_MAX_USD;
-      if (body.enabled && !limitOk) return badRequest(`Pick a monthly limit from $1 to $${EXTRA_DISK_LIMIT_MAX_USD}.`);
-      await setExtraDisk(env, userId, body.enabled ? { enabled: true, monthlyLimitCents: (limit as number) * 100 } : { enabled: false }, now);
+      if (!body.enabled) {
+        await setExtraDisk(env, userId, { enabled: false }, now);
+      } else {
+        const limit = readMonthlyLimitUsd(body.monthlyLimitUsd);
+        if (limit == null) return badRequest(`${LIMIT_SENTENCE}.`);
+        await setExtraDisk(env, userId, { enabled: true, monthlyLimitCents: limit * 100 }, now);
+      }
       return json(await buildAccountState(env, userId, now));
     }
     if (path === CLOUD_PATHS.billingExtraPhone) {
-      // No limit is `null`; a limit is whole dollars, as extra disk's.
-      const limit = body.monthlyLimitUsd;
-      const limitOk = limit === null || limit === undefined || (typeof limit === "number" && Number.isInteger(limit) && limit >= 1 && limit <= EXTRA_DISK_LIMIT_MAX_USD);
-      if (body.enabled && !limitOk) return badRequest(`Pick a monthly limit from $1 to $${EXTRA_DISK_LIMIT_MAX_USD}, or none.`);
-      await setExtraPhoneMinutes(env, userId, body.enabled ? { enabled: true, monthlyLimitCents: typeof limit === "number" ? limit * 100 : null } : { enabled: false }, now);
+      if (!body.enabled) {
+        await setExtraPhoneMinutes(env, userId, { enabled: false }, now);
+      } else if (body.monthlyLimitUsd == null) {
+        // No limit is only ever chosen (null or left out).
+        await setExtraPhoneMinutes(env, userId, { enabled: true, monthlyLimitCents: null }, now);
+      } else {
+        // A limit is whole dollars, as extra disk's.
+        const limit = readMonthlyLimitUsd(body.monthlyLimitUsd);
+        if (limit == null) return badRequest(`${LIMIT_SENTENCE}, or none.`);
+        await setExtraPhoneMinutes(env, userId, { enabled: true, monthlyLimitCents: limit * 100 }, now);
+      }
       return json(await buildAccountState(env, userId, now));
     }
     await setExtraHours(env, userId, body.enabled, now);
@@ -1492,7 +1508,8 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
 function freePlanMomentOf(method: string, path: string): "read" | "use" | null {
   if (method === "GET" && (path === CLOUD_PATHS.account || path === CLOUD_PATHS.referrals)) return "read";
   if (method !== "POST") return null;
-  if (path === CLOUD_PATHS.instances || path === CLOUD_PATHS.phone) return "use";
+  // A phone start settles them in `phones.ts`, once its access is known.
+  if (path === CLOUD_PATHS.instances) return "use";
   const action = instanceRouteOf(path)?.action;
   return action === "start" || action === "fork" ? "use" : null;
 }

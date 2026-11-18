@@ -71,6 +71,8 @@ export type CloudServerProviderDeps = {
   computer?: () => Promise<CloudComputerSignal | null>;
   fetch?: FetchLike;
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
+  /** The account this client is made for (`CloudProvider.account`, `cloudAccessKey`). */
+  account: string;
 };
 
 export type CloudDeleteContext = {
@@ -206,6 +208,8 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
   }
 
   return {
+    account: deps.account,
+
     async accessEnabled(): Promise<boolean> {
       return record(await request("GET", "/cloud/access"))?.enabled === true;
     },
@@ -484,10 +488,6 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async phoneStart(input): Promise<CloudPhoneStart> {
       return await request("POST", CLOUD_PATHS.phone, { body: input.device ? { device: input.device } : {} }) as CloudPhoneStart;
-    },
-
-    async phoneToken(): Promise<CloudPhoneStart> {
-      return await request("POST", CLOUD_PATHS.phoneToken, { body: {} }) as CloudPhoneStart;
     },
 
     async phoneView(input): Promise<CloudPhoneView> {

@@ -337,6 +337,7 @@ import { SAVED_CHAT_STOPPED_STATUS } from "../../desktop/src/shared/cloudSavedCh
 import { noteAccountLanesChanged } from "./services/account/accountLaneIndexPublisher";
 import { createCloudLaneNameSync, type CloudLaneNameSync } from "../../desktop/src/main/services/adeCloud/cloudLaneNameSync";
 import { createCloudServerProvider } from "../../desktop/src/main/services/adeCloud/cloudServerProvider";
+import { cloudAccessKey } from "../../desktop/src/main/services/adeCloud/cloudAccessMemory";
 import { normalizeGitRemoteIdentity } from "../../desktop/src/shared/crossMachineHandoff";
 import { readGitOriginUrl } from "../../desktop/src/main/services/projects/recentProjectSummary";
 import { BRAIN_HEARTBEAT_STALE_MS, readBrainHeartbeat, servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
@@ -3141,9 +3142,12 @@ export async function createAdeRuntime(args: {
     cloudChatUploaderRef.current = cloudChatUploader;
     teardown.push(() => cloudChatUploader?.dispose());
     if (isAdeCloudComputer() && process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
+      const laneNameBaseUrl = () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }) || null;
       const laneNameClient = createCloudServerProvider({
         accessToken: async () => (await getAccountAccessToken().catch(() => null)) ?? null,
-        baseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }) || null,
+        baseUrl: laneNameBaseUrl,
+        // An ADE Cloud computer serves the one account it was made for.
+        account: cloudAccessKey(laneNameBaseUrl(), accountAuthService.getStatus().userId ?? null),
         logger,
       });
       cloudLaneNameSyncRef.current = createCloudLaneNameSync({

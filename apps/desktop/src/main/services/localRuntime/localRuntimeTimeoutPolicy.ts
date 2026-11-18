@@ -3,6 +3,7 @@ import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 import { WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS } from "../../../shared/types/macDesktop";
 import { GIT_PULL_ACTION_TIMEOUT_MS, LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
 import { FILE_DELETE_TIMEOUT_MS } from "../../../shared/removeTreeTimeouts";
+import { CLOUD_PHONE_BUILD_TIMEOUT_MS, CLOUD_PHONE_CALL_TIMEOUT_MS } from "../../../shared/cloudPhone";
 import {
   ARCHIVE_DELETE_TIMEOUT_MS,
   ARCHIVE_RESTORE_TIMEOUT_MS,
@@ -400,16 +401,16 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["ios_simulator.launch", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
   // The ADE Cloud iPhone: a build uploads the project and builds it there; a
   // start may wait in NoMac's line for a free phone (up to 5 minutes).
-  ["cloud_phone.launch", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
-  ["cloud_phone.installApp", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
-  ["cloud_phone.runTests", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
-  ["cloud_phone.start", 7 * 60_000],
-  ["cloud_phone.look", 7 * 60_000],
-  ["cloud_phone.act", 7 * 60_000],
-  ["cloud_phone.screenshot", 7 * 60_000],
-  ["cloud_phone.control", 7 * 60_000],
-  ["cloud_phone.logs", 7 * 60_000],
-  ["cloud_phone.record", 7 * 60_000],
+  ["cloud_phone.launch", CLOUD_PHONE_BUILD_TIMEOUT_MS],
+  ["cloud_phone.installApp", CLOUD_PHONE_BUILD_TIMEOUT_MS],
+  ["cloud_phone.runTests", CLOUD_PHONE_BUILD_TIMEOUT_MS],
+  ["cloud_phone.start", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.look", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.act", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.screenshot", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.control", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.logs", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.record", CLOUD_PHONE_CALL_TIMEOUT_MS],
   // Builds into the lane's DerivedData like a launch, then installs.
   ["ios_simulator.installApp", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
   // See IOS_SIMULATOR_PREVIEW_TIMEOUT_MS.

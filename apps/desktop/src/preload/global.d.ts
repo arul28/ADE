@@ -61,7 +61,7 @@ import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } fro
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { AndroidEmulatorPreloadApi } from "../shared/types/androidEmulator";
 import type { CloudPhoneViewPreloadApi } from "../shared/types/cloudPhoneView";
-import type { CloudPhoneStatusView, CloudPhoneViewLink } from "../shared/cloudPhone";
+import type { CloudPhoneStatusView, CloudPhoneView } from "../shared/cloudPhone";
 import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
 import type { DatabaseCopiesBridge } from "../shared/types/startupRecovery";
 import type { ProductSurveyBridge } from "../shared/types/productSurveys";
@@ -4411,6 +4411,15 @@ declare global {
         signOut: (args: SubscriptionProxySignOutArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyMutationResult>;
         setDisabled: (args: SubscriptionProxySetDisabledArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyMutationResult>;
       };
+      /** The ADE Cloud iPhone on the chat's brain (`cloud_phone`). Pass the chat's pin. */
+      cloudPhone: {
+        status: (pin?: OpenProjectBinding | null) => Promise<CloudPhoneStatusView>;
+        view: (args?: { control?: boolean }, pin?: OpenProjectBinding | null) => Promise<CloudPhoneView>;
+        start: (args?: { device?: string }, pin?: OpenProjectBinding | null) => Promise<unknown>;
+        stop: (pin?: OpenProjectBinding | null) => Promise<{ stopped: boolean }>;
+        screenshot: (args: { chatSessionId?: string | null; laneId?: string | null }, pin?: OpenProjectBinding | null) => Promise<{ artifactId: string | null }>;
+        record: (args: { action: "start" | "stop"; chatSessionId?: string | null; laneId?: string | null }, pin?: OpenProjectBinding | null) => Promise<{ failed: boolean; text: string; artifactId: string | null }>;
+      };
       /**
        * The account's provider sign-ins for ADE Cloud (P5). `status` reads (any
        * caller); the rest are the person's, and the brain refuses them to
@@ -4418,15 +4427,6 @@ declare global {
        * `useSettingsMachineScope().pin` for its "this computer" part; the
        * account part is the same from any brain of the person's.
        */
-      /** The ADE Cloud iPhone on the chat's brain (`cloud_phone`). Pass the chat's pin. */
-      cloudPhone: {
-        status: (pin?: OpenProjectBinding | null) => Promise<CloudPhoneStatusView>;
-        view: (args?: { control?: boolean }, pin?: OpenProjectBinding | null) => Promise<CloudPhoneViewLink>;
-        start: (args?: { device?: string }, pin?: OpenProjectBinding | null) => Promise<unknown>;
-        stop: (pin?: OpenProjectBinding | null) => Promise<{ stopped: boolean }>;
-        screenshot: (args: { chatSessionId?: string | null; laneId?: string | null }, pin?: OpenProjectBinding | null) => Promise<{ artifactId: string | null }>;
-        record: (args: { action: "start" | "stop"; chatSessionId?: string | null; laneId?: string | null }, pin?: OpenProjectBinding | null) => Promise<{ failed: boolean; text: string; artifactId: string | null }>;
-      };
       providerLogins: {
         status: (args?: { provider?: ProviderLoginProvider | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         captureNow: (args?: { provider?: ProviderLoginProvider | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;

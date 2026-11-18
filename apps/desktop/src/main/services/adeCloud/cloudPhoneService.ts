@@ -21,21 +21,21 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import type {
   CloudPhoneDevice,
   CloudPhoneMinutes,
   CloudPhoneStart,
-  CloudPhoneState,
   CloudPhoneSummary,
   CloudPhoneView,
 } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudProvider } from "./cloudProvider";
 import { CloudProviderError } from "./cloudProvider";
-import { CLOUD_PHONE_AGENT_ACTIONS } from "../../../shared/cloudPhone";
+import { CLOUD_PHONE_AGENT_ACTIONS, CLOUD_PHONE_DEVICES, isCloudPhoneDevice, type CloudPhoneStatusView } from "../../../shared/cloudPhone";
 import type { ComputerUseArtifactIngestionRequest } from "../../../shared/types";
 import { readArtifactId } from "../ios/recording/simRecordingService";
-
-
+import { isPathInside } from "../shared/pathCompare";
+import { isPathEscapeError, resolvePathWithinRoot } from "../shared/utils";
 
 export type CloudPhoneServiceDeps = {
   /** The account's ADE Cloud client, or null signed out. */
@@ -70,13 +70,6 @@ export type CloudPhoneToolAnswer = {
   stopNotice: string | null;
 };
 
-export type CloudPhoneStatus = CloudPhoneState & {
-  /** Every action an agent may call on this device. */
-  capabilities: readonly string[];
-  supported: boolean;
-  /** One line for a person or agent when it can't be used. */
-  reason: string | null;
-};
 
 type Held = { phoneId: string; token: string; expiresAt: number; apiBase: string; device: string; minutes: CloudPhoneMinutes; checkedAt: number };
 
@@ -101,7 +94,7 @@ const isSecretFile = (name: string): boolean =>
   || name === ".netrc";
 const skipFile = (name: string): boolean => name === ".DS_Store" || name.endsWith(".xcuserstate") || isSecretFile(name);
 
-export function cloudPhoneSkipsPath(relative: string): boolean {
+function cloudPhoneSkipsPath(relative: string): boolean {
   const parts = relative.split(/[\\/]/);
   const name = parts[parts.length - 1] ?? "";
   return parts.slice(0, -1).some((part) => SKIP_DIRS.has(part)) || SKIP_DIRS.has(name) || skipFile(name);
@@ -129,29 +122,62 @@ function run(command: string, args: string[], options: { cwd: string; input?: Bu
   });
 }
 
-/** The files a build needs: what git tracks or would track (its ignores kept), minus NoMac's skip list. */
-async function projectFiles(root: string): Promise<string[]> {
-  const listed = await run("git", ["ls-files", "-co", "--exclude-standard", "-z"], { cwd: root });
+/**
+ * The files a build needs: what git tracks or would track (its ignores kept),
+ * minus NoMac's skip list. Only files go to tar, never a folder: git lists a
+ * submodule as its folder, so its own files are listed the same way, under its
+ * path, and each passes the same filter (a folder whole would carry its keys).
+ */
+async function projectFiles(root: string, prefix = ""): Promise<string[]> {
+  const listed = await run("git", ["ls-files", "-co", "--exclude-standard", "-z"], { cwd: prefix ? path.join(root, prefix) : root });
   if (listed.code !== 0) throw new CloudPhoneError(`Could not list the project's files: ${listed.stderr.trim() || "git failed"}.`, "pack_failed");
-  return listed.stdout.toString("utf8").split("\0").filter((file) => file && !cloudPhoneSkipsPath(file) && fs.existsSync(path.join(root, file)));
+  const files: string[] = [];
+  for (const entry of listed.stdout.toString("utf8").split("\0")) {
+    if (!entry) continue;
+    const relative = prefix ? `${prefix}/${entry}` : entry;
+    if (cloudPhoneSkipsPath(relative)) continue;
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(path.join(root, relative));
+    } catch {
+      continue; // Tracked but deleted here.
+    }
+    if (!stat.isDirectory()) files.push(relative);
+    // A submodule that is checked out; one that isn't has no files to send.
+    else if (fs.existsSync(path.join(root, relative, ".git"))) files.push(...await projectFiles(root, relative));
+  }
+  return files;
+}
+
+type Packed = { file: string; size: number; sha256: string };
+
+/**
+ * Packs with the system's tar into a temp `.tar.gz`, then reads its size and
+ * sha256 as a stream: an archive up to 2 GB is never held in memory. The file
+ * is removed when packing fails or it is over the limit.
+ */
+async function packWithTar(noun: "project" | "app", tarArgs: (out: string) => string[], options: { cwd: string; input?: Buffer }): Promise<Packed> {
+  const out = path.join(os.tmpdir(), `ade-cloud-phone-${noun === "app" ? "app-" : ""}${randomUUID()}.tar.gz`);
+  try {
+    const packed = await run("tar", tarArgs(out), options);
+    if (packed.code !== 0) throw new CloudPhoneError(`Could not pack the ${noun}: ${packed.stderr.trim() || "tar failed"}.`, "pack_failed");
+    const { size } = await fs.promises.stat(out);
+    if (size > UPLOAD_LIMIT_BYTES) throw new CloudPhoneError(`The ${noun} is over 2 GB packed, more than a cloud iPhone takes.`, "pack_too_large");
+    const hash = createHash("sha256");
+    for await (const chunk of fs.createReadStream(out)) hash.update(chunk as Buffer);
+    return { file: out, size, sha256: hash.digest("hex") };
+  } catch (error) {
+    fs.rmSync(out, { force: true });
+    throw error;
+  }
 }
 
 /** A `.tar.gz` of those files, made with the system's tar (Windows 10+, macOS and Linux all ship one that reads `--null -T -`). */
-async function packProject(root: string): Promise<{ file: string; size: number; sha256: string; count: number }> {
+async function packProject(root: string): Promise<Packed & { count: number }> {
   const files = await projectFiles(root);
   if (!files.length) throw new CloudPhoneError("The project has no files to send.", "pack_failed");
-  const out = path.join(os.tmpdir(), `ade-cloud-phone-${randomUUID()}.tar.gz`);
-  const packed = await run("tar", ["--null", "-czf", out, "-T", "-"], { cwd: root, input: Buffer.from(`${files.join("\0")}\0`, "utf8") });
-  if (packed.code !== 0) {
-    fs.rmSync(out, { force: true });
-    throw new CloudPhoneError(`Could not pack the project: ${packed.stderr.trim() || "tar failed"}.`, "pack_failed");
-  }
-  const bytes = fs.readFileSync(out);
-  if (bytes.length > UPLOAD_LIMIT_BYTES) {
-    fs.rmSync(out, { force: true });
-    throw new CloudPhoneError("The project is over 2 GB packed, more than a cloud iPhone takes.", "pack_too_large");
-  }
-  return { file: out, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), count: files.length };
+  const packed = await packWithTar("project", (out) => ["--null", "-czf", out, "-T", "-"], { cwd: root, input: Buffer.from(`${files.join("\0")}\0`, "utf8") });
+  return { ...packed, count: files.length };
 }
 
 /** Sent for a `.ipa` or a device build: the cloud iPhone runs Simulator builds. */
@@ -173,21 +199,39 @@ function supportedPlatformOf(bundle: string): string | null {
 }
 
 /** A `.tar.gz` of one `.app` folder, whole: a bundle's own folders and files are part of it. */
-async function packApp(appPath: string): Promise<{ file: string; size: number; sha256: string }> {
+function packApp(appPath: string): Promise<Packed> {
   const parent = path.dirname(appPath);
-  const name = path.basename(appPath);
-  const out = path.join(os.tmpdir(), `ade-cloud-phone-app-${randomUUID()}.tar.gz`);
-  const packed = await run("tar", ["-czf", out, "-C", parent, name], { cwd: parent });
-  if (packed.code !== 0) {
-    fs.rmSync(out, { force: true });
-    throw new CloudPhoneError(`Could not pack the app: ${packed.stderr.trim() || "tar failed"}.`, "pack_failed");
+  return packWithTar("app", (out) => ["-czf", out, "-C", parent, path.basename(appPath)], { cwd: parent });
+}
+
+/**
+ * Where a screenshot is saved. Like the local simulator, which refuses an out
+ * path outside its build root, only inside the calling project or the temp
+ * folder; a relative path resolves under the project. The real-path check
+ * catches a symlink inside an allowed folder that points out of it.
+ */
+function screenshotTarget(requested: string | undefined, projectRoot: string | null): string {
+  const temp = os.tmpdir();
+  if (!requested) return path.join(temp, `ade-cloud-iphone-${Date.now()}.png`);
+  const target = path.resolve(projectRoot ?? temp, requested);
+  const allowed = [projectRoot, temp].filter((root): root is string => Boolean(root)).some((root) => {
+    if (!isPathInside(target, root)) return false;
+    if (!fs.existsSync(root)) return true;
+    try {
+      resolvePathWithinRoot(root, target, { allowMissing: true });
+      return true;
+    } catch (error) {
+      if (isPathEscapeError(error)) return false;
+      throw error;
+    }
+  });
+  if (!allowed) {
+    throw new CloudPhoneError(
+      `${target} is outside ${projectRoot ? `the project (${projectRoot}) and ` : ""}the temp folder. outPath must be a path inside ${projectRoot ? "one of them; a relative path resolves under the project" : "the temp folder"}.`,
+      "out_path_outside_root",
+    );
   }
-  const bytes = fs.readFileSync(out);
-  if (bytes.length > UPLOAD_LIMIT_BYTES) {
-    fs.rmSync(out, { force: true });
-    throw new CloudPhoneError("The app is over 2 GB packed, more than a cloud iPhone takes.", "pack_too_large");
-  }
-  return { file: out, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+  return target;
 }
 
 /** The bundle id an install answer names, when it names one. */
@@ -195,13 +239,13 @@ function bundleIdOf(text: string): string | null {
   const named = /bundle(?:\s*id)?\s*[:=]?\s*([A-Za-z][\w-]*(?:\.[\w-]+)+)/i.exec(text)?.[1];
   if (named) return named;
   // NoMac's own wording elsewhere: "installed dev.example.App." (app_run).
-  const installed = /installed\s+([A-Za-z][\w-]*(?:\.[\w-]+){2,})/i.exec(text)?.[1];
+  const installed = /\binstalled\s+([A-Za-z][\w-]*(?:\.[\w-]+){2,})/i.exec(text)?.[1];
   if (installed) return installed.replace(/\.$/, "");
   return /\(([A-Za-z][\w-]*(?:\.[\w-]+){2,})\)/.exec(text)?.[1] ?? null;
 }
 
 /** The workspace folder a project unpacks into: the same one each time, so builds stay incremental. */
-export function cloudPhoneProjectName(root: string): string {
+function cloudPhoneProjectName(root: string): string {
   const base = path.basename(root).replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 40) || "project";
   return `${base}-${createHash("sha256").update(path.resolve(root).toLowerCase()).digest("hex").slice(0, 12)}`;
 }
@@ -226,8 +270,16 @@ function answerOf(body: Record<string, unknown> | null): CloudPhoneToolAnswer {
 export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
   const fetcher = deps.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
   let held: Held | null = null;
+  /**
+   * The account `held` was started for. A phone and its token belong to one
+   * account: after a sign-out or a switch to another account it is dropped,
+   * never driven. The client is made fresh per call, so its account names it.
+   */
+  let heldFor: string | null = null;
   /** One start at a time: a second caller waits for the same phone. */
   let starting: Promise<Held> | null = null;
+
+  const accountOf = (client: CloudProvider | null): string | null => client?.account ?? null;
 
   async function provider(): Promise<CloudProvider> {
     const client = await deps.provider();
@@ -235,7 +287,13 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     return client;
   }
 
-  function hold(start: CloudPhoneStart): Held {
+  /** Drops the held phone when the signed-in account is no longer the one it was started for. */
+  async function dropOtherAccountsPhone(): Promise<void> {
+    if (held && accountOf(await deps.provider()) !== heldFor) held = null;
+  }
+
+  function hold(start: CloudPhoneStart, client: CloudProvider): Held {
+    heldFor = accountOf(client);
     held = {
       phoneId: start.phone.id,
       token: start.token.token,
@@ -248,14 +306,15 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     return held;
   }
 
-  async function nomac(phone: Held, method: string, route: string, body?: unknown, idempotent = false): Promise<{ status: number; body: Record<string, unknown> | null }> {
+  /** One call to the phone's NoMac session. A POST that must run once passes an `idempotencyKey` (`newKey()`, or one its retries share). */
+  async function nomac(phone: Held, method: string, route: string, body?: unknown, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> | null }> {
     const response = await fetcher(`${phone.apiBase}/sessions/${encodeURIComponent(phone.phoneId)}${route}`, {
       method,
       headers: {
         authorization: `Bearer ${phone.token}`,
         accept: "application/json",
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
-        ...(idempotent ? { "idempotency-key": `ade-${randomUUID()}` } : {}),
+        ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       signal: AbortSignal.timeout(90_000),
@@ -264,6 +323,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     const parsed = await response.json().catch(() => null) as unknown;
     return { status: response.status, body: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null };
   }
+
+  const newKey = (): string => `ade-${randomUUID()}`;
 
   function failureOf(answer: { status: number; body: Record<string, unknown> | null }, doing: string): CloudPhoneError {
     const error = answer.body?.error as { code?: unknown; message?: unknown } | string | undefined;
@@ -300,6 +361,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
 
   /** The account's ready phone, started when there is none. */
   async function ensure(device?: CloudPhoneDevice): Promise<Held> {
+    await dropOtherAccountsPhone();
     if (held && held.expiresAt - Date.now() > TOKEN_REFRESH_MARGIN_MS && (!device || held.device === device)) {
       if (Date.now() - held.checkedAt < READY_TRUST_MS) return held;
       // A held phone may have stopped on its own (idle, its time limit): read it.
@@ -313,7 +375,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     starting ??= (async () => {
       const client = await provider();
       const start = await client.phoneStart!({ ...(device ? { device } : {}) });
-      const phone = hold(start);
+      const phone = hold(start, client);
       deps.logger?.info?.("cloud_phone.held", { phoneId: phone.phoneId, reused: start.reused, minutesLeft: start.minutes.left });
       await waitUntilReady(phone);
       phone.checkedAt = Date.now();
@@ -326,12 +388,12 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
   async function tool(name: string, args: Record<string, unknown>, doing: string): Promise<CloudPhoneToolAnswer> {
     let phone = await ensure();
     const by = Date.now() + TOOL_WAIT_MS;
-    let answer = await nomac(phone, "POST", `/tools/${name}`, args, true);
+    let answer = await nomac(phone, "POST", `/tools/${name}`, args, newKey());
     // The phone ended between the check and the call (idle, its limit): once more on a fresh one.
     if (answer.status === 401 || answer.status === 404 || answer.status === 409 || answer.status === 410) {
       held = null;
       phone = await ensure();
-      answer = await nomac(phone, "POST", `/tools/${name}`, args, true);
+      answer = await nomac(phone, "POST", `/tools/${name}`, args, newKey());
     }
     while (answer.status === 200 && answer.body?.state === "running" && typeof answer.body.id === "string") {
       if (Date.now() >= by) throw new CloudPhoneError(`${doing} is still running after 15 minutes.`, "tool_timeout");
@@ -344,7 +406,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     let job = JOB_PATTERN.exec(result.text)?.[1] ?? null;
     while (job) {
       if (Date.now() >= by) throw new CloudPhoneError(`${doing} is still running after 15 minutes.`, "tool_timeout");
-      const next = await nomac(phone, "POST", "/tools/job_status", { job_id: job }, true);
+      const next = await nomac(phone, "POST", "/tools/job_status", { job_id: job }, newKey());
       if (next.status !== 200 || !next.body?.result) throw failureOf(next, doing);
       result = answerOf(next.body);
       job = STILL_RUNNING.test(result.text) ? job : null;
@@ -353,27 +415,24 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
   }
 
   /** Uploads a packed archive with the closed link, then has the phone unpack it under `name`. */
-  async function uploadPacked(phone: Held, packed: { file: string; size: number; sha256: string }, name: string, what: string): Promise<{ root: string; app: string | null }> {
+  async function uploadPacked(phone: Held, packed: Packed, name: string, what: string): Promise<{ root: string; app: string | null }> {
     const link = await nomac(phone, "POST", "/sync/upload", { size: packed.size, sha256: packed.sha256 });
     const uploadUrl = link.body?.upload_url;
     if (link.status !== 200 || typeof uploadUrl !== "string" || !uploadUrl.startsWith("https://")) throw failureOf(link, `Uploading ${what}`);
+    // Streamed from disk with its length: up to 2 GB is never held in memory.
     const put = await fetcher(uploadUrl, {
       method: "PUT",
       headers: { "content-length": String(packed.size) },
-      body: fs.readFileSync(packed.file),
+      body: Readable.toWeb(fs.createReadStream(packed.file)) as unknown as BodyInit,
+      duplex: "half",
       signal: AbortSignal.timeout(30 * 60_000),
-    });
+    } as RequestInit);
     if (!put.ok) throw new CloudPhoneError(`Uploading ${what} failed (${put.status}).`, "upload_failed");
     const key = `ade-fetch-${packed.sha256.slice(0, 32)}`;
     for (let attempt = 0; attempt < 600; attempt += 1) {
-      const response = await fetcher(`${phone.apiBase}/sessions/${encodeURIComponent(phone.phoneId)}/sync/fetch`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${phone.token}`, "content-type": "application/json", "idempotency-key": key },
-        body: JSON.stringify({ sha256: packed.sha256, name }),
-        signal: AbortSignal.timeout(90_000),
-      });
-      const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-      if (response.status !== 200) throw failureOf({ status: response.status, body }, `Unpacking ${what}`);
+      const response = await nomac(phone, "POST", "/sync/fetch", { sha256: packed.sha256, name }, key);
+      const body = response.body;
+      if (response.status !== 200) throw failureOf(response, `Unpacking ${what}`);
       if (body?.state === "failed") throw new CloudPhoneError(`Unpacking ${what} failed: ${String(body.error ?? "unknown")}.`, "fetch_failed");
       if (body?.state !== "running" && typeof body?.root === "string") {
         return { root: body.root, app: typeof body.app === "string" ? body.app : null };
@@ -434,8 +493,19 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     return value;
   };
 
+  /** A build's project folder on this machine, and the folder inside it to build (`path`). */
+  const projectArgs = (args: { root?: unknown; path?: unknown } | null | undefined): { root: string; sub: string | undefined } => {
+    const root = textArg(args?.root, "root", 2_000);
+    if (!root || !fs.existsSync(root)) throw new CloudPhoneError("root is the project's folder on this machine.", "bad_request");
+    const sub = textArg(args?.path, "path", 500);
+    if (sub && (path.isAbsolute(sub) || sub.split(/[\\/]/).includes(".."))) throw new CloudPhoneError("path is a folder inside the project.", "bad_request");
+    return { root, sub };
+  };
+  /** That folder in the phone's unpacked copy. */
+  const onPhone = (uploadedRoot: string, sub: string | undefined): string => (sub ? `${uploadedRoot}/${sub.replace(/\\/g, "/")}` : uploadedRoot);
+
   return {
-    async getStatus(): Promise<CloudPhoneStatus> {
+    async getStatus(): Promise<CloudPhoneStatusView> {
       const client = await deps.provider();
       if (!client?.phoneState) {
         return { access: "off", minutes: null, phone: null, capabilities: [], supported: false, reason: await deps.whyNoProvider() ?? "Sign in to ADE to use the ADE Cloud iPhone." };
@@ -450,10 +520,10 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
 
     async start(args: { device?: unknown } | null | undefined): Promise<{ phone: CloudPhoneSummary | null; minutes: CloudPhoneMinutes }> {
       const device = args?.device;
-      if (device !== undefined && device !== "iphone" && device !== "iphone-pro-max" && device !== "ipad") {
-        throw new CloudPhoneError("device is iphone, iphone-pro-max or ipad.", "bad_request");
+      if (device !== undefined && !isCloudPhoneDevice(device)) {
+        throw new CloudPhoneError(`device is ${CLOUD_PHONE_DEVICES.join(", ")}.`, "bad_request");
       }
-      const phone = await ensure(device as CloudPhoneDevice | undefined);
+      const phone = await ensure(device);
       const state = await (await provider()).phoneState!();
       return { phone: state.phone, minutes: state.minutes ?? phone.minutes };
     },
@@ -478,21 +548,22 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       return tool("ui_act", { steps }, "Acting on the screen");
     },
 
-    /** A full-size PNG of the screen, saved to `outPath` (or a temp file). */
     /**
-     * A full-size PNG of the screen, saved to `outPath` (or a temp file), and
-     * filed to the calling project's proof drawer (`noProof` leaves it out).
+     * A full-size PNG of the screen, saved to `outPath` (inside the project or
+     * the temp folder; a temp file by default), and filed to the calling
+     * project's proof drawer (`noProof` leaves it out).
      */
     async screenshot(
       args: (ProofOwners & { outPath?: unknown; noProof?: unknown }) | null | undefined,
       proof?: CloudPhoneProofTarget | null,
     ): Promise<{ path: string; link: string; bytes: number; artifactId: string | null }> {
+      // Checked before the phone is used: a refused path spends no minutes.
+      const requested = textArg(args?.outPath, "outPath", 1_000);
+      const target = screenshotTarget(requested, proof?.projectRoot ?? null);
       const answer = await tool("ui_look", { screenshot_file: true }, "Taking a screenshot");
       const link = answer.links.find((candidate) => /\.png/i.test(Buffer.from(candidate.split("/files/")[1]?.split(".")[0] ?? "", "base64url").toString("utf8"))) ?? answer.links[0];
       if (!link) throw new CloudPhoneError("The cloud iPhone did not answer with a screenshot.", "no_screenshot");
       const bytes = await download(link, "screenshot");
-      const requested = textArg(args?.outPath, "outPath", 1_000);
-      const target = requested ? path.resolve(requested) : path.join(os.tmpdir(), `ade-cloud-iphone-${Date.now()}.png`);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, bytes);
       const caption = textArg(args?.caption, "caption", 300) ?? "ADE Cloud iPhone screenshot";
@@ -506,14 +577,11 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
      * `app_run`. Answers the app's first screen as text, or the build's errors.
      */
     async launch(args: { root?: unknown; path?: unknown; scheme?: unknown; configuration?: unknown; env?: unknown; clean?: unknown } | null | undefined): Promise<CloudPhoneToolAnswer & { files: number; bytes: number }> {
-      const root = textArg(args?.root, "root", 2_000);
-      if (!root || !fs.existsSync(root)) throw new CloudPhoneError("root is the project's folder on this machine.", "bad_request");
-      const sub = textArg(args?.path, "path", 500);
-      if (sub && (path.isAbsolute(sub) || sub.split(/[\\/]/).includes(".."))) throw new CloudPhoneError("path is a folder inside the project.", "bad_request");
+      const { root, sub } = projectArgs(args);
       const configuration = args?.configuration === undefined ? undefined : args.configuration === "Release" ? "Release" : args.configuration === "Debug" ? "Debug" : null;
       if (configuration === null) throw new CloudPhoneError("configuration is Debug or Release.", "bad_request");
       const uploaded = await uploadProject(root);
-      const target = sub ? `${uploaded.root}/${sub.replace(/\\/g, "/")}` : uploaded.root;
+      const target = onPhone(uploaded.root, sub);
       const scheme = textArg(args?.scheme, "scheme", 200);
       const env = textArg(args?.env, "env", 8_000);
       const answer = await tool("app_run", {
@@ -594,7 +662,6 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       }, "Reading the app's logs");
     },
 
-    /** `start`, then `stop` for a link to an MP4 (7 days) while the phone keeps running. */
     /**
      * `start`, then `stop`: the stop downloads the MP4 (NoMac keeps its link 7
      * days) and files it to the proof drawer, while the phone keeps running.
@@ -617,15 +684,12 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     },
 
     async runTests(args: { root?: unknown; path?: unknown; scheme?: unknown; only?: unknown } | null | undefined): Promise<CloudPhoneToolAnswer> {
-      const root = textArg(args?.root, "root", 2_000);
-      if (!root || !fs.existsSync(root)) throw new CloudPhoneError("root is the project's folder on this machine.", "bad_request");
-      const sub = textArg(args?.path, "path", 500);
-      if (sub && (path.isAbsolute(sub) || sub.split(/[\\/]/).includes(".."))) throw new CloudPhoneError("path is a folder inside the project.", "bad_request");
+      const { root, sub } = projectArgs(args);
       const uploaded = await uploadProject(root);
       const scheme = textArg(args?.scheme, "scheme", 200);
       const only = textArg(args?.only, "only", 2_000);
       return tool("tests_run", {
-        path: sub ? `${uploaded.root}/${sub.replace(/\\/g, "/")}` : uploaded.root,
+        path: onPhone(uploaded.root, sub),
         ...(scheme ? { scheme } : {}),
         ...(only ? { only } : {}),
       }, "Running the tests");

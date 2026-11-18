@@ -90,14 +90,18 @@ export function visibleCatalogCards(hasSideChat: boolean): CatalogCardId[] {
   return WORK_TOOL_TILES.filter((card) => card !== "side-chat" || hasSideChat);
 }
 
+/** Whether a machine can run a device kind. ADE Cloud's iPhone is only ever the ios one. */
+export function machineRunsKind(kind: DeviceKind, machine: ToolMachine): boolean {
+  return machine.isCloudIphone ? kind === "ios" : deviceKindRunsOnPlatform(kind, machine.platform);
+}
+
 /** The machines a device kind can run on, the chat's own first; offline ones only when chosen. */
 export function machinesForKind(
   kind: DeviceKind,
   machines: readonly ToolMachine[],
   chosen: ToolMachine | null,
 ): ToolMachine[] {
-  // ADE Cloud has only the iPhone.
-  const able = machines.filter((machine) => (machine.isCloudIphone ? kind === "ios" : deviceKindRunsOnPlatform(kind, machine.platform))
+  const able = machines.filter((machine) => machineRunsKind(kind, machine)
     && (machine.online || Boolean(chosen && sameMachineKey(chosen.key, machine.key))));
   if (chosen && !chosen.isChat && !able.some((machine) => sameMachineKey(machine.key, chosen.key))) able.unshift(chosen);
   // One order every time the tool opens: the chat's own machine first, then

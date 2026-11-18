@@ -512,7 +512,7 @@ struct WorkSessionDestinationView: View {
   @State var scheduledWorkSnapshotsRenderSignature = 0
   @State var chatInfoPresented = false
   /// The ADE Cloud iPhone, from the chat's Tools menu.
-  @State var cloudPhonePresented = false
+  @State var cloudIphonePresented = false
   /// The GitHub issue picker opened from the composer's Issue context menu.
   @State var githubIssueAttachPresented = false
   @State var expandedSubagentDetailIds: Set<String> = []
@@ -834,7 +834,7 @@ struct WorkSessionDestinationView: View {
         session: session,
         onShowChatInfo: { showChatInfo() },
         onOpenTool: { openChatTool($0) },
-        onOpenCloudPhone: { cloudPhonePresented = true },
+        onOpenCloudIphone: { cloudIphonePresented = true },
         onCreatePullRequest: { presentCreateLanePr() },
         onOpenLane: { openSessionLane() },
         onRename: { presentSessionRename() },
@@ -854,7 +854,7 @@ struct WorkSessionDestinationView: View {
       session: session,
       onShowChatInfo: { showChatInfo() },
       onOpenTool: { openChatTool($0) },
-      onOpenCloudPhone: { cloudPhonePresented = true },
+      onOpenCloudIphone: { cloudIphonePresented = true },
       onCreatePullRequest: { presentCreateLanePr() },
       onOpenLane: { openSessionLane() },
       onRename: { presentSessionRename() },
@@ -1387,7 +1387,7 @@ struct WorkSessionDestinationView: View {
         onToggleSidebar: onDuoToggleSidebar,
         onChatInfo: { showChatInfo() },
         onOpenTool: { openChatTool($0) },
-        onOpenCloudPhone: { cloudPhonePresented = true },
+        onOpenCloudIphone: { cloudIphonePresented = true },
         onCreatePullRequest: { presentCreateLanePr() },
         onOpenLane: { openSessionLane() },
         onRename: { presentSessionRename() },
@@ -1491,7 +1491,7 @@ struct WorkSessionDestinationView: View {
       // Optional on mobile: an older host has no restart, and the item hides.
       showsRestartAgent: syncService.supportsChatRemoteAction("chat.restartSession", sessionId: session.id),
       tools: personalChat ? [] : chatToolMenuItems,
-      showsCloudPhone: !personalChat && syncService.supportsChatRemoteAction("cloudPhone.status", sessionId: sessionId),
+      showsCloudIphone: !personalChat && syncService.supportsChatRemoteAction("cloudPhone.status", sessionId: sessionId),
       hasPullRequest: showsLaneActions && !personalChat && duoHasPullRequest,
       canCreatePullRequest: showsLaneActions && !personalChat && !duoHasPullRequest
         && canCreatePullRequestForHeaderLane,
@@ -1764,8 +1764,8 @@ struct WorkSessionDestinationView: View {
           Task { await attachGitHubIssueToChat(issue, repo: repo) }
         }
       }
-      .sheet(isPresented: $cloudPhonePresented) {
-        CloudPhoneSheet(sessionId: sessionId, syncService: syncService)
+      .sheet(isPresented: $cloudIphonePresented) {
+        CloudIphoneSheet(sessionId: sessionId, syncService: syncService)
           .presentationDetents([.large])
           .presentationDragIndicator(.visible)
       }

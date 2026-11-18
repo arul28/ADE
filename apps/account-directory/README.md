@@ -494,9 +494,9 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
 - `GET /cloud/phone` answers `CloudPhoneState`: `access` (`on`, `soon`, `off`),
   the period's `minutes`, and the live `phone`. `POST /cloud/phone`
   `{ device? }` starts the account's phone (or answers its live one) and mints
-  a token for that phone; `DELETE /cloud/phone` stops it.
-- `POST /cloud/phone/token` mints a fresh token for the live phone;
-  `POST /cloud/phone/view` `{ control? }` answers a view link for it, signed for
+  a token for that phone (sent again, it answers the live phone with a fresh
+  token); `DELETE /cloud/phone` stops it.
+- `POST /cloud/phone/view` `{ control? }` answers a view link for it, signed for
   the account when `NOMAC_EMBED_SECRET` is set.
 - The plan's `phoneMinutes` are the period's (`plans.ts`: Free 60, Plus 80,
   Pro 300, Max 800; none on a free plan held by the free-plan checks, 402

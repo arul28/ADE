@@ -36,10 +36,10 @@ import {
 export type AppleStageMode = "flat" | "3d";
 
 export type AppleDeviceStageProps = {
-  /** Localised read address. Null when there is no stream to read. */
-  streamUrl: string | null;
+  /** Localised read address. Null (or left out) when there is no stream to read. */
+  streamUrl?: string | null;
   /** Bearer token for the reader's `Authorization` header. */
-  streamToken: string | null;
+  streamToken?: string | null;
   /**
    * A picture someone else already draws (the ADE Cloud iPhone, painted in
    * main and decoded by `useCloudPhoneFrames`), used instead of a stream.
@@ -47,7 +47,8 @@ export type AppleDeviceStageProps = {
    * as its own decoder's.
    */
   screenSource?: { canvas: HTMLCanvasElement | null; pixelSize: { width: number; height: number } | null } | undefined;
-  reconnectNonce: number;
+  /** The stream's reconnect: only with `streamUrl`. */
+  reconnectNonce?: number;
   mode: AppleStageMode;
   /**
    * "Reset view". Handed to the 3D view as a value it acts on, NOT as a React
@@ -76,9 +77,10 @@ export type AppleDeviceStageProps = {
   onDeviceScroll?: (delta: { x: number; y: number; deltaX: number; deltaY: number }) => void;
   /** A key pressed while the flat screen holds focus. True = forwarded. */
   onDeviceKey?: (event: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }) => boolean;
-  onReaderStatus: (status: "connecting" | "playing" | "error" | "stopped", error: string | null) => void;
-  onDimensions: (size: { width: number; height: number }) => void;
-  onFrame: () => void;
+  /** The stream reader's state, size and frames: only with `streamUrl`. */
+  onReaderStatus?: (status: "connecting" | "playing" | "error" | "stopped", error: string | null) => void;
+  onDimensions?: (size: { width: number; height: number }) => void;
+  onFrame?: () => void;
   /** Each drawn frame; the 3D view re-uploads its texture on each. */
   frames: AppleFrameFeed | null;
   /**
@@ -176,7 +178,7 @@ export function AppleDeviceStage({
     setScreenPixelSize((current) => (
       current && current.width === size.width && current.height === size.height ? current : size
     ));
-    onDimensions(size);
+    onDimensions?.(size);
   }, [onDimensions]);
 
   // WebGL is a hard precondition for the 3D presenter. There is no procedural
@@ -218,10 +220,10 @@ export function AppleDeviceStage({
       <div style={videoStyle} data-apple-stage-screen="">
         {streamUrl ? (
           <H264StreamView
-            source={h264SourceForUrl(streamUrl, streamToken)}
+            source={h264SourceForUrl(streamUrl, streamToken ?? null)}
             streamName="simulator video stream"
             streamGoneCode={APPLE_STREAM_NOT_RUNNING_CODE}
-            reconnectNonce={reconnectNonce}
+            reconnectNonce={reconnectNonce ?? 0}
             onStatus={onReaderStatus}
             onDimensions={handleDimensions}
             onFrame={onFrame}

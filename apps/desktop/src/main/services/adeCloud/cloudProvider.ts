@@ -203,9 +203,13 @@ export type CloudProvider = {
   phoneState?(): Promise<CloudPhoneState>;
   /** Starts the account's phone, or answers its live one, with a token for that phone only. */
   phoneStart?(input: { device?: CloudPhoneDevice }): Promise<CloudPhoneStart>;
-  /** A fresh token for the live phone. */
-  phoneToken?(): Promise<CloudPhoneStart>;
   /** A link that shows the live phone to this account alone. */
   phoneView?(input: { control: boolean }): Promise<CloudPhoneView>;
   phoneStop?(): Promise<{ stopped: boolean }>;
+  /**
+   * The account this client acts for (`cloudAccessKey`), when it knows it. A
+   * client is made per call, so this, not the object, says two are the same
+   * account (a held cloud iPhone belongs to one).
+   */
+  readonly account?: string;
 };

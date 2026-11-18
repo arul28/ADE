@@ -919,10 +919,11 @@ export function scopeAutomationAdeActionArgs(
         stripHostAuthoredMessageProvenance(candidate.metadata);
       }
     }
-  } else if (domain === "cloud") {
+  } else if (domain === "cloud" || domain === "cloud_phone") {
     // ADE Cloud asks who decides. A rule is never the person, whatever its
     // args say: it is an unattended agent, held to the agent limits (sizes,
-    // new computers a day), and never deletes a computer it didn't make.
+    // new computers a day, whether agents may spend hours and iPhone minutes),
+    // and never deletes a computer it didn't make.
     for (const candidate of candidates) {
       if (isRecord(candidate)) candidate.approval = AUTOMATION_CLOUD_APPROVAL;
     }

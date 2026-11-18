@@ -113,7 +113,7 @@ import type {
   CloudPhoneViewPreloadApi,
   CloudPhoneViewStateEvent,
 } from "../shared/types/cloudPhoneView";
-import type { CloudPhoneStatusView, CloudPhoneViewLink } from "../shared/cloudPhone";
+import type { CloudPhoneStatusView, CloudPhoneView } from "../shared/cloudPhone";
 import { IPC } from "../shared/ipc";
 import type { CloudLaneLaunchCallRequest, CloudLaneLaunchCallResult, CloudLaneLaunchMethod } from "../shared/cloudLaneLaunch";
 import { normalizeGitRemoteIdentity } from "../shared/crossMachineHandoff";
@@ -2770,6 +2770,17 @@ function callLaneShareAction<T>(
 ): Promise<T> {
   return callPinnedOrBoundRuntimeActionOr<T>(pin, "lane_share", action, { args }, async () => {
     throw new Error("lane_share_no_runtime: Lane sharing needs the project's ADE brain. Open the project and try again.");
+  });
+}
+
+/**
+ * The ADE Cloud iPhone (`cloud_phone`) on the chat's machine: the pin, else
+ * the tab's bound runtime. There is no fallback: the phone's token lives in a
+ * brain.
+ */
+function callCloudPhone<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr<T>(pin, "cloud_phone", action, { args: { ...args } }, async () => {
+    throw new Error("The ADE Cloud iPhone needs this project's ADE brain. Open the project and try again.");
   });
 }
 
@@ -12470,31 +12481,19 @@ const adeBridge = {
    */
   cloudPhone: {
     status: (pin?: OpenProjectBinding | null): Promise<CloudPhoneStatusView> =>
-      callPinnedOrBoundRuntimeActionOr<CloudPhoneStatusView>(pin, "cloud_phone", "getStatus", { args: {} }, async () => {
-        throw new Error("The ADE Cloud iPhone needs this project's ADE brain. Open the project and try again.");
-      }),
-    view: (args: { control?: boolean } = {}, pin?: OpenProjectBinding | null): Promise<CloudPhoneViewLink> =>
-      callPinnedOrBoundRuntimeActionOr<CloudPhoneViewLink>(pin, "cloud_phone", "view", { args: { ...args } }, async () => {
-        throw new Error("The ADE Cloud iPhone needs this project's ADE brain. Open the project and try again.");
-      }),
+      callCloudPhone<CloudPhoneStatusView>("getStatus", {}, pin),
+    view: (args: { control?: boolean } = {}, pin?: OpenProjectBinding | null): Promise<CloudPhoneView> =>
+      callCloudPhone<CloudPhoneView>("view", args, pin),
     start: (args: { device?: string } = {}, pin?: OpenProjectBinding | null): Promise<unknown> =>
-      callPinnedOrBoundRuntimeActionOr<unknown>(pin, "cloud_phone", "start", { args: { ...args } }, async () => {
-        throw new Error("The ADE Cloud iPhone needs this project's ADE brain. Open the project and try again.");
-      }),
+      callCloudPhone<unknown>("start", args, pin),
     stop: (pin?: OpenProjectBinding | null): Promise<{ stopped: boolean }> =>
-      callPinnedOrBoundRuntimeActionOr<{ stopped: boolean }>(pin, "cloud_phone", "stop", { args: {} }, async () => {
-        throw new Error("The ADE Cloud iPhone needs this project's ADE brain. Open the project and try again.");
-      }),
+      callCloudPhone<{ stopped: boolean }>("stop", {}, pin),
     /** A screenshot filed to the proof drawer, owned by the chat and lane given. */
     screenshot: (args: { chatSessionId?: string | null; laneId?: string | null }, pin?: OpenProjectBinding | null): Promise<{ artifactId: string | null }> =>
-      callPinnedOrBoundRuntimeActionOr<{ artifactId: string | null }>(pin, "cloud_phone", "screenshot", { args: { ...args } }, async () => {
-        throw new Error("The ADE Cloud iPhone needs this project's ADE brain. Open the project and try again.");
-      }),
+      callCloudPhone<{ artifactId: string | null }>("screenshot", args, pin),
     /** Start, then stop: the stop files the MP4 to the proof drawer. */
     record: (args: { action: "start" | "stop"; chatSessionId?: string | null; laneId?: string | null }, pin?: OpenProjectBinding | null): Promise<{ failed: boolean; text: string; artifactId: string | null }> =>
-      callPinnedOrBoundRuntimeActionOr<{ failed: boolean; text: string; artifactId: string | null }>(pin, "cloud_phone", "record", { args: { ...args } }, async () => {
-        throw new Error("The ADE Cloud iPhone needs this project's ADE brain. Open the project and try again.");
-      }),
+      callCloudPhone<{ failed: boolean; text: string; artifactId: string | null }>("record", args, pin),
   },
   providerLogins: {
     status: (args: { provider?: ProviderLoginProvider | null } = {}, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>

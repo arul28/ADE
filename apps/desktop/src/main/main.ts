@@ -1,4 +1,5 @@
 import { closeAllCloudPhoneViews } from "./services/adeCloud/registerCloudPhoneViewIpc";
+import { isCloudPhoneViewWindow } from "./services/adeCloud/cloudPhoneViewHost";
 import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { createLocalPasswordsAccess, registerBrowserTabPasswordsIpc } from "./services/passwords/localPasswordsBridge";
 import { createMessagesIntegrationService } from "./services/messagesIntegration/messagesIntegrationService";
@@ -587,6 +588,15 @@ import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./deskto
 import { createWebhookRemoteSource } from "./services/automations/webhookAutomationFactory";
 
 /**
+ * ADE's own windows: every BrowserWindow but the hidden offscreen ones that
+ * paint a cloud iPhone. For counting and picking windows ("the last window",
+ * "a window to show this in"); broadcasts may still reach every window.
+ */
+function adeWindows(): BrowserWindow[] {
+  return BrowserWindow.getAllWindows().filter((win) => !isCloudPhoneViewWindow(win));
+}
+
+/**
  * Whether this build carries the in-process project runtime: the whole
  * service graph that tests and the `ADE_ENABLE_DESKTOP_SYNC_HOST` diagnostics
  * host run inside main. Every other main hands projects to the brain. A
@@ -1083,7 +1093,7 @@ function buildDesktopPrimaryCredentialStore(
   }
   const safeCredentialsPath = path.join(secretsDir, "credentials.safe.enc");
   const legacyCredentialsPath = path.join(secretsDir, "credentials.json.enc");
-  if (!keychainReadBeforeWindowLogged && BrowserWindow.getAllWindows().length === 0) {
+  if (!keychainReadBeforeWindowLogged && adeWindows().length === 0) {
     // Not stopped: the caller needs the key. Named, so the launch path that
     // asked for it can be moved after the window.
     keychainReadBeforeWindowLogged = true;
@@ -2457,7 +2467,7 @@ app.whenReady().then(async () => {
     getProjectRootForWindow: (win) => getWindowSession(win.id).binding?.rootPath ?? null,
     getWindowForProjectRoot: (projectRoot) => {
       const normalizedRoot = normalizeProjectRoot(projectRoot);
-      const candidateWindows = BrowserWindow.getAllWindows().filter(
+      const candidateWindows = adeWindows().filter(
         (win) => !win.isDestroyed(),
       );
       const selection = selectWindowForProjectNavigation(
@@ -2492,7 +2502,7 @@ app.whenReady().then(async () => {
       // opens a tab without showing the Browser pane, host its capture surface
       // in the focused ADE window (or the first live one) without activating
       // the personal collection in that window.
-      const appWindows = BrowserWindow.getAllWindows().filter(
+      const appWindows = adeWindows().filter(
         (win) => !win.isDestroyed() && win.isVisible() && !win.isMinimized(),
       );
       return appWindows.find((win) => win.isFocused())
@@ -2785,7 +2795,7 @@ app.whenReady().then(async () => {
     if (!tabs) return;
     windowRepositoryTabs.set(windowId, tabs);
     windowRestoreRepositoryTabs.delete(windowId);
-    const openWindows = BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed());
+    const openWindows = adeWindows().filter((win) => !win.isDestroyed());
     if (BrowserWindow.getFocusedWindow()?.id === windowId || openWindows.length === 1) {
       persistWindowRepositoryTabs(windowId);
     }
@@ -4011,7 +4021,7 @@ app.whenReady().then(async () => {
     // Asked in an app window: the focused one is the recovery window, whose
     // page has no quit prompt. A crashed app window falls back to the native box.
     relaunch: () => requestQuitAfterWarnings(
-      BrowserWindow.getAllWindows().find((win) => !win.isDestroyed() && !isStartupRecoveryWindow(win)) ?? null,
+      adeWindows().find((win) => !win.isDestroyed() && !isStartupRecoveryWindow(win)) ?? null,
       "relaunch",
     ),
   });
@@ -5698,7 +5708,7 @@ app.whenReady().then(async () => {
         const trimmed = absPath.trim();
         if (!trimmed) return undefined;
         const normalizedProjectRoot = normalizeProjectRoot(projectRoot);
-        const candidateWindows = BrowserWindow.getAllWindows().filter(
+        const candidateWindows = adeWindows().filter(
           (candidate) =>
             !candidate.isDestroyed()
             && candidate.webContents
@@ -9991,7 +10001,7 @@ app.whenReady().then(async () => {
     const parentWindow =
       ownerWindow && !ownerWindow.isDestroyed()
         ? ownerWindow
-        : BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+        : BrowserWindow.getFocusedWindow() ?? adeWindows()[0];
     const choice = parentWindow
       ? dialog.showMessageBoxSync(parentWindow, dialogOptions)
       : dialog.showMessageBoxSync(dialogOptions);
@@ -10094,7 +10104,7 @@ app.whenReady().then(async () => {
     if (shutdownRequested || autoUpdateService.isInstallQuitArmed()) return;
     if (closeWindowWithoutQuitPrompt.delete(win.id)) return;
     event.preventDefault();
-    if (BrowserWindow.getAllWindows().filter((openWindow) => !openWindow.isDestroyed()).length > 1) {
+    if (adeWindows().filter((openWindow) => !openWindow.isDestroyed()).length > 1) {
       if (!confirmCloseWindowWarning(win)) return;
       closeWindowWithoutPrompt(win);
       return;
@@ -10397,7 +10407,7 @@ app.whenReady().then(async () => {
       onWindow?: (win: BrowserWindow) => void;
     } = {},
   ): Promise<{ windowId: number | null; project: ProjectInfo | null }> => {
-    const openWindows = BrowserWindow.getAllWindows().filter(
+    const openWindows = adeWindows().filter(
       (win) => !win.isDestroyed(),
     );
     const requestedRemote = args.remoteBinding
@@ -10455,7 +10465,7 @@ app.whenReady().then(async () => {
     request: AppNavigationRequest,
   ): Promise<{ ok: true; windowId: number } | { ok: false; message: string }> => {
     const normalizedRoot = normalizeProjectRoot(targetProjectRoot);
-    const candidateWindows = BrowserWindow.getAllWindows().filter(
+    const candidateWindows = adeWindows().filter(
       (win) => !win.isDestroyed(),
     );
     const selection = selectWindowForProjectNavigation(
@@ -10607,7 +10617,7 @@ app.whenReady().then(async () => {
 
       let targetWindow =
         BrowserWindow.getFocusedWindow() ??
-        BrowserWindow.getAllWindows().find((win) => !win.isDestroyed()) ??
+        adeWindows().find((win) => !win.isDestroyed()) ??
         null;
       if (!targetWindow) {
         if (!initialWindowNavigationReady) {
@@ -11033,7 +11043,7 @@ app.whenReady().then(async () => {
   const emptyAttentionHostWindow = (): BrowserWindow | null => {
     const focusedWindowId = BrowserWindow.getFocusedWindow()?.id ?? null;
     const windowId = selectRemoteHostWindow(
-      BrowserWindow.getAllWindows()
+      adeWindows()
         .filter((win) => !win.isDestroyed())
         .map((win) => ({
           id: win.id,
@@ -11132,7 +11142,7 @@ app.whenReady().then(async () => {
    * `lastFocusedAdeWindowId` remembers the window the user was last in.
    */
   const captureGestureWindow = (): BrowserWindow | null => {
-    const liveWindows = BrowserWindow.getAllWindows().filter(
+    const liveWindows = adeWindows().filter(
       (win) => !win.isDestroyed() && !win.webContents.isDestroyed(),
     );
     const focused = BrowserWindow.getFocusedWindow();
@@ -11652,7 +11662,7 @@ app.whenReady().then(async () => {
       window: initialWindow,
       transactionDone: postUpdateTransactionDone ?? Promise.resolve(),
       readTransaction: () => autoUpdateService.getSnapshot().updateTransaction,
-      anyWindowVisible: () => BrowserWindow.getAllWindows().some((win) => !win.isDestroyed() && win.isVisible()),
+      anyWindowVisible: () => adeWindows().some((win) => !win.isDestroyed() && win.isVisible()),
       isShuttingDown: () => shutdownRequested,
       requestShutdown: () => requestAppShutdown({ reason: "update_installed_on_quit", exitCode: 0 }),
     });
@@ -11735,7 +11745,7 @@ app.whenReady().then(async () => {
 
   app.on("activate", async () => {
     // A hidden quit-install launch is revealed by its own listener above.
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (adeWindows().length === 0) {
       await openAdeWindow();
     }
   });

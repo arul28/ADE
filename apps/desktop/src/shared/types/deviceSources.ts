@@ -164,11 +164,6 @@ export type ChatDeviceSourceChoice =
   }
   | { kind: "cloud"; chosenAt: string };
 
-/** The machine a choice names, or null for ADE Cloud. */
-export function choiceMachine(choice: ChatDeviceSourceChoice | null | undefined): { machineKey: string; machineName: string } | null {
-  return choice?.kind === "machine" ? { machineKey: choice.machineKey, machineName: choice.machineName } : null;
-}
-
 /** Which kinds ADE Cloud has: only the iPhone. */
 export const deviceKindRunsOnCloud = (kind: DeviceKind): boolean => kind === "ios";
 
