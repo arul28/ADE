@@ -157,7 +157,7 @@ import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInv
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
-import type { CloudCarriedSignIns, CloudLaneBackup, CloudLaunchRecord as AccountCloudLaunchRecord } from "../../../account-directory/src/cloud/contract";
+import type { CloudCarriedSignIns, CloudLaneBackup, CloudLaunchRecord as AccountCloudLaunchRecord, CloudModelCatalog } from "../../../account-directory/src/cloud/contract";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import type { CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
 import {
@@ -14498,6 +14498,8 @@ const adeBridge = {
     serverLaunchStatus: (launchId: string): Promise<AccountCloudLaunchRecord | null> => ipcRenderer.invoke(IPC.cloudServerLaunchStatus, { launchId }),
     /** Provider sign-ins the account carries to ADE Cloud: account-level, no pin. */
     carriedSignIns: (): Promise<CloudCarriedSignIns | null> => ipcRenderer.invoke(IPC.cloudCarriedSignIns),
+    /** The models a chat on ADE Cloud can run: account-level, no pin. */
+    modelCatalog: (): Promise<CloudModelCatalog | null> => ipcRenderer.invoke(IPC.cloudModelCatalog),
     cloudSignInStatus: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInStatus),
     cloudSignInClaudeStart: (args?: CloudSignInClaudeStartArgs): Promise<CloudSignInStatus | null> =>
       ipcRenderer.invoke(IPC.cloudSignInClaudeStart, {

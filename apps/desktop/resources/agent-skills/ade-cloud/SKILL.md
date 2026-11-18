@@ -29,6 +29,7 @@ Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `
 - Push the branch first. The lane starts from the pushed copy; uncommitted changes stay here.
 - The approval card asks the person in your chat, with the size and its hours rate. No answer in 5 minutes means no.
 - In a full-auto chat, an automation or an ADE MCP app, nobody watches. ADE answers with the agent limits (`agents` in the status): only sizes in `sizesAllowed`, at most `newComputersLeftToday` new computers today. Each new lane counts one. A person never counts.
+- What only the person decides (a size change, deleting a computer this chat didn't make, looser agent limits) still puts a card in a full-auto chat, and the person answers it there. An automation or an ADE MCP app has nobody to ask, so it is refused.
 - From a terminal with no ADE chat, it is refused: ADE can't tell a person there from an agent. Tell the person to start it in the ADE app (Run on: ADE Cloud) or in an ADE chat.
 - A CLI session (Claude Code, Codex and others in a terminal) can be the first thing in a new cloud lane, but only from the ADE app: the person picks CLI and Run on: ADE Cloud. From the command line, start a chat or the lane alone.
 - One computer holds one lane. On a cloud computer, never plain `ade lanes create`: start a new lane on ADE Cloud.
@@ -94,7 +95,7 @@ With access, `ade devices use ios@cloud`, then `ade apple …` (ade-apple).
 ## Never
 
 - Change the plan, or turn on or raise extra hours, disk or iPhone minutes: only the person does, in Settings › ADE Cloud.
-- Delete a computer you didn't make, or any computer over ADE MCP.
+- Delete a computer you didn't make without the person's yes on its card, or any computer over ADE MCP.
 - Change a size (`ade cloud resize --shape`) yourself (growing the disk with `--free` is yours to do). Ask instead: `ade cloud resize --request --size large --reason "<why>"` puts a card in your chat, and the person confirms it.
 - Wake computers to look at them: the status already knows.
 - Sign a provider in for the person, or save a sign-in. The person does it once in ADE (ade://settings/integrations.ade-cloud-sign-ins).

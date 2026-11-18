@@ -112,19 +112,22 @@ describe("ADE Cloud agent actions: approvals", () => {
   };
 
   it.each([
-    // A size change is the person's alone: nobody is watching these callers, so none may resize, and no card is raised.
-    ["a full-auto chat may not change a computer's size", agent, { level: "full-auto" }, "resize", { machine: "lane box", shape: "4x8" }, null, 0],
+    // A size change, a delete of a machine this chat didn't make and looser limits are the person's alone: a full-auto chat
+    // asks them on a card; an automation run or an ADE MCP app has nobody to ask, so it is refused with no card.
+    ["a full-auto chat asks the person on a card to change a computer's size", agent, { level: "full-auto" }, "resize", { machine: "lane box", shape: "4x8" }, null, 1],
     ["an automation run may not change a computer's size", { by: "agent", chatSessionId: null, automation: true }, {}, "resize", { machine: "lane box", shape: "4x8" }, null, 0],
     ["an app on ADE MCP may not change a computer's size", { by: "agent", chatSessionId: null, viaAdeMcp: true }, {}, "resize", { machine: "lane box", shape: "4x8" }, null, 0],
-    ["a full-auto agent may not delete a machine it didn't make", agent, { level: "full-auto", madeBy: "chat_other" }, "delete", { machine: "inst_1" }, null, 0],
+    ["a full-auto chat asks the person on a card to delete a machine it didn't make", agent, { level: "full-auto", madeBy: "chat_other" }, "delete", { machine: "inst_1" }, null, 1],
+    ["the person's yes on that card deletes it", agent, { level: "full-auto", madeBy: "chat_other", answer: "yes" }, "delete", { machine: "inst_1" }, "delete", 1],
+    ["an automation run may not delete a machine it didn't make", { by: "agent", chatSessionId: null, automation: true }, { madeBy: "chat_other" }, "delete", { machine: "inst_1" }, null, 0],
     ["a full-auto agent deletes the machine its chat made", agent, { level: "full-auto", madeBy: "chat_1" }, "delete", { machine: "inst_1" }, "delete", 0],
     ["plan mode changes nothing", agent, { level: "plan" }, "resize", { machine: "lane box", shape: "4x8" }, null, 0],
     ["a shell with no chat is refused", shell, {}, "delete", { machine: "inst_1" }, null, 0],
     ["an attended agent asks, and no stops it", agent, { level: "ask", answer: "no" }, "delete", { machine: "inst_1" }, null, 1],
     ["an attended agent asks, and yes runs it", agent, { level: "ask", answer: "yes" }, "resize", { machine: "lane box", shape: "4x8" }, "resize", 1],
     // What the person lets unattended agents spend (balanced: 3 a day, up to 4x16).
-    ["with unattended spending off, a full-auto agent resizes nothing", agent, { level: "full-auto", unattendedSpend: false }, "resize", { machine: "lane box", shape: "4x8" }, null, 0],
-    ["a full-auto agent may not pick a size over the limit", agent, { level: "full-auto" }, "resize", { machine: "lane box", shape: "4x32" }, null, 0],
+    ["with unattended spending off, a full-auto chat's resize still goes to the person", agent, { level: "full-auto", unattendedSpend: false }, "resize", { machine: "lane box", shape: "4x8" }, null, 1],
+    ["a size over the agents' limit, in a full-auto chat, goes to the person", agent, { level: "full-auto", answer: "yes" }, "resize", { machine: "lane box", shape: "4x32" }, "resize", 1],
     ["a full-auto agent makes a machine within the day's limit", agent, { level: "full-auto", madeToday: 2 }, "create", { kind: "box", shape: "2x4" }, "create", 0],
     ["at the day's limit a full-auto agent makes no machine", agent, { automation: true, madeToday: 3 }, "create", { kind: "box", shape: "2x4" }, null, 0],
     ["an attended agent asks even past the limits", agent, { level: "ask", answer: "yes", madeToday: 9 }, "create", { kind: "vm", shape: "4x32" }, "create", 1],
@@ -140,7 +143,8 @@ describe("ADE Cloud agent actions: approvals", () => {
     ["a full-auto agent's retry is checked at the size the launch starts again, not the one it names", agent, { level: "full-auto", launchPhase: "failed", savedSize: "xlarge", maxShape: "2x4" }, "lane_launch", laneLaunchArgs, null, 0],
     ["a retry needs no first message: the launch has its own", person, { launchPhase: "failed" }, "lane_launch", { ...laneLaunchArgs, launch: { launchId: laneLaunchArgs.launch.launchId, kind: "chat" } }, "lane_launch", 0],
     ["a launch still running is only read again, asking nothing", agent, { level: "full-auto", unattendedSpend: false, launchPhase: "running" }, "lane_launch", laneLaunchArgs, "lane_launch", 0],
-    ["a full-auto agent may not loosen the limits", agent, { level: "full-auto" }, "set_limits", { preset: "hands_off" }, null, 0],
+    ["a full-auto chat asks the person on a card to loosen the limits", agent, { level: "full-auto" }, "set_limits", { preset: "hands_off" }, null, 1],
+    ["an automation run may not loosen the limits", { by: "agent", chatSessionId: null, automation: true }, {}, "set_limits", { preset: "hands_off" }, null, 0],
     ["any agent may tighten the limits", agent, { level: "full-auto" }, "set_limits", { preset: "ask" }, "limits", 0],
   ] as const)("%s", async (_label, approval, options, verb, args, expectedRun, expectedCards) => {
     const { actions, ran, cards } = setup(options);

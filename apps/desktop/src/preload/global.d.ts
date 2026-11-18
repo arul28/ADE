@@ -17,7 +17,7 @@ import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInv
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
 import type { AdeCloudBridge } from "../shared/adeCloud/chatQueue";
-import type { CloudCarriedSignIns, CloudLaunchRecord as AccountCloudLaunchRecord } from "../../../account-directory/src/cloud/contract";
+import type { CloudCarriedSignIns, CloudLaunchRecord as AccountCloudLaunchRecord, CloudModelCatalog } from "../../../account-directory/src/cloud/contract";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
@@ -5160,6 +5160,8 @@ declare global {
         serverLaunchStatus?: (launchId: string) => Promise<AccountCloudLaunchRecord | null>;
         /** Provider sign-ins the account carries to ADE Cloud (key names only). Account-level, no pin. Null when the server didn't say. */
         carriedSignIns?: () => Promise<CloudCarriedSignIns | null>;
+        /** The models a chat on ADE Cloud can run (`GET /cloud/models`). Account-level, no pin. Null from an untrusted window. */
+        modelCatalog?: () => Promise<CloudModelCatalog | null>;
         /**
          * Sign-ins for cloud machines: the provider sign-ins every new cloud
          * machine starts with. Kept in the account vault and run on this

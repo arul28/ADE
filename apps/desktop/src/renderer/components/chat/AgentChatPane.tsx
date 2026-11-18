@@ -275,6 +275,7 @@ import { useSessionLifecyclePillVisible } from "../work/useSessionLifecycleSnaps
 import { useForeignSessionLaneId, useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { remoteConnectionMarkNow, useRemoteConnectionMark, useRemoteTargetReconnecting } from "../../state/projectMachines";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
+import { useCloudModelCatalog } from "../../state/cloudModelCatalog";
 import { isWebRuntimePinUnroutableError } from "../../webclient/adapter/runtimePinGuard";
 import {
   CHAT_HISTORY_BACKFILL_PAGE_MAX_BYTES,
@@ -18614,6 +18615,14 @@ export function AgentChatPane({
   const adeCloudMode = (adeCloudPicked || adeCloudTabDraft || adeCloudStartOnDraft) && adeCloud.available;
   adeCloudModeRef.current = adeCloudMode;
   adeCloudAccountRef.current = adeCloud.account;
+  // A new chat on ADE Cloud lists the models ADE Cloud runs (`GET /cloud/models`,
+  // account-level), not the models of a computer that may not be online.
+  const adeCloudModelCatalog = useCloudModelCatalog(adeCloudMode && showDraftLaunchControls && !selectedSessionId).catalog;
+  const adeCloudModelIds = useMemo<string[] | null>(() => {
+    if (!adeCloudModelCatalog) return null;
+    const ids = adeCloudModelCatalog.providers.flatMap((provider) => provider.models.map((model) => model.id));
+    return ids.length > 0 ? filterCursorModelIdsForDraftKind([...new Set(ids)], workDraftKind, modelCatalogScopeKey) : null;
+  }, [adeCloudModelCatalog, modelCatalogScopeKey, workDraftKind]);
   const adeCloudLaneComputers = adeCloud.computers;
   const adeCloudIndex = adeCloud.index;
   // Every ADE Cloud computer (a lane's, a CTO home, one made without a lane)
@@ -21356,7 +21365,11 @@ export function AgentChatPane({
   // problem), instead of "Sign in" rows that lead to a settings page for a
   // computer that is asleep.
   const restingModelPicker = chatComputerResting && !cursorCloudSessionActive;
-  const composerAvailableModelIds = cursorCloudSessionActive ? cursorCloudModelIds : effectiveAvailableModelIds;
+  const composerAvailableModelIds = cursorCloudSessionActive
+    ? cursorCloudModelIds
+    : adeCloudMode && !selectedSessionId && adeCloudModelIds
+      ? adeCloudModelIds
+      : effectiveAvailableModelIds;
   const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudSessionActive;
 
   const compactionIdleMode = selectedSession?.compactionIdleMode;

@@ -402,7 +402,12 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       notice(`ADE said no to "${card.title}" for this chat: plan mode changes nothing.`);
       throw new CloudDeclined(`${card.title}: declined, because this chat is in plan mode.`);
     }
-    if (viaAdeMcp || automation || level === "full-auto") {
+    // What only the person decides (a size, a delete of a machine this chat
+    // didn't make, a person-only setting): a full-auto chat still has the
+    // person's chat, so it shows them the card, as a secret request does.
+    // An ADE MCP app or an automation run has nobody to show it to.
+    const personDecides = card.action === "person_only" || card.tierChange === true || (card.action === "delete" && !card.madeByThisChat);
+    if (viaAdeMcp || automation || (level === "full-auto" && !personDecides)) {
       const where = viaAdeMcp ? "this app connected through ADE MCP" : automation ? "this automation run" : "this full-auto chat";
       if (card.action === "person_only") {
         notice(`ADE said no to "${card.title}" in ${where}: only you can decide it.`);

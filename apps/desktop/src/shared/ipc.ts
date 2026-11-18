@@ -1265,6 +1265,8 @@ export const IPC = {
   cloudServerLaunchStatus: "ade.cloud.serverLaunchStatus",
   /** Which provider sign-ins the account carries to ADE Cloud (`GET /cloud/sign-ins` `carried`). Account-level, no pin. */
   cloudCarriedSignIns: "ade.cloud.carriedSignIns",
+  /** The models a chat on ADE Cloud can run (`GET /cloud/models`), the same for every account. Account-level, no pin. */
+  cloudModelCatalog: "ade.cloud.modelCatalog",
   /** Sign-ins for cloud machines: the person's provider sign-ins, given to every new cloud machine. */
   cloudSignInStatus: "ade.cloud.cloudSignInStatus",
   cloudSignInClaudeStart: "ade.cloud.cloudSignInClaudeStart",

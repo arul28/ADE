@@ -18,12 +18,22 @@ function set(next: CatalogState): void {
   for (const listener of listeners) listener();
 }
 
+/** ADE Web reads the account server itself; the desktop asks its main process, which holds the account sign-in. */
+function catalogReader(): (() => Promise<CloudModelCatalog | null>) | null {
+  if (typeof window === "undefined") return null;
+  const web = window.ade?.cloudLaunches?.models;
+  if (isAdeAvailable(web)) return web;
+  const desktop = window.ade?.cloud?.modelCatalog;
+  return isAdeAvailable(desktop) ? desktop : null;
+}
+
 async function load(): Promise<void> {
-  const api = typeof window !== "undefined" ? window.ade?.cloudLaunches : undefined;
-  if (!api || !isAdeAvailable(api.models) || state.loading) return;
+  const read = catalogReader();
+  if (!read || state.loading) return;
   set({ ...state, loading: true, error: null });
   try {
-    const catalog = await api.models();
+    const catalog = await read();
+    if (!catalog) throw new Error("ADE Cloud didn't list its models.");
     set({ catalog, error: null, loading: false });
   } catch (error) {
     set({ ...state, error: error instanceof Error ? error.message : String(error), loading: false });
@@ -40,7 +50,8 @@ const read = () => state;
 export function useCloudModelCatalog(enabled: boolean): CatalogState & { retry: () => void } {
   const snapshot = useSyncExternalStore(subscribe, read, read);
   useEffect(() => {
-    if (enabled && !state.catalog && !state.loading && !state.error) void load();
+    // Each time a reader turns on, so a list that failed (signed out, offline) is asked for again.
+    if (enabled && !state.catalog && !state.loading) void load();
   }, [enabled]);
   return { ...snapshot, retry: () => void load() };
 }

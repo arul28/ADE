@@ -16,9 +16,19 @@ import {
 import { CLOUD_REMOTE_SIGN_IN, type CloudLaunchRecord, type CloudLaunchSignIn, type CloudLaunchStage } from "../../../shared/accountCloudLaunches";
 import { humanizeProvider } from "../usage/usageProviderNames";
 
+/**
+ * The launch's stage ids (`CloudLaunchStage.id`) by the step they show on.
+ * The computer's boot reports `computer`, `join`, `clone` and `sign_in`; its
+ * brain then reports the lane's own (`fetch`, `checkout`, `environment`,
+ * `agent`). `environment` is the lane's setup script, where a disk that fills
+ * up (and grows) shows too: part of getting the repo ready.
+ */
 const COMPUTER_STAGES = ["computer", "join"];
-const REPO_STAGES = ["clone", "fetch", "checkout"];
+const REPO_STAGES = ["clone", "fetch", "checkout", "environment"];
+const SIGN_IN_STAGES = ["sign_in"];
 const AGENT_STAGE = "agent";
+/** Stages only the computer's brain reports: it has the launch, so the sign-in is behind it. */
+const HANDED_OFF_STAGES = new Set(["fetch", "checkout", "environment", AGENT_STAGE]);
 
 function stagesState(stages: readonly CloudLaunchStage[], ids: readonly string[]): SetupStepState | null {
   const mine = stages.filter((stage) => ids.includes(stage.id));
@@ -31,36 +41,58 @@ function stagesState(stages: readonly CloudLaunchStage[], ids: readonly string[]
 
 const AFTER_JOIN = new Set(["joined", "waiting_for_sign_in", "running", "done"]);
 
-/** The four steps, from the launch's record. */
-function cloudSetupStepStates(record: CloudLaunchRecord | null): {
+type CloudSetupStepStates = {
   computer: SetupStepState;
   repo: SetupStepState;
   signIn: SetupStepState;
   send: SetupStepState;
-} {
+};
+
+/** The four steps, from the launch's record. */
+function cloudSetupStepStates(record: CloudLaunchRecord | null): CloudSetupStepStates {
   if (!record) return { computer: "running", repo: "todo", signIn: "todo", send: "todo" };
   const stages = record.stages ?? [];
   const failed = record.state === "failed" || record.state === "cancelled";
-  const computer = stagesState(stages, COMPUTER_STAGES)
-    ?? (AFTER_JOIN.has(record.state) ? "done" : record.state === "needs_approval" ? "waiting" : failed ? "failed" : "running");
-  const repoFromStages = stagesState(stages, REPO_STAGES);
   const agent = stages.find((stage) => stage.id === AGENT_STAGE)?.status ?? null;
   const agentStarted = agent === "running" || agent === "done" || record.state === "running" || record.state === "done";
-  const repo = repoFromStages ?? (agentStarted || record.state === "waiting_for_sign_in" ? "done" : computer === "done" ? "running" : "todo");
+  const handedOff = agentStarted || stages.some((stage) => HANDED_OFF_STAGES.has(stage.id));
+  const computer = stagesState(stages, COMPUTER_STAGES)
+    ?? (AFTER_JOIN.has(record.state) ? "done" : record.state === "needs_approval" ? "waiting" : "running");
+  const repo = stagesState(stages, REPO_STAGES)
+    ?? (handedOff || record.state === "waiting_for_sign_in" ? "done" : computer === "done" ? "running" : "todo");
+  const signInStage = stagesState(stages, SIGN_IN_STAGES);
   const signIn: SetupStepState = record.state === "waiting_for_sign_in"
     ? "waiting"
-    : agentStarted
-      ? "done"
-      : failed && repo === "done" ? "failed" : "todo";
+    : signInStage === "failed"
+      ? "failed"
+      : signInStage === "done" || handedOff
+        ? "done"
+        : signInStage === "running" ? "running" : "todo";
   const send: SetupStepState = record.sessionId || record.state === "done" || agent === "done"
     ? "done"
-    : agentStarted ? "running" : failed && signIn === "done" ? "failed" : "todo";
-  return {
-    computer: failed && computer !== "done" ? "failed" : computer,
-    repo: failed && computer === "done" && repo !== "done" ? "failed" : repo,
-    signIn,
-    send,
-  };
+    : agent === "failed" ? "failed" : agentStarted ? "running" : "todo";
+  const steps: CloudSetupStepStates = { computer, repo, signIn, send };
+  if (!failed) return steps;
+  // A failure shows on its own step. One no step claims (a stage none maps,
+  // or none at all) shows on the step that was running: the first one not
+  // done. Never on the sign-in, which fails only by its own stage.
+  const order: (keyof CloudSetupStepStates)[] = ["computer", "repo", "signIn", "send"];
+  if (order.some((key) => steps[key] === "failed")) {
+    // Nothing after a failed step still runs.
+    let past = false;
+    for (const key of order) {
+      if (past && (steps[key] === "running" || steps[key] === "waiting")) steps[key] = "todo";
+      if (steps[key] === "failed") past = true;
+    }
+    return steps;
+  }
+  const running = order.find((key) => steps[key] !== "done" && (key !== "signIn" || steps[key] === "running" || steps[key] === "waiting"));
+  if (!running) return steps;
+  steps[running] = "failed";
+  for (const key of order.slice(order.indexOf(running) + 1)) {
+    if (steps[key] === "running" || steps[key] === "waiting") steps[key] = "todo";
+  }
+  return steps;
 }
 
 function providerLabel(provider: string | null | undefined): string {
