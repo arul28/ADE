@@ -63,7 +63,8 @@ describe("McpAppCard, a page that never answers", () => {
       </ChatRuntimeScopeProvider>,
     );
     await screen.findByTestId("chat-mcp-app-frame");
-
+    // Let the frame's effects (and with them its handshake timeout) commit before the clock moves.
+    await act(async () => {});
     await act(async () => { vi.advanceTimersByTime(10_000); });
     const folded = await screen.findByTestId("chat-mcp-app-stalled");
     expect(folded.textContent).toContain("did not load");
