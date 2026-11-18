@@ -1105,11 +1105,11 @@ describe("ptyService", () => {
     });
 
     it("keeps a Claude CLI's background agents as background work until each reports its stop", async () => {
-      const { service, loadPty, onSessionRuntimeSignal, sessionService } = createHarness({
+      const { service, loadPty, mockPty, onSessionRuntimeSignal, sessionService } = createHarness({
         runtimeSocketPath: "/tmp/ade-test-runtime.sock",
         getAdeCliAgentEnv: (env) => ({ ...env, ADE_CLI_PATH: path.resolve("/opt/ade/bin/ade") }),
       });
-      await service.create({
+      const created = await service.create({
         sessionId: "session-agents",
         allowNewSessionId: true,
         laneId: "lane-1",
@@ -1135,6 +1135,40 @@ describe("ptyService", () => {
       expect(service.getTrackedCliTurn("session-agents")).toMatchObject({ phase: "idle", backgroundAgentCount: 1 });
       expect(row()).toMatchObject({ activeBackgroundTaskCount: 1 });
       expect(lastSignalAgents()).toEqual(["agent-1"]);
+
+      // The main turn is over while the agent runs. Its timer redraws the
+      // screen every second, so the screen never goes quiet, yet the prompt
+      // takes a typed message once the end has settled, not after the last
+      // agent stops. A relaunch still waits: it would end the agent.
+      const box = "╭────────────╮\n│ >          │\n╰────────────╯\n  agent-1 running (3s)\n";
+      mockPty._emitter.emit("data", box);
+      expect(service.canTakeTypedMessage("session-agents"), "just after Stop").toBe(false);
+      const settledAt = Date.now() + 700;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => settledAt);
+      try {
+        mockPty._emitter.emit("data", box);
+        expect(service.canTakeTypedMessage("session-agents")).toBe(true);
+        // A draft the person types at that prompt is theirs: a typed message
+        // would clear the line first, so the redraws hold it again.
+        service.write({ ptyId: created.ptyId, data: "half a draft" });
+        mockPty._emitter.emit("data", box);
+        expect(service.canTakeTypedMessage("session-agents"), "after a draft").toBe(false);
+      } finally {
+        clock.mockRestore();
+      }
+      expect(service.canAcceptScheduledTurn("session-agents")).toBe(false);
+      // A line typed since the turn ended starts the next turn: not free.
+      hook({ hook_event_name: "UserPromptSubmit", prompt_id: "p-2" });
+      expect(service.canTakeTypedMessage("session-agents")).toBe(false);
+      hook({ hook_event_name: "Stop" });
+      // The draft typed before this turn ended is still at the prompt.
+      const laterClock = vi.spyOn(Date, "now").mockImplementation(() => settledAt + 700);
+      try {
+        mockPty._emitter.emit("data", box);
+        expect(service.canTakeTypedMessage("session-agents"), "draft from before the end").toBe(false);
+      } finally {
+        laterClock.mockRestore();
+      }
 
       // Each hook is its own process: a short agent's stop can arrive before its start.
       hook({ hook_event_name: "SubagentStop", agent_id: "agent-2" });

@@ -23,7 +23,7 @@ export type AgentCliWakeDeps = {
   logger: Logger;
   sessionService: Pick<ReturnType<typeof createSessionService>, "get">;
   ptyService:
-    | (Pick<ReturnType<typeof createPtyService>, "canAcceptScheduledTurn" | "sendToSession">
+    | (Pick<ReturnType<typeof createPtyService>, "canAcceptScheduledTurn" | "canTakeTypedMessage" | "sendToSession">
       & Partial<Pick<ReturnType<typeof createPtyService>, "isSessionOwnedByLivePeerRuntime">>)
     | null;
   /** A tracked agent CLI terminal (Claude Code, Codex, ...): it can take wakes typed at its prompt. */
@@ -38,9 +38,21 @@ export type AgentCliWakeDeps = {
 export function createAgentCliWakes(deps: AgentCliWakeDeps) {
   const { logger, sessionService } = deps;
 
-  /** True while a tracked agent CLI cannot take a wake: mid-turn, or run by another live ADE runtime. */
+  /**
+   * True while a tracked agent CLI is mid-turn or run by another live ADE
+   * runtime. The strict check, for a hand-off, a move or a delete: background
+   * agents that are still printing count as mid-turn.
+   */
   const agentCliWakeDeferred = (sessionId: string): boolean =>
     deps.isTrackedAgentCliSession(sessionId) && deps.ptyService?.canAcceptScheduledTurn(sessionId.trim()) !== true;
+
+  /**
+   * True while a tracked agent CLI cannot take typed text: as
+   * `agentCliWakeDeferred`, except that a main turn reported over counts as
+   * free while only background agents run (`canTakeTypedMessage`).
+   */
+  const agentCliTypingDeferred = (sessionId: string): boolean =>
+    deps.isTrackedAgentCliSession(sessionId) && deps.ptyService?.canTakeTypedMessage(sessionId.trim()) !== true;
 
   /** Whether another live ADE runtime runs this tracked agent CLI's terminal. */
   const agentCliOwnedByAnotherRuntime = (sessionId: string): boolean => {
@@ -59,7 +71,7 @@ export function createAgentCliWakes(deps: AgentCliWakeDeps) {
     const { ptyService } = deps;
     // Checked again here, inside the per-CLI queue: an earlier wake may have
     // just started a turn.
-    if (!ptyService || ptyService.canAcceptScheduledTurn(sessionId) !== true) return "deferred";
+    if (!ptyService || ptyService.canTakeTypedMessage(sessionId) !== true) return "deferred";
     try {
       const sent = await ptyService.sendToSession({ sessionId, text });
       // sendToSession relaunches an ended CLI, as for scheduled work; its own
@@ -80,7 +92,7 @@ export function createAgentCliWakes(deps: AgentCliWakeDeps) {
       // a turn (it started one, or another runtime took it). An ended CLI
       // that cannot be reopened (no resume target) fails now instead of
       // retrying a resume that cannot work.
-      if (isPtySendPreDeliveryError(error) && ptyService.canAcceptScheduledTurn(sessionId) !== true) {
+      if (isPtySendPreDeliveryError(error) && ptyService.canTakeTypedMessage(sessionId) !== true) {
         logger.info("agent_chat.cli_wake_deferred", {
           sessionId,
           error: error instanceof Error ? error.message : String(error),
@@ -143,5 +155,5 @@ export function createAgentCliWakes(deps: AgentCliWakeDeps) {
     }
   };
 
-  return { agentCliWakeDeferred, agentCliOwnedByAnotherRuntime, deliverWakeToSession, wakeAgentCliParent };
+  return { agentCliWakeDeferred, agentCliTypingDeferred, agentCliOwnedByAnotherRuntime, deliverWakeToSession, wakeAgentCliParent };
 }
