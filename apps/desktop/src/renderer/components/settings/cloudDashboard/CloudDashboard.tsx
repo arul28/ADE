@@ -58,7 +58,7 @@ import {
   prefersReducedMotion,
   type DashLane,
 } from "./cloudDashboardModel";
-import { clearCloudLaneCaches, cloudLaneLifeAvailable } from "../../cloudLane/cloudLaneActions";
+import { clearCloudLaneCaches, cloudLaneChangesAvailable, cloudLaneLifeAvailable } from "../../cloudLane/cloudLaneActions";
 import { deleteCloudLaneWithCheck, freeCloudLaneWithConfirm, useCloudLaneDeletes, type CloudLaneDeletePhase } from "../../cloudLane/deleteCloudLane";
 import { cloudLaneJobFor, cloudLaneJobVisible, refreshCloudLanesWithoutComputer, useCloudLaneJobs, useCloudLanesWithoutComputer } from "../../cloudLane/cloudLaneStores";
 import { CloudLaneJobCard, cloudLaneJobPresentation } from "../../cloudLane/CloudLaneJobCard";
@@ -704,7 +704,7 @@ function laneMenuActions(lane: DashLane, args: {
   onDelete: () => void;
 }): MachineAction[] {
   if (!lane.instanceId) return [];
-  const life = cloudLaneLifeAvailable();
+  const life = cloudLaneChangesAvailable();
   const actions: MachineAction[] = [
     { key: "disk", label: "What uses the disk", icon: <MagnifyingGlass size={13} />, onSelect: args.onLookInside },
   ];
@@ -716,6 +716,9 @@ function laneMenuActions(lane: DashLane, args: {
   }
   if (life) {
     actions.push({ key: "delete", label: lane.noLane ? "Delete computer" : "Delete lane", icon: <Trash size={13} />, onSelect: args.onDelete, disabled: args.busy, danger: true });
+  } else if (isWebClientMode()) {
+    // ADE Web: say where these are instead of leaving the person to look.
+    actions.push({ key: "desktop", label: "Size, free and delete: in the ADE desktop app", icon: <Desktop size={13} />, onSelect: () => {}, disabled: true });
   }
   return actions;
 }

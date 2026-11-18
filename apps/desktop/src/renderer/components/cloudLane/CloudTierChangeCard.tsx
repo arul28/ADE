@@ -9,7 +9,7 @@ import { CloudSizeCards } from "../settings/cloudDashboard/CloudSizeCards";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { noticeTone } from "../ui/notice/noticeTones";
-import { CLOUD_LANE_LIFE_UNAVAILABLE, changeCloudLaneTier, cloudLaneLifeAvailable } from "./cloudLaneActions";
+import { CLOUD_LANE_LIFE_UNAVAILABLE, changeCloudLaneTier, cloudLaneChangesAvailable } from "./cloudLaneActions";
 import { tierChangeAndroidNote, tierChangeDiskChoices, tierChangeDiskLine, type TierChangeComputer } from "./cloudTierChangeFacts";
 import "./cloudLane.css";
 
@@ -93,7 +93,7 @@ export function CloudTierChangeCard({
   const to = tiers.find((tier) => tier.id === picked) ?? null;
   const move = Boolean(from && to && from.type !== to.type);
   const changed = to != null && to.id !== facts.fromSizeId;
-  const available = cloudLaneLifeAvailable();
+  const available = cloudLaneChangesAvailable();
   const leftMilli = hoursLeftOf(account);
   const hours = hoursText(leftMilli, to);
   const currentDiskGb = computer?.diskGb ?? null;
