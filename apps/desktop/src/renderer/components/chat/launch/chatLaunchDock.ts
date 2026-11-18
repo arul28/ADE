@@ -94,6 +94,47 @@ export const USER_MESSAGE_CARD_SELECTOR = "[data-chat-user-message-card]";
 
 const pendingDocks = new Map<string, { handoff: ComposerHandoff; stashedAtMs: number }>();
 
+/**
+ * Draft chrome copies that a chat pane plays now, each with the chat it opened
+ * and the call that takes it away.
+ */
+const departuresOnScreen = new Map<HTMLElement, { sessionId: string; end: () => void }>();
+/** Other send animations (the Work area's dissolve) that end with the departures. */
+const sendHandoffSettleListeners = new Set<() => void>();
+
+function pruneDepartures(): void {
+  for (const host of departuresOnScreen.keys()) {
+    if (!host.isConnected) departuresOnScreen.delete(host);
+  }
+}
+
+/**
+ * Runs `listener` each time a send's animations must end at once. Returns the
+ * call that removes it.
+ */
+export function onSendHandoffSettle(listener: () => void): () => void {
+  sendHandoffSettleListeners.add(listener);
+  return () => {
+    sendHandoffSettleListeners.delete(listener);
+  };
+}
+
+/**
+ * Ends the send animations of the chat `sessionId`: its draft chrome copies
+ * and the Work area's dissolve. The chat pane calls it when that chat's reply
+ * shows its first words, because the reply must not sit under a fading draft
+ * or a blur. It acts only while that chat's draft copy is on screen, so a
+ * reply that comes after the animations ended, another chat's reply, or a
+ * chat opened another way changes nothing.
+ */
+export function settleSendHandoff(sessionId: string): void {
+  pruneDepartures();
+  const ends = Array.from(departuresOnScreen.values()).filter((departure) => departure.sessionId === sessionId);
+  if (!ends.length) return;
+  for (const departure of ends) departure.end();
+  for (const listener of Array.from(sendHandoffSettleListeners)) listener();
+}
+
 function discardDeparting(handoff: ComposerHandoff | null | undefined): void {
   const departing = handoff?.departing;
   if (departing && !departing.played) departing.host.remove();
@@ -745,6 +786,8 @@ function headerLayer(header: HTMLElement, rect: DOMRect): HTMLElement {
  */
 export function playDepartingDraftChrome(
   departing: DepartingDraftChrome | null | undefined,
+  /** The chat that opened; its first reply words end this (`settleSendHandoff`). */
+  sessionId: string,
   header?: HTMLElement | null,
 ): void {
   if (!departing || departing.played) return;
@@ -761,9 +804,11 @@ export function playDepartingDraftChrome(
   const finish = () => {
     if (done) return;
     done = true;
+    departuresOnScreen.delete(host);
     if (morphInto) morphInto.style.visibility = previousHeaderVisibility;
     host.remove();
   };
+  departuresOnScreen.set(host, { sessionId, end: finish });
   if (!shouldPlaySendHandoff()) {
     finish();
     return;

@@ -48,7 +48,7 @@ import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { CliLaunchChips } from "./CliLaunchChips";
 import { WorkStartSurface } from "./WorkStartSurface";
 import { useRemoteConnectionMark } from "../../state/projectMachines";
-import { hasPendingComposerDock } from "../chat/launch/chatLaunchDock";
+import { hasPendingComposerDock, onSendHandoffSettle } from "../chat/launch/chatLaunchDock";
 import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
 import { SceneFrost } from "../../scene/SceneFrost";
 import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
@@ -1191,6 +1191,12 @@ function WorkAreaModeLayer({ dock, children }: { dock: boolean; children: React.
     if (isPresent) layer.removeAttribute("inert");
     else layer.setAttribute("inert", "");
   }, [isPresent]);
+  // A reply that answers before the dissolve ends shows at once, not blurred.
+  useEffect(() => onSendHandoffSettle(() => {
+    for (const animation of ref.current?.getAnimations() ?? []) {
+      if (animation.playState === "running") animation.finish();
+    }
+  }), []);
   return (
     <motion.div
       ref={ref}

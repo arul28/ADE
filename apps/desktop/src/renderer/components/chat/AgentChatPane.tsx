@@ -326,6 +326,7 @@ import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../li
 import {
   compareChatSessionsByEffectiveRecency,
   getChatSessionLocalTouchTimestampForEvent,
+  isFirstTextOfTurn,
   shouldRefreshSessionListForChatEvent,
 } from "../../lib/chatSessionEvents";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -576,6 +577,7 @@ import {
   playDepartingDraftChrome,
   playFirstMessageFlight,
   refreshComposerHandoffDeparture,
+  settleSendHandoff,
   stashComposerHandoffOrigin,
   stashComposerDockOrigin,
   takeComposerDockOrigin,
@@ -5550,7 +5552,11 @@ export function AgentChatPane({
     playComposerDock(composerDockRef.current, handoff.composer);
     playFirstMessageFlight(shellRef.current, handoff.text);
     // The draft's mode switcher morphs into this chat's header.
-    playDepartingDraftChrome(handoff.departing, shellRef.current?.querySelector<HTMLElement>(CHAT_SHELL_HEADER_SELECTOR));
+    playDepartingDraftChrome(
+      handoff.departing,
+      lockSessionId,
+      shellRef.current?.querySelector<HTMLElement>(CHAT_SHELL_HEADER_SELECTOR),
+    );
   }, [lockSessionId]);
   useLayoutEffect(() => {
     const pending = pendingComposerHandoffAnimationRef.current;
@@ -5564,6 +5570,7 @@ export function AgentChatPane({
     playFirstMessageFlight(shell, pending.handoff.text);
     playDepartingDraftChrome(
       pending.handoff.departing,
+      pending.sessionId,
       shell.querySelector<HTMLElement>(CHAT_SHELL_HEADER_SELECTOR),
     );
   }, [lockSessionId, optimisticOutgoingMessage]);
@@ -11500,13 +11507,18 @@ export function AgentChatPane({
   // frame the thinking indicator already draws: on macOS each frame is a
   // whole-window composite, and words that land between beats would each
   // cost one more.
-  const scheduleQueuedEventFlush = useCallback(() => {
-    if (eventFlushTimerRef.current != null) return;
+  const scheduleQueuedEventFlush = useCallback((nextFrame = false) => {
+    if (eventFlushTimerRef.current != null) {
+      // A flush already waits. It keeps its time unless this event is a
+      // turn's first text and the wait is for a work beat, not a frame.
+      if (!nextFrame || eventFlushFrameRef.current != null) return;
+      cancelQueuedEventFlush();
+    }
     const flush = () => {
       cancelQueuedEventFlush();
       flushQueuedEvents();
     };
-    if (performance.now() - lastEventFlushAtRef.current < STREAM_FLUSH_GAP_MS) {
+    if (!nextFrame && performance.now() - lastEventFlushAtRef.current < STREAM_FLUSH_GAP_MS) {
       eventFlushTimerRef.current = window.setTimeout(flush, msToNextBeat());
       return;
     }
@@ -11856,6 +11868,12 @@ export function AgentChatPane({
       // optimistic bubble cannot disappear behind the 16ms debounce. A visible
       // grid tile streams on the scheduled flush like any pane: it needs no
       // focus, and a flush per event cost a frame per event for each tile.
+      const firstTextOfTurn = envelope.event.type === "text" && isFirstTextOfTurn(
+        envelope,
+        pendingEventQueueRef.current,
+        eventsBySessionRef.current[envelope.sessionId],
+        detachedLiveEventsBySessionRef.current[envelope.sessionId],
+      );
       if (heldForOpen) {
         // Flushed when the hold ends.
       } else if (
@@ -11866,7 +11884,11 @@ export function AgentChatPane({
         cancelQueuedEventFlush();
         flushQueuedEvents();
       } else {
-        scheduleQueuedEventFlush();
+        // The reply's first words replace the draft: this chat's send
+        // animations (draft copies, the Work area's dissolve) end in the
+        // same frame.
+        if (firstTextOfTurn && envelope.sessionId === selectedSessionIdRef.current) settleSendHandoff(envelope.sessionId);
+        scheduleQueuedEventFlush(firstTextOfTurn);
       }
       // After the flush is scheduled, so its paint mark lands after that frame.
       noteChatSendTimingEvent(envelope);
