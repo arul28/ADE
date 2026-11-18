@@ -328,7 +328,17 @@ function hasOwnSshSetup(top: string): boolean {
 }
 
 function localCheckout(cwd: string): { top: string; head: string; branch: string | null } {
-  const top = gitText(cwd, ["rev-parse", "--show-toplevel"]);
+  let top: string;
+  try {
+    top = gitText(cwd, ["rev-parse", "--show-toplevel"]);
+  } catch (error) {
+    if (!/not a git repository/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    // The command runs in a copy of this checkout there, and there is none here.
+    throw new CliUsageError(
+      `${cwd} is not a Git checkout, so there is no work to copy to the other machine. `
+      + "Run it from the project's folder, or pass --lane <lane> to run in a lane there, or --no-code when the command needs no code.",
+    );
+  }
   const branch = gitText(top, ["rev-parse", "--abbrev-ref", "HEAD"]);
   return { top, head: gitText(top, ["rev-parse", "HEAD"]), branch: branch === "HEAD" ? null : branch };
 }
