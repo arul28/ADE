@@ -56,8 +56,34 @@ export function writeFileAtomic(filePath: string, contents: string | Buffer): vo
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmpPath, contents, { mode: 0o600 });
   ensureMode600(tmpPath);
-  fs.renameSync(tmpPath, filePath);
+  try {
+    renameRetryingOnWindows(tmpPath, filePath);
+  } catch (error) {
+    try { fs.rmSync(tmpPath, { force: true }); } catch { /* the rename error is the one to report */ }
+    throw error;
+  }
   ensureMode600(filePath);
+}
+
+/**
+ * Waits between rename attempts on Windows, about 1.3 s in all. Antivirus
+ * and the search indexer open a newly written file for a moment, and Windows
+ * refuses a rename onto or from a file anyone has open (EPERM, EACCES, EBUSY).
+ * A credential write must outlast that: after a refresh-token rotation the old
+ * token is already spent, so a write that gives up signs the machine out.
+ */
+const WINDOWS_RENAME_RETRY_WAITS_MS = [0, 5, 10, 25, 50, 100, 150, 250, 300, 400];
+
+function renameRetryingOnWindows(tmpPath: string, filePath: string): void {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(tmpPath, filePath);
+      return;
+    } catch (error) {
+      if (!isLockContention(error) || isEexist(error) || attempt >= WINDOWS_RENAME_RETRY_WAITS_MS.length) throw error;
+      sleepSync(WINDOWS_RENAME_RETRY_WAITS_MS[attempt]!);
+    }
+  }
 }
 
 export function isEnoent(error: unknown): boolean {

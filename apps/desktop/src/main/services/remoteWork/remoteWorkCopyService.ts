@@ -424,6 +424,22 @@ export function remoteWorkCopiesInRepo(
   return [...here, ...elsewhere];
 }
 
+/**
+ * Whether a work copy's worktree link is whole, from the files alone (no git
+ * process: this runs before every tap and screenshot). A worktree's `.git` is
+ * a file naming its folder in the main repository; with either gone, git run
+ * in the copy finds the main checkout around it instead.
+ */
+function worktreeLinkIntact(copyPath: string): boolean {
+  try {
+    const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(path.join(copyPath, ".git"), "utf8"));
+    if (!pointer) return false;
+    return fs.existsSync(path.join(path.resolve(copyPath, pointer[1]!), "HEAD"));
+  } catch {
+    return false;
+  }
+}
+
 export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOptions) {
   const { projectRoot, logger } = options;
   const now = options.now ?? (() => Date.now());
@@ -877,13 +893,45 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
   };
 
   /**
+   * Whether git, run in the copy, works on the copy itself. Copies live inside
+   * the main checkout (`.ade/remote-work/…`), so a copy whose worktree link
+   * broke (its `.git` file gone, or its registration pruned) silently resolves
+   * to the MAIN checkout: the sync's `checkout --force` and `clean` would then
+   * rewrite the person's own working tree. Read from the files alone (this
+   * runs before every tap and screenshot), so git is spawned only for a link
+   * that is already broken: `git worktree repair` once, then read again.
+   */
+  const copyLinked = async (copyPath: string): Promise<boolean> => {
+    if (worktreeLinkIntact(copyPath)) return true;
+    await git(["worktree", "repair", copyPath], projectRoot);
+    return worktreeLinkIntact(copyPath);
+  };
+
+  /**
+   * A copy folder git no longer treats as its own checkout: moved aside with
+   * its files (it may hold work made there), never synced or deleted, so a
+   * new copy can take its place.
+   */
+  const setAsideUnlinkedCopy = (owner: string, copyPath: string): void => {
+    const aside = `${copyPath}.unlinked-${now()}`;
+    fs.renameSync(copyPath, aside);
+    logger?.warn("remote_work.unlinked_copy_set_aside", { owner, path: copyPath, aside });
+  };
+
+  /**
    * A copy folder the list lost (a damaged or replaced copies.json): keep it,
    * list it unsynced, and let the guarded sync take it over rather than
    * deleting what it holds. Null when there is no such folder.
    */
   const adoptUnlistedCopy = async (owner: string, source: RemoteWorkSource, timestamp: string): Promise<RemoteWorkCopy | null> => {
     const copyPath = pathFor(owner);
-    if (!fs.existsSync(path.join(copyPath, ".git"))) return null;
+    if (!fs.existsSync(copyPath)) return null;
+    if (!(await copyLinked(copyPath))) {
+      // A folder with files but no working link may hold work: set aside,
+      // never deleted. An empty leftover is the new copy's to replace.
+      if (fs.readdirSync(copyPath).length > 0) setAsideUnlinkedCopy(owner, copyPath);
+      return null;
+    }
     // A folder that is there but unreadable is refused, not replaced: it may hold work.
     const head = await gitOrThrow(["rev-parse", "HEAD"], copyPath, "Could not read the code left in this chat's folder there");
     logger?.warn("remote_work.adopted_unlisted_copy", { owner, path: copyPath });
@@ -941,6 +989,12 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     return await withLock(owner, async () => {
       const timestamp = new Date(now()).toISOString();
       let copy = get(owner);
+      if (copy && fs.existsSync(copy.path) && !(await copyLinked(copy.path))) {
+        // Git there would act on the main checkout; never run a command in it.
+        if (inUse(owner)) throw busyError();
+        setAsideUnlinkedCopy(owner, copy.path);
+        copy = null;
+      }
       if (!copy || !fs.existsSync(copy.path)) {
         if (inUse(owner)) throw busyError();
         // An adopted folder goes through the guarded sync below; a new copy is synced already.
@@ -1045,9 +1099,11 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       if (making.failure && making.head.toLowerCase() === source.head.toLowerCase()) throw making.failure;
     }
     const existing = get(owner);
-    if (existing && fs.existsSync(existing.path)) return { prepared: await prepare(owner, source, mode, prepareOptions) };
+    // A copy that lost its git link is rebuilt by `prepare`, which takes as
+    // long as a new copy: it goes through the timed path below.
+    if (existing && worktreeLinkIntact(existing.path)) return { prepared: await prepare(owner, source, mode, prepareOptions) };
 
-    // No copy yet: make it, and answer in time either way.
+    // No usable copy yet: make it, and answer in time either way.
     const work = prepare(owner, source, mode, prepareOptions);
     const answered = await waitAtMost(work, waitMs);
     if (answered) return { prepared: answered.value };

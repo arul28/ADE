@@ -102,12 +102,16 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
   "usage",
   // Only `ade files push|pull` (this chat's work copy there); see below.
   "files",
+  // A scheduled send fires from the machine whose database holds it, so a
+  // send for a chat there is made there: each machine has its own copy of
+  // the project, and a row saved here never reaches the other one.
+  "drafts",
 ]);
 /**
- * Commands whose own `--machine` flag means something else (a draft's sending
- * machine, the machine `ade machines` acts on). They keep the flag.
+ * Commands whose own `--machine` flag means something else (the machine
+ * `ade machines` acts on). They keep the flag.
  */
-const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["drafts", "machines", "help"]);
+const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["machines", "help"]);
 /**
  * Where `--clone` sets this repository up on that machine first (GitHub only,
  * `machines.cloneForAgent` there): a chat there, or a command, device or file
@@ -198,7 +202,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       }
       throw new CliUsageError(
         `ade ${typed} runs on this machine only; --machine and --all-machines don't apply to it. `
-        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, apple, android, screen (mac-desktop, windows-desktop), app-control, files push|pull.",
+        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, drafts, apple, android, screen (mac-desktop, windows-desktop), app-control, files push|pull.",
       );
     }
     return parsed;
@@ -216,6 +220,16 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       throw new CliUsageError(`--to names the destination of a move; drop it for ${ownMoveFlags.join("/")}.`);
     }
     return parsed;
+  }
+  if (primary === "drafts") {
+    // An --image is a path on this computer; the draft made there would name a file that machine lacks.
+    const flags = flagNamesOutsideFreeText(parsed.command);
+    if (flags.has("--machine") && flags.has("--image")) {
+      throw new CliUsageError(
+        "A draft made on another machine can't carry an image from this one. "
+        + "Drop --image, or run ade drafts on that machine itself with the image there.",
+      );
+    }
   }
   if (primary === "files") {
     // The other `ade files` verbs act on a workspace (a lane) here; with

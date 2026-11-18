@@ -3471,7 +3471,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade drafts list --text                        Drafts and armed sends, newest first
     $ ade drafts list --scheduled --text            Only armed sends
     $ ade drafts list --needs-you --text            Sends that need you (blocked or missed)
-    $ ade drafts list --machine <key> --text        Only sends delivered by that machine
+    $ ade drafts list --machine <name> --text       That machine's drafts and armed sends
     $ ade drafts create --prompt "<text>"           Save a plain draft
     $ cat prompt.md | ade drafts create             Read the prompt from stdin
     $ ade drafts create --prompt "Ship it" --image ./shot.png
@@ -3499,7 +3499,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                             (ade chat models --provider <p> --text lists the ids).
     --permission <mode>     Captured permission mode.
     --thinking <effort>     Captured reasoning effort.
-    --machine <key>         Which machine delivers it. Omitted: whichever runtime is up.
+    --machine <name>        Make it on that machine, the one the --target chat is on;
+                            it fires there. Omitted: this machine.
     --if-late <wait|strict|grace>  What happens when the fire time cannot send (default wait).
     --grace <duration>      How long \`grace\` holds the send (max 24h).
 
@@ -14186,7 +14187,6 @@ const DRAFT_SCHEDULE_ONLY_FLAGS: readonly string[] = [
   "--new-chat",
   "--lane",
   "--lane-id",
-  "--machine",
   "--if-late",
   "--grace",
 ];
@@ -14328,7 +14328,9 @@ function buildDraftScheduleInput(args: string[], existing: JsonObject | null): J
     ?? asString(existing?.permissionMode);
   const thinking = readValue(args, ["--thinking", "--reasoning-effort", "--effort"])
     ?? asString(existing?.thinking);
-  const machine = readValue(args, ["--machine"]) ?? asString(existing?.targetMachineKey);
+  // `--machine` runs the whole command on that machine (cliMachineTargeting);
+  // only a send armed before that keeps the delivering machine it named.
+  const machine = asString(existing?.targetMachineKey);
   // A new chat is created by the fire-time delivery, so it must carry its model
   // and provider up front — nobody is there to pick one when it fires.
   if (targetKind === "new" && !model) {
@@ -14388,21 +14390,14 @@ function isDraftPending(status: string | null): boolean {
   return status === "scheduled" || status === "sending";
 }
 
-function selectDraftRows(
-  value: unknown,
-  opts: { filter: "all" | "scheduled" | "needs-you"; machine: string | null },
-): JsonObject[] {
+function selectDraftRows(value: unknown, filter: "all" | "scheduled" | "needs-you"): JsonObject[] {
   let rows = draftEntriesFromResult(value);
-  if (opts.filter === "scheduled") {
+  if (filter === "scheduled") {
     rows = rows.filter((row) => isDraftPending(asString(row.status)));
-  } else if (opts.filter === "needs-you") {
+  } else if (filter === "needs-you") {
     // A blocked send waits on the user; a missed one already refused to go out.
     // Both are the "you have to act" bucket.
     rows = rows.filter((row) => row.status === "blocked" || row.status === "missed");
-  }
-  if (opts.machine) {
-    const want = opts.machine.trim().toLowerCase();
-    rows = rows.filter((row) => (asString(row.targetMachineKey) ?? "").toLowerCase() === want);
   }
   return rows;
 }
@@ -14553,13 +14548,12 @@ function buildDraftsListPlan(args: string[]): CliPlan {
   if (scheduled && needsYou) {
     throw new CliUsageError("Use --scheduled or --needs-you, not both.");
   }
-  const machine = readValue(args, ["--machine"]);
   const filter: "all" | "scheduled" | "needs-you" = scheduled ? "scheduled" : needsYou ? "needs-you" : "all";
   return {
     kind: "execute",
     label: "drafts list",
     steps: [draftsActionStep("listDrafts")],
-    shapeResult: (values) => selectDraftRows(values.result, { filter, machine }),
+    shapeResult: (values) => selectDraftRows(values.result, filter),
     formatter: "drafts-list",
     tableText: (result) => renderDraftsTable(result as JsonObject[]),
   };

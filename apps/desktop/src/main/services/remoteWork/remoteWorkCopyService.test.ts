@@ -86,6 +86,34 @@ describe("remote work copy", () => {
       expect(git(first.path, "rev-parse", "HEAD")).toBe(head);
       // trimEnd: a Windows checkout writes it back with CRLF.
       expect(fs.readFileSync(path.join(first.path, "app.txt"), "utf8").trimEnd()).toBe("v1");
+
+      // The copy loses its git link. It sits inside the main checkout, so git
+      // there now means the main checkout, which has the person's own
+      // uncommitted edit: neither a reuse nor a sync may ever touch it.
+      fs.writeFileSync(path.join(projectRoot, "app.txt"), "mine, not committed\n");
+      const mainHead = git(projectRoot, "rev-parse", "HEAD");
+      const parent = path.dirname(first.path);
+      const unlinked = () => fs.readdirSync(parent).filter((name) => name.includes(".unlinked-"));
+      fs.writeFileSync(path.join(first.path, "left-there.txt"), "kept\n");
+      // Only its `.git` file gone: git still lists it, so it is repaired in place.
+      fs.rmSync(path.join(first.path, ".git"));
+      const repaired = await service.prepare(owner, source, "none");
+      repaired.done();
+      expect(git(first.path, "rev-parse", "--show-toplevel")).toBe(fs.realpathSync(first.path));
+      expect(fs.existsSync(path.join(first.path, "left-there.txt"))).toBe(true);
+      // Also pruned from git's list: set aside with its files, and a new copy made.
+      for (const mode of ["none", "sync"] as const) {
+        fs.rmSync(path.join(first.path, ".git"));
+        git(projectRoot, "worktree", "prune");
+        const again = await service.prepare(owner, source, mode);
+        again.done();
+        expect(again).toMatchObject({ path: first.path, created: true });
+        expect(git(first.path, "rev-parse", "--show-toplevel")).toBe(fs.realpathSync(first.path));
+      }
+      expect(fs.readFileSync(path.join(projectRoot, "app.txt"), "utf8")).toBe("mine, not committed\n");
+      expect(git(projectRoot, "rev-parse", "HEAD")).toBe(mainHead);
+      expect(unlinked()).toHaveLength(2);
+      expect(unlinked().some((name) => fs.existsSync(path.join(parent, name, "left-there.txt")))).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
