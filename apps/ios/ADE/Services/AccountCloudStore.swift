@@ -168,6 +168,20 @@ final class AccountCloudStore: ObservableObject {
     }
   }
 
+  /// "Update & restart" for an ADE Cloud computer whose ADE is too old to
+  /// keep working on (`ClientUpdateGate.swift`). Nil when the update started,
+  /// else the sentence to show.
+  func updateComputer(instanceId: String, using sync: SyncService) async -> String? {
+    guard let client = await sync.cloudServerClient() else { return "Sign in to ADE to update this computer." }
+    do {
+      try await client.update(instanceId: instanceId)
+      accountCloudLog.notice("cloud_store update=started")
+      return nil
+    } catch {
+      return cloudServerFailureMessage(error)
+    }
+  }
+
   /// Hands a message for an existing cloud chat to the server's queue. The
   /// server wakes the chat's own computer (or makes a new one for a lane
   /// whose computer was deleted) and delivers the message once, keyed on

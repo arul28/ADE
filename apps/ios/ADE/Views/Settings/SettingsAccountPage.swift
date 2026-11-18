@@ -32,6 +32,7 @@ struct SettingsAccountPage: View {
   @State private var confirmSignOut = false
   @State private var signingOut = false
   @State private var copiedAccountId = false
+  @State private var showDeleteAccount = false
   /// The account's invite summary, read only with ADE Cloud (`cloud.read referral`).
   @State private var referral: CloudPhoneReferral?
 
@@ -65,6 +66,7 @@ struct SettingsAccountPage: View {
         SettingsPasswordsSection()
         detailsSection(identity)
         inviteSection
+        deleteAccountSection
       } else {
         signedOutPanel
       }
@@ -89,6 +91,9 @@ struct SettingsAccountPage: View {
     // The invite box is part of ADE Cloud: no read, and no box, without access.
     .task(id: syncService.cloudAvailable && syncService.cloudSupported) {
       referral = await syncService.readCloudReferral()
+    }
+    .sheet(isPresented: $showDeleteAccount) {
+      AccountDeleteSheet()
     }
     .confirmationDialog("Sign out of ADE?", isPresented: $confirmSignOut, titleVisibility: .visible) {
       Button("Sign out", role: .destructive) {
@@ -243,6 +248,29 @@ struct SettingsAccountPage: View {
         .buttonStyle(ADEKitRowButtonStyle())
         .disabled(signingOut)
       }
+    }
+  }
+
+  // MARK: Delete account
+
+  /// Last on the page, apart from Sign out: deleting the account is for good.
+  private var deleteAccountSection: some View {
+    ADESettingsRows {
+      Button {
+        showDeleteAccount = true
+      } label: {
+        ADESettingsRow(
+          title: "Delete account",
+          hint: "Deletes your ADE account, its ADE Cloud computers, saved chats, passwords and project list. Projects on your computers stay.",
+          symbol: "trash",
+          titleColor: ADEColor.danger,
+          tint: .red
+        ) {
+          EmptyView()
+        }
+      }
+      .buttonStyle(ADEKitRowButtonStyle())
+      .accessibilityIdentifier("settings-account-delete")
     }
   }
 
