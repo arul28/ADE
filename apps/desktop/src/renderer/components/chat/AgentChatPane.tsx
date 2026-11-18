@@ -15735,51 +15735,124 @@ export function AgentChatPane({
 
   /** The banner text a failed card answer raised, so its successful retry can clear it. */
   const approvalErrorRef = useRef<string | null>(null);
-  const [inlineApprovalError, setInlineApprovalError] = useState<{ itemId: string; message: string } | null>(null);
+  const [inlineApprovalError, setInlineApprovalError] = useState<{ sessionId: string; itemId: string; message: string } | null>(null);
+  const approvalActionsInFlightRef = useRef(new Map<string, "new_chat" | null>());
+  /** The card whose "Implement in a new chat" is still starting; drives its spinner. */
+  const [planHandoffStartingFor, setPlanHandoffStartingFor] = useState<string | null>(null);
+  const planHandoffSourceIsCurrent = useLatestCallback((
+    sessionId: string,
+    pin: OpenProjectBinding,
+    projectBindingKey: string | null,
+  ) => paneMountedRef.current
+    && isTileActive
+    && activeProjectBindingKeyRef.current === projectBindingKey
+    && renderSelectedSessionIdRef.current === sessionId
+    && chatRuntimePinRef.current?.key === pin.key);
+
+  const completePlanHandoff = useLatestCallback(async (
+    implementationSessionId: string,
+    sourceSessionId: string,
+    sourceLaneId: string | null,
+    pin: OpenProjectBinding,
+    projectBindingKey: string | null,
+  ) => {
+    invalidateAgentChatSessionListCache(sourceLaneId ? { laneId: sourceLaneId } : undefined);
+    if (!planHandoffSourceIsCurrent(sourceSessionId, pin, projectBindingKey)) return;
+    void refreshSessions({ force: true }).catch(() => undefined);
+
+    // Give Work the actual row so it can seed the new tab on the right machine.
+    if (onSessionCreated) {
+      const summary = await withChatPin(pin, (chatPin) =>
+        agentChatApiRef.current.getSummary({ sessionId: implementationSessionId }, chatPin)
+      ).catch(() => null);
+      if (!planHandoffSourceIsCurrent(sourceSessionId, pin, projectBindingKey)) return;
+      if (summary) {
+        notifySessionCreated(sessionFromSummary(summary), { source: "handoff", runtimePin: pin });
+        return;
+      }
+    }
+
+    navigateToSpawnedChat(implementationSessionId, sourceLaneId, pin);
+    if (!onSessionCreated) {
+      const params = new URLSearchParams({ sessionId: implementationSessionId });
+      if (sourceLaneId && projectBindingKey === pin.key) params.set("laneId", sourceLaneId);
+      navigate(`/work?${params.toString()}`);
+    }
+  });
+
   const handleApproval = useCallback(async (
     itemId: string,
     decision: AgentChatApprovalDecision,
     responseText?: string | null,
     answers?: Record<string, string | string[]>,
-    options?: { inlineError?: boolean },
+    options?: { inlineError?: boolean; planAction?: "new_chat" },
   ): Promise<boolean> => {
     if (!selectedSessionId) return false;
-    setInlineApprovalError((current) => (current?.itemId === itemId ? null : current));
+    const approvalKey = `${selectedSessionId}\u0000${itemId}`;
+    if (approvalActionsInFlightRef.current.has(approvalKey)) return false;
+    const planAction = options?.planAction ?? null;
+    const sourcePin = chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current);
+    const sourceProjectBindingKey = activeProjectBindingKeyRef.current;
+    approvalActionsInFlightRef.current.set(approvalKey, planAction);
+    if (planAction) setPlanHandoffStartingFor(approvalKey);
+    setInlineApprovalError((current) => (
+      current?.sessionId === selectedSessionId && current.itemId === itemId ? null : current
+    ));
     try {
       touchSession(selectedSessionId);
       setRespondingApprovalIds((prev) => new Set(prev).add(itemId));
-      await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.respondToInput({
+      const result = await withChatPin(sourcePin, (chatPin) => agentChatApiRef.current.respondToInput({
         sessionId: selectedSessionId,
         itemId,
         decision,
         responseText,
         ...(answers ? { answers } : {}),
+        ...(planAction ? { planAction } : {}),
       }, chatPin));
+      const implementationSessionId = typeof result?.implementationSessionId === "string"
+        ? result.implementationSessionId.trim()
+        : null;
+      if (planAction && (!implementationSessionId || implementationSessionId === selectedSessionId)) {
+        throw new Error("The computer did not confirm a new implementation chat.");
+      }
       setPendingInputsBySession((prev) => ({
         ...prev,
         [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((entry) => entry.itemId !== itemId)
       }));
-      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
       // A retry that went through clears the banner its own failure raised.
       const staleApprovalError = approvalErrorRef.current;
       approvalErrorRef.current = null;
       if (staleApprovalError) setError((current) => (current === staleApprovalError ? null : current));
-      await refreshSessions().catch(() => {});
-      return true;
+      if (planAction && implementationSessionId && sourcePin) {
+        void completePlanHandoff(
+          implementationSessionId,
+          selectedSessionId,
+          chatScopeLaneId,
+          sourcePin,
+          sourceProjectBindingKey,
+        ).catch((error: unknown) => console.warn("Could not open the implementation chat", error));
+      }
     } catch (approvalError) {
-      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
       const rawApprovalError = approvalError instanceof Error ? approvalError.message : String(approvalError);
       const message = stripElectronErrorWrapper(rawApprovalError) || rawApprovalError;
       if (options?.inlineError) {
         // The card shows it itself, beside the fields the person retries.
-        setInlineApprovalError({ itemId, message });
+        setInlineApprovalError({ sessionId: selectedSessionId, itemId, message });
         return false;
       }
       approvalErrorRef.current = message;
       setError(message);
       return false;
+    } finally {
+      approvalActionsInFlightRef.current.delete(approvalKey);
+      if (planAction) {
+        setPlanHandoffStartingFor((current) => (current === approvalKey ? null : current));
+      }
+      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
     }
-  }, [refreshSessions, selectedSessionId, touchSession]);
+    if (!planAction) await refreshSessions().catch(() => {});
+    return true;
+  }, [chatScopeLaneId, completePlanHandoff, refreshSessions, selectedSessionId, touchSession]);
 
   /**
    * Throw a dismissible card away.
@@ -17513,6 +17586,19 @@ export function AgentChatPane({
       inlineError: cardShowsOwnError(readNativeInputCard(pendingInput.request)),
     });
   }, [handleApproval, pendingInput, selectedSessionId]);
+
+  const planHandoffAvailable = !isBoundScopePane
+    && Boolean(chatRuntimePin)
+    && !chatComputerResting
+    && Boolean(composerSessionId && composerSessionId === selectedSessionId)
+    && pendingInput?.request.kind === "plan_approval"
+    && pendingInput.request.source === "codex"
+    && pendingInput.request.providerMetadata?.planHandoffSupported === true
+    && isAdeAvailable(agentChatApiRef.current?.respondToInput);
+  const implementPlanInNewChat = useLatestCallback(() => {
+    if (!planHandoffAvailable || !pendingInput) return;
+    void handleApproval(pendingInput.itemId, "accept", null, undefined, { inlineError: true, planAction: "new_chat" });
+  });
 
   const updateNativeControls = useCallback(async (patch: Partial<NativeControlState>) => {
     if (isPersistentIdentitySurface && sessionMutationKind) return;
@@ -20938,7 +21024,11 @@ export function AgentChatPane({
             pendingInputQueue={pendingInputQueue}
             onSelectPendingInput={setFocusedPendingItemId}
             approvalResponding={pendingInput ? respondingApprovalIds.has(pendingInput.itemId) : false}
-            pendingInputError={pendingInput && inlineApprovalError?.itemId === pendingInput.itemId ? inlineApprovalError.message : null}
+            pendingInputError={pendingInput
+              && inlineApprovalError?.sessionId === composerSessionId
+              && inlineApprovalError.itemId === pendingInput.itemId
+              ? inlineApprovalError.message
+              : null}
             turnActive={turnActive}
             sendOnEnter={sendOnEnter}
             busy={
@@ -21056,6 +21146,8 @@ export function AgentChatPane({
             backgroundJobCount={selectedSession?.activeBackgroundTaskCount ?? 0}
             childChatCount={activeChildChatCount}
             onApproval={(decision, responseText, answers) => approve(decision, responseText, answers)}
+            onImplementPlanInNewChat={planHandoffAvailable ? implementPlanInNewChat : undefined}
+            planHandoffResponding={planHandoffStartingFor === `${selectedSessionId}\u0000${pendingInput?.itemId}`}
             onAddAttachment={addAttachment}
             onRegisterDropTarget={registerChatPaneDropTarget}
             onRemoveAttachment={removeAttachment}

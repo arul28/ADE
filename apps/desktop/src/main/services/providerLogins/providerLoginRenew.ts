@@ -50,7 +50,7 @@ export type OwnerRenewOutcome = "renewed" | "failed" | "busy";
 export const RENEW_RETRY_MS = 60_000;
 /** Tries for one expiry; then nothing until the expiry changes (the CLI renews itself when used). */
 export const RENEW_MAX_TRIES = 3;
-/** setTimeout's largest delay; a later expiry is planned again by a later pass. */
+/** setTimeout's largest delay; a timer for a later due time wakes and waits again. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
 type Logger = { info(event: string, data?: Record<string, unknown>): void };
@@ -81,6 +81,11 @@ export function createOwnerRenewal(args: {
   async function fire(key: string): Promise<void> {
     const planned = timers.get(key);
     if (!planned) return;
+    // A due time past setTimeout's limit (a 30-day OpenCode login) wakes early: wait again, never a try.
+    if (planned.dueAt - args.now() > 1_000) {
+      arm(key, planned.dueAt, planned.target);
+      return;
+    }
     timers.delete(key);
     const { target } = planned;
     if (running.has(target.provider)) return;
@@ -111,6 +116,12 @@ export function createOwnerRenewal(args: {
     args.onRenewed(target, outcome);
   }
 
+  function arm(key: string, due: number, target: OwnerRenewTarget): void {
+    const timer = setTimeout(() => void fire(key), Math.min(MAX_TIMER_MS, Math.max(0, due - args.now())));
+    timer.unref?.();
+    timers.set(key, { timer, dueAt: due, target });
+  }
+
   return {
     /** Make the timers match these sign-ins: one each, aimed at its renewal time. Others go. */
     plan(targets: readonly OwnerRenewTarget[]): void {
@@ -122,9 +133,7 @@ export function createOwnerRenewal(args: {
         const have = timers.get(target.key);
         if (have && have.dueAt === due && have.target.expiresAt === target.expiresAt) continue;
         if (have) clearTimeout(have.timer);
-        const timer = setTimeout(() => void fire(target.key), Math.min(MAX_TIMER_MS, Math.max(0, due - args.now())));
-        timer.unref?.();
-        timers.set(target.key, { timer, dueAt: due, target });
+        arm(target.key, due, target);
       }
       for (const [key, planned] of timers) {
         if (keep.has(key)) continue;

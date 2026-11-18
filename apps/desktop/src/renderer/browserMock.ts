@@ -1091,7 +1091,7 @@ function createMockAppControl() {
 }
 
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
-  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-6-astra";
+  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-6.2-sol";
 const DEFAULT_BROWSER_MOCK_CLAUDE_MODEL =
   getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-5";
 const BROWSER_MOCK_PREVIEW_CAPABILITY_UNSUPPORTED = {
@@ -5129,6 +5129,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       "anthropic/claude-haiku-5-5",
       "openai/gpt-6-sol",
       "openai/gpt-6-luna",
+      "openai/gpt-6.2-sol",
+      "openai/gpt-6.2-astra",
       "openai/gpt-6.1-sol",
       "openai/gpt-6-astra",
       "xai/grok-4-6",

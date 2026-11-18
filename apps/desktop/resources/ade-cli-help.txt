@@ -688,6 +688,10 @@ Work chats
                                                     Approval: --approve | --approve-session | --deny (--text is the
                                                     reason). Approvals are the person's to answer unless you were
                                                     told you may approve. --deny/--cancel also decline a question.
+                                                    A Codex plan ready to implement can go to a chat of its own:
+                                                    --new-chat (with --approve implied) starts that chat, sends it
+                                                    the plan, and prints its session id. Only the person may do
+                                                    this; the plan itself stays in the planning chat.
                                                     While a chat waits on input, 'chat message' and 'chat send' are
                                                     refused (error -32011) until it is answered. A subagent's question
                                                     is also sent to its parent chat with these commands filled in.
