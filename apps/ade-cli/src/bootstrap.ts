@@ -3341,6 +3341,7 @@ export async function createAdeRuntime(args: {
           linearAgentRuntime?.onChatEvent(event);
           pushEvent("runtime", event as unknown as Record<string, unknown>);
           if (event.event.type === "done") cloudChatUploader?.noteTurnEnded(event.sessionId, event.event.status);
+          else if (event.event.type === "session_meta_updated") cloudChatUploader?.noteRowChanged(event.sessionId);
           // A routine added, changed or removed between turns is part of the copy too.
           if ((event.event.type === "done" || event.event.type === "scheduled_work_update") && ctoAccountCopyRef.current && agentChatServiceHolder.current?.sessionIdentityKeyNow(event.sessionId) === "cto") {
             ctoAccountCopyRef.current.noteTurnEnded();
