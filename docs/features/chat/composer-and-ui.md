@@ -436,6 +436,14 @@ until the morph lands. With no header, the switcher flies off the top. The
 rest fades and drops 10 px (260 ms). Transform and opacity only (`contain:
 layout style`); unplayed copies remove themselves after the TTL.
 
+**The reply ends the send animations.** When the shown chat's reply shows the
+first text of its turn (`isFirstTextOfTurn`, `lib/chatSessionEvents.ts`) while a
+draft copy is still on screen, `settleSendHandoff` removes the copies and
+finishes the `WorkViewArea` dissolve (`onSendHandoffSettle`) in the same frame,
+so a quick reply is never drawn under a fade or a blur. That first text also
+flushes in the next frame, not at the next work beat. A reply that comes after
+the animations end changes nothing.
+
 **Skips.** The flight is skipped when the bubble does not mount in 500 ms.
 Both animations are skipped for reduced motion, at resource pressure level 3
 or higher (`latestAppResourcePressureLevel`) and while the window is hidden;
