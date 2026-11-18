@@ -18,10 +18,10 @@ Settings opens on **General**. The sidebar groups the rest by what they belong t
     **Account** (sign-in, connections, your computers) and **Usage** (spend and pacing across your providers and machines).
   </Card>
   <Card title="App" icon="window">
-    **Chat**, **Providers** (one list, with a machine picker in its title, and the **Custom** section), **MCP servers**, **ADE MCP**, **Notifications**, **Appearance**, **Behaviour**, and **Apple devices** on macOS.
+    **Chat**, **Providers** (one list, with a machine picker in its title, and the **Custom** section), **MCP servers**, **ADE MCP**, **Notifications**, **Appearance**, **Behaviour**, **Keyboard**, **Passwords & Secrets**, and **Apple devices** on macOS.
   </Card>
   <Card title="Project" icon="folder-tree">
-    **Lanes**, **Agents**, **Storage & cleanup**, **Location**, **Secrets**, and **Integrations** (GitHub, Linear, and Jira) for the open project.
+    **Lanes**, **Agents**, **Storage & cleanup**, **Location**, and **Integrations** (GitHub, Linear, and Jira) for the open project.
   </Card>
   <Card title="System" icon="server">
     **Machines**, with a page per machine (its load, its **New work** preference, and the work it keeps for chats on other machines), and **Advanced** (the background service, the `ade` command, reports, database copies, and reset).
@@ -35,6 +35,14 @@ Settings opens on **General**. The sidebar groups the rest by what they belong t
 <Note>
 A few controls live in the **top bar**, not in Settings: live provider quota windows and the automation budget sit in the **Usage** popup, and phone pairing and multi-device sync sit in the **Sync** popover. **Settings › Usage** is the retrospective view; the Usage popup is the live one.
 </Note>
+
+## Passwords & Secrets
+
+**Settings › Passwords & Secrets** holds your logins, 2FA codes, passkeys and secrets (such as API keys). It is on by default. It follows your ADE account to every computer you sign in to, ADE Cloud included. A secret can also be kept on this computer only.
+
+Agents use these values but never see them. An agent signs in with a saved login and fills a 2FA code. It runs commands with your secrets in the environment (`ade secrets exec`) and sees only masked output. To show or copy a value, you confirm with Touch ID or Windows Hello. Your old project Secrets move into this page without a prompt.
+
+To bring logins over, choose **Import a CSV**. Chrome, Safari, 1Password and Bitwarden export this format.
 
 ## First-run setup
 

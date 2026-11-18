@@ -4,7 +4,7 @@ description: "Every way to start a lane — a new branch or an existing branch �
 icon: "plus"
 ---
 
-Your repo root is always the **primary lane** — it exists from the moment you open the project, and it can't be deleted. Every *other* lane is a git worktree you create for a single task, isolated under `.ade/worktrees/`. You never pick a "lane type"; what varies is **how** you bring the new lane into being.
+Your repo root is always the **main checkout** — it exists from the moment you open the project, and it can't be deleted. Every *other* lane is a git worktree you create for a single task, isolated under `.ade/worktrees/`. You never pick a "lane type"; what varies is **how** you bring the new lane into being.
 
 <Frame caption="Start a new lane from the Lanes view.">
   <img src="/media/current/lanes.jpg" alt="The New lane button in the Lanes view" />
@@ -36,7 +36,7 @@ This is the default path. Open the **New lane** dialog, name the task, and choos
     Use a short, outcome-shaped name like `fix-auth-redirect` or `add-health-endpoint`. The name becomes the branch and the worktree folder slug. ADE picks an unused accent color for the lane; click the colored dot inside the name field to change it.
   </Step>
   <Step title="Choose the base">
-    Choose **Start from**: the project default branch, the primary lane branch, or another branch. Under **Bring**, choose pushed commits, local commits, or uncommitted changes. Uncommitted changes are copied, including staged, unstaged, and untracked files; the source stays unchanged.
+    Choose **Start from**: the project default branch, the main checkout's branch, or another branch. Under **Bring**, choose pushed commits, local commits, or uncommitted changes. Uncommitted changes are copied, including staged, unstaged, and untracked files; the source stays unchanged.
   </Step>
   <Step title="Create">
     Click **Create lane**. ADE runs `git worktree add`, checks the new branch out under `.ade/worktrees/`, and the lane appears in the list.
