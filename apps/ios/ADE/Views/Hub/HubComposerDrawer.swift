@@ -632,7 +632,9 @@ struct HubInlineComposer: View {
     let primaryName = syncService.focusedMachineDisplayName
     let primaryAccountKey = account.machine(forFleetKey: syncService.focusedMachineKey)?.machineKey
     let primaryIsCloud = syncService.isCloudFleetKey(syncService.focusedMachineKey)
-    for project in syncService.projects {
+    // An unreachable primary can't take a chat: only the other machines and
+    // ADE Cloud are offered until it is back.
+    for project in syncService.connectionState == .connected ? syncService.projects : [] {
       add(HubComposerCopy(
         machineKey: nil, machineName: primaryName, accountMachineKey: primaryAccountKey,
         project: project, isCloud: primaryIsCloud
@@ -1702,8 +1704,27 @@ struct HubInlineComposer: View {
         pickedProjectId = ""
       }
     }
-    let projects = syncService.projects.filter { !isRemoved($0, nil) }
+    let projects = syncService.connectionState == .connected
+      ? syncService.projects.filter { !isRemoved($0, nil) }
+      : []
     guard !projects.isEmpty else {
+      // No primary to start on (none, or it is unreachable): ADE Cloud,
+      // for the open project when the account has it.
+      let live = accountProjects.liveProjects
+      let active = syncService.activeProject
+      let openProject = active?.accountProjectId.flatMap { id in live.first { $0.id == id } }
+        ?? active.flatMap { active in
+          live.first {
+            $0.owner.caseInsensitiveCompare(active.repoOwner ?? "") == .orderedSame
+              && $0.name.caseInsensitiveCompare(active.repoName ?? "") == .orderedSame
+          }
+        }
+      if let project = openProject ?? live.first {
+        pickedMachineKey = ADECloudMachine.id
+        pickedProjectId = project.id
+        selectedLaneId = workAutoCreateLaneSentinelId
+        return
+      }
       pickedProjectId = ""
       selectedLaneId = ""
       return
