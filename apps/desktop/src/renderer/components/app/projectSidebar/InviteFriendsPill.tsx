@@ -13,20 +13,23 @@ import {
 } from "../../../lib/invitePill";
 import { navigateToAppTarget } from "../../../lib/openExternal";
 import { useCloudAccount } from "../../../state/cloudAccountStore";
+import { useUnaskedNudge } from "../../../onboarding/unaskedNudge";
 
 /**
  * "Invite friends, get free cloud hours": the desktop pill in the star pill's
- * place. It shows only to an account ADE Cloud lets in that has used it, and
- * never while the star pill is up (one nudge at a time). The rules are in
+ * place. It shows only to an account ADE Cloud lets in that has used it,
+ * never while the star pill is up (one nudge at a time), and only within the
+ * shared unasked budget (`useUnaskedNudge`). The rules are in
  * `lib/invitePill.ts`; a click opens the invite card in Settings › ADE Cloud.
  */
 export function InviteFriendsPill() {
   const account = useCloudAccount();
   const prefs = useInvitePillPrefs();
   const starUp = isStarPillVisible(useRootAppStore((s) => s.starPill));
-  const visible = !starUp && isInvitePillVisible(prefs, account);
   const showing = INVITE_PILL_SCHEDULE.showing(prefs);
   const shownDue = INVITE_PILL_SCHEDULE.shownDue(prefs);
+  // Under the shared unasked budget: never during onboarding or a new account's quiet days.
+  const visible = useUnaskedNudge(!starUp && isInvitePillVisible(prefs, account), shownDue);
 
   // Once per showing, not per mount.
   useEffect(() => {

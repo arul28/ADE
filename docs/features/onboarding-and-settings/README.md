@@ -1555,6 +1555,14 @@ itself, tip cards, surveys, situational suggestions) shares one budget
 nothing in a new account's first three days. A suggestion is never held back
 by it, but spends it.
 
+The sidebar nudges ("Star ADE on GitHub", "Invite friends") go through it too
+(`renderer/onboarding/unaskedNudge.ts`): a new showing waits until onboarding
+ended on an earlier launch and the budget has room, and spends it; a banner
+already up stays up, except while onboarding still has this launch. The
+"Import your chats" pill under the new-chat composer is not a nudge (it is the
+composer's own import entry, dismissible per project), but it waits while the
+tour runs, since the tour's cards point at the same composer.
+
 Onboarding lives on the account as one setting, `onboarding.progress`
 (`shared/onboardingProgressRecord.ts`, `ACCOUNT_SCOPE_ALL`): started, skipped,
 tour done, hint answers, tips already offered, and the last unasked showing.

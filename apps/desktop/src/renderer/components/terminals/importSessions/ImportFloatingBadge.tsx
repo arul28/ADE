@@ -4,6 +4,7 @@ import { cn } from "../../ui/cn";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../../../shared/types/externalSessions";
 import { ToolLogo } from "../ToolLogos";
 import { PROVIDER_TOOL_TYPE } from "./contract";
+import { useTourOpen } from "../../../onboarding/unaskedNudge";
 
 const STORAGE_PREFIX = "ade.importChatsBadge.dismissed:";
 
@@ -56,7 +57,9 @@ export function ImportFloatingBadge({
     onOpen();
   }, [dismiss, onOpen]);
 
-  if (!projectRoot || dismissed) return null;
+  // The tour's cards point at this same composer: the pill waits until the tour ends.
+  const tourOpen = useTourOpen();
+  if (!projectRoot || dismissed || tourOpen) return null;
 
   return (
     // `shrink-0` because the draft column this sits in is a height-capped
