@@ -803,7 +803,9 @@ function LookInside({ lane, now, busy, onBack, onClear }: { lane: DashLane; now:
         </div>
       ) : (
         <p className="adecd-empty">
-          {lane.name}&apos;s computer measures its disk while it is awake and idle, at most every few hours. Its first measure shows here then. ADE doesn&apos;t wake it to look.
+          {usage
+            ? `${lane.name}'s files use ${formatCloudGb(total)}, too little to break down. Its computer measures again while it is awake and idle; ADE doesn't wake it to look.`
+            : `${lane.name}'s computer measures its disk while it is awake and idle, at most every few hours. Its first measure shows here then. ADE doesn't wake it to look.`}
         </p>
       )}
     </div>

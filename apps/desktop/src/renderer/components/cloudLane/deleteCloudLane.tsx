@@ -254,12 +254,24 @@ export async function freeCloudLaneWithConfirm(input: { instanceId: string; lane
     cancelLabel: "Cancel",
   });
   if (!ok) return false;
+  // Waking it, pushing and removing it take minutes: say so until it ends, as a delete does.
+  const toastId = `cloud-lane-free:${instanceId}`;
+  showToast({
+    id: toastId,
+    tone: "info",
+    busy: true,
+    title: `Freeing ${laneName}'s computer`,
+    message: "ADE pushes its work to GitHub, then removes the computer. This can take a few minutes.",
+    durationMs: 0,
+    dismissible: false,
+    replayMask: { title: true },
+  });
   try {
     const done = await freeCloudLane(instanceId);
-    showToast({ tone: done.ok ? "success" : "error", title: done.ok ? `Freed ${laneName}'s computer` : `Kept ${laneName}'s computer`, message: done.message, replayMask: { title: true } });
+    showToast({ id: toastId, tone: done.ok ? "success" : "error", title: done.ok ? `Freed ${laneName}'s computer` : `Kept ${laneName}'s computer`, message: done.message, durationMs: done.ok ? undefined : READABLE_TOAST_DURATION_MS, replayMask: { title: true } });
     return done.ok;
   } catch (error) {
-    showToast({ tone: "error", title: `Couldn't free ${laneName}'s computer`, message: ipcErrorMessage(error) || "Try again in a moment.", replayMask: { title: true } });
+    showToast({ id: toastId, tone: "error", title: `Couldn't free ${laneName}'s computer`, message: ipcErrorMessage(error) || "Try again in a moment.", durationMs: READABLE_TOAST_DURATION_MS, replayMask: { title: true } });
     return false;
   } finally {
     input.onDone?.();

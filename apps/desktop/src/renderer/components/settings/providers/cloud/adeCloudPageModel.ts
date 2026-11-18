@@ -15,6 +15,7 @@ import {
   adeCloudPageLine,
   ADE_CLOUD_REACH_LINE,
   signInCardBucket,
+  signInOriginName,
   type AdeCloudAccountPart,
   type AdeCloudCloudPart,
   type AdeCloudTile,
@@ -72,7 +73,7 @@ function signInCard(signIn: ProviderLoginSignIn, now: number): SignInCardModel {
   const email = signIn.account?.email?.trim() || null;
   // A computer's GitHub CLI login for Copilot names its GitHub user, not an email.
   const ghUser = signIn.provider === "copilot" && signIn.slot === "gh" ? signIn.account?.id?.trim() || null : null;
-  const origin = signIn.origin.label;
+  const origin = signInOriginName(signIn.origin);
   const captured = parseTime(signIn.capturedAt);
   const source = `From ${origin}${signIn.origin.thisComputer ? " (this computer)" : ""}`;
   const renewedAt = parseTime(signIn.renewedAt);
@@ -113,7 +114,7 @@ function accountCard(copies: ProviderLoginSignIn[], now: number): SignInCardMode
   const lead = ordered.find((signIn) => signIn.inUseOnCloud) ?? ordered[0]!;
   const card = signInCard(lead, now);
   if (ordered.length === 1) return card;
-  const names = ordered.map((signIn) => `${signIn.origin.label}${signIn.origin.thisComputer ? " (this computer)" : ""}`);
+  const names = ordered.map((signIn) => `${signInOriginName(signIn.origin)}${signIn.origin.thisComputer ? " (this computer)" : ""}`);
   const newest = freshness(ordered[0]!);
   const source = `From ${ordered.length} computers: ${names.join(", ")}`;
   return {
@@ -239,7 +240,7 @@ export function providerPageLine(
     const applied = (cloud.status.applied ?? []).find((entry) => entry.place === tile.provider && entry.state === "applied");
     const signIn = applied?.key ? account.status.signIns.find((entry) => entry.key === applied.key) : null;
     // Only when it is the one the account picks; else the tile says it is on its way.
-    if (signIn?.inUseOnCloud && tile.state === "connected") return `${cloud.computerName} uses the sign-in from ${signIn.origin.label}.`;
+    if (signIn?.inUseOnCloud && tile.state === "connected") return `${cloud.computerName} uses the sign-in from ${signInOriginName(signIn.origin)}.`;
   }
   // A working tile says where its sign-in is from first; any other tile ends on why.
   const reason = (tile.state === "connected" ? tile.facts[0] : tile.facts[tile.facts.length - 1])?.text ?? "";
