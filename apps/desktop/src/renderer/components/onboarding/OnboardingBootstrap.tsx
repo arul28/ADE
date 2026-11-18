@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
 import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { markOnboardingStarted } from "../../onboarding/onboardingProgress";
 import { useAppStore } from "../../state/appStore";
 import { LANE_SHARE_GUEST_ROUTE } from "../laneShare/guest/laneShareGuestRoute";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
@@ -73,6 +74,11 @@ export function OnboardingBootstrap() {
   }, [restart, web]);
 
   const open = !onSharedLanePage && (phase === "welcome" || phase === "agents" || phase === "projects");
+
+  // ADE Web: the welcome counts as given once it is on screen, not when it was found due.
+  useEffect(() => {
+    if (open && web) markOnboardingStarted();
+  }, [open, web]);
 
   // Escape closes setup; unlike the Skip link it never skips the tour.
   useEffect(() => {

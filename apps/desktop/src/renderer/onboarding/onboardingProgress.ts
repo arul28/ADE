@@ -225,22 +225,10 @@ export function onboardingProgressRecord(progress: OnboardingProgress = readOnbo
   return out;
 }
 
-/**
- * Takes the account's combined answers. A reset there that is newer than
- * this computer's starts this computer over too; a tour finished or skipped
- * elsewhere ends it here; a hint answered elsewhere stops here. Writes only
- * when something changed.
- */
-/** Another account signed in here: its record replaces what this computer held for the last one. */
-export function replaceOnboardingProgressRecord(record: OnboardingProgressRecord): void {
-  writeOnboardingProgress({ tour: {}, hints: {} });
-  adoptOnboardingProgressRecord(record);
-}
-
-export function adoptOnboardingProgressRecord(merged: OnboardingProgressRecord): void {
-  const current = readOnboardingProgress();
-  let next: OnboardingProgress = current;
-  if (merged.resetAt && merged.resetAt > (current.resetAt ?? 0)) {
+/** `base` with the record's answers added; answers already in `base` stay. */
+function withRecord(base: OnboardingProgress, merged: OnboardingProgressRecord): OnboardingProgress {
+  let next = base;
+  if (merged.resetAt && merged.resetAt > (base.resetAt ?? 0)) {
     next = { resetAt: merged.resetAt, startedAt: merged.startedAt ?? merged.resetAt, tour: {}, hints: {} };
   }
   const tour = { ...next.tour };
@@ -253,12 +241,30 @@ export function adoptOnboardingProgressRecord(merged: OnboardingProgressRecord):
     const dismissedAt = hint.dismissedAt ?? answer.dismissedAt;
     if (doneAt !== hint.doneAt || dismissedAt !== hint.dismissedAt) hints[id] = { ...hint, doneAt, dismissedAt };
   }
-  next = {
+  return {
     ...next,
     startedAt: next.startedAt ?? merged.startedAt,
     skippedAt: next.skippedAt ?? merged.skippedAt,
     tour,
     hints,
   };
-  if (JSON.stringify(next) !== JSON.stringify(current)) writeOnboardingProgress(next);
+}
+
+function writeIfChanged(next: OnboardingProgress): void {
+  if (JSON.stringify(next) !== JSON.stringify(readOnboardingProgress())) writeOnboardingProgress(next);
+}
+
+/**
+ * Takes the account's combined answers. A reset there that is newer than
+ * this computer's starts this computer over too; a tour finished or skipped
+ * elsewhere ends it here; a hint answered elsewhere stops here. Writes only
+ * when something changed.
+ */
+export function adoptOnboardingProgressRecord(merged: OnboardingProgressRecord): void {
+  writeIfChanged(withRecord(readOnboardingProgress(), merged));
+}
+
+/** Another account signed in here: its record replaces what this computer held for the last one. */
+export function replaceOnboardingProgressRecord(record: OnboardingProgressRecord): void {
+  writeIfChanged(withRecord({ tour: {}, hints: {} }, record));
 }

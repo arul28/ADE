@@ -100,7 +100,8 @@ export function useFirstRunSteps({
     void due
       .then((fresh) => {
         if (cancelled) return;
-        if (fresh) markOnboardingStarted();
+        // ADE Web marks it when the card is on screen (OnboardingBootstrap), so a page that holds it back never uses it up.
+        if (fresh && !welcomeOnly) markOnboardingStarted();
         // A replay that started while the state was being read wins.
         setPhase((current) => (current === "checking" ? (fresh ? "welcome" : "done") : current));
       })
@@ -113,7 +114,7 @@ export function useFirstRunSteps({
     return () => {
       cancelled = true;
     };
-  }, [enabled]);
+  }, [enabled, welcomeOnly]);
 
   const restart = useCallback(() => setPhase("welcome"), []);
   const agentsDone = useCallback(() => setPhase("projects"), []);

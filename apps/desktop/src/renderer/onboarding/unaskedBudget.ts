@@ -33,7 +33,10 @@ let accountCreatedAt: number | null = null;
 
 /** Set by the onboarding sync pass, from the signed-in account's id. */
 export function setUnaskedAccountCreatedAt(createdAt: number | null): void {
+  if (accountCreatedAt === createdAt) return;
   accountCreatedAt = createdAt;
+  // A timer armed before the account was known re-plans with its quiet days.
+  lastShownStore.notify();
 }
 
 export function lastUnaskedAt(): number {
@@ -50,16 +53,15 @@ export function replaceLastUnaskedAt(at: number | undefined): void {
   lastShownStore.set(at ?? 0);
 }
 
-/** The earliest time something unasked may show (0: now). */
-export function nextUnaskedAt(): number {
-  const last = lastShownStore.get();
+/** The earliest time something unasked may show (0: now); `last`: the last showing to count from. */
+export function nextUnaskedAt(last = lastShownStore.get()): number {
   const afterGap = last ? last + UNASKED_GAP_MS : 0;
   const afterQuiet = accountCreatedAt != null ? accountCreatedAt + NEW_ACCOUNT_QUIET_MS : 0;
   return Math.max(afterGap, afterQuiet);
 }
 
-export function unaskedAllowed(now = Date.now()): boolean {
-  return now >= nextUnaskedAt();
+export function unaskedAllowed(now = Date.now(), last = lastShownStore.get()): boolean {
+  return now >= nextUnaskedAt(last);
 }
 
 /** Something unasked showed: nothing else unasked for a day. */

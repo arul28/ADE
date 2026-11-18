@@ -9,6 +9,7 @@ import type { UpdateInterruptedChat } from "../../../shared/types";
 import { useActiveScene } from "../../scene/useScene";
 import { backdropThemeFromScene } from "../../scene/scenePalette";
 import { onboardingSettledBeforeThisLaunch } from "../../onboarding/onboardingProgress";
+import { lastUnaskedAt, unaskedAllowed } from "../../onboarding/unaskedBudget";
 import { editingTextNow, floatingLayerBusy, launchGateOpen } from "../ui/overlayState";
 import type { AnnouncementPageDef } from "./announcementPages";
 import {
@@ -125,6 +126,9 @@ export function AnnouncementsHost() {
     const openAfterUpdate = (event: Event) => {
       const detail = (event as CustomEvent<AfterUpdateDetail>).detail;
       if (!detail) return;
+      // The release notes always come after an update; the feature pages only within the unasked budget,
+      // as it stood before this showing spends it (read once the account, and so its quiet days, is known).
+      const lastUnaskedBefore = lastUnaskedAt();
       markShowing();
       setShownThisLaunch(true);
       cancelArrival();
@@ -137,7 +141,7 @@ export function AnnouncementsHost() {
       const show = (from: ScreenBox | null) => {
         inputWatch.stop();
         setShowing({
-          pages: dueAnnouncements(),
+          pages: unaskedAllowed(Date.now(), lastUnaskedBefore) ? dueAnnouncements() : [],
           notes: {
             digest: releaseNotesDigest(detail.version, detail.fromVersion),
             resumedChats: detail.resumedChats,

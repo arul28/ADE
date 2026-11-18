@@ -4,8 +4,9 @@ import {
   normalizeSeenAnnouncements,
   seenAnnouncementsCover,
 } from "../../../shared/announcementsSeen";
-import { createAccountSettingSync, useAccountSettingSync } from "../../lib/accountSettingSync";
+import { createAccountValueSync, useAccountValueSync } from "../../lib/accountValueSync";
 import { createLocalStore, storedRecord } from "../../onboarding/localStore";
+import { setUnaskedAccountCreatedAt } from "../../onboarding/unaskedBudget";
 import {
   mergeSeenAnnouncementsFromAccount,
   readSeenAnnouncements,
@@ -29,7 +30,7 @@ import {
  * saw under another account stay seen here but are never written to this one
  * (`accountMarkStore`).
  *
- * The pass loop, the brain pull and the relay are `accountSettingSync.ts`'s.
+ * The pass loop, the brain pull and the relay are `accountValueSync.ts`'s.
  */
 
 /** A pass never holds the in-project showing back longer than this. */
@@ -64,7 +65,7 @@ function accountMarkFor(userId: string): AccountMark {
   return next;
 }
 
-const seenSync = createAccountSettingSync({
+const seenSync = createAccountValueSync({
   key: ANNOUNCEMENTS_SEEN_SETTING_KEY,
   timeoutMs: PASS_TIMEOUT_MS,
   fingerprint: ["announcements", "seen-sync"],
@@ -72,6 +73,7 @@ const seenSync = createAccountSettingSync({
     // First: the showing waits for this pass, and a page from before the
     // account was created must not show to a new one.
     setAnnouncementsAccountCreatedAt(accountCreatedAtFromUserId(userId));
+    setUnaskedAccountCreatedAt(accountCreatedAtFromUserId(userId));
     if (userId) accountMarkFor(userId);
   },
   reconcile: ({ remote: value, userId }) => {
@@ -79,10 +81,7 @@ const seenSync = createAccountSettingSync({
     const merged = mergeSeenAnnouncementsFromAccount(remote);
     const foreign = new Set(accountMarkFor(userId).foreign);
     const own = Object.fromEntries(Object.entries(merged).filter(([id]) => !foreign.has(id) || id in remote));
-    return {
-      write: seenAnnouncementsCover(remote, own) ? null : own,
-      accountEmpty: Object.keys(remote).length === 0,
-    };
+    return { write: seenAnnouncementsCover(remote, own) ? null : own };
   },
 });
 
@@ -101,5 +100,5 @@ export function reconcileSeenAnnouncements(): Promise<void> {
  * pulls new account settings, and when this computer marks a page seen.
  */
 export function useAnnouncementSeenSync(): void {
-  useAccountSettingSync(seenSync, LOCAL_CHANGES);
+  useAccountValueSync(seenSync, LOCAL_CHANGES);
 }

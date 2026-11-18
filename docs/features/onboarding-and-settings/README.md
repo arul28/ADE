@@ -1566,7 +1566,7 @@ tour and hint answers everywhere), adopts the result locally and writes back
 only when the account lacked something. What a computer held before its
 first account signed in belongs to that account; when another account signs
 in there, its copy replaces the computer's. The shared pass loop is
-`renderer/lib/accountSettingSync.ts` (also used by What's new seen pages); a
+`renderer/lib/accountValueSync.ts` (also used by What's new seen pages); a
 desktop brain pull counts only when `accountSettings.sync` reports `ready`. The desktop goes through its brain,
 ADE Web through the account relay. Signed out or offline, the local copy
 decides. No polling.

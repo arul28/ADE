@@ -11,26 +11,29 @@ import { isWebClientMode } from "./webClientMode";
  * account lacks.
  *
  * The desktop reaches the setting through its brain, whose copy can be older
- * than the account: it pulls once per account before the first read, and an
- * empty copy it has not pulled is never written over. ADE Web reaches it
- * through the account relay. Signed out, offline or with no settings bridge,
+ * than the account: it pulls once per account before the first read, and
+ * writes only once a pull reached the account (an older copy written back
+ * would replace newer answers). ADE Web reaches it through its own account
+ * settings bridge (the relay, or the connected computer for some keys) and,
+ * since it hears only its own writes, reads again when the page comes back
+ * into view. Signed out, offline or with no settings bridge,
  * a pass does nothing and this computer's copy decides.
  */
 
-export type AccountSettingPass = {
+export type AccountValuePass = {
   /** The account's value as stored, not yet validated. */
   remote: unknown;
   userId: string;
+  /** The read is the account's current copy (ADE Web, or a desktop brain that pulled), not a possibly stale cache. */
+  fresh: boolean;
 };
 
-export type AccountSettingPassResult = {
+export type AccountValuePassResult = {
   /** What to write to the account; null when it already holds everything. */
   write: unknown | null;
-  /** The account's copy held nothing (after validation). */
-  accountEmpty: boolean;
 };
 
-export type AccountSettingSyncOptions = {
+export type AccountValueSyncOptions = {
   key: string;
   /** A caller waiting on a pass never waits longer than this. */
   timeoutMs: number;
@@ -39,10 +42,10 @@ export type AccountSettingSyncOptions = {
   /** Runs first in every pass with the signed-in account (null: none), before anything can fail. */
   onAccount?: (userId: string | null) => void;
   /** Combines the account's copy with this computer's, takes the result here, and says what to write back. */
-  reconcile: (pass: AccountSettingPass) => AccountSettingPassResult;
+  reconcile: (pass: AccountValuePass) => AccountValuePassResult;
 };
 
-export type AccountSettingSync = {
+export type AccountValueSync = {
   /** One reconcile. Resolves when done, failed or too slow; never rejects. A call while one runs makes one more pass after it. */
   reconcile: () => Promise<void>;
   /** Whether a pass has read the account's copy for this account. */
@@ -53,12 +56,17 @@ function signedInUserId(status: Awaited<ReturnType<typeof fetchAccountStatus>> |
   return status?.signedIn ? status.userId?.trim() || null : null;
 }
 
-export function createAccountSettingSync(options: AccountSettingSyncOptions): AccountSettingSync {
+/** After a failed brain pull, the next one waits this long. */
+const PULL_RETRY_MS = 5 * 60_000;
+
+export function createAccountValueSync(options: AccountValueSyncOptions): AccountValueSync {
   let running: Promise<void> | null = null;
   let rerun = false;
   let reportedFailure = false;
   /** The account whose settings the desktop brain pulled fresh this session. */
   let brainSyncedFor: string | null = null;
+  /** When a pull last failed: the next try waits, so offline passes do not each run a full brain sync. */
+  let pullFailedAt = 0;
   let lastReconciledFor: string | null = null;
 
   const onePass = async (): Promise<void> => {
@@ -67,22 +75,25 @@ export function createAccountSettingSync(options: AccountSettingSyncOptions): Ac
     const api = window.ade?.accountSettings;
     if (!userId || !api?.get || !api.set) return;
     const web = isWebClientMode();
-    if (!web && brainSyncedFor !== userId && api.sync) {
+    if (!web && brainSyncedFor !== userId && api.sync && Date.now() - pullFailedAt >= PULL_RETRY_MS) {
       const synced = await api.sync().catch(() => null);
       // Only a pull that reached the account counts (null: an older brain that cannot say).
       if (synced?.ok && (synced.value == null || synced.value === "ready")) brainSyncedFor = userId;
+      else pullFailedAt = Date.now();
     }
     const read = await api.get({ scope: ACCOUNT_SCOPE_ALL, key: options.key });
     if (!read.ok) return;
     // The pull and the read can span a sign-in change: take and write this copy only for the same account.
-    if (signedInUserId(await fetchAccountStatus({ force: true }).catch(() => null)) !== userId) return;
-    const { write, accountEmpty } = options.reconcile({ remote: read.value, userId });
+    // Sign-ins and sign-outs are pushed into the cached status, so the cached read is current.
+    if (signedInUserId(await fetchAccountStatus().catch(() => null)) !== userId) return;
+    const fresh = web || brainSyncedFor === userId;
+    const { write } = options.reconcile({ remote: read.value, userId, fresh });
     lastReconciledFor = userId;
-    if (write === null) return;
-    // Not pulled fresh and the account looks empty: it may be only this brain's stale copy.
-    if (!web && brainSyncedFor !== userId && accountEmpty) return;
-    // The fence: the brain refuses the write if another account signed in meanwhile.
-    await api.set({ scope: ACCOUNT_SCOPE_ALL, key: options.key, value: write, expectedAccountUserId: userId });
+    // Not fresh: the read may be only this brain's stale copy. A later pass that pulled writes it.
+    if (write === null || !fresh) return;
+    // The fence: the brain refuses the write if another account signed in meanwhile; the next pass is that account's.
+    const written = await api.set({ scope: ACCOUNT_SCOPE_ALL, key: options.key, value: write, expectedAccountUserId: userId });
+    if (!written.ok && "rejected" in written) console.debug(`[account] ${options.key} write refused: the account changed`);
   };
 
   const startPasses = (): Promise<void> =>
@@ -120,13 +131,16 @@ export function createAccountSettingSync(options: AccountSettingSyncOptions): Ac
   };
 }
 
+const WEB_REVISIT_MIN_MS = 60_000;
+
 /**
  * Reconciles when the app opens, when an account signs in, when the account
- * settings change elsewhere, and when `subscribeLocal` reports a change here
- * (after `localDelayMs`, so a burst of changes is one pass).
+ * settings change elsewhere (in ADE Web: when the page comes back into view),
+ * and when `subscribeLocal` reports a change here (after `localDelayMs`, so a
+ * burst of changes is one pass).
  */
-export function useAccountSettingSync(
-  sync: AccountSettingSync,
+export function useAccountValueSync(
+  sync: AccountValueSync,
   subscribeLocal: ReadonlyArray<(listener: () => void) => () => void>,
   localDelayMs = 0,
 ): void {
@@ -151,11 +165,21 @@ export function useAccountSettingSync(
       }
       : reconcile;
     const stops = subscribeLocal.map((subscribe) => subscribe(local));
+    // ADE Web hears only its own writes: read again when the page comes back, at most once a minute.
+    let lastVisibleRead = Date.now();
+    const onVisible = () => {
+      if (document.visibilityState !== "visible" || Date.now() - lastVisibleRead < WEB_REVISIT_MIN_MS) return;
+      lastVisibleRead = Date.now();
+      reconcile();
+    };
+    const web = isWebClientMode();
+    if (web) document.addEventListener("visibilitychange", onVisible);
     return () => {
       stopAccount();
       stopRemote?.();
       for (const stop of stops) stop();
       if (timer) clearTimeout(timer);
+      if (web) document.removeEventListener("visibilitychange", onVisible);
     };
     // The subscriptions are module-level functions passed once per mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps

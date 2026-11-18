@@ -6,7 +6,7 @@ import {
   sameOnboardingProgressRecord,
   type OnboardingProgressRecord,
 } from "../../shared/onboardingProgressRecord";
-import { createAccountSettingSync, useAccountSettingSync } from "../lib/accountSettingSync";
+import { createAccountValueSync, useAccountValueSync } from "../lib/accountValueSync";
 import { createLocalStore, storedRecord } from "./localStore";
 import {
   adoptOnboardingProgressRecord,
@@ -39,7 +39,7 @@ import {
  * another account signs in later, its copy replaces this computer's, so one
  * person's finished tour never reaches another's account (`ownerStore`).
  *
- * The pass loop, the brain pull and the relay are `accountSettingSync.ts`'s.
+ * The pass loop, the brain pull and the relay are `accountValueSync.ts`'s.
  */
 
 /** A caller waiting on a pass (the web welcome) never waits longer than this. */
@@ -78,24 +78,23 @@ const ownerStore = createLocalStore<{ userId: string } | null>({
   },
 });
 
-const progressSync = createAccountSettingSync({
+const progressSync = createAccountValueSync({
   key: ONBOARDING_PROGRESS_SETTING_KEY,
   timeoutMs: PASS_TIMEOUT_MS,
   fingerprint: ["onboarding", "progress-sync"],
   onAccount: (userId) => setUnaskedAccountCreatedAt(accountCreatedAtFromUserId(userId)),
-  reconcile: ({ remote: value, userId }) => {
+  reconcile: ({ remote: value, userId, fresh }) => {
     const remote = normalizeOnboardingProgressRecord(value);
     const owner = ownerStore.get()?.userId ?? null;
     if (owner !== userId) {
+      // Another account's copy is replaced only by this account's current one, never a stale cache.
+      if (owner && !fresh) return { write: null };
       if (owner) replaceWith(remote);
       ownerStore.set({ userId });
     }
     const merged = mergeOnboardingProgressRecords(localRecord(), remote);
     adopt(merged);
-    return {
-      write: sameOnboardingProgressRecord(remote, merged) ? null : merged,
-      accountEmpty: Object.keys(remote).length === 0,
-    };
+    return { write: sameOnboardingProgressRecord(remote, merged) ? null : merged };
   },
 });
 
@@ -116,5 +115,5 @@ const LOCAL_CHANGES = [subscribeOnboardingProgress, subscribeUnaskedBudget, subs
  * settings change elsewhere, and shortly after onboarding moves here.
  */
 export function useOnboardingSync(): void {
-  useAccountSettingSync(progressSync, LOCAL_CHANGES, LOCAL_CHANGE_DELAY_MS);
+  useAccountValueSync(progressSync, LOCAL_CHANGES, LOCAL_CHANGE_DELAY_MS);
 }
