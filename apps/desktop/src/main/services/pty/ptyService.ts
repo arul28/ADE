@@ -874,8 +874,11 @@ type PtyEntry = {
    * CLI's own signals when it has them (cliTurnSignals.ts). Null for shells.
    */
   cliTurn: CliTurnState | null;
-  /** When an exact signal last moved the turn to idle; null while working or before any. */
-  cliTurnEndedAt: number | null;
+  /**
+   * When an exact signal last moved the turn to idle, and the user-input
+   * count at that moment; null while working or before any.
+   */
+  cliTurnEnd: { at: number; inputGeneration: number } | null;
   /** The secret this launch's Claude hooks send back (`CLI_TURN_HOOK_TOKEN_ENV`); null without hooks. */
   cliTurnHookToken: string | null;
   /**
@@ -5830,7 +5833,9 @@ export function createPtyService({
       // The state, not output, says the turn moved; touch nothing so the quiet
       // fallback still measures from the last real output.
       setRuntimeState(entry.sessionId, runtimeState, { touch: false });
-      entry.cliTurnEndedAt = transition.to === "idle" ? now : null;
+      entry.cliTurnEnd = transition.to === "idle"
+        ? { at: now, inputGeneration: entry.userInputGeneration }
+        : null;
       if (transition.to === "working" && transition.from === "idle") anchorTurnStart(entry.sessionId);
       if (transition.to === "working" && turn.source === "claude-hooks") scheduleIdleTransition(entry.sessionId);
       else clearIdleTimer(entry.sessionId);
@@ -6394,13 +6399,17 @@ export function createPtyService({
    * ended at least `AGENT_CLI_READY_QUIET_MS` ago, with nothing typed since.
    * Its background agents redraw their timers every second, so the screen
    * never goes quiet while they run, yet its prompt takes a message. The
-   * tracker's starting `idle` does not count: only a reported end does.
+   * tracker's starting `idle` does not count: only a reported end does. Any
+   * key the person pressed since then (a draft at the prompt) also does not:
+   * typing a message clears the prompt line first.
    */
   const agentCliMainTurnEndedAndSettled = (entry: PtyEntry): boolean => {
     const turn = entry.cliTurn;
+    const ended = entry.cliTurnEnd;
     return turn != null
-      && entry.cliTurnEndedAt != null
-      && Date.now() - entry.cliTurnEndedAt >= AGENT_CLI_READY_QUIET_MS
+      && ended != null
+      && Date.now() - ended.at >= AGENT_CLI_READY_QUIET_MS
+      && entry.userInputGeneration === ended.inputGeneration
       && isExactCliTurnSource(turn.source)
       && turn.phase === "idle"
       && !turn.submittedSinceEnd
@@ -8214,7 +8223,7 @@ export function createPtyService({
         cliTurnInterruptTimer: null,
         cliSubagentRecheckTimer: null,
         cliTurnHookToken: launchEnv[CLI_TURN_HOOK_TOKEN_ENV] ?? null,
-        cliTurnEndedAt: null,
+        cliTurnEnd: null,
         cliSubagents: null,
         priorEndState,
         piSessionLease,

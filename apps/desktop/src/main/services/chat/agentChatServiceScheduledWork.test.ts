@@ -449,7 +449,9 @@ describe("createAgentChatService", () => {
       vi.useFakeTimers();
       vi.setSystemTime(SCHEDULE_TEST_START);
       const scheduledWork = createScheduledWorkDb();
-      let canAcceptScheduledTurn = false;
+      // The main turn's end, not the end of its background agents: those keep
+      // the strict check (restarts, moves) false the whole time.
+      let mainTurnEnded = false;
       const sendToSession = vi.fn(async () => ({
         ptyId: "pty-cli-busy",
         sessionId: "cli-busy",
@@ -462,11 +464,11 @@ describe("createAgentChatService", () => {
         db: scheduledWork.db,
         ptyService: {
           create: vi.fn(),
-          canAcceptScheduledTurn: () => canAcceptScheduledTurn,
-          canTakeTypedMessage: () => canAcceptScheduledTurn,
+          canAcceptScheduledTurn: () => false,
+          canTakeTypedMessage: () => mainTurnEnded,
           enrichSessions: (rows: Array<Record<string, unknown>>) => rows.map((row) => ({
             ...row,
-            runtimeState: canAcceptScheduledTurn ? "waiting-input" : "running",
+            runtimeState: mainTurnEnded ? "waiting-input" : "running",
           })),
           sendToSession,
         },
@@ -487,7 +489,7 @@ describe("createAgentChatService", () => {
       expect(sendToSession).not.toHaveBeenCalled();
       expect(scheduledWork.readState()?.schedules[0]?.status).toBe("scheduled");
 
-      canAcceptScheduledTurn = true;
+      mainTurnEnded = true;
       await vi.advanceTimersByTimeAsync(20_000);
       expect(sendToSession).toHaveBeenCalledOnce();
       expect(scheduledWork.readState()?.schedules[0]?.status).toBe("done");

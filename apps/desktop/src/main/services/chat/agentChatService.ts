@@ -83041,7 +83041,8 @@ export function createAgentChatService(args: {
         // A quiet-output heuristic is not a turn boundary: a CLI can think for
         // longer than the idle timer without printing. The PTY service checks
         // provider-specific visible composer markers plus a short quiet window.
-        return ptyService?.canAcceptScheduledTurn(schedule.sessionId) !== true;
+        // The wake is typed text, so background agents alone do not hold it.
+        return ptyService?.canTakeTypedMessage(schedule.sessionId) !== true;
       }
       // Another live brain runs this chat and fires the row at its own turn
       // boundary; firing it here would start a second provider process. A

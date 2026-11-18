@@ -73,7 +73,7 @@ export type AgentCliSessionActionDeps = {
   logger: Logger;
   sessionService: Pick<ReturnType<typeof createSessionService>, "get" | "updateMeta">;
   ptyService:
-    | (Pick<PtyService, "canAcceptScheduledTurn" | "sendToSession">
+    | (Pick<PtyService, "canAcceptScheduledTurn" | "canTakeTypedMessage" | "sendToSession">
       & Partial<Pick<PtyService, "hasLivePty" | "getRuntimeState" | "getCliPromptKind" | "interruptAgentCli" | "restartAgentCli" | "regenerateAgentCliTitle" | "writeBySessionId">>)
     | null;
   isTrackedAgentCliSession: (sessionId: string) => boolean;
@@ -152,6 +152,10 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
   /** Busy: a live CLI that cannot take text at its prompt right now (mid-turn, or still starting). */
   const isBusy = (row: TerminalSessionSummary): boolean =>
     isLive(row) && deps.ptyService?.canAcceptScheduledTurn(row.id) !== true;
+
+  /** A live CLI that cannot take a typed message now. Background agents alone do not hold one. */
+  const isTypingBusy = (row: TerminalSessionSummary): boolean =>
+    isLive(row) && deps.ptyService?.canTakeTypedMessage(row.id) !== true;
 
   const statusOf = (row: TerminalSessionSummary): AgentChatSessionStatus =>
     !isLive(row) ? "ended" : isBusy(row) ? "active" : "idle";
@@ -238,7 +242,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
       return { ...base, routedAction: "interrupt-replace", delivery: "sent" };
     }
     // Texts already queued for this CLI go first: a new send waits behind them.
-    if (isBusy(row) || awaitingInputBefore || await deps.hasQueuedSends(sessionId)) return await queue();
+    if (isTypingBusy(row) || awaitingInputBefore || await deps.hasQueuedSends(sessionId)) return await queue();
     const delivered = await deps.deliverWakeToSession({ sessionId, text: args.text, kind: "auto" });
     if (delivered === "deferred") return await queue();
     return { ...base, routedAction: "sendMessage", delivery: "sent" };

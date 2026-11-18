@@ -1107,7 +1107,7 @@ describe("ptyService", () => {
         runtimeSocketPath: "/tmp/ade-test-runtime.sock",
         getAdeCliAgentEnv: (env) => ({ ...env, ADE_CLI_PATH: path.resolve("/opt/ade/bin/ade") }),
       });
-      await service.create({
+      const created = await service.create({
         sessionId: "session-agents",
         allowNewSessionId: true,
         laneId: "lane-1",
@@ -1146,6 +1146,11 @@ describe("ptyService", () => {
       try {
         mockPty._emitter.emit("data", box);
         expect(service.canTakeTypedMessage("session-agents")).toBe(true);
+        // A draft the person types at that prompt is theirs: a typed message
+        // would clear the line first, so the redraws hold it again.
+        service.write({ ptyId: created.ptyId, data: "half a draft" });
+        mockPty._emitter.emit("data", box);
+        expect(service.canTakeTypedMessage("session-agents"), "after a draft").toBe(false);
       } finally {
         clock.mockRestore();
       }
