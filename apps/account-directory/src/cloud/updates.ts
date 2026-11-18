@@ -92,6 +92,31 @@ export function channelTemplate(targets: CloudUpdateTargets, channel: CloudUpdat
   return (channel === "beta" ? targets.beta : targets.stable) ?? targets.legacy;
 }
 
+/**
+ * The oldest image build known to run a server launch's boot (`cloudBootLaunch`):
+ * ade@53 (v1.2.130 betas). Stable sat on ade@17 (v1.2.129) until then, and a
+ * computer made from that never joins its launch.
+ */
+const LAUNCH_BOOT_MIN_BUILD = 53;
+
+function templateBuild(template: string | null): number | null {
+  const match = template ? /@(\d+)$/.exec(template.trim()) : null;
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * The channel a server launch (`POST /cloud/launches`) makes its computer on.
+ * Beta when the app asks for beta. Otherwise (a stable app, or the web and the
+ * phone, which send none) stable, once the stable image runs the launch's
+ * boot; until then beta, so the computer joins. This follows the image
+ * settings, so a stable promote moves it with no deploy.
+ */
+export function launchChannel(targets: CloudUpdateTargets, requested: CloudUpdateChannel | null | undefined): CloudUpdateChannel {
+  if (requested === "beta") return "beta";
+  const build = templateBuild(channelTemplate(targets, "stable"));
+  return build != null && build >= LAUNCH_BOOT_MIN_BUILD ? "stable" : "beta";
+}
+
 /** The channel's image, when a passed check let computers update to it on their own; else null. */
 export function automaticTemplate(targets: CloudUpdateTargets, channel: CloudUpdateChannel): string | null {
   const target = channelTemplate(targets, channel);

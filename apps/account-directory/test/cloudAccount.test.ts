@@ -2242,6 +2242,21 @@ describe("ADE Cloud server launcher", () => {
     device_code: `device-${userCode}`, user_code: userCode, device_secret_hash: "hash", status: "pending", poll_interval_seconds: 5, created_at: NOW, expires_at: NOW + 60 * 60_000,
   });
 
+  // A computer made from an image older than the launch's boot never joins.
+  it.each([
+    { stable: "ade@17", sent: undefined, channel: "beta", image: "ade@53" },
+    { stable: "ade@17", sent: "stable", channel: "beta", image: "ade@53" },
+    { stable: "ade@60", sent: undefined, channel: "stable", image: "ade@60" },
+    { stable: "ade@60", sent: "stable", channel: "stable", image: "ade@60" },
+    { stable: "ade@60", sent: "beta", channel: "beta", image: "ade@53" },
+  ])("a launch with stable on $stable and $sent asked is made on $channel ($image)", async ({ stable, sent, channel, image }) => {
+    harness.insert("cloud_settings", { key: "template_version_stable", value: stable, updated_at: NOW });
+    harness.insert("cloud_settings", { key: "template_version_beta", value: "ade@53", updated_at: NOW });
+    const started = await harness.send(OWNER, "POST", "/cloud/launches", sent ? { ...launchBody, channel: sent } : launchBody);
+    expect(started.status).toBe(201);
+    expect(harness.row("select channel, template_version from cloud_computers where instance_id = ?", "madenew12345")).toEqual({ channel, template_version: image });
+  });
+
   it("one launch id makes one computer: a repeat answers the same launch, another account can't use it", async () => {
     const first = await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
     expect(first.status).toBe(201);
