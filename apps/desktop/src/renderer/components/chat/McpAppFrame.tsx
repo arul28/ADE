@@ -333,6 +333,9 @@ function mcpAppResultPreview(result: McpAppToolResult | null): { text: string; l
   let parsed: unknown;
   if (text.length <= 20_000 && /^[[{]/.test(text)) {
     try { parsed = JSON.parse(text); } catch { /* not JSON: shown as it came */ }
+  } else if (!text && result.structuredContent !== undefined) {
+    // A result that is only structured data is shown as that data.
+    parsed = result.structuredContent;
   }
   if (parsed !== undefined) {
     const strings: string[] = [];

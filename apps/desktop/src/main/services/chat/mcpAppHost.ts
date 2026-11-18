@@ -154,14 +154,18 @@ function droppedCount(declared: unknown, kept: readonly string[]): number {
  * own code and never answers, and this is the line that says why.
  */
 function undeclaredPageOrigins(html: string, resourceDomains: readonly string[]): string[] {
-  const allowed = (origin: string) => resourceDomains.some((entry) => entry === origin
+  // `:443` is the port an https origin has anyway; CSP matches it either way.
+  const bare = (origin: string) => origin.replace(/:443$/, "");
+  const declared = resourceDomains.map(bare);
+  const allowed = (origin: string) => declared.some((entry) => entry === origin
     || (entry.startsWith("https://*.") && origin.endsWith(entry.slice("https://*".length))));
   const out = new Set<string>();
   // `[^<>]` keeps one attempt inside one tag, so a page full of unclosed
-  // `<script ` costs one pass, not one pass per tag.
-  const tag = /<(?:script|link)\b[^<>]*?\b(?:src|href)\s*=\s*["']?(https:\/\/[a-z0-9.-]+(?::\d+)?)/gi;
+  // `<script ` costs one pass, not one pass per tag. The white space before
+  // the name keeps `data-src` from standing in for `src`.
+  const tag = /<(?:script|link)\b[^<>]*?\s(?:src|href)\s*=\s*["']?(https:\/\/[a-z0-9.-]+(?::\d+)?)/gi;
   for (const match of html.slice(0, 200_000).matchAll(tag)) {
-    const origin = match[1]!.toLowerCase();
+    const origin = bare(match[1]!.toLowerCase());
     if (!allowed(origin)) out.add(origin);
     if (out.size >= 8) break;
   }

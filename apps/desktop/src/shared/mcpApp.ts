@@ -68,6 +68,13 @@ export const MCP_APP_LIMITS = {
    * and the page never ran.
    */
   maxCspDomains: 128,
+  /**
+   * Characters of origins kept per CSP list. The resource list is written into
+   * five directives, so this keeps a whole policy under the phone's 256,000
+   * (`workMcpAppPolicyIsUsable`) whatever the origins look like. Real lists
+   * are far under it: 128 origins of 40 characters is about 5,000.
+   */
+  maxCspListChars: 40_000,
   minHeight: 80,
   maxHeight: 800,
 } as const;
@@ -190,9 +197,13 @@ export function sanitizeMcpAppCspOrigin(value: unknown, schemes: readonly string
 function sanitizeOriginList(value: unknown, schemes: readonly string[]): string[] {
   if (!Array.isArray(value)) return [];
   const out = new Set<string>();
+  let chars = 0;
   for (const entry of value) {
     const origin = sanitizeMcpAppCspOrigin(entry, schemes);
-    if (origin) out.add(origin);
+    if (!origin || out.has(origin)) continue;
+    chars += origin.length + 1;
+    if (chars > MCP_APP_LIMITS.maxCspListChars) break;
+    out.add(origin);
     if (out.size >= MCP_APP_LIMITS.maxCspDomains) break;
   }
   return [...out];
