@@ -467,7 +467,8 @@ struct CloudServerClient {
     query: [URLQueryItem] = [],
     body: Data? = nil,
     contentType: String = "application/json",
-    timeout: TimeInterval = 12
+    timeout: TimeInterval = 12,
+    resendOnLostConnection: Bool = false
   ) async throws -> Data {
     var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
     if !query.isEmpty { components?.queryItems = query }
@@ -486,7 +487,15 @@ struct CloudServerClient {
       request.timeoutInterval = timeout
       request.cachePolicy = .reloadIgnoringLocalCacheData
       do {
-        let (data, response) = try await session.data(for: request)
+        let (data, response): (Data, URLResponse)
+        do {
+          (data, response) = try await session.data(for: request)
+        } catch let error as URLError where resendOnLostConnection && error.code == .networkConnectionLost {
+          // A kept-alive connection the server already closed fails at once
+          // (-1005). A caller whose route is safe to send twice sends it once
+          // more, on a new connection.
+          (data, response) = try await session.data(for: request)
+        }
         guard let http = response as? HTTPURLResponse else { throw Failure.transport }
         return (data, http)
       } catch let failure as Failure {
