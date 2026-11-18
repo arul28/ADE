@@ -159,7 +159,7 @@ struct WorkImportActionBar: View {
           Menu {
             Picker("Import into lane", selection: $targetLaneId) {
               ForEach(lanes) { lane in
-                Text("\(lane.emoji.map { "\($0) " } ?? "")\(lane.name)").tag(lane.id)
+                Text("\(lane.emoji.map { "\($0) " } ?? "")\(lane.displayName)").tag(lane.id)
               }
             }
           } label: {

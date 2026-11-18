@@ -1035,3 +1035,10 @@ func rosterDerivedChatSummary(_ payload: [String: Any]) -> AgentChatSessionSumma
   summary.rosterDerived = true
   return summary
 }
+
+extension RemoteRosterLane {
+  /// The name every screen shows; the primary lane reads "Main checkout".
+  var displayName: String {
+    laneType == "primary" ? "Main checkout" : name
+  }
+}

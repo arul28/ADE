@@ -751,7 +751,8 @@ struct PrDetailView: View {
           }
         } else {
           Button(action: openCurrentLane) { Label("Open lane", systemImage: "arrow.triangle.branch") }
-          if !isOpen {
+          // Archive runs on the lane's computer: none while its ADE Cloud computer is asleep.
+          if !isOpen, !laneRestsOnCloud(currentPr.laneId, sync: syncService) {
             Button {
               cleanupChoice = .archive
               cleanupConfirmationPresented = true
@@ -892,6 +893,14 @@ struct PrDetailView: View {
     case .merge:
       mergeCurrentPr()
     case .deleteBranch:
+      // A lane on its own ADE Cloud computer is deleted from the account,
+      // computer and all, with no wake; a host delete would leave it running.
+      if let target = cloudLaneDeleteTarget(laneId: currentPr.laneId, laneName: currentPr.laneName ?? currentPr.headBranch, sync: syncService, onDeleted: {
+        await reload(refreshRemote: true)
+      }) {
+        CloudLaneActions.shared.delete(target)
+        return
+      }
       cleanupChoice = .deleteBranch
       cleanupConfirmationPresented = true
     case .reopen: reopenCurrentPr()
@@ -1596,7 +1605,7 @@ struct PrDetailView: View {
       stack: nativeStackMembership.map { PrDuoStackMerge(position: $0.position, size: $0.size, count: stackMergeCount) },
       isDraft: isCurrentPrDraft,
       mergedSummary: mergedSummary,
-      canArchiveLane: !currentPr.laneId.isEmpty && canRunPrActions,
+      canArchiveLane: !currentPr.laneId.isEmpty && canRunPrActions && !laneRestsOnCloud(currentPr.laneId, sync: syncService),
       canMergeAnyway: canRunPrActions
         && (nativeStackMembership == nil || stackMergeCount == 1 || syncService.supportsStackLayeredBypass),
       canOpenGitHub: canOpenCurrentPrInGitHub,

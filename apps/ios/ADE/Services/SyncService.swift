@@ -16878,7 +16878,8 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
     includeThreadComments: Bool = false,
-    compactFirst: Bool? = nil
+    compactFirst: Bool? = nil,
+    cloudFiles: [CloudQueuedFile] = []
   ) async throws -> SyncChatMessageDelivery {
     // Auto-route to the session's foreign project (cross-project "quick look")
     // unless the caller already named a target explicitly (e.g. the hub
@@ -16911,12 +16912,16 @@ final class SyncService: ObservableObject {
        let key = chatThreadKey(for: sessionId),
        let accountKey = savedCloudChatAccountKey(forThreadKey: key) {
       let messageId = (args["clientSendId"] as? String) ?? UUID().uuidString
-      switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, using: self) {
+      switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, files: cloudFiles, using: self) {
       case .queued:
         return .heldByServer
       case .refused(let message), .failed(let message):
         throw NSError(domain: "ADE", code: 46, userInfo: [NSLocalizedDescriptionKey: message])
       case .routeMissing:
+        // Files sent through the account have no live-link fallback.
+        if !cloudFiles.isEmpty {
+          throw NSError(domain: "ADE", code: 46, userInfo: [NSLocalizedDescriptionKey: "This chat's computer can't take files while it sleeps. Wake it, then send them."])
+        }
         await wakeSavedCloudChatComputer(key)
       }
     } else if let key = chatThreadKey(for: sessionId), savedCloudChatAccountKey(forThreadKey: key) != nil {
@@ -29060,6 +29065,13 @@ extension SyncService: ChatThreadTransport {
   /// link to this phone (asleep, or deleted): its transcript is the saved
   /// copy on the account server. Nil for any other chat. The focused
   /// computer counts too: its own link is down while it sleeps.
+  /// The chat runs on an ADE Cloud computer the phone has no live link to:
+  /// a send goes to the account, which holds it and wakes the computer.
+  func chatSendsThroughCloudAccount(sessionId: String) -> Bool {
+    guard let key = chatThreadKey(for: sessionId) else { return false }
+    return savedCloudChatAccountKey(forThreadKey: key) != nil
+  }
+
   func savedCloudChatAccountKey(forThreadKey key: ChatThreadKey) -> String? {
     guard isCloudFleetKey(key.machineKey) else { return nil }
     if key.machineKey == focusedMachineKey {
@@ -30168,7 +30180,9 @@ extension SyncService {
       ).flatMap({ syncNonEmpty($0.deviceId) }) else { return nil }
       namedFleetKey = "machine:\(deviceId.lowercased())"
     }
-    for machine in fleet.machines where machine.machineKey != focusedKey {
+    // Resting ADE Cloud computers too: their chats open on the saved copy
+    // the account keeps, so a push or a link never wakes one just to read.
+    for machine in fleet.machines + fleet.restingCloudMachines where machine.machineKey != focusedKey {
       if let namedFleetKey, machine.machineKey != namedFleetKey { continue }
       for project in machine.projects {
         guard let chat = project.chats.first(where: {

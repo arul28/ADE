@@ -36,6 +36,7 @@ struct CloudDashboardScreen: View {
           }
           CloudNotices(store: store)
           CloudLanesCard(store: store, pushes: pushes)
+          CloudSavedLaneWorkCard(store: store)
           if let account = store.account, account.catalog != nil {
             CloudPlansCard(account: account, newPlanId: moment?.planId)
             CloudSizesCard(account: account, tiers: store.tiers)

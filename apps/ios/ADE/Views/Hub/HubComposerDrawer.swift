@@ -209,7 +209,7 @@ struct HubInlineComposer: View {
   private var selectedLaneName: String {
     if isAutoCreateLane { return "Auto-create lane" }
     if let lane = lanesForPickedProject.first(where: { $0.id == selectedLaneId }) {
-      return lane.name
+      return lane.displayName
     }
     return selectedLaneId.isEmpty ? "Select lane" : selectedLaneId
   }
@@ -769,7 +769,7 @@ struct HubInlineComposer: View {
             Circle().fill(tint).frame(width: 8, height: 8)
               .frame(width: 22)
           }
-          Text(lane.name)
+          Text(lane.displayName)
             .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)

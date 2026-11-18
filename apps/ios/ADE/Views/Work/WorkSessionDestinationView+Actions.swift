@@ -115,12 +115,21 @@ extension WorkSessionDestinationView {
     sending = true
 
     let attachmentRefs: [AgentChatFileRef]
+    // A chat on a sleeping ADE Cloud computer: its files go to the account
+    // with the held message (the computer has no live link to upload to).
+    var cloudFiles: [CloudQueuedFile] = []
+    let sendsThroughCloudAccount = !useSteer && syncService.chatSendsThroughCloudAccount(sessionId: sessionId)
     do {
-      attachmentRefs = try await workChatSaveInputAttachments(
-        inputAttachments,
-        syncService: syncService,
-        chatSessionId: sessionId
-      )
+      if sendsThroughCloudAccount {
+        attachmentRefs = []
+        cloudFiles = try workChatCloudQueuedFiles(inputAttachments)
+      } else {
+        attachmentRefs = try await workChatSaveInputAttachments(
+          inputAttachments,
+          syncService: syncService,
+          chatSessionId: sessionId
+        )
+      }
     } catch {
       sending = false
       WorkPendingUploadPreviewStore.shared.release(pendingUploadRefs)
@@ -180,7 +189,8 @@ extension WorkSessionDestinationView {
             text: text,
             attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
             includeThreadComments: includeThreadComments,
-            compactFirst: compactFirst
+            compactFirst: compactFirst,
+            cloudFiles: cloudFiles
           )
         } catch where workChatErrorIndicatesActiveTurn(error) {
           if workChatIsManualCompactCommand(text) {

@@ -9330,3 +9330,11 @@ func workCliTypeOutcome(from response: Any) throws -> WorkCliTypeOutcome {
     throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "The computer sent an unreadable answer."])
   }
 }
+
+extension LaneSummary {
+  /// The name every screen shows: a project's own folder (stored as
+  /// "Primary") reads "Main checkout".
+  var displayName: String {
+    laneType == "primary" ? "Main checkout" : name
+  }
+}

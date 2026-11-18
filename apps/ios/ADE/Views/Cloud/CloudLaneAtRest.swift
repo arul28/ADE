@@ -31,6 +31,59 @@ func cloudLaneShowsAtRest(fleetKey: String?, sync: SyncService) -> Bool {
   return sync.cloudServerInstance(fleetKey: fleetKey)?.isAwake != true
 }
 
+/// The fleet key of the machine a lane lives on: the machine its remote id
+/// names, else the focused machine (a focused ADE Cloud computer's own lanes
+/// carry plain ids).
+@MainActor
+func cloudLaneFleetKey(_ laneId: String, sync: SyncService) -> String? {
+  workParseRemoteLaneId(laneId)?.machineKey ?? sync.focusedMachineKey
+}
+
+/// Whether a lane lives on an ADE Cloud computer that is not up. Such a lane
+/// offers only what needs no wake: its computer (size, free, delete) and its
+/// delete. Color, rename and archive need the computer.
+@MainActor
+func laneRestsOnCloud(_ laneId: String, sync: SyncService) -> Bool {
+  cloudLaneShowsAtRest(fleetKey: cloudLaneFleetKey(laneId, sync: sync), sync: sync)
+}
+
+/// The account server's row for the ADE Cloud computer a lane lives on, awake
+/// or asleep. Nil for a lane on any other machine, or a computer that is gone.
+@MainActor
+func cloudLaneComputer(_ laneId: String, sync: SyncService) -> CloudServerInstance? {
+  let fleetKey = cloudLaneFleetKey(laneId, sync: sync)
+  guard sync.isCloudFleetKey(fleetKey),
+        fleetKey?.hasPrefix(ADECloudMachine.savedFleetKeyPrefix) != true,
+        let instance = sync.cloudServerInstance(fleetKey: fleetKey),
+        !instance.isGone
+  else { return nil }
+  return instance
+}
+
+/// The account delete of a lane that lives on its own ADE Cloud computer:
+/// the computer goes, and the lane and its chats with it. Nil for any other
+/// lane (an older computer that holds several lanes, a lane on a machine of
+/// the person's own), which the host deletes the usual way.
+@MainActor
+func cloudLaneDeleteTarget(
+  laneId: String,
+  laneName: String,
+  sync: SyncService,
+  onDeleted: (@MainActor () async -> Void)? = nil
+) -> CloudLaneDeleteTarget? {
+  guard let instance = cloudLaneComputer(laneId, sync: sync) else { return nil }
+  let plain = workParseRemoteLaneId(laneId)?.laneId ?? laneId
+  guard instance.laneId == plain else { return nil }
+  return CloudLaneDeleteTarget(
+    instanceId: instance.id,
+    accountMachineKey: instance.machineKey,
+    laneId: plain,
+    laneName: nonEmptyTrimmed(instance.laneName) ?? laneName,
+    unpushed: instance.laneWork?.unpushed,
+    onDeleted: onDeleted
+  )
+}
+
 @MainActor
 func cloudLaneAtRestSubject(fleetKey: String, lane: LaneSummary, sync: SyncService) -> CloudLaneAtRestSubject? {
   guard let accountKey = sync.cloudAccountMachineKey(fleetKey: fleetKey) else { return nil }
@@ -53,6 +106,7 @@ struct CloudLaneAtRestScreen: View {
   let onAwake: @MainActor () async -> Void
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @ObservedObject private var store = CloudAtRestStore.shared
+  @Environment(\.dismiss) private var dismiss
   private var syncService: SyncService { syncPublishes.service }
   /// The lane's computer on the account server; none once it was deleted.
   private var manageInstanceId: String? {
@@ -62,11 +116,27 @@ struct CloudLaneAtRestScreen: View {
   @State private var commits: CloudAtRestStore.Read<[GitHubDirectCommit]>?
   @State private var commitsError: GitHubDirectError?
   @State private var filesPresented = false
-  @State private var managePresented = false
   @State private var waking = false
   @State private var wakeError: String?
   @State private var changedFileAsk: CloudGitChangedFile?
   @State private var movePresented = false
+
+  /// The account delete of this lane (its computer goes with it); none once
+  /// the computer was deleted or for a computer that holds other lanes.
+  private var deleteTarget: CloudLaneDeleteTarget? {
+    guard manageInstanceId != nil,
+          let instance = syncService.cloudServerInstance(fleetKey: subject.fleetKey),
+          instance.laneId == subject.laneId
+    else { return nil }
+    return CloudLaneDeleteTarget(
+      instanceId: instance.id,
+      accountMachineKey: instance.machineKey,
+      laneId: subject.laneId,
+      laneName: subject.laneName,
+      unpushed: instance.laneWork?.unpushed,
+      onDeleted: { dismiss() }
+    )
+  }
 
   private var summaryRead: CloudAtRestStore.Read<CloudGitSummary>? {
     store.summary(machineKey: subject.accountMachineKey, laneId: subject.laneId)
@@ -94,6 +164,9 @@ struct CloudLaneAtRestScreen: View {
       VStack(alignment: .leading, spacing: 14) {
         header
         gitCard
+        // The work its computer saved at its last rest, as a patch: a download
+        // with no wake, also once the computer was deleted.
+        CloudSavedWorkRow(syncService: syncService, laneId: subject.laneId, framed: true)
         filesCard
         historyCard
         if let wakeError {
@@ -125,10 +198,20 @@ struct CloudLaneAtRestScreen: View {
       }
       // Size, free and delete are account actions: none of them wakes the
       // computer, so a resting lane manages it from here.
-      if manageInstanceId != nil {
+      if let manageInstanceId {
         ToolbarItem(placement: .secondaryAction) {
-          Button("Manage computer", systemImage: "slider.horizontal.3") { managePresented = true }
-            .adeInspectable("CloudLane.AtRest.Manage")
+          Button("Manage computer", systemImage: "slider.horizontal.3") {
+            CloudLaneActions.shared.manageComputer(instanceId: manageInstanceId, showsOpenWork: false)
+          }
+          .adeInspectable("CloudLane.AtRest.Manage")
+        }
+      }
+      if let deleteTarget {
+        ToolbarItem(placement: .secondaryAction) {
+          Button("Delete lane", systemImage: "trash", role: .destructive) {
+            CloudLaneActions.shared.delete(deleteTarget)
+          }
+          .adeInspectable("CloudLane.AtRest.Delete")
         }
       }
       // The system puts a secondary action in the bar's ⋯ menu. A lane
@@ -138,11 +221,6 @@ struct CloudLaneAtRestScreen: View {
           Button("Move to…", systemImage: "arrow.right.circle") { movePresented = true }
             .adeInspectable("CloudLane.AtRest.Move")
         }
-      }
-    }
-    .sheet(isPresented: $managePresented) {
-      if let id = manageInstanceId {
-        CloudLaneManageSheet(syncService: syncService, instanceId: id)
       }
     }
     .sheet(isPresented: $movePresented) {

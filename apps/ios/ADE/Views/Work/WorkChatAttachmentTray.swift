@@ -477,6 +477,18 @@ func workChatStageAttachmentOnHost(
 }
 
 @MainActor
+/// The staged files' bytes for a message the account holds (a sleeping ADE
+/// Cloud chat). A file restored from a saved draft has no bytes on the phone.
+func workChatCloudQueuedFiles(_ attachments: [WorkChatInputAttachment]) throws -> [CloudQueuedFile] {
+  try workChatInputReadyAttachments(attachments).map { attachment in
+    guard let data = attachment.uploadData ?? attachment.image?.jpegData(compressionQuality: 0.85) else {
+      throw NSError(domain: "ADE", code: 47, userInfo: [NSLocalizedDescriptionKey: "\(attachment.filename) isn't on this phone anymore. Attach it again."])
+    }
+    let contentType = attachment.uploadData == nil ? "image/jpeg" : attachment.mimeType
+    return CloudQueuedFile(name: attachment.filename, contentType: contentType, data: data)
+  }
+}
+
 func workChatSaveInputAttachments(
   _ attachments: [WorkChatInputAttachment],
   syncService: SyncService,

@@ -1551,7 +1551,7 @@ struct HubLaneSection: View, Equatable {
             .frame(width: 10, alignment: .center)
           WorkLaneLogoMark(color: laneTint, laneIcon: laneIcon, emoji: lane.emoji, size: 11)
             .frame(width: 13, height: 13)
-          Text(lane.name)
+          Text(lane.displayName)
             .font(.system(size: 13, weight: .medium))
             .foregroundStyle(laneTint)
             .lineLimit(1)

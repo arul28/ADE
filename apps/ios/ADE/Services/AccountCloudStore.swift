@@ -172,12 +172,29 @@ final class AccountCloudStore: ObservableObject {
   /// server wakes the chat's own computer (or makes a new one for a lane
   /// whose computer was deleted) and delivers the message once, keyed on
   /// `messageId` (the composer's send id).
-  func queueSend(machineKey: String, chatId: String, messageId: String, text: String, using sync: SyncService) async -> SendOutcome {
+  func queueSend(machineKey: String, chatId: String, messageId: String, text: String, files: [CloudQueuedFile] = [], using sync: SyncService) async -> SendOutcome {
     let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else { return .failed("Sign in to ADE to send this message.") }
     let key = Self.chatKey(machineKey: machineKey, chatId: chatId)
+    // Files go up first, to a draft launch the message then names; the
+    // computer fetches them when it wakes.
+    var attachments: [[String: Any]] = []
+    if !files.isEmpty {
+      if files.count > CloudQueuedFile.maxCount { return .failed("Send at most \(CloudQueuedFile.maxCount) files at once.") }
+      let launchId = UUID().uuidString.lowercased()
+      for (index, file) in files.enumerated() {
+        if file.data.count > CloudQueuedFile.maxBytes { return .failed("\(file.name) is over 25 MB.") }
+        let fileId = "f\(index)-\(launchId.prefix(8))"
+        do {
+          let size = try await client.uploadLaunchFile(launchId: launchId, fileId: fileId, data: file.data, contentType: file.contentType)
+          attachments.append(["fileId": fileId, "name": String(file.name.prefix(200)), "contentType": file.contentType, "sizeBytes": size, "launchId": launchId])
+        } catch {
+          return .failed("ADE couldn't send \(file.name). \(cloudServerFailureMessage(error))")
+        }
+      }
+    }
     do {
-      let result = try await client.queueMessage(machineKey: machineKey, chatId: chatId, messageId: messageId, text: text)
+      let result = try await client.queueMessage(machineKey: machineKey, chatId: chatId, messageId: messageId, text: text, attachments: attachments)
       guard generation == accountGeneration else { return .failed("The account changed. Send the message again.") }
       upsert(result.message, key: key)
       accountCloudLog.notice("cloud_store queue=sent wake=\(result.wake?.state ?? "none", privacy: .public)")
@@ -406,4 +423,13 @@ func accountCloudDecodeParts(_ parts: [CloudChatTranscriptPage.Part]) -> [ChatTh
     }
   }
   return events
+}
+
+/// A file sent with a message to a sleeping ADE Cloud chat.
+struct CloudQueuedFile {
+  static let maxCount = 10
+  static let maxBytes = 25 * 1024 * 1024
+  let name: String
+  let contentType: String
+  let data: Data
 }

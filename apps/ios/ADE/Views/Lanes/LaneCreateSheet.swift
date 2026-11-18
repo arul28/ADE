@@ -100,7 +100,7 @@ func laneHoldingBranch(_ branch: String, lanes: [LaneSummary]) -> LaneSummary? {
 
 /// How a lane reads in a sentence: the primary lane is "Primary".
 func laneHolderLabel(_ lane: LaneSummary) -> String {
-  lane.laneType == "primary" ? "Primary" : lane.name
+  lane.displayName
 }
 
 /// Match the lane start sentence shown on desktop.

@@ -65,6 +65,7 @@ struct CloudPaneSheet: View {
       }
     }
     .task { await store.reload() }
+    .cloudLaneActionsHost()
   }
 
   private func bookLayout(fold: DuoFold, size: CGSize) -> some View {
@@ -141,24 +142,31 @@ struct CloudSettingsPage: View {
         CloudMachineScreen(store: store, instanceId: machine.instanceId)
       }
       .task { await store.reload() }
+      .cloudLaneActionsHost()
   }
 }
 
-/// One cloud computer's page (size, free, delete) over a resting lane: the
-/// same `CloudMachineScreen` as ADE Cloud's dashboard, with no wake.
+/// A cloud lane's "Manage computer": the same `CloudMachineScreen` as ADE
+/// Cloud's dashboard, for one computer. It shows the computer's state, size,
+/// disk and last run; opens the lane's work (at rest when the computer is
+/// asleep); sleeps or wakes it from a controlling device; deletes the lane
+/// (with its computer, from the account, no wake); and downloads the lane's
+/// saved work. Size and freeing the computer stay in the ADE desktop app.
 struct CloudLaneManageSheet: View {
   @StateObject private var store: CloudPaneStore
   let instanceId: String
+  let showsOpenWork: Bool
   @Environment(\.dismiss) private var dismiss
 
-  init(syncService: SyncService, instanceId: String) {
+  init(syncService: SyncService, instanceId: String, showsOpenWork: Bool = true) {
     _store = StateObject(wrappedValue: CloudPaneStore(syncService: syncService))
     self.instanceId = instanceId
+    self.showsOpenWork = showsOpenWork
   }
 
   var body: some View {
     NavigationStack {
-      CloudMachineScreen(store: store, instanceId: instanceId)
+      CloudMachineScreen(store: store, instanceId: instanceId, showsOpenWork: showsOpenWork)
         .toolbar {
           ToolbarItem(placement: .cancellationAction) {
             Button("Done") { dismiss() }
@@ -166,6 +174,7 @@ struct CloudLaneManageSheet: View {
         }
     }
     .task { await store.reload() }
+    .cloudLaneActionsHost()
   }
 }
 
@@ -477,6 +486,10 @@ func cloudPhoneMachine(from instance: CloudServerInstance) -> CloudPhoneMachine?
     object["lane"] = lane
   }
   object["pastDue"] = instance.pastDue
+  // "Safe to delete" and the delete's warning read it.
+  if let work = instance.laneWork {
+    object["laneWork"] = ["unpushed": work.unpushed as Any? ?? NSNull(), "prState": work.prState as Any? ?? NSNull()]
+  }
   guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
   return try? JSONDecoder().decode(CloudPhoneMachine.self, from: data)
 }

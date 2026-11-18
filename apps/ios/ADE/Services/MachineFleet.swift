@@ -419,6 +419,11 @@ final class MachineFleet: ObservableObject {
       ?? restingCloudMachines.first { $0.machineKey == machineKey }
   }
 
+  /// The account showed this machine online at its last load.
+  func accountShowsOnline(_ machineKey: String) -> Bool {
+    accountOnlineKeys.contains(machineKey)
+  }
+
   /// The machine has a live roster link now.
   func isLive(_ machineKey: String) -> Bool {
     machine(for: machineKey)?.state == .live
