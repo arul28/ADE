@@ -94,6 +94,44 @@ export const USER_MESSAGE_CARD_SELECTOR = "[data-chat-user-message-card]";
 
 const pendingDocks = new Map<string, { handoff: ComposerHandoff; stashedAtMs: number }>();
 
+/**
+ * Draft chrome copies on screen now (parked or playing), each with the call
+ * that takes it away.
+ */
+const departuresOnScreen = new Map<HTMLElement, () => void>();
+/** Other send animations (the Work area's dissolve) that end with the departures. */
+const sendHandoffSettleListeners = new Set<() => void>();
+
+function pruneDepartures(): void {
+  for (const host of departuresOnScreen.keys()) {
+    if (!host.isConnected) departuresOnScreen.delete(host);
+  }
+}
+
+/**
+ * Runs `listener` each time a send's animations must end at once. Returns the
+ * call that removes it.
+ */
+export function onSendHandoffSettle(listener: () => void): () => void {
+  sendHandoffSettleListeners.add(listener);
+  return () => {
+    sendHandoffSettleListeners.delete(listener);
+  };
+}
+
+/**
+ * Ends every send animation still running: the draft chrome copies and the
+ * Work area's dissolve. The chat pane calls it when the shown chat's reply
+ * shows its first words, because the reply must not sit under a fading draft
+ * or a blur. A reply that comes after the animations ended changes nothing.
+ */
+export function settleSendHandoff(): void {
+  pruneDepartures();
+  for (const end of Array.from(departuresOnScreen.values())) end();
+  departuresOnScreen.clear();
+  for (const listener of Array.from(sendHandoffSettleListeners)) listener();
+}
+
 function discardDeparting(handoff: ComposerHandoff | null | undefined): void {
   const departing = handoff?.departing;
   if (departing && !departing.played) departing.host.remove();
@@ -660,6 +698,11 @@ function captureDepartingDraftChrome(scope: Element | null | undefined): Departi
   if (!items.length) return null;
   document.body.appendChild(host);
   const departing: DepartingDraftChrome = { host, items, played: false };
+  pruneDepartures();
+  departuresOnScreen.set(host, () => {
+    departing.played = true;
+    host.remove();
+  });
   // Belt and braces: a copy nobody plays must not outlive the stash.
   window.setTimeout(() => {
     if (!departing.played) host.remove();
@@ -761,9 +804,11 @@ export function playDepartingDraftChrome(
   const finish = () => {
     if (done) return;
     done = true;
+    departuresOnScreen.delete(host);
     if (morphInto) morphInto.style.visibility = previousHeaderVisibility;
     host.remove();
   };
+  departuresOnScreen.set(host, finish);
   if (!shouldPlaySendHandoff()) {
     finish();
     return;

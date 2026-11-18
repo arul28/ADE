@@ -570,6 +570,7 @@ import {
 import {
   captureComposerHandoff,
   CHAT_SHELL_HEADER_SELECTOR,
+  settleSendHandoff,
   findDraftComposerHandoffElement,
   peekComposerHandoffFirstMessage,
   playComposerDock,
@@ -1660,6 +1661,36 @@ function prepareDraftLaunch(snapshot: DraftLaunchSnapshot): PreparedDraftLaunch 
  * Where a sent draft's departing chrome lives: the whole Work draft surface
  * (its mode switcher sits outside this pane), or just this pane elsewhere.
  */
+/**
+ * Whether `envelope` (a text event already in `queued`) is the first text of
+ * its chat's turn: no text since the turn's user message or start. The pane
+ * that shows a new chat mounts after the send, so it reads the events it
+ * holds instead of tracking the turn itself. A chat with no known events
+ * counts as a first text.
+ */
+function isFirstTextOfTurn(
+  envelope: AgentChatEventEnvelope,
+  queued: readonly AgentChatEventEnvelope[],
+  committed: readonly AgentChatEventEnvelope[] | undefined,
+): boolean {
+  const verdict = (candidate: AgentChatEventEnvelope): boolean | null => {
+    if (candidate === envelope || candidate.sessionId !== envelope.sessionId) return null;
+    const event = candidate.event;
+    if (event.type === "text") return false;
+    if (event.type === "user_message" || (event.type === "status" && event.turnStatus === "started")) return true;
+    return null;
+  };
+  for (let index = queued.length - 1; index >= 0; index -= 1) {
+    const found = verdict(queued[index]!);
+    if (found !== null) return found;
+  }
+  for (let index = (committed?.length ?? 0) - 1; index >= 0; index -= 1) {
+    const found = verdict(committed![index]!);
+    if (found !== null) return found;
+  }
+  return true;
+}
+
 function draftDepartingScope(shell: HTMLElement | null): Element | null {
   return shell?.closest("[data-work-draft-surface]") ?? shell;
 }
@@ -11500,13 +11531,18 @@ export function AgentChatPane({
   // frame the thinking indicator already draws: on macOS each frame is a
   // whole-window composite, and words that land between beats would each
   // cost one more.
-  const scheduleQueuedEventFlush = useCallback(() => {
-    if (eventFlushTimerRef.current != null) return;
+  const scheduleQueuedEventFlush = useCallback((nextFrame = false) => {
+    if (eventFlushTimerRef.current != null) {
+      // A flush already waits. It keeps its time unless this event is a
+      // turn's first text and the wait is for a work beat, not a frame.
+      if (!nextFrame || eventFlushFrameRef.current != null) return;
+      cancelQueuedEventFlush();
+    }
     const flush = () => {
       cancelQueuedEventFlush();
       flushQueuedEvents();
     };
-    if (performance.now() - lastEventFlushAtRef.current < STREAM_FLUSH_GAP_MS) {
+    if (!nextFrame && performance.now() - lastEventFlushAtRef.current < STREAM_FLUSH_GAP_MS) {
       eventFlushTimerRef.current = window.setTimeout(flush, msToNextBeat());
       return;
     }
@@ -11856,6 +11892,11 @@ export function AgentChatPane({
       // optimistic bubble cannot disappear behind the 16ms debounce. A visible
       // grid tile streams on the scheduled flush like any pane: it needs no
       // focus, and a flush per event cost a frame per event for each tile.
+      const firstTextOfTurn = envelope.event.type === "text" && isFirstTextOfTurn(
+        envelope,
+        pendingEventQueueRef.current,
+        eventsBySessionRef.current[envelope.sessionId],
+      );
       if (heldForOpen) {
         // Flushed when the hold ends.
       } else if (
@@ -11866,7 +11907,10 @@ export function AgentChatPane({
         cancelQueuedEventFlush();
         flushQueuedEvents();
       } else {
-        scheduleQueuedEventFlush();
+        // The reply's first words replace the draft: the send's animations
+        // (draft copies, the Work area's dissolve) end in the same frame.
+        if (firstTextOfTurn && envelope.sessionId === selectedSessionIdRef.current) settleSendHandoff();
+        scheduleQueuedEventFlush(firstTextOfTurn);
       }
       // After the flush is scheduled, so its paint mark lands after that frame.
       noteChatSendTimingEvent(envelope);
