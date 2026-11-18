@@ -67,6 +67,12 @@ export const Z_LAYERS = {
   dialogPopover: 205,
   /** A confirm/prompt raised from inside another dialog. */
   nestedDialog: 210,
+  /**
+   * "Update ADE to keep working": a build below the owner's minimum. Above
+   * every app surface and dialog (the welcome screen included), so nothing
+   * opens over it; below toasts, so its own results (a copied command) show.
+   */
+  updateRequired: 220,
   /** Bottom-right toast viewport; above dialogs so a dialog's own result toast shows. */
   toast: 250,
   /**

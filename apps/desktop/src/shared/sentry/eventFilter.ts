@@ -67,6 +67,19 @@ export function setSentryEventMirror(mirror: SentryEventMirror | null): void {
   mirrorEvent = mirror;
 }
 
+let unsupportedBuild = false;
+
+/**
+ * True while this build is below the owner's minimum (`desktopUpdateRequirement`
+ * says required): its error events are dropped, since they come from a build
+ * that is already fixed. Logs still go out (the release gates count machines
+ * per build from them). Renderer events pass main's `beforeSend`, so main's
+ * flag covers the window too.
+ */
+export function setSentryUnsupportedBuild(unsupported: boolean): void {
+  unsupportedBuild = unsupported;
+}
+
 /** Whether the SDK caught this exception itself (an uncaught error or unhandled rejection). */
 function isUnhandledException(event: unknown): boolean {
   const values = (event as { exception?: { values?: Array<{ mechanism?: { handled?: boolean } }> } })
@@ -91,6 +104,7 @@ export function createSentryEventHooks(budget?: SentryBudget) {
   const fatalLimiter = createEventLimiter(FATAL_SENTRY_BUDGET);
   return {
     beforeSend<T>(event: T, hint?: DiagnosticHint & { originalException?: unknown }): T | null {
+      if (unsupportedBuild) return null;
       const candidate = event as unknown as FilterableEvent;
       // An error its throw site marked as an answer (`shared/expectedError.ts`)
       // that someone caught and reported: a direct capture or a logged error.

@@ -1,5 +1,6 @@
 import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
-import { useMemo, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useMemo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type CSSProperties } from "react";
+import { RemoteMachineUpdateGate } from "../remoteTargets/RemoteMachineUpdateGate";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { STANDARD_EASE } from "../../lib/motion";
 import { previewRowsFromTranscript, transcriptUsesAlternateScreen } from "./terminalPreviewRows";
@@ -902,7 +903,21 @@ function CliSessionSurface({
   );
 }
 
-export function SessionSurface({
+/**
+ * One Work session: its chat, CLI or shell, unless its machine runs a build
+ * below the owner's minimum; then that machine's update panel instead. A
+ * session on the tab's machine has no pin, so the tab's binding decides.
+ */
+export function SessionSurface(props: ComponentProps<typeof SessionSurfaceBody>) {
+  const boundBinding = useAppStore((state) => state.projectBinding);
+  return (
+    <RemoteMachineUpdateGate binding={props.runtimePin ?? boundBinding}>
+      <SessionSurfaceBody {...props} />
+    </RemoteMachineUpdateGate>
+  );
+}
+
+function SessionSurfaceBody({
   session,
   sessionTitleById,
   lanes,

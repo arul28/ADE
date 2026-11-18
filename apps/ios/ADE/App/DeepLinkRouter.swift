@@ -64,6 +64,9 @@ final class DeepLinkRouter {
   /// Malformed input never crashes. An ADE link that reaches no route opens the
   /// Hub with a short notice, so the tap is never a silent no-op.
   func handle(_ url: URL, attentionItemId: String? = nil) {
+    // A phone below its minimum shows only the update cover; a link opens
+    // nothing under it (and lands on no Hub notice it can't see).
+    guard !ClientUpdateGateStore.shared.isPhoneBlocked else { return }
     let url = Self.withADEScheme(url)
     let before = routedCount
     route(url, attentionItemId: attentionItemId)
@@ -808,6 +811,7 @@ final class DeepLinkRouter {
   /// `prNumber` keys. Used when the user taps the notification body or a
   /// default action we do not special-case into a remote command.
   func handleNotificationUserInfo(_ userInfo: [AnyHashable: Any]) {
+    guard !ClientUpdateGateStore.shared.isPhoneBlocked else { return }
     let before = routedCount
     routeNotificationUserInfo(userInfo)
     guard routedCount == before else { return }

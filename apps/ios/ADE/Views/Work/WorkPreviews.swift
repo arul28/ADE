@@ -1604,6 +1604,14 @@ enum ADEPreviewScreen: String, CaseIterable {
   case ctoSettingsBrain = "cto-settings-brain"
   case ctoSettingsMemory = "cto-settings-memory"
   case ctoOffline = "cto-offline"
+  /// The launch update gate: the phone's cover (App Store, TestFlight) and a
+  /// machine's card (from the phone, too old, ADE Cloud). See `UpdateGateViews.swift`.
+  case updateGatePhone = "update-gate-phone"
+  case updateGatePhoneTestFlight = "update-gate-phone-testflight"
+  case updateGatePhoneBeta = "update-gate-phone-beta"
+  case updateGateMachine = "update-gate-machine"
+  case updateGateMachineOld = "update-gate-machine-old"
+  case updateGateCloud = "update-gate-cloud"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1895,6 +1903,18 @@ struct ADEPreviewScreenHost: View {
     case .ctoAvatar, .ctoWelcome, .ctoThread, .ctoProfile, .ctoProfileLibrary,
          .ctoSettingsLook, .ctoSettingsBrain, .ctoSettingsMemory, .ctoOffline:
       CtoPreviewHost(screen: screen)
+    case .updateGatePhone:
+      PhoneUpdateGatePreviewHost()
+    case .updateGatePhoneTestFlight:
+      PhoneUpdateGatePreviewHost(source: .testFlight)
+    case .updateGatePhoneBeta:
+      PhoneUpdateGatePreviewHost(source: .betaApp)
+    case .updateGateMachine:
+      MachineVersionGatePreviewHost()
+    case .updateGateMachineOld:
+      MachineVersionGatePreviewHost(variant: .tooOld)
+    case .updateGateCloud:
+      MachineVersionGatePreviewHost(variant: .cloud)
     }
   }
 }

@@ -310,6 +310,7 @@ describe("createAdeWebAdapter", () => {
     expect(Object.keys(adapter.ade.account).sort()).toEqual([
       "cancelDeviceLogin",
       "cancelLogin",
+      "deleteAccount",
       "getLocalMachineIdentity",
       "listMachines",
       "onPairMachineProgress",

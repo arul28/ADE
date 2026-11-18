@@ -36,6 +36,9 @@ struct ADEApp: App {
     ProductAnalytics.shared.configure()
     // Then crash reporting, so a crash later in launch is still captured.
     CrashReporting.start()
+    // The launch update gate's cover: from the first scene on, a phone below
+    // its minimum shows only "Update ADE to keep working".
+    PhoneUpdateGateWindows.shared.start()
     // Before `SyncService` creates a device id, which marks an install as one that ran before.
     ADEColorSchemeChoice.seedDefaultIfNeeded()
     ADEIntentCommandRegistry.register(ADESyncIntentBridge.shared)
@@ -96,6 +99,10 @@ struct ADEApp: App {
           await appUpdateAdvisor.checkForUpdates()
         }
         .task {
+          // The first read of the minimum, then every 3 hours in front.
+          ClientUpdateGateStore.shared.appBecameActive()
+        }
+        .task {
           guard !didBootstrapSync else { return }
           didBootstrapSync = true
           // A hang report names what kept publishing (`ADEHangContext`).
@@ -138,6 +145,7 @@ struct ADEApp: App {
             // push and Activity cover "needs you" meanwhile.
             machineFleet.setAppActive(false)
             accountService.stopAttentionPolling()
+            ClientUpdateGateStore.shared.appEnteredBackground()
             ProductAnalytics.shared.flush()
             // Reclaim draft-attachment directories no live key names. Preview
             // copies are NOT dropped here: backgrounding does not dismiss a
@@ -163,6 +171,7 @@ struct ADEApp: App {
           Task { await PushNotificationService.shared.refreshAccountMutedSessions() }
           Task { await accountService.updateAttentionAppForeground(true) }
           Task { await appUpdateAdvisor.checkForUpdates() }
+          ClientUpdateGateStore.shared.appBecameActive()
           // Defense-in-depth: drain intent commands queued by an extension
           // process while the bridge wasn't reachable (cold launch drains via
           // register(); this covers warm foregrounds).
@@ -261,6 +270,12 @@ private final class ADESyncIntentBridge: ADEIntentCommandBridge {
     case .retryPrChecks: mapped = .retryPrChecks
     }
     guard let sync = SyncService.shared else { return }
+    // A phone below its minimum does nothing from a notification or Live
+    // Activity button either: the cover is the only thing it can do.
+    guard !ClientUpdateGateStore.shared.isPhoneBlocked else {
+      CrashReporting.breadcrumb("update_gate", message: "intent command dropped while blocked")
+      return
+    }
     // An account push names the machine that asked. Approve or deny THAT
     // machine's request, never whichever host happens to be focused: connect to
     // it first, and send nothing if it cannot be reached.

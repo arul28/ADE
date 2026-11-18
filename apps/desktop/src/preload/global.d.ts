@@ -1,5 +1,6 @@
 import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopyResult } from "../shared/ctoAccountCopy";
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
+import type { ClientUpdateGateState } from "../shared/clientUpdateGate";
 import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../shared/types/deviceSources";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
 import type { AccountCloudLaunchesBridge, CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
@@ -5031,6 +5032,12 @@ declare global {
         pollDeviceLogin: (args: { sessionId: string }) => Promise<AdeAccountDeviceLoginPoll>;
         cancelDeviceLogin: (args: { sessionId: string }) => Promise<AdeAccountStatus>;
         signOut: () => Promise<AdeAccountStatus>;
+        /**
+         * Deletes the signed-in ADE account (computers, saved chats, vault,
+         * project list), then signs out. Rejects with a sentence to show when
+         * the account was not deleted.
+         */
+        deleteAccount: () => Promise<AdeAccountStatus>;
         listMachines: () => Promise<AdeAccountMachinesResult>;
         getMachineInventory?: (
           machineKey?: string,
@@ -5730,6 +5737,19 @@ declare global {
       /** Quits and reopens ADE after the usual quit warnings. False when unavailable. */
       updateRelaunchApp: () => Promise<boolean>;
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
+      /**
+       * This computer's build against the owner's minimum (`/client/minimum`),
+       * read by main (by ADE Web's adapter on the web). Also carries the
+       * minimum and the newest builds, to judge another machine's version.
+       */
+      clientUpdateGate: {
+        getState: () => Promise<ClientUpdateGateState>;
+        /** Reads `/client/minimum` again now. */
+        refresh: () => Promise<ClientUpdateGateState>;
+        onChange: (cb: (state: ClientUpdateGateState) => void) => () => void;
+        /** Quits ADE the ordinary way (its quit warnings included). Absent on the web. */
+        quit?: () => Promise<boolean>;
+      };
       /** Whether this computer's ADE.app needs a password on every update, and the one-click fix. Absent on the web client. */
       appBundleOwnership?: AppBundleOwnershipBridge;
       /** The database copies ADE took on this computer before updates. Absent on the web client. */

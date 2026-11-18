@@ -44,6 +44,8 @@ import { handleAccountProjectRequest, isAccountProjectRequest, type AccountProje
 import { handleAccountLanesRequest, isAccountLanesRequest } from "./accountLanes/routes";
 import { handleGithubAppRequest, isGithubAppRequest, type GithubAppEnv } from "./githubApp/routes";
 import { handleLatestReleasesRequest, isLatestReleasesRequest, type LatestReleasesEnv } from "./latestReleases";
+import { handleClientMinimumRequest, isClientMinimumRequest } from "./clientMinimum";
+import { handleAccountSelfDeleteRequest, isAccountSelfDeleteRequest } from "./accountSelfDelete";
 import { runGithubAppCron } from "./githubApp/grants";
 import {
   cleanupUsageResearch,
@@ -95,6 +97,12 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // "Update & restart" on other machines: account bearer, GET only, the
   // directory's exact-origin CORS for the web client.
   if (isLatestReleasesRequest(url)) return handleLatestReleasesRequest(request, env);
+  // The oldest build each kind of install may run (the update gate). Public
+  // and read-only: a signed-out app must still learn it has to update.
+  if (isClientMinimumRequest(url)) return handleClientMinimumRequest(request, env);
+  // The person deletes their own account from the app; Clerk's `user.deleted`
+  // webhook then removes everything ADE holds for it.
+  if (isAccountSelfDeleteRequest(url)) return handleAccountSelfDeleteRequest(request, env);
   // ADE Cloud (src/cloud): account bearer, the directory's exact-origin CORS for
   // the web client (routes.ts). Timed wakes ride the same gate. Everything
   // under /cloud refuses an account the owner blocked (403), except a launch's

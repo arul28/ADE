@@ -492,21 +492,34 @@ func adeVersionIsBetaTrack(_ version: String?) -> Bool {
 }
 
 /// The same ordering as desktop's `compareUpdateVersions`
-/// (`apps/desktop/src/shared/updateVersions.ts`): numeric core first, then
-/// prerelease precedence, where a release outranks any prerelease of its core.
+/// (`apps/desktop/src/shared/updateVersions.ts`), step for step: numeric core
+/// first (each part read like `parseInt`, padded to three), then prerelease
+/// precedence, where a release outranks any prerelease of its core. Like the
+/// JS `split("-", 2)`, only the text between the first and second dash is the
+/// prerelease. The launch update gate (`ClientUpdateGate.swift`) decides who
+/// is blocked with this, so it must agree with the desktop exactly.
 func compareAdeVersions(_ left: String, _ right: String) -> Int {
+  /// `Number.parseInt(part, 10)`, with NaN read as 0.
+  func parseIntLikeJS(_ part: Substring) -> Int {
+    var rest = part.drop(while: { $0.isWhitespace })
+    var negative = false
+    if let sign = rest.first, sign == "-" || sign == "+" {
+      negative = sign == "-"
+      rest = rest.dropFirst()
+    }
+    let digits = rest.prefix(while: { $0.isASCII && $0.isNumber })
+    guard !digits.isEmpty, let value = Int(digits) else { return 0 }
+    return negative ? -value : value
+  }
+  func isNumericIdentifier(_ part: String) -> Bool {
+    !part.isEmpty && part.allSatisfy { $0.isASCII && $0.isNumber }
+  }
   func parse(_ version: String) -> (core: [Int], prerelease: [String]) {
     let text = adeVersionCore(version)
-    let coreText: Substring
-    let prereleaseText: Substring
-    if let dash = text.firstIndex(of: "-") {
-      coreText = text[..<dash]
-      prereleaseText = text[text.index(after: dash)...]
-    } else {
-      coreText = Substring(text)
-      prereleaseText = ""
-    }
-    let core = coreText.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) ?? 0 }
+    let dashParts = text.split(separator: "-", omittingEmptySubsequences: false)
+    let coreText = dashParts.first ?? ""
+    let prereleaseText = dashParts.count > 1 ? dashParts[1] : ""
+    let core = coreText.split(separator: ".", omittingEmptySubsequences: false).map(parseIntLikeJS)
     let prerelease = prereleaseText.isEmpty ? [] : prereleaseText.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
     return (core, prerelease)
   }
@@ -523,15 +536,23 @@ func compareAdeVersions(_ left: String, _ right: String) -> Int {
     guard index < rhs.prerelease.count else { return 1 }
     let leftPart = lhs.prerelease[index]
     let rightPart = rhs.prerelease[index]
-    switch (Int(leftPart), Int(rightPart)) {
-    case let (l?, r?):
-      if l != r { return l - r }
-    case (_?, nil):
+    switch (isNumericIdentifier(leftPart), isNumericIdentifier(rightPart)) {
+    case (true, true):
+      // `Number(left) - Number(right)`: compared as numbers, however long.
+      let l = Double(leftPart) ?? 0
+      let r = Double(rightPart) ?? 0
+      if l != r { return l < r ? -1 : 1 }
+    case (true, false):
       return -1
-    case (nil, _?):
+    case (false, true):
       return 1
-    case (nil, nil):
-      if leftPart != rightPart { return leftPart < rightPart ? -1 : 1 }
+    case (false, false):
+      // `localeCompare`.
+      switch leftPart.localizedCompare(rightPart) {
+      case .orderedAscending: return -1
+      case .orderedDescending: return 1
+      case .orderedSame: break
+      }
     }
   }
   return 0

@@ -167,6 +167,7 @@ import {
 } from "../../desktop/src/shared/sentry/diagnostics";
 import { projectRegistryDiagnosticAttachment } from "./services/projects/projectRegistryJournal";
 import { initBrainSentry } from "./sentry/initBrain";
+import { startBrainClientUpdateCheck } from "./services/runtime/brainClientUpdateCheck";
 import { brainReportsAsRelease } from "./sentry/brainBuild";
 import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
 import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
@@ -29956,6 +29957,9 @@ async function runServe(
   // A brain starts with the desktop app on a cold launch: its background
   // provider CLI work waits out the launch (`launchQuiet.ts`).
   armLaunchQuiet();
+  // Below the owner's minimum: one stderr line, and no Sentry errors from
+  // this build. Never blocks the brain (a cloud computer's account updates it).
+  startBrainClientUpdateCheck({ version: BUNDLED_VERSION || null });
   // Before anything reads the env: a brain started from an agent's shell must
   // not lend that agent's identity to every client it serves.
   const droppedCallerIdentityKeys = dropInheritedCallerIdentity(process.env);
