@@ -402,7 +402,7 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
   /// fixtures stay a normal install. The flag is on the event only.
   private static var sendsAsDevelopment: Bool {
     #if DEBUG || targetEnvironment(simulator)
-    return isTruthyFlag(ProcessInfo.processInfo.environment["ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT"])
+    return ProductAnalytics.isTruthyFlag(ProcessInfo.processInfo.environment["ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT"])
     #else
     return false
     #endif
