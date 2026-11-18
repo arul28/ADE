@@ -5122,10 +5122,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   Each computer on your ADE Cloud account is one of your machines: reach it
   with --machine <its name>. They sleep on their own after a few idle minutes
-  and use no hours while asleep; a --machine call or opening a lane wakes one
-  in about a second. <machine> is its name or id. Sizes: small,
-  medium, large, x-large (or 2x4, 4x8, 4x16, 4x32). --kind vm is a full
-  computer: Android (medium or bigger) and Docker.
+  and use no hours while asleep; a --machine call or a message wakes one in
+  about 20 seconds. Reading a sleeping lane's saved chats does not wake it.
+  <machine> is its name or id. Sizes: small, medium, large, xlarge
+  (ade cloud status lists each one's CPU, memory and hours). large and
+  xlarge are full computers: Android and Docker need one.
 
     $ ade cloud status --text                     Everything in one read: can a new lane start (and why not),
                                                     plan, hours, disk, computers, each lane, sizes, agent limits
@@ -5134,7 +5135,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade cloud work-state --text                 On a cloud computer: which lanes have work not on GitHub yet
     $ ade cloud invite --text                     Your invite link: friends joined, rewards left, hours earned
                                                     (enter a friend's invite in Settings › Account)
-    $ ade cloud create --kind vm --shape medium --name "android vm"
+    $ ade cloud create --kind vm --shape large --name "android vm"
     $ ade cloud sleep <machine>                   Sleep now (uses no hours)
     $ ade cloud wake <machine>                    Wake (the server refuses it at 0 hours)
     $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts

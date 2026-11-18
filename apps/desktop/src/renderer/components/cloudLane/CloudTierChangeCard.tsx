@@ -221,7 +221,7 @@ export function CloudTierChangeCard({
       {!available ? <p className="adecl-muted">{CLOUD_LANE_LIFE_UNAVAILABLE}</p> : null}
 
       <div className="adecl-tier-actions">
-        {changed ? (
+        {changed && !computer?.resting ? (
           <label className="adecl-tier-now-check">
             <input type="checkbox" checked={stopTurn} onChange={(event) => setStopTurn(event.target.checked)} />
             <span>Stop the running turn and do it now</span>

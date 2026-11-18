@@ -23,11 +23,17 @@ export type TierChangeComputer = {
   diskGb: number | null;
   /** What uses it, from the computer's own last measure; null before one. */
   usedGb: number | null;
+  /** Asleep or stopped: no turn runs on it, so there is no turn to stop. */
+  resting?: boolean;
 };
 
 /** A cloud computer's disk facts for the change card. */
-export function tierChangeComputerOf(machine: Pick<CloudMachine, "resources" | "diskUsage">): TierChangeComputer {
-  return { diskGb: machine.resources?.diskGb ?? null, usedGb: machine.diskUsage?.totalGb ?? null };
+export function tierChangeComputerOf(machine: Pick<CloudMachine, "resources" | "diskUsage" | "state">): TierChangeComputer {
+  return {
+    diskGb: machine.resources?.diskGb ?? null,
+    usedGb: machine.diskUsage?.totalGb ?? null,
+    resting: machine.state === "asleep" || machine.state === "stopped",
+  };
 }
 
 const roundGb = (gb: number) => Math.max(0, Math.floor(gb * 10) / 10);
