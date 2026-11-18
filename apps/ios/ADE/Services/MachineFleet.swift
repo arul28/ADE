@@ -170,6 +170,9 @@ final class MachineFleet: ObservableObject {
   private var hiddenCancellables: Set<AnyCancellable> = []
   /// Fleet keys of the machines the account showed online at its last load.
   private var accountOnlineKeys: Set<String> = []
+  /// Of those, the ones not reporting sleep: a Mac with its lid shut stays
+  /// "online" in the account but cannot answer.
+  private var accountAwakeKeys: Set<String> = []
   /// Each computer's heartbeats across the account loads (see
   /// `accountMachinesLoaded`).
   private var presenceWatch = AccountPresenceWatch()
@@ -276,6 +279,11 @@ final class MachineFleet: ObservableObject {
           })
           let cameOnline = online.subtracting(self.accountOnlineKeys)
           self.accountOnlineKeys = online
+          self.accountAwakeKeys = Set(machines.compactMap { machine -> String? in
+            guard machine.online, machine.sleepState != .asleep,
+                  let deviceId = nonEmptyTrimmed(machine.deviceId) else { return nil }
+            return HiddenMachineStore.fleetKey(deviceId: deviceId)
+          })
           // The ADE Cloud computers resolve to fleet keys through this list.
           self.syncService?.resolveCloudMachineKeys()
           // Their saved chats, read from the account server itself.
@@ -395,6 +403,7 @@ final class MachineFleet: ObservableObject {
     presenceRefreshTask = nil
     presenceWatch = AccountPresenceWatch()
     accountOnlineKeys = []
+    accountAwakeKeys = []
     needsUpdateSince.removeAll()
     needsUpdateRetryTask?.cancel()
     needsUpdateRetryTask = nil
@@ -419,9 +428,9 @@ final class MachineFleet: ObservableObject {
       ?? restingCloudMachines.first { $0.machineKey == machineKey }
   }
 
-  /// The account showed this machine online at its last load.
-  func accountShowsOnline(_ machineKey: String) -> Bool {
-    accountOnlineKeys.contains(machineKey)
+  /// The account showed this machine online and awake at its last load.
+  func accountShowsAwake(_ machineKey: String) -> Bool {
+    accountAwakeKeys.contains(machineKey)
   }
 
   /// The machine has a live roster link now.

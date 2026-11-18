@@ -1235,7 +1235,7 @@ private struct WorkChatAttachmentChip: View {
           Image(systemName: loadFailed ? "photo.badge.exclamationmark" : "photo")
             .font(.system(size: 18, weight: .semibold))
             .foregroundStyle(Color.white.opacity(0.82))
-          Text(loadFailed ? "On desktop" : (isUploading ? "Sending" : "Image"))
+          Text(loadFailed ? "No preview" : (isUploading ? "Sending" : "Image"))
             .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(Color.white.opacity(0.72))
             .lineLimit(1)
@@ -1346,6 +1346,16 @@ private struct WorkChatAttachmentChip: View {
         loadFailed = true
         return
       }
+    }
+
+    // The chat's own machine first: a chat on an ADE Cloud computer or a
+    // second computer keeps its files there, not on the focused machine.
+    if let chatSessionId, !chatSessionId.isEmpty,
+       let dataUrl = try? await syncService.chatScopedImageDataUrl(sessionId: chatSessionId, path: attachment.path),
+       let image = WorkChatAttachmentImagePreview.image(fromDataUrl: dataUrl, maxPixelSize: maxPixelSize) {
+      previewImage = image
+      loadFailed = false
+      return
     }
 
     guard let laneId, !laneId.isEmpty else {

@@ -1267,7 +1267,7 @@ private struct WorkImportLaneFilterMenu: View {
   private var title: String {
     if selection == workImportAllLanesFilter { return "All lanes" }
     if selection == workImportOtherFoldersFilter { return "Other folders" }
-    return selectedLane?.name ?? "All lanes"
+    return selectedLane?.displayName ?? "All lanes"
   }
 
   var body: some View {

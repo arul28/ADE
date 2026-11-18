@@ -37,7 +37,7 @@ struct WorkLanePickerDropdown: View {
 
   private var triggerTitle: String {
     if isAutoCreateSelected { return "Auto-create lane" }
-    return selectedLane?.name ?? emptySelectionTitle
+    return selectedLane?.displayName ?? emptySelectionTitle
   }
 
   private var triggerBranchLabel: String? {

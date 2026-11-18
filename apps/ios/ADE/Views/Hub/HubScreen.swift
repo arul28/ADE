@@ -744,9 +744,12 @@ struct HubScreen: View {
       let state = machineFleet.machine(for: location.machineKey)?.state
       let isCloud = syncService.cloudMachineFleetKeys.contains(location.machineKey)
       if state == .live { return 0 }
-      // A computer the account shows online serves the project without
-      // waking (and paying for) an ADE Cloud computer.
-      if !isCloud && (state == .connecting || machineFleet.accountShowsOnline(location.machineKey)) { return 1 }
+      // A computer the account shows awake, or an ADE Cloud computer that is
+      // running, serves it without waking (and paying for) a sleeping one.
+      // A computer the phone keeps dialing but the account shows asleep or
+      // gone does not answer: it ranks after a cloud copy.
+      let resting = machineFleet.restingCloudMachines.contains { $0.machineKey == location.machineKey }
+      if isCloud ? !resting : machineFleet.accountShowsAwake(location.machineKey) { return 1 }
       if isCloud { return 2 }
       return 3
     }

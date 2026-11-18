@@ -1510,7 +1510,9 @@ struct WorkNewChatScreen: View {
   @ViewBuilder
   private var launchOptionsMenu: some View {
     let accounts = launchAccountChoices
-    if launchAccountState.error || !accounts.isEmpty {
+    // ADE Cloud signs its computer in with your logins; there is no machine
+    // account list to pick from.
+    if !isCloudSelected, launchAccountState.error || !accounts.isEmpty {
       Section("Account") {
         Button {
           selectedLaunchAccountId = nil

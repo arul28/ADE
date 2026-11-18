@@ -16908,20 +16908,24 @@ final class SyncService: ObservableObject {
     // the server holds the message, wakes the lane's own computer (or makes
     // a new one that continues this chat), and delivers it once. The phone
     // may close meanwhile. An older server has no queue: wake, then send.
+    if (attachments ?? []).isEmpty, !cloudFiles.isEmpty,
+       let key = chatThreadKey(for: sessionId), savedCloudChatAccountKey(forThreadKey: key) != nil {
+      // The account can hold files, but a computer can't fetch them yet (the
+      // server serves only files a started launch names): wake the computer,
+      // and the caller uploads them over its live link.
+      await wakeSavedCloudChatComputer(key)
+      throw CloudChatFilesNeedLiveLink()
+    }
     if (attachments ?? []).isEmpty,
        let key = chatThreadKey(for: sessionId),
        let accountKey = savedCloudChatAccountKey(forThreadKey: key) {
       let messageId = (args["clientSendId"] as? String) ?? UUID().uuidString
-      switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, files: cloudFiles, using: self) {
+      switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, using: self) {
       case .queued:
         return .heldByServer
       case .refused(let message), .failed(let message):
         throw NSError(domain: "ADE", code: 46, userInfo: [NSLocalizedDescriptionKey: message])
       case .routeMissing:
-        // Files sent through the account have no live-link fallback.
-        if !cloudFiles.isEmpty {
-          throw NSError(domain: "ADE", code: 46, userInfo: [NSLocalizedDescriptionKey: "This chat's computer can't take files while it sleeps. Wake it, then send them."])
-        }
         await wakeSavedCloudChatComputer(key)
       }
     } else if let key = chatThreadKey(for: sessionId), savedCloudChatAccountKey(forThreadKey: key) != nil {
@@ -17603,6 +17607,22 @@ final class SyncService: ObservableObject {
       targetProjectRootPath: rootPath,
       as: ChatAttachmentChunk.self
     )
+  }
+
+  /// An image a chat's message carries, read through that chat's own
+  /// machine (an ADE Cloud computer, a second computer, or the focused one).
+  /// Nil when that machine can't be asked right now (asleep, offline).
+  func chatScopedImageDataUrl(sessionId: String, path: String) async throws -> String? {
+    guard !isPersonalChatScope(sessionId: sessionId) else { return nil }
+    guard canInvokeChatRemoteAction("chat.getImageDataUrl", sessionId: sessionId) else { return nil }
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableCommand(
+      action: "chat.getImageDataUrl",
+      args: ["path": path],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: PersonalChatImageData.self
+    ).dataUrl
   }
 
   func chatImageDataUrlForChat(sessionId: String, path: String) async throws -> String {

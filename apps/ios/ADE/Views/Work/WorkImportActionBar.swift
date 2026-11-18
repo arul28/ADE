@@ -166,12 +166,12 @@ struct WorkImportActionBar: View {
             WorkImportPillLabel(
               symbol: "square.stack.3d.up",
               laneMark: lanes.first(where: { $0.id == targetLaneId }),
-              title: lanes.first(where: { $0.id == targetLaneId })?.name ?? "Choose lane"
+              title: lanes.first(where: { $0.id == targetLaneId })?.displayName ?? "Choose lane"
             )
           }
           .disabled(importDisabled)
           .accessibilityLabel("Import into lane")
-          .accessibilityValue(lanes.first(where: { $0.id == targetLaneId })?.name ?? "")
+          .accessibilityValue(lanes.first(where: { $0.id == targetLaneId })?.displayName ?? "")
         }
       }
     }
@@ -238,7 +238,7 @@ struct WorkImportActionBar: View {
   }
 
   private var lockedChip: some View {
-    let name = lockedLane?.name ?? session.home?.laneName ?? "its lane"
+    let name = lockedLane?.displayName ?? session.home?.laneName ?? "its lane"
     let color = LaneColorPalette.displayColor(
       forHex: lockedLane?.color ?? session.home?.color,
       fallback: ADEColor.textSecondary

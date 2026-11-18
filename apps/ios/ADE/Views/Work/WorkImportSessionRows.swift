@@ -219,7 +219,7 @@ struct WorkImportLaneLabel: View {
           .font(.caption2.weight(.semibold))
           .accessibilityHidden(true)
       }
-      Text(liveLane?.name ?? session.laneDisplayName)
+      Text(liveLane?.displayName ?? session.laneDisplayName)
         .lineLimit(1)
         .truncationMode(.middle)
     }

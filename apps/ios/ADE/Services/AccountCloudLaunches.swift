@@ -375,6 +375,12 @@ final class AccountCloudLaunchStore: ObservableObject {
     var body: RemoteJSONValue?
 
     var inProgress: Bool { startError == nil && (record?.inProgress ?? true) }
+    /// Still worth reading again: in progress, or running before the server
+    /// has named its chat (the card's Open chat needs that id).
+    var awaitsChat: Bool {
+      guard startError == nil, let record else { return false }
+      return record.inProgress || (record.state == "running" && record.sessionId == nil)
+    }
   }
 
   /// A file the first message carries: uploaded to the launch before its start.
@@ -651,7 +657,7 @@ final class AccountCloudLaunchStore: ObservableObject {
 
   /// One loop for every launch in progress; it ends when none is left.
   private func poll(using sync: SyncService) {
-    guard pollTask == nil, entries.contains(where: { $0.inProgress && $0.record != nil }) else { return }
+    guard pollTask == nil, entries.contains(where: \.awaitsChat) else { return }
     pollGeneration += 1
     let generation = pollGeneration
     pollTask = Task { @MainActor [weak self] in
@@ -661,7 +667,7 @@ final class AccountCloudLaunchStore: ObservableObject {
         if Task.isCancelled { break }
         // Paused while the app is in the background.
         if UIApplication.shared.applicationState != .active { delay = 10; continue }
-        let open = self.entries.filter { $0.inProgress && $0.record != nil }
+        let open = self.entries.filter(\.awaitsChat)
         if open.isEmpty { break }
         guard let client = await sync.cloudServerClient() else { break }
         var changed = false

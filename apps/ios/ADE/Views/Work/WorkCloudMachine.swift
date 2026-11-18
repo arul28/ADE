@@ -109,8 +109,15 @@ struct WorkCloudLaunchCard: View {
         }
       } else if running {
         HStack(spacing: 8) {
-          Button("Open chat", action: onOpenChat)
-            .buttonStyle(ADEKitButtonStyle(prominent: true))
+          if record?.sessionId != nil {
+            Button("Open chat", action: onOpenChat)
+              .buttonStyle(ADEKitButtonStyle(prominent: true))
+          } else {
+            ProgressView().controlSize(.small)
+            Text("Opening the chat…")
+              .font(.system(size: 12))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
           Button("Hide") { launches.hide(entry.launchId) }
             .buttonStyle(ADEKitButtonStyle())
         }
