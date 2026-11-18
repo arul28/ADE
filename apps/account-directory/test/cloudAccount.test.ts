@@ -3513,7 +3513,7 @@ describe("ADE Cloud iPhone minutes", () => {
       name: "minutes past the plan this period, sent once however often the meter runs",
       seed: () => { seedPhoneAccount(); seedPhone("ses_a", 312); },
       act: async () => {},
-      reports: [[`ade-phone:sub_1:${PERIOD}:from-0`, 12]],
+      reports: [[`ade-phone:cus_1:${PERIOD}:from-0`, 12]],
       after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 12 },
     },
     {
@@ -3521,7 +3521,7 @@ describe("ADE Cloud iPhone minutes", () => {
       seed: () => { seedPhoneAccount({ phone_extra_limit_cents: null }); seedPhone("ses_a", 340); },
       // $0.50 allows 20 extra minutes; 40 were used under no limit.
       act: () => setExtraPhoneMinutes(harness.env, OWNER, { enabled: true, monthlyLimitCents: 50 }, clock),
-      reports: [[`ade-phone:sub_1:${PERIOD}:from-0`, 40]],
+      reports: [[`ade-phone:cus_1:${PERIOD}:from-0`, 40]],
       after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 40 },
     },
     {
@@ -3529,7 +3529,7 @@ describe("ADE Cloud iPhone minutes", () => {
       // Pro's 300 minutes in the old period, Plus (80) now: 400 used bills 100, never 320.
       seed: () => { seedPhoneAccount({ paid_plan: "plus", phone_extra_period_start: OLD_PERIOD, phone_extra_included: 300 }); seedPhone("ses_old", 400, OLD_PERIOD + HOUR); },
       act: async () => {},
-      reports: [[`ade-phone:sub_1:${OLD_PERIOD}:from-0`, 100]],
+      reports: [[`ade-phone:cus_1:${OLD_PERIOD}:from-0`, 100]],
       after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 0 },
     },
     {

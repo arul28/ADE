@@ -184,7 +184,8 @@ const endReasonOf = (session: NomacSession): string | null => session.ended?.rea
 
 /** One phone as NoMac answers it now, or null when it can't be read. */
 async function readSession(env: Pick<CloudEnv, "NOMAC_API_KEY">, phoneId: string): Promise<{ session: NomacSession; stopNotice: unknown } | null> {
-  const answer = await nomac(env, "GET", `/api/v1/simulator/sessions/${encodeURIComponent(phoneId)}`);
+  // A timeout or a dropped connection is unreadable, like a 5xx: callers fall back to the phone id they know.
+  const answer = await nomac(env, "GET", `/api/v1/simulator/sessions/${encodeURIComponent(phoneId)}`).catch((): NomacAnswer => ({ status: 504, body: null }));
   const session = sessionOf(answer.body?.session);
   return answer.status === 200 && session ? { session, stopNotice: answer.body?.stop_notice } : null;
 }
@@ -223,16 +224,21 @@ const PHONE_MERGE_SQL = `
  * repeated answer can't undo a newer one (`PHONE_MERGE_SQL`). `free` is
  * whether the account was on free rules when the phone started.
  */
-async function savePhone(env: Pick<CloudEnv, "DB">, userId: string, session: NomacSession, now: number, free = false): Promise<void> {
+async function savePhone(env: Pick<CloudEnv, "DB">, userId: string, session: NomacSession, now: number, free = false, onlyLiveAccount = false): Promise<boolean> {
   const facts = phoneFacts(session, now);
-  await env.DB.prepare(`
+  // `onlyLiveAccount`: a new row only while the account exists, checked in this write, so a deletion
+  // that re-keyed its phones meanwhile never gets a row under the person's id back.
+  const saved = await env.DB.prepare(`
     insert into cloud_phones (phone_id, user_id, device, state, created_at, ready_at, ended_at, billed_seconds, cost_micros, end_reason, free, updated_at)
-    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    where ? = 0 or exists (select 1 from cloud_accounts where user_id = ? and deleted_at is null)
     on conflict(phone_id) do update set ${PHONE_MERGE_SQL}
   `).bind(
     session.id, userId, facts.device, facts.state, isoMs(session.created_at) ?? now, facts.readyAt, facts.endedAt,
     facts.billedSeconds, facts.costMicros, facts.endReason, free ? 1 : 0, now,
+    onlyLiveAccount ? 1 : 0, userId,
   ).run();
+  return (saved.meta.changes ?? 0) > 0;
 }
 
 /** The ADE account a NoMac label names (`ade:<userId>`), or null for a label ADE did not make. */
@@ -256,7 +262,7 @@ async function updatePhone(env: Pick<CloudEnv, "DB">, session: NomacSession, now
   const userId = userIdOfLabel(session.label);
   const account = userId ? await env.DB.prepare("select plan, stripe_status from cloud_accounts where user_id = ? and deleted_at is null").bind(userId).first<Pick<AccountRow, "plan" | "stripe_status">>() : null;
   if (!userId || !account) return null;
-  await savePhone(env, userId, session, now, accountRules(account) === "free");
+  if (!(await savePhone(env, userId, session, now, accountRules(account) === "free", true))) return null;
   logCloud("cloud.phone_recovered", { userId, phoneId: session.id });
   return { userId, wasEnded: false };
 }
@@ -287,7 +293,7 @@ function phoneMinutesUsed(rows: readonly PhoneRow[], now: number, settledOnly: b
 
 /** Stops one phone at NoMac and saves its end. Answers false when NoMac refused (it is tried again later). */
 async function stopPhone(env: CloudEnv, userId: string, phoneId: string, now: number, why: string): Promise<boolean> {
-  const answer = await nomac(env, "DELETE", `/api/v1/simulator/sessions/${encodeURIComponent(phoneId)}`);
+  const answer = await nomac(env, "DELETE", `/api/v1/simulator/sessions/${encodeURIComponent(phoneId)}`).catch((): NomacAnswer => ({ status: 504, body: null }));
   if (answer.status >= 400 && answer.status !== 404) {
     logCloud("cloud.phone_stop_failed", { userId, phoneId, why, status: answer.status, code: errorOf(answer).code });
     return false;
@@ -501,7 +507,11 @@ export async function enforcePhoneAllowance(env: CloudEnv, userId: string, now: 
   if (context instanceof Response || !context.live) return "none";
   const live = context.live;
   const why = await stopReasonOf(env, userId, context);
-  if (why) return (await stopPhone(env, userId, live.session.id, now, why)) ? "stopped" : "stop_failed";
+  if (why) {
+    // Due now, saved first: if NoMac refuses the stop, the minute tick tries it again.
+    await env.DB.prepare("update cloud_phones set stop_at = ?, updated_at = ? where phone_id = ? and state = 'live'").bind(now, now, live.session.id).run();
+    return (await stopPhone(env, userId, live.session.id, now, why)) ? "stopped" : "stop_failed";
+  }
   await env.DB.prepare("update cloud_phones set stop_at = ?, updated_at = ? where phone_id = ? and state = 'live'")
     .bind(now + allowedMinutes(context.usage) * 60_000, now, live.session.id).run();
   return "running";
@@ -517,7 +527,11 @@ export async function stopPhonesDue(env: CloudEnv, now: number): Promise<void> {
       // Held to what the account may use now: given more since (extra minutes back on), it gets a later stop_at and runs on.
       const outcome = await enforcePhoneAllowance(env, row.user_id, now);
       // NoMac couldn't read the phone (no live phone found): the row's own stop_at still stops it.
-      if (outcome === "none") await stopPhone(env, row.user_id, row.phone_id, now, "stop_at");
+      if (outcome === "none") {
+        // Still due: a later stop_at written meanwhile (extra minutes back on) wins.
+        const still = await env.DB.prepare("select 1 from cloud_phones where phone_id = ? and state = 'live' and stop_at is not null and stop_at <= ?").bind(row.phone_id, now).first();
+        if (still) await stopPhone(env, row.user_id, row.phone_id, now, "stop_at");
+      }
     } catch (error) {
       reportCloudFailure("cloud.phone_stop_due_failed", { userId: row.user_id, message: error instanceof Error ? error.message : "unknown" });
     }
@@ -963,7 +977,12 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
 export async function deleteAccountPhone(env: Pick<CloudEnv, "DB" | "NOMAC_API_KEY">, userId: string): Promise<void> {
   await env.DB.prepare("delete from cloud_phone_beta where user_id = ?").bind(userId).run();
   const label = phoneLabelFor(userId);
-  if (!label || !env.NOMAC_API_KEY?.trim()) return;
+  if (!label) return;
+  // An account that never had a phone has nothing at NoMac: NoMac being down never holds its deletion back.
+  const hadPhone = await env.DB.prepare("select 1 from cloud_phones where user_id = ? limit 1").bind(userId).first();
+  if (!hadPhone) return;
+  // Phones but no key: tried again later, never skipped with its data left at NoMac.
+  if (!env.NOMAC_API_KEY?.trim()) throw new Error("phone_cleanup_no_key");
   const listed = await nomac(env, "GET", `/api/v1/simulator/sessions?${new URLSearchParams({ label, limit: "100" }).toString()}`);
   // Unread is not "none": the deletion is tried again rather than leaving a phone or its data behind.
   if (listed.status !== 200) throw new Error(`phone_list_${errorOf(listed).code}`);
