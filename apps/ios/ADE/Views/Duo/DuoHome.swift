@@ -187,14 +187,33 @@ func duoHomeMachines(syncService: SyncService, fleet: MachineFleet) -> [DuoHomeM
       )
     )
   }
-  if hasCloud, let state = cloud.state {
-    let asleep = !cloud.live && cloud.asleep
+  // Every signed-in account has ADE Cloud, so it lists even before this
+  // phone has linked one of its computers. The account's read says how many
+  // are awake (nothing is woken to ask).
+  let instances = syncService.cloudServerInstances
+  let awake = instances.filter { $0.isAwake || $0.isComingUp }.count
+  if !focusedIsCloud, hasCloud || AccountService.shared.isSignedIn {
+    let word: String
+    let tone: ADEKitTone
+    if cloud.live, let state = cloud.state {
+      word = duoMachineFleetStateWord(state)
+      tone = duoMachineFleetStateTone(state)
+    } else if awake > 0 {
+      word = "\(awake) awake"
+      tone = .ok
+    } else if hasCloud, !cloud.asleep, let state = cloud.state {
+      word = duoMachineFleetStateWord(state)
+      tone = duoMachineFleetStateTone(state)
+    } else {
+      word = instances.isEmpty && !hasCloud ? "No lanes" : "Asleep"
+      tone = .neutral
+    }
     rows.insert(
       DuoHomeMachine(
         id: "duo-ade-cloud",
         name: ADECloudMachine.name,
-        statusWord: asleep ? "Asleep" : duoMachineFleetStateWord(state),
-        tone: asleep ? .neutral : duoMachineFleetStateTone(state),
+        statusWord: word,
+        tone: tone,
         projectCount: cloud.projects,
         workingCount: cloud.working,
         isLive: cloud.live
