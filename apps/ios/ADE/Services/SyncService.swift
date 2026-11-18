@@ -4604,6 +4604,15 @@ final class SyncService: ObservableObject {
   /// Debounces persistence of the roster snapshot to the App Group cache.
   var rosterPersistTask: Task<Void, Never>?
   @Published var settingsPresented = false
+  /// The Settings page to open with the sheet (a row title), taken by the
+  /// Settings host when it presents.
+  @Published var settingsRequestedPage: String?
+
+  /// Opens Settings on one page, such as Machines from "Connect a computer".
+  func presentSettings(_ route: SettingsRoute) {
+    settingsRequestedPage = route.title
+    settingsPresented = true
+  }
   @Published var projectHubPresented = true {
     didSet {
       guard projectHubPresented != oldValue else { return }

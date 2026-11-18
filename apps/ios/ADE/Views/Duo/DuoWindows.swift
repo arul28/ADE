@@ -91,6 +91,11 @@ struct DuoWindowPresentations: ViewModifier {
     .onChange(of: syncService.settingsPresented) { _, presented in
       if !presented { settingsOpenPage = nil }
     }
+    .onChange(of: syncService.settingsRequestedPage) { _, page in
+      guard let page else { return }
+      settingsOpenPage = page
+      syncService.settingsRequestedPage = nil
+    }
     .sheet(isPresented: shown(syncService.bindings.attentionDrawerPresented, when: activitySheet)) {
       ActivityDrawerSheet()
         .environmentObject(syncService)

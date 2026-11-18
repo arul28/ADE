@@ -1,4 +1,5 @@
 import SwiftUI
+import OSLog
 
 // The all-projects hub — the mobile app's main surface once a machine is
 // connected. Every project on every paired machine as a grid of cards with
@@ -10,6 +11,9 @@ import SwiftUI
 //
 // Replaces the connected-state layout of the old `project hub`; the
 // no-machine / connecting states are preserved here.
+/// Why a launch did or did not connect the phone by itself.
+private let hubAutoConnectLog = Logger(subsystem: "com.ade.sync", category: "connect")
+
 struct HubScreen: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   var syncService: SyncService { syncPublishes.service }
@@ -110,6 +114,39 @@ struct HubScreen: View {
 
   private var canShowProjects: Bool {
     syncService.connectionState == .connected
+  }
+
+  /// Set after the one automatic connect a launch makes.
+  static var autoConnectAttempted = false
+
+  /// The computer a signed-in phone with none connects to by itself: an
+  /// online computer of the person's own (never ADE Cloud), most recently
+  /// seen first. Nil once tried, while anything is attached or connecting, or
+  /// when the phone has a pairing of its own (that reconnects as before) or
+  /// the user disconnected.
+  private var hubAutoConnectAllowed: Bool {
+    !HubScreen.autoConnectAttempted
+      && account.identity != nil
+      && (syncService.connectionState == .disconnected || syncService.connectionState == .error)
+      && !syncService.canReconnectToSavedHost
+      && !syncService.hasPairedHost
+      && !syncService.primaryDisconnectedByUser
+      && machineFleet.machines.isEmpty
+  }
+
+  private var hubAutoConnectCandidate: AccountMachine? {
+    guard hubAutoConnectAllowed else { return nil }
+    let ownMachines = account.machines.filter { machine in
+      machine.online && syncService.accountHasOwnComputer([machine])
+    }
+    return ownMachines.max { ($0.lastSeenAt ?? 0) < ($1.lastSeenAt ?? 0) }
+  }
+
+  /// Re-checks the candidate when the account's computers or the
+  /// connection change.
+  private var hubAutoConnectKey: String {
+    let online = account.machines.filter(\.online).map(\.machineKey).sorted().joined(separator: ",")
+    return "\(account.identity?.userId ?? "")|\(online)|\(syncService.connectionState)|\(machineFleet.machines.count)"
   }
 
   /// A computer is on its way: the focused one or any in the fleet.
@@ -395,6 +432,23 @@ struct HubScreen: View {
       guard accountRebuildKey != nil else { return }
       rebuildHubProjectPresentations()
     }
+    // A signed-in phone with no computer of its own yet (a new install, a
+    // fresh sign-in) connects to the person's most recently active online
+    // computer by itself, once per launch, instead of waiting on a tap.
+    .task(id: hubAutoConnectKey) {
+      guard hubAutoConnectAllowed else { return }
+      // Nothing else reads the account's computers on a plain launch.
+      if account.machines.isEmpty { await account.loadMachines() }
+      guard !Task.isCancelled, let machine = hubAutoConnectCandidate else { return }
+      hubAutoConnectLog.notice("hub_auto_connect start machine=\(machine.displayName, privacy: .public)")
+      HubScreen.autoConnectAttempted = true
+      guard let authorization = AccountService.shared.currentPairingAuthorization else { return }
+      // Its own task: this one is keyed on the connection state, which the
+      // connect itself changes, and that would cancel the connect.
+      Task { @MainActor [syncService] in
+        _ = await syncService.pairWithAccountMachine(machine, authorization: authorization)
+      }
+    }
     // The Hub coming into view reads the account list (at most once a minute).
     .task(id: hubIsActive) {
       if hubIsActive { accountProjects.refreshIfStale() }
@@ -541,7 +595,7 @@ struct HubScreen: View {
         notice: notice,
         onRetryList: { Task { await reloadAccount() } },
         onReconnect: { Task { await syncService.reconnectIfPossible(userInitiated: true) } },
-        onConnectComputer: { syncService.settingsPresented = true },
+        onConnectComputer: { syncService.presentSettings(.machines) },
         onOpenSettings: { syncService.settingsPresented = true }
       )
     }
@@ -570,7 +624,7 @@ struct HubScreen: View {
       HubAccountEmptyCard(
         kind: hubAccountEmptyKind(statusInputs),
         onRetryList: { Task { await reloadAccount() } },
-        onConnectComputer: { syncService.settingsPresented = true },
+        onConnectComputer: { syncService.presentSettings(.machines) },
         onAddProject: { addProjectSheetPresented = true }
       )
     } else if filteredHubProjectPresentations.isEmpty {
