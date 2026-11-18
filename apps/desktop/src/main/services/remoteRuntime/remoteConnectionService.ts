@@ -2416,16 +2416,16 @@ export class RemoteConnectionService {
     await this.waitForHeldReconnect(target.id);
     const personFixGate = this.personFixGate(target.id);
     if (personFixGate) await personFixGate;
-    const current = this.requireTarget(target.id);
+    const savedTarget = this.requireTarget(target.id);
     if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
       throw new Error(
         "Remote target was disconnected before ADE finished connecting.",
       );
     }
-    this.assertImplicitReconnectAllowed(current.id);
+    this.assertImplicitReconnectAllowed(savedTarget.id);
     try {
       const result = await this.pool.callMachineForTarget(
-        current,
+        savedTarget,
         method,
         params,
         options,
@@ -3047,6 +3047,16 @@ export class RemoteConnectionService {
     if (next.state === "connected") next.disconnectedAt = null;
     else if (current.state === "connected") next.disconnectedAt = Date.now();
     this.statusById.set(targetId, next);
+    // A failure no redial fixes (a rejected pairing or sign-in) ends the
+    // reconnect hold: windows show it with its action at once, and held calls
+    // stop waiting for a redial that will not come.
+    if (
+      next.state === "error"
+      && isPersonFixFailure(next.lastErrorInfo?.failure)
+      && this.reconnectHoldSinceByTargetId.has(targetId)
+    ) {
+      this.endReconnectHold(targetId);
+    }
     // Every successful call re-stamps `lastAttemptedAt` on a healthy machine.
     // Broadcasting that told every window "the connections changed", and the
     // cross-machine lane union answered each one with a status read of every

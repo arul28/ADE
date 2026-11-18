@@ -4365,6 +4365,12 @@ function isLikelyMacRenderer(): boolean {
   return /\bMac\b/i.test(navigator.platform) || /\bMac OS X\b/i.test(navigator.userAgent);
 }
 
+
+/** Empties a composer list only while it still holds the array a draft restore set. */
+function takeBackRestoredItems<T>(restored: T[]): (current: T[]) => T[] {
+  return (current) => (restored.length > 0 && current === restored ? keepEmptyArray(current) : current);
+}
+
 export function AgentChatPane({
   laneId,
   laneLabel,
@@ -5068,6 +5074,9 @@ export function AgentChatPane({
     clientSendId: string;
     attachments: AgentChatFileRef[];
     contextAttachments: AgentChatContextAttachment[];
+    iosContextItems: IosElementContextItem[];
+    appControlContextItems: AppControlContextItem[];
+    builtInBrowserContextItems: BuiltInBrowserContextItem[];
   } | null>(null);
   // The draft as typed right now, for a send that awaits before it dispatches.
   const liveDraftRef = useMemo(() => ({
@@ -12801,6 +12810,9 @@ export function AgentChatPane({
           clientSendId: saved.restoredFor,
           attachments: saved.attachments,
           contextAttachments: saved.contextAttachments,
+          iosContextItems: saved.iosContextItems,
+          appControlContextItems: saved.appControlContextItems,
+          builtInBrowserContextItems: saved.builtInBrowserContextItems,
         }
         : null;
       setContextAttachments(orKeepEmptyArray(saved.contextAttachments));
@@ -12896,6 +12908,13 @@ export function AgentChatPane({
             ? keepEmptyArray(current)
             : current
         ));
+      }
+      // The device picks (iOS, App Control, browser) a draft restore put back
+      // go the same way: only the very arrays it set.
+      if (restored?.clientSendId === send.clientSendId) {
+        setIosElementContextItems(takeBackRestoredItems(restored.iosContextItems));
+        setAppControlContextItems(takeBackRestoredItems(restored.appControlContextItems));
+        setBuiltInBrowserContextItems(takeBackRestoredItems(restored.builtInBrowserContextItems));
       }
     }
     flushPendingComposerDraftWrite();
