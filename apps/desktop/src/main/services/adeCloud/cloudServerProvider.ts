@@ -17,6 +17,7 @@ import {
   type CloudCheckoutResult,
   type CloudInviteRedeemResult,
   type CloudLaneWithoutComputer,
+  type CloudMoveRecord,
   type CloudPhoneStart,
   type CloudPhoneState,
   type CloudPhoneView,
@@ -87,6 +88,15 @@ const BAD_RESPONSE = "ADE Cloud answered with something ADE could not read.";
 function instancePath(id: string, action?: string): string {
   const base = `${INSTANCES}/${encodeURIComponent(id)}`;
   return action ? `${base}/${action}` : base;
+}
+
+/** A move's record, checked enough that a follower never reads a wrong shape as progress. */
+function readMoveRecord(value: unknown): CloudMoveRecord {
+  const body = record(value);
+  if (typeof body?.moveId !== "string" || typeof body.state !== "string" || typeof body.sourceInstanceId !== "string") {
+    throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+  }
+  return body as unknown as CloudMoveRecord;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -370,6 +380,18 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async setInstanceName(id, name): Promise<void> {
       await request("PUT", instancePath(id, "name"), { body: { name: name.slice(0, 60) } });
+    },
+
+    async startMove(id, input): Promise<CloudMoveRecord> {
+      return readMoveRecord(await request("POST", instancePath(id, "move"), { body: input }));
+    },
+
+    async readMove(moveId): Promise<CloudMoveRecord> {
+      return readMoveRecord(await request("GET", `${CLOUD_PATHS.moves}/${encodeURIComponent(moveId)}`));
+    },
+
+    async cancelMove(moveId): Promise<CloudMoveRecord> {
+      return readMoveRecord(await request("DELETE", `${CLOUD_PATHS.moves}/${encodeURIComponent(moveId)}`));
     },
 
     async setInstanceMetadata(id, metadata): Promise<void> {

@@ -11,6 +11,7 @@ import type {
 } from "../../../shared/adeCloud";
 import type { CloudSignInStatus } from "../../../shared/cloudSignIns";
 import { createWebCloudBilling, type CloudBillingAccountClient } from "./cloudBilling";
+import { createWebCloudMoves } from "./cloudMoves";
 import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import type { AdapterInfra } from "./types";
 import { runAdeCloudAccountCall } from "../../../shared/adeCloud/accountCalls";
@@ -48,8 +49,9 @@ import type { CloudAccessIpcAnswer } from "../../../shared/adeCloudMachine";
  * `accountCloudLaunches.ts`).
  *
  * What only the desktop app can do stays out, so each caller's own guard
- * hides it: the life of a lane's computer (`laneLife`, `onLaneJob`), saving a
- * key or a Claude pass. A delete refuses with a plain sentence: the desktop
+ * hides it: most of the life of a lane's computer (`laneLife`: delete, free,
+ * a resize in place), saving a key or a Claude pass. A move to the other
+ * kind runs on the server, so the web starts and follows it (`cloudMoves.ts`). A delete refuses with a plain sentence: the desktop
  * first checks the lane's work for changes not on GitHub. The account's cloud
  * sign-ins (saved keys, passes) are read, never written.
  */
@@ -171,6 +173,7 @@ export function createWebCloudNamespace(
 ): NonNullable<Window["ade"]["cloud"]> {
   const { client, commands } = infra;
   const billing = createWebCloudBilling(accountClient);
+  const moves = createWebCloudMoves(() => accountClient.cloudApi());
   /** A computer of the account answers on this connection. */
   const computerOnline = () => client.getStatus().readiness === "ready";
 
@@ -313,13 +316,24 @@ export function createWebCloudNamespace(
           if (typeof laneId !== "string" || !laneId.trim()) throw new Error("ADE doesn't know that lane.");
           return { forgotten: (await api.forgetLaneWithoutComputer(laneId.trim())).forgotten === true };
         }
+        // A move to the other kind runs on ADE's server, so the web starts and follows it (`cloudMoves.ts`).
+        case "changeTier":
+          return await moves.changeTier(args);
         case "listJobs":
-          return [];
+          return await moves.listJobs();
+        case "cancelJob":
+          return await moves.cancelJob(args);
+        case "retryJob":
+          return await moves.retryJob(args);
+        case "dismissJob":
+          return await moves.dismissJob(args);
         default:
           // The same sentence as `CLOUD_LANE_LIFE_UNAVAILABLE` (cloudLaneActions.ts).
           throw new Error("Do this in the ADE desktop app. This window can't change ADE Cloud lanes.");
       }
     }) as NonNullable<Window["ade"]["cloud"]>["laneLife"],
+    // A server move's progress, read while one runs.
+    onLaneJob: (cb) => moves.onLaneJob(cb),
     // A lane's saved work at rest (`laneBackups.ts`): the list and its patch only; the bundle stays native.
     laneBackups: async (laneId?: string | null) => (await accountClient.cloudApi()?.laneBackups(laneId ?? null)) ?? [],
     saveLaneBackupPatch: async (machineKey: string, laneId: string) => {

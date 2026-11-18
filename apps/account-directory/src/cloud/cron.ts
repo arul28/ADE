@@ -15,6 +15,7 @@ import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProv
 import { runPlanLimitChecks } from "./planCleanup";
 import { enforceBlocksInTick } from "./safety";
 import { computersJoiningLaunches } from "./launches";
+import { computersInJobs } from "./jobs";
 import { runCloudAutoUpdates, updateBootStatements } from "./updates";
 import {
   PENDING_TIMEOUT_MS,
@@ -355,8 +356,11 @@ async function warnHours(env: CloudEnv, account: AccountRow, state: CloudHoursSt
  * with no wake. Nothing wakes it again for free.
  */
 async function stopAll(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number, reason: WakeBlock): Promise<void> {
+  // A server move in flight finishes first (it is bounded): stopped mid-copy, both computers would be left half-moved.
+  const inJobs = await computersInJobs(env);
   await Promise.all(computers.map(async (computer) => {
     if (computer.cold_storage === 1) return;
+    if (inJobs.has(computer.instance_id)) return;
     if (computer.free_wake_until != null && computer.free_wake_until > now) return;
     const stoppable = isMeteredStatus(computer.status) || computer.status === "sleeping" || computer.status === "waking" || computer.status === "starting";
     if (!stoppable) return;
@@ -437,7 +441,13 @@ async function sleepUnseen(env: CloudEnv, provider: CloudProvider, computers: Ti
     reportCloudFailure("cloud.launch_joining_read_failed", { message: error instanceof Error ? error.message : "unknown" });
     return null;
   });
-  const sleeps = (computer: TickComputer) => (joining ? !joining.has(computer.instance_id) : computer.last_seen_at != null);
+  // A server move pauses its old computer's ADE (no check-ins) and waits on the new one: both stay awake until it ends.
+  const inJobs = await computersInJobs(env).catch((error: unknown) => {
+    reportCloudFailure("cloud.jobs_read_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return null;
+  });
+  const sleeps = (computer: TickComputer) => (inJobs ? !inJobs.has(computer.instance_id) : computer.last_seen_at != null)
+    && (joining ? !joining.has(computer.instance_id) : computer.last_seen_at != null);
   await Promise.all(unseen.filter(sleeps).map(async (computer) => {
     try {
       const status = await provider.sleepInstance(computer.instance_id);
@@ -532,7 +542,9 @@ async function endMoves(env: CloudEnv, now: number): Promise<void> {
     select m.instance_id, m.user_id, (m.deleted_at is null and s.instance_id is not null) as source_left
     from cloud_computers m
     left join cloud_computers s on s.instance_id = m.moving_from and s.deleted_at is null
-    where m.moving_from is not null and (m.deleted_at is not null or s.instance_id is null or m.created_at <= ?)
+    where m.moving_from is not null and (m.deleted_at is not null or s.instance_id is null or (m.created_at <= ?
+      -- A server move still running holds its grace until it ends (it is bounded by its own limits).
+      and not exists (select 1 from cloud_jobs j where j.target_instance_id = m.instance_id and j.state not in ('done', 'failed', 'cancelled'))))
   `).bind(now - MOVE_GRACE_MS).all<{ instance_id: string; user_id: string; source_left: number }>();
   const ended = rows.results ?? [];
   if (ended.length === 0) return;

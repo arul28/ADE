@@ -10,7 +10,7 @@ import { callCloudMachineAction, confirmCloudSleep } from "../remoteTargets/useC
 import { refreshCloudMachines } from "../remoteTargets/useCloudMachines";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { CloudTierChangeDialog } from "./CloudTierChangeDialog";
-import { cloudLaneChangesAvailable } from "./cloudLaneActions";
+import { cloudLaneChangesAvailable, cloudLaneMovesAvailable } from "./cloudLaneActions";
 import { deleteCloudLaneWithCheck } from "./deleteCloudLane";
 
 /**
@@ -46,7 +46,8 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
       onSelect: () => void keepLaneComputer(computer.instanceId, name),
     });
   }
-  if (life) actions.push({ key: "size", label: "Change size", icon: <Cpu size={13} />, onSelect: () => setSizing(true) });
+  // ADE Web too: a move to the other kind runs on the server (a resize in place says it needs the desktop app).
+  if (life || cloudLaneMovesAvailable()) actions.push({ key: "size", label: "Change size", icon: <Cpu size={13} />, onSelect: () => setSizing(true) });
   actions.push({
     key: "disk",
     label: "Disk, hours and more on the ADE Cloud page",

@@ -218,6 +218,8 @@ export function createCloudBrainMaker(deps: {
         shape: input.shape ?? null,
         madeByChat: input.madeByChat ?? null,
         madeByAgent: input.madeByAgent ?? null,
+        // An unattended agent's move runs here: the server moves only for a person.
+        selfApprove: input.selfApprove === true,
       }, onProgress);
     })();
     const done = work.then(

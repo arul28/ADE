@@ -10,6 +10,7 @@ import {
   type CloudIgnoredFiles,
 } from "./contract";
 import { sendCloudEmail } from "./email";
+import { computersInJobs } from "./jobs";
 import { isCloudBlocked, notBlockedSql } from "./blocks";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
 import { cloudSizeFor, isRestingStatus, tierOf } from "./plans";
@@ -511,6 +512,8 @@ export async function runIdleCleanup(env: CloudEnv, provider: CloudProvider, now
     env.DB.prepare("select * from cloud_computers where deleted_at is null and user_id in (select value from json_each(?))").bind(userIds).all<ComputerRow>(),
   ]);
   const ownedBy = groupByUser(owned.results ?? []);
+  // A server move waiting on its old computer (`timing: "idle"`) hasn't made the new one yet, so no row says `moving_from`.
+  const inJobs = await computersInJobs(env);
   let budget = SAVES_PER_TICK;
   const runs: Promise<void>[] = [];
   for (const account of accounts.results ?? []) {
@@ -520,7 +523,7 @@ export async function runIdleCleanup(env: CloudEnv, provider: CloudProvider, now
       const movingSources = movingSourcesOf(all);
       for (const computer of byUser.get(account.user_id) ?? []) {
         // A move or an update in flight changes which computer holds the lane: wait it out (both ends of a move).
-        if (inMoveOrUpdate(computer, movingSources)) continue;
+        if (inMoveOrUpdate(computer, movingSources) || inJobs.has(computer.instance_id)) continue;
         const state = idleStateOf(computer, account, liveUsed, now);
         if (!state) continue;
         if (state.needsWarning) await warn(env, waitUntil, account, computer, state, now);

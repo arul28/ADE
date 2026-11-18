@@ -5,18 +5,19 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { reportExtraPhoneMinutes, setExtraPhoneMinutes } from "../src/cloud/phoneBilling";
-import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, type CloudAccountState } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, type CloudAccountState, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
 import { runIdleCleanup } from "../src/cloud/idleCleanup";
 import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
 import { createCloudProvider } from "../src/cloud/provider";
-import { failUnjoinedLaunches } from "../src/cloud/launches";
+import { failUnjoinedLaunches, MACHINE_LAUNCH_MIN_VERSION_SETTING } from "../src/cloud/launches";
+import { runCloudMoves } from "../src/cloud/moves";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
 import { prepareStopBackupReportId, runCloudMinuteCron } from "../src/cloud/cron";
 import { runLinearRenewalCron } from "../src/cloud/linearRenewal";
 import { nextFireAt } from "../src/cloud/automationSchedule";
-import { handleCloudRequest } from "../src/cloud/routes";
+import { createComputer, handleCloudRequest } from "../src/cloud/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
 import { applyCloudPlanChange, type CloudEnv } from "../src/cloud/store";
 import { runDailyCostReport } from "../src/cloud/costReport";
@@ -119,6 +120,8 @@ function fakeNetwork() {
   const once: Array<{ match: RegExp; reply: Response | Error }> = [];
   /** Runs once after the matching call has its answer, before the caller sees it. */
   const after: Array<{ match: RegExp; run: () => Promise<void> | void }> = [];
+  /** A computer's shell, when a test gives it one: what each command prints (else exit 0, nothing). */
+  const hooks: { exec: ((id: string, command: string) => { exit_code: number; stdout: string } | null) | null } = { exec: null };
 
   const instanceJson = (instance: FakeInstance) => ({ ...instance, resources: instance.resources ?? { cpu: 2, memory: 4, disk: 4 } });
   const reply = (body: unknown, status = 200) => new Response(body === null ? null : JSON.stringify(body), { status });
@@ -181,7 +184,8 @@ function fakeNetwork() {
       instances.delete(id);
       return reply(null, 204);
     }
-    if (method === "POST" && action === "exec") return reply({ exit_code: 0, stdout: "", stderr: "" });
+    if (method === "POST" && action === "exec") return reply({ stderr: "", ...(hooks.exec?.(id, String(body?.command ?? "")) ?? { exit_code: 0, stdout: "" }) });
+    if (method === "POST" && action === "signed-url") return reply({ url: `https://serve-${id}.test/?sig=secret-link`, expires_at: null });
     if (method === "POST" && action) {
       const next = ({ sleep: "sleeping", stop: "stopped", start: "running" } as Record<string, string>)[action] ?? instance.status;
       instance.status = next;
@@ -212,7 +216,7 @@ function fakeNetwork() {
     if (hook !== -1) await after.splice(hook, 1)[0]!.run();
     return response;
   };
-  return { instances, subscriptions, calls, once, after, fetchStub, reply };
+  return { instances, subscriptions, calls, once, after, hooks, fetchStub, reply };
 }
 
 type Harness = ReturnType<typeof sqliteD1> & {
@@ -3588,5 +3592,282 @@ describe("ADE Cloud iPhone minutes", () => {
     await harness.tick();
     expect(nomacCalls).toContain("DELETE");
     expect(harness.row("select state from cloud_phones where phone_id = 'ses_live'").state).toBe("ended");
+  });
+});
+
+describe("ADE Cloud server moves", () => {
+  const MOVE = "6f0e1d2c-3b4a-4c5d-8e7f-9a0b1c2d3e4f";
+  const OTHER_MOVE = "7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+  const TARGET = "madenew12345";
+  const ROOT = "/home/node/widgets";
+  const SETTING = MACHINE_LAUNCH_MIN_VERSION_SETTING;
+  /** What the computers' shells print for the move's commands. */
+  let shell: { copy: string; serve: string; receive: string };
+  let ran: Array<{ id: string; command: string }>;
+
+  beforeEach(() => {
+    harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
+    seedAccount(harness, OWNER);
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    harness.insert("cloud_settings", { key: SETTING, value: "1.2.131", updated_at: NOW });
+    seedComputer(harness, { name: "Widgets", machine_key: "mk_source", lane_id: "lane-1", lane_name: "Fix login" });
+    provide(harness, INSTANCE, "running", { ade_machine_key: "mk_source", ade_lane_id: "lane-1", ade_lane_name: "Fix login", ade_former_machine_keys: "mk_older" });
+    harness.insert("machines", { user_id: OWNER, machine_key: "mk_source", name: "Widgets", created_at: NOW });
+    shell = { copy: "", serve: "started", receive: "started" };
+    ran = [];
+    harness.net.hooks.exec = (id, command) => {
+      ran.push({ id, command });
+      if (command.includes("not_started")) return { exit_code: 0, stdout: shell.copy };
+      if (command.includes('touch "$ADE_HOME/brain.paused"')) return { exit_code: 0, stdout: shell.serve };
+      if (command.includes("/tmp/ade-move.started")) return { exit_code: 0, stdout: shell.receive };
+      if (command.includes("ade projects list")) return { exit_code: 0, stdout: JSON.stringify({ projects: [{ rootPath: ROOT }, { rootPath: "/tmp/elsewhere" }] }) };
+      if (command.includes("tail -n 3 /tmp/ade-move.log")) return { exit_code: 0, stdout: "curl: (22) The requested URL returned error: 502" };
+      return null;
+    };
+  });
+
+  const run = () => runCloudMoves(harness.env, {
+    provider: createCloudProvider("provider-key"),
+    createComputer: (userId, provider, extras) => createComputer(harness.env, userId, provider, extras, { now: clock, waitUntil: undefined }),
+  });
+  const job = () => harness.row("select * from cloud_jobs where job_id = ?", MOVE);
+  /** The minute cron, tick after tick, until the move reaches `step`. */
+  const drive = async (step: string) => {
+    for (let tick = 0; tick < 200 && job().step !== step; tick += 1) {
+      clock += 16_000;
+      await run();
+    }
+    expect(job().step).toBe(step);
+  };
+  const start = (body: Row = {}) => harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/move`, { moveId: MOVE, to: "full", ...body });
+  const record = async (moveId = MOVE) => await (await harness.send(OWNER, "GET", `/cloud/moves/${moveId}`)).json() as CloudMoveRecord;
+  /** The new computer signs in as its brain does: it registers, names its machine, then reports its launch done. */
+  const signIn = async () => {
+    harness.insert("machines", { user_id: OWNER, machine_key: "mk_target", name: "ade-box", created_at: clock });
+    expect((await harness.send(OWNER, "PUT", `/cloud/instances/${TARGET}/metadata`, { metadata: { ade_machine_key: "mk_target" } })).status).toBe(200);
+    expect((await harness.send(OWNER, "PUT", `/cloud/launches/${job().target_launch_id as string}/stages`, { state: "done" })).status).toBe(200);
+  };
+  const onComputer = (id: string, text: string) => ran.filter((entry) => entry.id === id && entry.command.includes(text));
+  const unpaused = () => onComputer(INSTANCE, 'rm -f "$ADE_HOME/brain.paused"').length > 0;
+  const sourceDeletes = () => providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`));
+
+  it("moves a computer to the other kind: one new computer, its files copied, the old one gone, the new one named for it", async () => {
+    const started = await start();
+    expect(started.status).toBe(201);
+    expect(await started.json()).toEqual(expect.objectContaining({ moveId: MOVE, sourceInstanceId: INSTANCE, sourceName: "Widgets", to: "full", state: "making", sourceDeleted: null, cancellable: true }));
+    // The same move again answers that move.
+    const again = await start();
+    expect(again.status).toBe(200);
+    expect((await again.json() as CloudMoveRecord).moveId).toBe(MOVE);
+
+    await drive("join");
+    const made = providerCalls(harness, /POST .*\/instances$/);
+    expect(made).toHaveLength(1);
+    expect(made[0]!.body).toEqual(expect.objectContaining({
+      type: "vm",
+      // The ADE that knows a computer with nothing on it, installed before its first brain start.
+      env: expect.objectContaining({ ADE_MIN_VERSION: "1.2.131", ADE_LAUNCH_ID: job().target_launch_id }),
+      metadata: expect.objectContaining({ ade_moved_from: INSTANCE, ade_lane_id: "lane-1", ade_lane_name: "Fix login", ade_former_machine_keys: "mk_older,mk_source" }),
+    }));
+    expect(computer(harness, TARGET).moving_from).toBe(INSTANCE);
+    expect(await record()).toEqual(expect.objectContaining({ state: "joining", targetInstanceId: TARGET }));
+
+    await signIn();
+    await drive("copy");
+    // The chats were saved before the old computer's ADE was paused.
+    const onSource = ran.filter((entry) => entry.id === INSTANCE).map((entry) => entry.command);
+    const saved = onSource.findIndex((command) => command.includes("ade cloud prepare-stop"));
+    expect(saved).toBeGreaterThan(-1);
+    expect(onSource.findIndex((command) => command.includes('touch "$ADE_HOME/brain.paused"'))).toBeGreaterThan(saved);
+    expect(await record()).toEqual(expect.objectContaining({ state: "copying", cancellable: false }));
+    // Paused, the old computer checks in no more: the minute cron leaves both computers awake.
+    clock += 11 * 60_000;
+    await harness.tick();
+    expect(providerCalls(harness, /POST .*\/sleep$/)).toHaveLength(0);
+
+    shell.copy = "0";
+    await drive("end");
+    expect(await record()).toEqual(expect.objectContaining({
+      state: "done", sourceDeleted: true, targetMachineKey: "mk_target", projects: [ROOT], message: "Moved Widgets to a full computer.",
+    }));
+    expect(onComputer(TARGET, `ade projects add '${ROOT}'`)).toHaveLength(1);
+    expect(harness.net.instances.has(INSTANCE)).toBe(false);
+    expect(computer(harness).deleted_at).not.toBeNull();
+    // The old machine's row went with it; the new one carries the old name.
+    expect(harness.rows("select machine_key, custom_name from machines where user_id = ?", OWNER)).toEqual([{ machine_key: "mk_target", custom_name: "Widgets" }]);
+    expect(computer(harness, TARGET).name).toBe("Widgets");
+    expect(providerCalls(harness, new RegExp(`PATCH .*/instances/${TARGET}$`)).some((call) => call.body?.name === "Widgets")).toBe(true);
+    // The signed link to the old computer's files is never kept.
+    expect(JSON.stringify(job())).not.toContain("secret-link");
+    expect(harness.net.instances.has(TARGET)).toBe(true);
+  });
+
+  it.each<[string, () => Promise<void>, string, boolean]>([
+    ["the new computer never signs in", async () => {
+      clock += 47 * 60_000;
+      await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+    }, "the new computer didn't sign in.", false],
+    ["the old computer doesn't hand its files over", async () => {
+      shell.serve = "";
+      await signIn();
+    }, "the old computer didn't start handing its files over.", true],
+    ["the copy exits non-zero", async () => {
+      await signIn();
+      await drive("copy");
+      shell.copy = "2";
+    }, "copying the files failed (exit 2): curl: (22) The requested URL returned error: 502.", true],
+    ["the copy runs past its 40 minutes", async () => {
+      await signIn();
+      await drive("copy");
+      clock += 41 * 60_000;
+    }, "copying the files took too long.", true],
+  ])("%s: the old computer is as it was and the new one is deleted", async (_label, fail, why, paused) => {
+    expect((await start()).status).toBe(201);
+    await drive("join");
+    await fail();
+    await drive("end");
+
+    expect(await record()).toEqual(expect.objectContaining({
+      state: "failed",
+      error: `ADE couldn't move Widgets: ${why} Widgets is as it was, and the new computer was deleted.`,
+      sourceDeleted: null,
+    }));
+    expect(harness.net.instances.has(TARGET)).toBe(false);
+    expect(computer(harness, TARGET).deleted_at).not.toBeNull();
+    expect(harness.net.instances.has(INSTANCE)).toBe(true);
+    expect(computer(harness).deleted_at).toBeNull();
+    expect(sourceDeletes()).toHaveLength(0);
+    // Paused, its ADE starts again; never paused, nothing is undone on it.
+    expect(unpaused()).toBe(paused);
+    // The computer is free for another move.
+    expect((await start({ moveId: OTHER_MOVE })).status).toBe(201);
+  });
+
+  it("an old computer the provider won't delete is kept with its ADE running again, and the move ends on the new one", async () => {
+    expect((await start()).status).toBe(201);
+    await drive("join");
+    await signIn();
+    shell.copy = "0";
+    for (let i = 0; i < 3; i += 1) {
+      harness.net.once.push({ match: new RegExp(`DELETE .*/instances/${INSTANCE}$`), reply: harness.net.reply({ error: { code: "server_error", message: "boom" } }, 500) });
+    }
+    await drive("end");
+
+    expect(await record()).toEqual(expect.objectContaining({
+      state: "done",
+      sourceDeleted: false,
+      message: "Moved Widgets to a full computer. The old computer couldn't be deleted, so it's still there. Delete it from its card.",
+    }));
+    expect(sourceDeletes()).toHaveLength(3);
+    expect(harness.net.instances.has(INSTANCE)).toBe(true);
+    expect(computer(harness).deleted_at).toBeNull();
+    expect(unpaused()).toBe(true);
+    expect(harness.net.instances.has(TARGET)).toBe(true);
+    expect(computer(harness, TARGET).deleted_at).toBeNull();
+  });
+
+  it("a cancel before the copy undoes the move", async () => {
+    expect((await start()).status).toBe(201);
+    await drive("join");
+
+    const cancelled = await harness.send(OWNER, "DELETE", `/cloud/moves/${MOVE}`);
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toEqual(expect.objectContaining({ state: "cancelled", message: "The move was cancelled. Widgets is as it was.", cancellable: false }));
+    expect(harness.net.instances.has(TARGET)).toBe(false);
+    expect(computer(harness, TARGET).deleted_at).not.toBeNull();
+    expect(harness.row("select state from cloud_launches where launch_id = ?", job().target_launch_id).state).toBe("cancelled");
+    expect(harness.net.instances.has(INSTANCE)).toBe(true);
+    expect(unpaused()).toBe(false);
+    // Another account sees no such move.
+    expect((await harness.send(OTHER, "DELETE", `/cloud/moves/${MOVE}`)).status).toBe(404);
+  });
+
+  it("once the copy started, a cancel is refused and the move goes on", async () => {
+    expect((await start()).status).toBe(201);
+    await drive("join");
+    await signIn();
+    await drive("copy");
+
+    const refused = await harness.send(OWNER, "DELETE", `/cloud/moves/${MOVE}`);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: expect.objectContaining({ code: "move_started" }) });
+    shell.copy = "0";
+    await drive("end");
+    expect((await record()).state).toBe("done");
+  });
+
+  it("a step that dies after the provider made the new computer runs again and adopts it, never making a second one", async () => {
+    // The provider made it, and the Worker stopped before it read the answer.
+    harness.net.after.push({ match: /POST .*\/instances$/, run: () => { throw new Error("the Worker stopped"); } });
+    expect((await start()).status).toBe(201);
+    clock += 1_000;
+    await run();
+    expect(job()).toEqual(expect.objectContaining({ step: "make", attempts: 1, target_instance_id: null }));
+    // A runner that died holding the job keeps the next one out until its lease ends.
+    harness.exec("update cloud_jobs set lease_id = 'dead', lease_until = ?, next_at = ? where job_id = ?", clock + 5 * 60_000, clock, MOVE);
+    clock += 60_000;
+    await run();
+    expect(job()).toEqual(expect.objectContaining({ step: "make", lease_id: "dead" }));
+
+    clock += 5 * 60_000;
+    await drive("join");
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(1);
+    expect(await record()).toEqual(expect.objectContaining({ state: "joining", targetInstanceId: TARGET }));
+  });
+
+  it.each<[string, () => void, Row, number, string]>([
+    ["the same kind", () => undefined, { to: "standard" }, 409, "already_that_kind"],
+    ["an agent", () => undefined, { origin: "agent" }, 403, "person_only"],
+    ["no hours left", () => harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER), {}, 402, "out_of_hours"],
+    ["a disk past the new size", () => harness.exec("update cloud_computers set disk_gb = 60 where instance_id = ?", INSTANCE), { sizeId: "large" }, 403, "disk_limit"],
+    ["a computer still being set up", () => harness.insert("cloud_launches", {
+      launch_id: "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f", user_id: OWNER, state: "joining", kind: "lane", instance_id: INSTANCE, created_at: NOW, updated_at: NOW, expires_at: NOW + DAY,
+    }), {}, 409, "computer_busy"],
+    ["moves turned off on the server", () => harness.exec("delete from cloud_settings where key = ?", SETTING), {}, 409, "server_move_unavailable"],
+  ])("a move asked with %s is refused and makes nothing", async (_label, setUp, body, status, code) => {
+    setUp();
+    const refused = await start(body);
+    expect(refused.status).toBe(status);
+    expect(await refused.json()).toEqual({ error: expect.objectContaining({ code }) });
+    expect(harness.rows("select job_id from cloud_jobs")).toEqual([]);
+    await run();
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(0);
+  });
+
+  it("a second move of a computer answers the one already running", async () => {
+    expect((await start()).status).toBe(201);
+    const second = await start({ moveId: OTHER_MOVE });
+    expect(second.status).toBe(200);
+    expect((await second.json() as CloudMoveRecord).moveId).toBe(MOVE);
+    expect(harness.rows("select job_id from cloud_jobs")).toEqual([{ job_id: MOVE }]);
+    const listed = await (await harness.send(OWNER, "GET", "/cloud/moves")).json() as { moves: CloudMoveRecord[] };
+    expect(listed.moves.map((move) => move.moveId)).toEqual([MOVE]);
+    expect((await (await harness.send(OTHER, "GET", "/cloud/moves")).json() as { moves: unknown[] }).moves).toEqual([]);
+  });
+
+  it("a machine launch makes a computer that only signs in, refused while the setting is off and for an agent", async () => {
+    const LAUNCH = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
+    harness.exec("delete from cloud_settings where key = ?", SETTING);
+    const off = await harness.send(OWNER, "POST", "/cloud/launches", { launchId: LAUNCH, kind: "machine" });
+    expect(off.status).toBe(409);
+    expect(await off.json()).toEqual({ error: expect.objectContaining({ code: "machine_launch_unavailable" }) });
+    harness.insert("cloud_settings", { key: SETTING, value: "1.2.131", updated_at: NOW });
+    expect((await harness.send(OWNER, "POST", "/cloud/launches", { launchId: LAUNCH, kind: "machine", madeBy: { kind: "agent", agent: "chat" } })).status).toBe(403);
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(0);
+
+    const made = await harness.send(OWNER, "POST", "/cloud/launches", { launchId: LAUNCH, kind: "machine", name: "Scratch" });
+    expect(made.status).toBe(201);
+    expect(await made.json()).toEqual(expect.objectContaining({
+      kind: "machine", instanceId: TARGET, request: null, machine: { type: "default", name: "Scratch", movedFrom: null },
+    }));
+    const create = providerCalls(harness, /POST .*\/instances$/);
+    expect(create).toHaveLength(1);
+    expect(create[0]!.body!.env).toEqual(expect.objectContaining({ ADE_MIN_VERSION: "1.2.131", ADE_LAUNCH_ID: LAUNCH }));
+    // An older app reads each listed launch as a chat or a lane: this one is never listed.
+    expect((await (await harness.send(OWNER, "GET", "/cloud/launches?active=1")).json() as { launches: unknown[] }).launches).toEqual([]);
+    // The same start again is the same launch.
+    expect((await harness.send(OWNER, "POST", "/cloud/launches", { launchId: LAUNCH, kind: "machine", name: "Scratch" })).status).toBe(200);
+    expect((await harness.send(OWNER, "PUT", `/cloud/launches/${LAUNCH}/stages`, { state: "done" })).status).toBe(200);
+    expect((await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json() as { state: string }).state).toBe("done");
   });
 });

@@ -22,6 +22,8 @@ import type {
   CloudInstance,
   CloudInviteRedeemResult,
   CloudLaneWithoutComputer,
+  CloudMoveRecord,
+  CloudMoveRequest,
   CloudPaidPlanId,
   CloudPhoneDevice,
   CloudPhoneStart,
@@ -154,6 +156,16 @@ export type CloudProvider = {
   /** A time-boxed link to one port that needs no credential. A secret: never logged, and kept short. */
   signedUrl(id: string, input: { port: number; ttlSeconds: number }): Promise<{ url: string; expiresAt: number | null }>;
   setInstanceName(id: string, name: string): Promise<void>;
+  /**
+   * A move to the other kind, run by ADE's server (`POST /cloud/instances/:id/move`):
+   * it answers at once and goes on with no app open; `readMove` follows it,
+   * `cancelMove` stops it before the copy. Only ADE's server has them; an
+   * older one answers 404, and the server answers 409
+   * `server_move_unavailable` until its computers can run one.
+   */
+  startMove?(id: string, input: CloudMoveRequest): Promise<CloudMoveRecord>;
+  readMove?(moveId: string): Promise<CloudMoveRecord>;
+  cancelMove?(moveId: string): Promise<CloudMoveRecord>;
   /** Replaces the metadata (it is not merged). */
   setInstanceMetadata(id: string, metadata: Record<string, string>): Promise<void>;
   /** Whether the server can make a computer right now (its pinned image exists). */

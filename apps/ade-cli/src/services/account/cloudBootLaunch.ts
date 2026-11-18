@@ -439,6 +439,20 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
       return;
     }
     const record = await api.launchStatus(launchId);
+    if (record.kind === "machine") {
+      // A computer with nothing on it (a move's new computer, a new one from
+      // the phone): signed in and named on the computer above, it is done.
+      // The server takes it from here.
+      if (record.state === "cancelled" || record.state === "done" || record.state === "failed") {
+        writeState(deps.stateFile, { launchId, phase: "ended" });
+        return;
+      }
+      const update: CloudLaunchStagesUpdate = { state: "done", stages: [doneStage("computer"), doneStage("join")] };
+      const landed = await reportFinal(report, update, sleep);
+      if (!landed) logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: "machine" });
+      writeState(deps.stateFile, { launchId, phase: "ended", ...(landed ? {} : { unsent: update }) });
+      return;
+    }
     if (record.state === "cancelled" || record.state === "done" || !record.request) {
       writeState(deps.stateFile, { launchId, phase: "ended" });
       return;

@@ -26,6 +26,7 @@ import type { ChatLaunchStageStatus, RemoteRuntimeProjectRecord } from "../../..
 import { getErrorMessage } from "../shared/utils";
 import { expectedErrorKind } from "../../../shared/expectedError";
 import { moveCloudMachine, type CloudCopyDeps } from "./cloudMachineCopy";
+import { KEEP_AWAKE_STATE_COMMAND, agentWorkOf, prepareStopCommand, shellJobId } from "../../../../../account-directory/src/cloud/computerCommands";
 import { CLOUD_MACHINE_KEY_METADATA, formerMachineKeysOf, type createCloudMachines } from "./cloudMachines";
 import { CloudProviderError, type CloudInstance, type CloudLogger, type CloudProvider } from "./cloudProvider";
 
@@ -83,29 +84,11 @@ const FINISHED_JOB_KEEP_MS = 24 * 60 * 60_000;
 // A lane's saved chats are read in pages of this size, at most this many pages.
 const SAVED_CHAT_PAGE = 200;
 const SAVED_CHAT_PAGES = 20;
-/** Busy reasons that are not the agent's work: a person watching a tool, a timer due soon. */
-const NOT_AGENT_WORK = new Set(["in_use", "schedule"]);
-
-/**
- * Interrupts running turns and agent CLIs and writes the saved chat copy
- * (`ade cloud prepare-stop`). A disk-only grow keeps the turns instead: the
- * computer notes the restart as a disk grow, so they continue after it. An
- * ADE there that predates `--disk-grow` stops them, as before.
- */
-const prepareStopCommand = (diskGrow: { gb: number; jobId: string } | null): string => [
-  'export PATH="$ADE_HOME/bin:$PATH"',
-  diskGrow
-    ? `ade cloud prepare-stop --timeout 40 --disk-grow ${Math.ceil(diskGrow.gb)} --grow-id ${shellJobId(diskGrow.jobId)} || ade cloud prepare-stop --timeout 40`
-    : "ade cloud prepare-stop --timeout 40",
-].join("\n");
-/** A job id as a shell word: ids are ADE's own UUIDs; anything else is dropped to letters, digits, `-` and `_`. */
-const shellJobId = (jobId: string): string => jobId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || "job";
 /** How long a save covers a disk grow's restart: past it (a Retry), the chats are saved again first. */
 const SAVE_FRESH_MS = 2 * 60_000;
 /** A disk-only job that stopped after its save: its own note goes (a newer grow's note stays). */
 const clearGrowNoteCommand = (jobId: string): string =>
   `f="$ADE_HOME/cloud/disk-grow.json"; grep -q '"jobId":"${shellJobId(jobId)}"' "$f" 2>/dev/null && rm -f "$f"; true`;
-const KEEP_AWAKE_STATE_COMMAND = 'cat "$ADE_HOME/cloud/keep-awake.json" 2>/dev/null';
 
 class JobStopped extends Error {}
 
@@ -116,6 +99,8 @@ type JobRecord = {
   targetType: "default" | "vm";
   /** A move's old computer's account key, kept after `job.machineKey` names the new one. */
   fromMachineKey?: string | null;
+  /** The move runs on ADE's server: a quit mid-move follows it again on the next start, since it went on without this app. */
+  serverMove?: boolean;
 };
 
 /** A finished job's card is closed: it leaves every view, and its record stays until it expires. */
@@ -248,14 +233,9 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       return null;
     });
     if (!read) return "unknown";
-    try {
-      const state = JSON.parse(read.stdout.trim()) as { busy?: unknown; reasons?: unknown };
-      const reasons = Array.isArray(state.reasons) ? state.reasons.filter((reason): reason is string => typeof reason === "string") : [];
-      return state.busy !== true || reasons.every((reason) => NOT_AGENT_WORK.has(reason)) ? "idle" : "busy";
-    } catch (error) {
-      logger.warn?.("cloud.lane_keep_awake_unreadable", { instanceId, error: getErrorMessage(error) });
-      return "unknown";
-    }
+    const work = agentWorkOf(read.stdout);
+    if (work === "unknown") logger.warn?.("cloud.lane_keep_awake_unreadable", { instanceId });
+    return work;
   };
 
   // ---------------------------------------------------------------------------
@@ -621,6 +601,12 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
         if (stage && stage.detail !== progress.message) setStage(record, active, "running", { detail: progress.message });
       }, {
         signal: controller.signal,
+        // The save step above stopped the turns and wrote the chats; the move doesn't do it again.
+        save: false,
+        onServer: () => {
+          record.serverMove = true;
+          persist(record);
+        },
         // Saved before the old computer is deleted: a quit from here on goes
         // on from the new computer, and Retry never starts from a deleted one.
         onCopied: (target) => {
@@ -875,7 +861,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
         }
         jobs.set(record.job.jobId, record);
         if (!isLive(record.job)) continue;
-        const cutMove = record.job.kind === "move"
+        const cutMove = record.job.kind === "move" && !record.serverMove
           && (stageOf(record, "computer")?.status === "running" || stageOf(record, "copy")?.status === "running");
         if (cutMove) {
           // The old computer stays as it was (its pause clears itself); the

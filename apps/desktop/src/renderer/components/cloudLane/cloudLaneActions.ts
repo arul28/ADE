@@ -60,6 +60,17 @@ export function cloudLaneChangesAvailable(): boolean {
   return cloudLaneLifeAvailable() && !isWebClientMode();
 }
 
+/**
+ * Whether this window can move a lane's computer to the other kind (Standard
+ * ↔ Full). ADE's server runs a move, so ADE Web offers it too; a size change
+ * in place still runs in the desktop app (`cloudLaneChangesAvailable`).
+ */
+export function cloudLaneMovesAvailable(): boolean {
+  return cloudLaneLifeAvailable();
+}
+
+export const CLOUD_LANE_RESIZE_UNAVAILABLE = "Changing the size in place needs the ADE desktop app. Moving to the other kind works here.";
+
 /** Whether the computer holds work that isn't on GitHub (null: the check couldn't run). */
 export async function cloudLaneWorkState(instanceId: string): Promise<CloudLaneWorkState> {
   return await call("workState", { instanceId });

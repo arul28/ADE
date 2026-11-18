@@ -70,6 +70,9 @@ import {
   type CloudLaunchStagesUpdate,
   type CloudLaunchStartRequest,
   type CloudModelCatalog,
+  type CloudMoveList,
+  type CloudMoveRecord,
+  type CloudMoveRequest,
   type CloudProjectComputersDeleteStarted,
   type CloudProjectComputersJob,
   type CloudProjectComputersPreview,
@@ -248,6 +251,17 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       request<{ status: string }>("POST", `${instancePath(instanceId)}/resize`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     deleteComputer: (instanceId: string, args: { who?: string | null; reason?: string | null } = {}) =>
       request<{ deleted: true }>("DELETE", instancePath(instanceId), { body: args }),
+
+    /* ---- A computer moved to the other kind, run by the server (`moves.ts`) ---- */
+
+    /** Answers at once; the move goes on with no app open. 404 on an older server, 409 `server_move_unavailable` while moves are off. */
+    startMove: (instanceId: string, move: CloudMoveRequest) =>
+      request<CloudMoveRecord>("POST", `${instancePath(instanceId)}/move`, { body: move }),
+    move: (moveId: string) => request<CloudMoveRecord>("GET", `${CLOUD_PATHS.moves}/${encodeURIComponent(moveId)}`),
+    /** Running moves, and those that ended in the last day; null on an older server. */
+    moves: async () => (await orNullOn404(() => request<CloudMoveList>("GET", CLOUD_PATHS.moves)))?.moves ?? null,
+    /** Only before the copy starts (409 `move_started` after). */
+    cancelMove: (moveId: string) => request<CloudMoveRecord>("DELETE", `${CLOUD_PATHS.moves}/${encodeURIComponent(moveId)}`),
 
     /* ---- Provider sign-ins on a computer ---- */
     startSignIn: (instanceId: string, provider: string) =>
