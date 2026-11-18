@@ -1,7 +1,7 @@
 import { KEEP_AWAKE_STATE_COMMAND, keepAwakeOf, pushWorkCommand, readPushWorkTally, type PushWorkLane } from "./computerCommands";
 import type { CloudFreeRecord, CloudFreeState } from "./contract";
 import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, fail, json, readJson } from "./http";
-import { JOB_RECORD_TTL_MS, readJob, registerJobKind, runJob, type CloudJobDeps, type JobContext, type JobRow, type StepResult } from "./jobs";
+import { JOB_RECORD_TTL_MS, nudgeJob, readJob, registerJobKind, runJob, type CloudJobDeps, type JobContext, type JobRow, type StepResult } from "./jobs";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
 import { CloudProviderError } from "./provider";
 import { deleteComputer, logCloud, ownedComputer, statusChangeStatements, type CloudEnv, type ComputerRow } from "./store";
@@ -307,12 +307,13 @@ export async function handleFreeStart(request: Request, env: CloudEnv, computer:
   return json(freeRecordOf((await readJob(env, freeId))!), 201);
 }
 
-/** `GET /cloud/frees/:id`. */
-export async function routeFrees(request: Request, path: string, env: CloudEnv, userId: string): Promise<Response> {
+/** `GET /cloud/frees/:id`. A watched free runs its due step right after the answer (`nudgeJob`). */
+export async function routeFrees(request: Request, path: string, env: CloudEnv, userId: string, deps: FreeRouteDeps): Promise<Response> {
   const notFound = () => fail("not_found", "ADE Cloud has no such job.", 404);
   const freeId = path.slice("/cloud/frees/".length);
   if (request.method !== "GET" || !isUuid(freeId)) return notFound();
   const job = await readJob(env, freeId.toLowerCase());
   if (!job || job.user_id !== userId || job.kind !== FREE_JOB_KIND) return notFound();
+  nudgeJob(env, job, deps, deps.waitUntil, deps.now);
   return json(freeRecordOf(job));
 }

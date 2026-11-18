@@ -3933,6 +3933,25 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
     expect(await keptLanes()).toEqual([expect.objectContaining({ laneId: "lane-1", branchRef: "ade/fix-login" })]);
   });
 
+  it("a watched free goes on with each read of its record, with no cron", async () => {
+    const pending: Array<Promise<unknown>> = [];
+    const waitUntil = (promise: Promise<unknown>) => { pending.push(promise); };
+    const watch = (method: string, url: string, body?: Row) => handleCloudRequest(new Request(`https://directory.test${url}`, {
+      method,
+      headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    }), harness.env, waitUntil);
+    expect((await watch("POST", `/cloud/instances/${INSTANCE}/free`, { freeId: FREE })).status).toBe(201);
+    for (let read = 0; read < 10 && job().step !== "end"; read += 1) {
+      await Promise.all(pending.splice(0));
+      clock += 2_000;
+      expect((await watch("GET", `/cloud/frees/${FREE}`)).status).toBe(200);
+    }
+    await Promise.all(pending.splice(0));
+    expect(await record()).toEqual(expect.objectContaining({ state: "done", laneKept: true }));
+    expect(harness.net.instances.has(INSTANCE)).toBe(false);
+  });
+
   it("wakes a resting computer to push its work", async () => {
     harness.net.instances.get(INSTANCE)!.status = "sleeping";
     harness.exec("update cloud_computers set status = 'sleeping' where instance_id = ?", INSTANCE);

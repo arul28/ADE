@@ -25,6 +25,7 @@ import { CLOUD_LANE_METADATA, type CloudMoveKind, type CloudMoveList, type Cloud
 import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, fail, json, readJson } from "./http";
 import {
   JOB_RECORD_TTL_MS,
+  nudgeJob,
   readJob,
   registerJobKind,
   requestJobCancel,
@@ -654,7 +655,10 @@ export async function routeMoves(request: Request, path: string, env: CloudEnv, 
   if (!isUuid(moveId)) return notFound();
   const job = await readJob(env, moveId.toLowerCase());
   if (!job || job.user_id !== userId || job.kind !== MOVE_JOB_KIND) return notFound();
-  if (request.method === "GET") return json(moveRecordOf(job));
+  if (request.method === "GET") {
+    nudgeJob(env, job, { provider: deps.provider, createComputer: deps.createComputer }, deps.waitUntil, deps.now);
+    return json(moveRecordOf(job));
+  }
   if (request.method !== "DELETE") return notFound();
   if (job.state === "cancelled") return json(moveRecordOf(job));
   if (job.state === "done" || job.state === "failed" || !CANCELLABLE_STEPS.has(job.step)) {
