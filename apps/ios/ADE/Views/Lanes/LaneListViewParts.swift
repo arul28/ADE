@@ -484,8 +484,9 @@ extension LanesTabView {
     let accountHasNoLanes = syncService.isAccountProjectScope
       // A failed read did not show there are none: its machine row says so.
       && remoteLanes.machines.allSatisfy { $0.snapshots.isEmpty && $0.error == nil }
-    if accountHasNoLanes, !remoteLanes.hasRead {
+    if accountHasNoLanes, !remoteLanes.hasRead || inputs.keptCloudLaneCount > 0 {
       // The first read of the cloud lanes is still out: nothing to say yet.
+      // Or the only lanes are kept without a computer: their block says so.
       EmptyView()
     } else if accountHasNoLanes {
       // No computer's copy, and no cloud lane yet.
@@ -978,8 +979,11 @@ extension LanesTabView {
   func refreshFromPullGesture() async {
     // The other machines are read now, not on their 30-second beat.
     async let remote: Void = remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+    // The ADE Cloud lanes kept without a computer, from the account.
+    async let kept: Void = AccountCloudStore.shared.refreshLanesWithoutComputer(using: syncService, force: true)
     await reload(refreshRemote: true)
     await remote
+    await kept
     if errorMessage == nil {
       withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
         refreshFeedbackToken += 1

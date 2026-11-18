@@ -26,6 +26,12 @@ struct LanesRootInputs: Equatable {
   var machineStateKeys: [String] = []
   /// False while the focused machine is off past its reconnect window.
   var focusedListsWork = true
+  /// The open project's repository on the account server, and how many of
+  /// its ADE Cloud lanes ADE kept without a computer.
+  var cloudProjectOrigin: String?
+  var keptCloudLaneCount = 0
+  /// Lane launches ("New computer") of this project the phone still shows.
+  var keptCloudLaneLaunchCount = 0
 
   @MainActor
   init(_ sync: SyncService, fleet: MachineFleet, isActive: Bool) {
@@ -50,6 +56,12 @@ struct LanesRootInputs: Equatable {
     // them through.
     machineStateKeys = fleet.listedMachines.map { "\($0.machineKey)=\($0.state == .live ? "live" : "listed")" }
     focusedListsWork = sync.focusedMachineListsWork
+    let origin = sync.cloudProjectOrigin
+    cloudProjectOrigin = origin
+    keptCloudLaneCount = origin.map { origin in
+      AccountCloudStore.shared.lanesWithoutComputer.filter { $0.projectOrigin == origin }.count
+    } ?? 0
+    keptCloudLaneLaunchCount = origin.map { AccountCloudLaunchStore.shared.openLaneLaunches(origin: $0).count } ?? 0
   }
 }
 
@@ -60,6 +72,9 @@ struct LanesTabShell: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
+  /// The kept lanes and their launches decide whether their block shows.
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
+  @ObservedObject private var cloudLaunches = AccountCloudLaunchStore.shared
   var isActive = true
 
   var body: some View {

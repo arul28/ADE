@@ -76,6 +76,8 @@ final class AccountCloudStore: ObservableObject {
 
   /// Bumped on an account change: an answer to the last account's read lands nowhere.
   private var accountGeneration = 0
+  /// The last read of the kept lanes (`refreshLanesWithoutComputer`, or the account read).
+  private var lanesReadAt: Date?
   /// Where the next older page of a saved chat starts (`nextBefore`), by thread key.
   private var transcriptCursors: [String: Int] = [:]
   /// Saved chats read this run, by thread key: one read per open.
@@ -100,7 +102,10 @@ final class AccountCloudStore: ObservableObject {
     guard generation == accountGeneration, AccountService.shared.isPairingCommitAuthorized(owner) else { return }
     if let nextAccess, nextAccess != access { access = nextAccess }
     if let nextAccount, nextAccount != account { account = nextAccount }
-    if let nextLanes, nextLanes != lanesWithoutComputer { lanesWithoutComputer = nextLanes }
+    if let nextLanes {
+      lanesReadAt = Date()
+      if nextLanes != lanesWithoutComputer { lanesWithoutComputer = nextLanes }
+    }
   }
 
   private func readAccess(_ client: CloudServerClient) async -> Access? {
@@ -132,6 +137,49 @@ final class AccountCloudStore: ObservableObject {
       accountCloudLog.notice("cloud_store read=lanes_without_computer failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
       return nil
     }
+  }
+
+  /// Reads the lanes ADE kept without a computer now (a page that shows them
+  /// opens or is pulled, or a new computer for one of them is up), at most
+  /// every 15 s unless forced. A failed read keeps the last list.
+  func refreshLanesWithoutComputer(using sync: SyncService, force: Bool = false) async {
+    if !force, let at = lanesReadAt, Date().timeIntervalSince(at) < 15 { return }
+    lanesReadAt = Date()
+    let generation = accountGeneration
+    guard let client = await sync.cloudServerClient() else { return }
+    guard let next = await readLanesWithoutComputer(client), generation == accountGeneration else { return }
+    if next != lanesWithoutComputer { lanesWithoutComputer = next }
+  }
+
+  /// Delete for a lane kept without a computer, as the desktop's
+  /// (`CloudLanesWithoutComputerBlock.deleteRow`): its saved chats first, on
+  /// every computer they were filed under, then the lane's record and its
+  /// saved work. Its branch stays on GitHub. A failure keeps the lane listed,
+  /// so Delete can run again. Nil when it worked, else the sentence to show.
+  func forgetLaneWithoutComputer(_ lane: CloudLaneWithoutComputer, using sync: SyncService) async -> String? {
+    let generation = accountGeneration
+    guard let client = await sync.cloudServerClient() else { return "Sign in to ADE, then try again." }
+    var machineKeys = Set(sync.cloudSavedChats.filter { $0.laneId == lane.laneId }.map { $0.machineKey.lowercased() })
+    if let former = lane.formerMachineKey.flatMap({ nonEmptyTrimmed($0) }) { machineKeys.insert(former.lowercased()) }
+    do {
+      for machineKey in machineKeys.sorted() {
+        do {
+          try await client.deleteSavedChats(machineKey: machineKey, laneId: lane.laneId)
+        } catch CloudServerClient.Failure.noAccess {
+          // Nothing saved under that computer.
+        }
+      }
+      try await client.forgetLaneWithoutComputer(laneId: lane.laneId)
+    } catch CloudServerClient.Failure.noAccess {
+      // Already gone (another device deleted it): the list drops it below.
+    } catch {
+      accountCloudLog.notice("cloud_store forget_lane failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      return cloudServerFailureMessage(error)
+    }
+    guard generation == accountGeneration else { return nil }
+    lanesWithoutComputer.removeAll { $0.laneId == lane.laneId }
+    accountCloudLog.notice("cloud_store forget_lane=done")
+    return nil
   }
 
   /// Why ADE Cloud can't do anything for this account now (blocked, out of
@@ -408,6 +456,7 @@ final class AccountCloudStore: ObservableObject {
     access = nil
     account = nil
     lanesWithoutComputer = []
+    lanesReadAt = nil
     queued = [:]
     keptInstanceIds = []
     hiddenMessageIds = []

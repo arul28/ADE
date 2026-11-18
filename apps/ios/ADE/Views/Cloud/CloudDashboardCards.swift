@@ -361,6 +361,8 @@ struct CloudNotices: View {
 struct CloudLanesCard: View {
   @ObservedObject var store: CloudPaneStore
   var pushes: Bool
+  /// The lanes ADE kept without a computer, every project's: they list under the computers.
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
 
   private var hint: String? {
     guard let computers = store.account?.computers else { return nil }
@@ -377,13 +379,14 @@ struct CloudLanesCard: View {
         }
         .padding(.horizontal, ADEKit.inset)
         .padding(.bottom, ADEKit.inset)
-      } else if store.machines.isEmpty {
+      } else if store.machines.isEmpty, cloudStore.lanesWithoutComputer.isEmpty {
         Text("No cloud lanes yet. Pick ADE Cloud under Run on when you send a message: ADE makes a computer for the lane, and it shows here.")
           .font(.system(size: 13))
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
           .padding(.horizontal, ADEKit.inset)
           .padding(.bottom, ADEKit.inset)
+        keptLanes
       } else {
         VStack(spacing: 0) {
           ForEach(Array(store.machines.enumerated()), id: \.element.id) { index, machine in
@@ -391,8 +394,20 @@ struct CloudLanesCard: View {
             row(machine)
           }
         }
+        keptLanes
       }
     }
+  }
+
+  /// Lanes whose computer ADE removed while it kept the lane (every
+  /// project's, as the computers above are), each with "New computer".
+  private var keptLanes: some View {
+    CloudKeptLanesBlock(
+      origin: nil,
+      refreshToken: store.refreshes,
+      insets: EdgeInsets(top: store.machines.isEmpty ? 0 : 8, leading: ADEKit.inset, bottom: ADEKit.inset, trailing: ADEKit.inset),
+      opensChats: false
+    )
   }
 
   @ViewBuilder

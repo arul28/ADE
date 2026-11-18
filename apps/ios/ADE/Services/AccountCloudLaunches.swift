@@ -66,6 +66,8 @@ struct CloudLaunchSignIn: Decodable, Equatable {
 struct CloudLaunchRecord: Decodable, Equatable {
   let launchId: String
   let state: String
+  /// `chat`, `lane` or `machine`; nil from an older server.
+  let kind: String?
   let projectOrigin: String?
   let laneId: String?
   let laneName: String?
@@ -84,7 +86,7 @@ struct CloudLaunchRecord: Decodable, Equatable {
   let approvalUrl: String?
 
   private enum CodingKeys: String, CodingKey {
-    case launchId, state, projectOrigin, laneId, laneName, instanceId, stages, sessionId, error, signIn, provider, modelId, request, approval
+    case launchId, state, kind, projectOrigin, laneId, laneName, instanceId, stages, sessionId, error, signIn, provider, modelId, request, approval
   }
   private struct Approval: Decodable { let url: String? }
   private struct Request: Decodable {
@@ -100,6 +102,7 @@ struct CloudLaunchRecord: Decodable, Equatable {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     launchId = try c.decode(String.self, forKey: .launchId)
     state = c.lenient(String.self, forKey: .state) ?? "making"
+    kind = c.lenient(String.self, forKey: .kind)
     projectOrigin = c.lenient(String.self, forKey: .projectOrigin)
     laneId = c.lenient(String.self, forKey: .laneId)
     laneName = c.lenient(String.self, forKey: .laneName)
@@ -373,7 +376,13 @@ final class AccountCloudLaunchStore: ObservableObject {
     var startError: String?
     /// The start this phone sent; a launch found from another device uses its record's `request`.
     var body: RemoteJSONValue?
+    /// `chat` (a chat and its first message) or `lane` (a lane alone, as "New
+    /// computer" for a lane kept without one starts it).
+    var kind: String = "chat"
+    var laneId: String?
+    var laneName: String?
 
+    var isLane: Bool { kind == "lane" }
     var inProgress: Bool { startError == nil && (record?.inProgress ?? true) }
     /// Still worth reading again: in progress, or running before the server
     /// has named its chat (the card's Open chat needs that id).
@@ -495,7 +504,10 @@ final class AccountCloudLaunchStore: ObservableObject {
         prompt: summary.prompt ?? "",
         provider: summary.provider,
         modelId: summary.modelId,
-        record: summary
+        record: summary,
+        kind: summary.kind ?? "chat",
+        laneId: summary.laneId,
+        laneName: summary.laneName
       ))
     }
     // The list's summaries carry no request: read each failed launch in full, so Retry has it.
@@ -577,6 +589,56 @@ final class AccountCloudLaunchStore: ObservableObject {
     ), at: 0)
     await runStart(launchId, body: body, using: sync)
     return launchId
+  }
+
+  /// "New computer" for a lane ADE kept without one, as the desktop's
+  /// (`useStartLaneOnNewComputer`): a lane launch for the same lane id, on its
+  /// branch on GitHub, at the old computer's size when today's sizes still
+  /// have it (else ADE Cloud's default). No chat and no first message; the
+  /// computer brings back the lane's saved chats. Answers the launch id.
+  @discardableResult
+  func startLaneOnNewComputer(_ lane: CloudLaneWithoutComputer, sizeId: String?, using sync: SyncService) async -> String? {
+    guard let origin = lane.projectOrigin.flatMap({ nonEmptyTrimmed($0) }), let branch = lane.branchName else { return nil }
+    let launchId = UUID().uuidString.lowercased()
+    var fields: [String: RemoteJSONValue] = [
+      "launchId": .string(launchId),
+      "kind": .string("lane"),
+      "project": .object(["origin": .string(origin)]),
+      // The desktop's `cloudLaneRestartBranchRef`: the branch as GitHub has it.
+      "lane": .object([
+        "id": .string(lane.laneId),
+        "name": .string(lane.laneName),
+        "existingBranch": .string("origin/\(branch)"),
+      ]),
+      "madeBy": .object(["kind": .string("person")]),
+    ]
+    if let sizeId { fields["sizeId"] = .string(sizeId) }
+    let body: RemoteJSONValue = .object(fields)
+    entries.insert(Entry(
+      launchId: launchId,
+      origin: origin.lowercased(),
+      prompt: "",
+      body: body,
+      kind: "lane",
+      laneId: lane.laneId,
+      laneName: lane.laneName
+    ), at: 0)
+    await runStart(launchId, body: body, using: sync)
+    return launchId
+  }
+
+  /// The newest lane launch for a lane that this phone shows (not hidden).
+  func laneLaunch(laneId: String) -> Entry? {
+    entries.first { $0.isLane && $0.laneId == laneId && $0.record?.state != "cancelled" && !hiddenIds.contains($0.launchId) }
+  }
+
+  /// Lane launches still on their way, or failed and not hidden: `origin`'s, or every project's.
+  func openLaneLaunches(origin: String?) -> [Entry] {
+    let key = origin?.lowercased()
+    return entries.filter { entry in
+      entry.isLane && (key == nil || entry.origin == key) && entry.record?.state != "cancelled"
+        && !hiddenIds.contains(entry.launchId)
+    }
   }
 
   /// Starts again a launch whose start failed, or whose computer failed
