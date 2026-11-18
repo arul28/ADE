@@ -9704,8 +9704,19 @@ function AgentChatMessageListMain({
             /* ── Virtualized path: only render rows in / near the viewport ── */
             <div className="flex min-w-0 max-w-full flex-col gap-[length:var(--chat-row-gap)]">
               {/* A minimum, not a height: a mounted row that grew since this
-                  render pushes what follows down instead of drawing over it. */}
-              <div style={{ minHeight: totalHeight, position: "relative" }}>
+                  render pushes what follows down instead of drawing over it.
+                  Following the bottom, the rows sit at the box's end: until
+                  the rows that just mounted are measured, the box keeps their
+                  estimated height, and estimates that run high left that
+                  slack under the last message, so the view pinned to the end
+                  showed an empty pane for a frame (the thread opened, went
+                  blank, then came back lower). The slack now sits above the
+                  mounted rows, out of view, and goes when they measure. */}
+              <div
+                style={stickToBottom
+                  ? { minHeight: totalHeight, position: "relative", display: "flex", flexDirection: "column", justifyContent: "flex-end" }
+                  : { minHeight: totalHeight, position: "relative" }}
+              >
                 {/* Top spacer pushes rendered rows to their correct scroll position */}
                 <div style={{ height: offsetTop }} aria-hidden />
                 <div className="flex flex-col gap-[length:var(--chat-row-gap)]">
