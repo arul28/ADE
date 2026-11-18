@@ -31,6 +31,8 @@ export type AccountValuePass = {
 export type AccountValuePassResult = {
   /** What to write to the account; null when it already holds everything. */
   write: unknown | null;
+  /** False when the pass left this computer's copy as it was (it waits for a fresh read). */
+  taken?: boolean;
 };
 
 export type AccountValueSyncOptions = {
@@ -65,8 +67,8 @@ export function createAccountValueSync(options: AccountValueSyncOptions): Accoun
   let reportedFailure = false;
   /** The account whose settings the desktop brain pulled fresh this session. */
   let brainSyncedFor: string | null = null;
-  /** When a pull last failed: the next try waits, so offline passes do not each run a full brain sync. */
-  let pullFailedAt = 0;
+  /** The account whose pull last failed, and when: its next try waits, so offline passes do not each run a full brain sync. */
+  let pullFailed: { userId: string; at: number } | null = null;
   let lastReconciledFor: string | null = null;
 
   const onePass = async (): Promise<void> => {
@@ -75,20 +77,21 @@ export function createAccountValueSync(options: AccountValueSyncOptions): Accoun
     const api = window.ade?.accountSettings;
     if (!userId || !api?.get || !api.set) return;
     const web = isWebClientMode();
-    if (!web && brainSyncedFor !== userId && api.sync && Date.now() - pullFailedAt >= PULL_RETRY_MS) {
+    const coolingDown = pullFailed?.userId === userId && Date.now() - pullFailed.at < PULL_RETRY_MS;
+    if (!web && brainSyncedFor !== userId && api.sync && !coolingDown) {
       const synced = await api.sync().catch(() => null);
       // Only a pull that reached the account counts (null: an older brain that cannot say).
       if (synced?.ok && (synced.value == null || synced.value === "ready")) brainSyncedFor = userId;
-      else pullFailedAt = Date.now();
+      else pullFailed = { userId, at: Date.now() };
     }
     const read = await api.get({ scope: ACCOUNT_SCOPE_ALL, key: options.key });
     if (!read.ok) return;
     // The pull and the read can span a sign-in change: take and write this copy only for the same account.
-    // Sign-ins and sign-outs are pushed into the cached status, so the cached read is current.
-    if (signedInUserId(await fetchAccountStatus().catch(() => null)) !== userId) return;
+    // Forced: a sign-in made in another window or through the CLI never reaches this window's cached status.
+    if (signedInUserId(await fetchAccountStatus({ force: true }).catch(() => null)) !== userId) return;
     const fresh = web || brainSyncedFor === userId;
-    const { write } = options.reconcile({ remote: read.value, userId, fresh });
-    lastReconciledFor = userId;
+    const { write, taken } = options.reconcile({ remote: read.value, userId, fresh });
+    if (taken !== false) lastReconciledFor = userId;
     // Not fresh: the read may be only this brain's stale copy. A later pass that pulled writes it.
     if (write === null || !fresh) return;
     // The fence: the brain refuses the write if another account signed in meanwhile; the next pass is that account's.

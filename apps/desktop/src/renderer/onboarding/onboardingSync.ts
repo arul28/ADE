@@ -88,7 +88,7 @@ const progressSync = createAccountValueSync({
     const owner = ownerStore.get()?.userId ?? null;
     if (owner !== userId) {
       // Another account's copy is replaced only by this account's current one, never a stale cache.
-      if (owner && !fresh) return { write: null };
+      if (owner && !fresh) return { write: null, taken: false };
       if (owner) replaceWith(remote);
       ownerStore.set({ userId });
     }

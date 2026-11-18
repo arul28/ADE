@@ -127,7 +127,7 @@ export function AnnouncementsHost() {
       const detail = (event as CustomEvent<AfterUpdateDetail>).detail;
       if (!detail) return;
       // The release notes always come after an update; the feature pages only within the unasked budget,
-      // as it stood before this showing spends it (read once the account, and so its quiet days, is known).
+      // counted from this computer's last showing before this one, with the account's quiet days once known.
       const lastUnaskedBefore = lastUnaskedAt();
       markShowing();
       setShownThisLaunch(true);
