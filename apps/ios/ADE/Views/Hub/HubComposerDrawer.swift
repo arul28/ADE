@@ -378,6 +378,8 @@ struct HubInlineComposer: View {
     .onChange(of: syncService.projects.map(\.id)) { _, _ in reconcileDestination() }
     .onChange(of: machineFleet.machines) { _, _ in reconcileDestination() }
     .onChange(of: accountProjects.removedProjects.map(\.id)) { _, _ in reconcileDestination() }
+    // A project added to the account (or read late) is the ADE Cloud pick when there is no primary.
+    .onChange(of: accountProjects.liveProjects.map(\.id)) { _, _ in reconcileDestination() }
     .sheet(isPresented: $modelPickerPresented, onDismiss: { composerFocused = true }) {
       WorkModelPickerSheet(
         currentModelId: modelId,
