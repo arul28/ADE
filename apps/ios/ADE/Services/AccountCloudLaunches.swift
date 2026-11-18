@@ -127,6 +127,22 @@ struct CloudLaunchRecord: Decodable, Equatable {
 struct CloudCatalogModel: Decodable, Equatable, Hashable {
   let id: String
   let displayName: String
+  /// The efforts the model takes (`chat.effort`); empty when it has none.
+  let reasoningTiers: [String]
+  let defaultReasoningEffort: String?
+  /// The model has a fast mode (`chat.fast`).
+  let fast: Bool
+
+  private enum CodingKeys: String, CodingKey { case id, displayName, reasoningTiers, defaultReasoningEffort, fast }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = try c.decode(String.self, forKey: .id)
+    displayName = c.lenient(String.self, forKey: .displayName) ?? id
+    reasoningTiers = c.lenient([String].self, forKey: .reasoningTiers) ?? []
+    defaultReasoningEffort = c.lenient(String.self, forKey: .defaultReasoningEffort)
+    fast = c.lenient(Bool.self, forKey: .fast) ?? false
+  }
 }
 
 struct CloudCatalogProvider: Decodable, Equatable {
@@ -150,7 +166,12 @@ struct CloudCatalogProvider: Decodable, Equatable {
 }
 
 struct CloudModelCatalog: Decodable, Equatable {
+  /// Changes with the list; absent from an older server.
+  let version: String?
   let providers: [CloudCatalogProvider]
+
+  /// Not read yet: a picker given this reads ADE Cloud's list itself.
+  static let pending = CloudModelCatalog(version: nil, providers: [])
 }
 
 /// One sign-in the account vault keeps for ADE Cloud. Never its value.
@@ -205,6 +226,20 @@ extension CloudServerClient {
 
   func modelCatalog() async throws -> CloudModelCatalog {
     try decode(CloudModelCatalog.self, from: try await send("GET", "cloud/models"))
+  }
+
+  /// A file the first message names, sent before the start (raw bytes). The
+  /// same `fileId` again replaces it.
+  func uploadLaunchFile(launchId: String, fileId: String, data: Data, contentType: String) async throws -> Int {
+    struct Uploaded: Decodable { let sizeBytes: Int }
+    let answer = try await send(
+      "PUT",
+      "cloud/launches/\(segment(launchId))/files/\(segment(fileId))",
+      body: data,
+      contentType: contentType,
+      timeout: 120
+    )
+    return try decode(Uploaded.self, from: answer).sizeBytes
   }
 
   /// 201 for a new launch; the same `launchId` again answers the same launch.
@@ -340,9 +375,27 @@ final class AccountCloudLaunchStore: ObservableObject {
     var body: RemoteJSONValue?
 
     var inProgress: Bool { startError == nil && (record?.inProgress ?? true) }
+    /// Still worth reading again: in progress, or running before the server
+    /// has named its chat (the card's Open chat needs that id).
+    var awaitsChat: Bool {
+      guard startError == nil, let record else { return false }
+      return record.inProgress || (record.state == "running" && record.sessionId == nil)
+    }
+  }
+
+  /// A file the first message carries: uploaded to the launch before its start.
+  struct LaunchFile: Equatable {
+    let fileId: String
+    let name: String
+    let contentType: String
+    let data: Data
   }
 
   @Published private(set) var entries: [Entry] = []
+  /// Files not yet on the server, per launch: a retried start sends the rest.
+  private var pendingFiles: [String: [LaunchFile]] = [:]
+  /// Launches whose start (uploads, then the start call) is running.
+  private var startingLaunchIds: Set<String> = []
   /// Finished or failed launches the person hid on this phone (until the account changes).
   @Published private var hiddenIds: Set<String> = []
   @Published private(set) var catalog: CloudModelCatalog?
@@ -466,6 +519,8 @@ final class AccountCloudLaunchStore: ObservableObject {
     provider: String,
     modelId: String,
     effort: String? = nil,
+    fast: Bool = false,
+    files: [(name: String, contentType: String, data: Data)] = [],
     existingLane: (id: String, name: String)? = nil,
     newLaneName: String? = nil,
     using sync: SyncService
@@ -481,6 +536,22 @@ final class AccountCloudLaunchStore: ObservableObject {
       "messageId": .string(String(messageId)),
     ]
     if let effort = effort.flatMap({ nonEmptyTrimmed($0) }) { chat["effort"] = .string(effort) }
+    if fast { chat["fast"] = .bool(true) }
+    // The server takes the files first, then a start that names each by id and size.
+    let launchFiles = files.enumerated().map { index, file in
+      LaunchFile(fileId: "f\(index)-\(launchId.prefix(8))", name: file.name, contentType: file.contentType, data: file.data)
+    }
+    if !launchFiles.isEmpty {
+      chat["attachments"] = .array(launchFiles.map { file in
+        .object([
+          "fileId": .string(file.fileId),
+          "name": .string(file.name),
+          "contentType": .string(file.contentType),
+          "sizeBytes": .number(Double(file.data.count)),
+        ])
+      })
+      pendingFiles[launchId] = launchFiles
+    }
     var fields: [String: RemoteJSONValue] = [
       "launchId": .string(launchId),
       "kind": .string("chat"),
@@ -519,11 +590,31 @@ final class AccountCloudLaunchStore: ObservableObject {
   }
 
   private func runStart(_ launchId: String, body: RemoteJSONValue, using sync: SyncService) async {
+    // One start per launch at a time: two cards retrying it would upload and
+    // drop each other's files.
+    guard !startingLaunchIds.contains(launchId) else { return }
+    startingLaunchIds.insert(launchId)
+    defer { startingLaunchIds.remove(launchId) }
     let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else {
       patch(launchId) { $0.startError = "Sign in to ADE to start a chat on ADE Cloud." }
       return
     }
+    // Each file goes once; a failed upload stops here and Retry sends the rest.
+    while let file = pendingFiles[launchId]?.first {
+      do {
+        _ = try await client.uploadLaunchFile(launchId: launchId, fileId: file.fileId, data: file.data, contentType: file.contentType)
+        // Signed out or another account meanwhile: start nothing for it.
+        guard generation == accountGeneration else { return }
+        pendingFiles[launchId]?.removeAll { $0.fileId == file.fileId }
+      } catch {
+        guard generation == accountGeneration else { return }
+        let reason = cloudServerFailureMessage(error)
+        patch(launchId) { $0.startError = "ADE couldn't send \(file.name) to ADE Cloud. \(reason)" }
+        return
+      }
+    }
+    pendingFiles[launchId] = nil
     do {
       let record = try await client.startLaunch(body)
       guard generation == accountGeneration else { return }
@@ -575,7 +666,7 @@ final class AccountCloudLaunchStore: ObservableObject {
 
   /// One loop for every launch in progress; it ends when none is left.
   private func poll(using sync: SyncService) {
-    guard pollTask == nil, entries.contains(where: { $0.inProgress && $0.record != nil }) else { return }
+    guard pollTask == nil, entries.contains(where: \.awaitsChat) else { return }
     pollGeneration += 1
     let generation = pollGeneration
     pollTask = Task { @MainActor [weak self] in
@@ -585,7 +676,7 @@ final class AccountCloudLaunchStore: ObservableObject {
         if Task.isCancelled { break }
         // Paused while the app is in the background.
         if UIApplication.shared.applicationState != .active { delay = 10; continue }
-        let open = self.entries.filter { $0.inProgress && $0.record != nil }
+        let open = self.entries.filter(\.awaitsChat)
         if open.isEmpty { break }
         guard let client = await sync.cloudServerClient() else { break }
         var changed = false
@@ -636,6 +727,7 @@ final class AccountCloudLaunchStore: ObservableObject {
     carriedSignIns = [:]
     accountGeneration += 1
     entries = []
+    pendingFiles = [:]
     hiddenIds = []
     activeReadAt = nil
   }

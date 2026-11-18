@@ -65,6 +65,7 @@ struct CloudPaneSheet: View {
       }
     }
     .task { await store.reload() }
+    .cloudLaneActionsHost()
   }
 
   private func bookLayout(fold: DuoFold, size: CGSize) -> some View {
@@ -111,17 +112,22 @@ struct CloudPaneSheet: View {
       }
       .frame(height: topHeight)
       DuoSeam(axis: .horizontal, foldRect: fold.frame)
-      ScrollView {
-        VStack(alignment: .leading, spacing: 14) {
-          if let machine = store.selected {
-            CloudMachineControls(store: store, machine: machine)
+      // Its own stack, so an asleep lane's "Open its work" pushes the lane's
+      // saved work into this half. The bar shows only on that pushed page.
+      NavigationStack {
+        ScrollView {
+          VStack(alignment: .leading, spacing: 14) {
+            if let machine = store.selected {
+              CloudMachineControls(store: store, machine: machine)
+            }
+            ADEEyebrow("Lanes and computers")
+            CloudMachineChips(store: store)
           }
-          ADEEyebrow("Lanes and computers")
-          CloudMachineChips(store: store)
+          .padding(16)
         }
-        .padding(16)
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .toolbar(.hidden, for: .navigationBar)
       }
-      .background(ADEColor.pageBackground.ignoresSafeArea())
     }
   }
 }
@@ -141,6 +147,39 @@ struct CloudSettingsPage: View {
         CloudMachineScreen(store: store, instanceId: machine.instanceId)
       }
       .task { await store.reload() }
+      .cloudLaneActionsHost()
+  }
+}
+
+/// A cloud lane's "Manage computer": the same `CloudMachineScreen` as ADE
+/// Cloud's dashboard, for one computer. It shows the computer's state, size,
+/// disk and last run; opens the lane's work (at rest when the computer is
+/// asleep); sleeps or wakes it from a controlling device; deletes the lane
+/// (with its computer, from the account, no wake); and downloads the lane's
+/// saved work. Size and freeing the computer stay in the ADE desktop app.
+struct CloudLaneManageSheet: View {
+  @StateObject private var store: CloudPaneStore
+  let instanceId: String
+  let showsOpenWork: Bool
+  @Environment(\.dismiss) private var dismiss
+
+  init(syncService: SyncService, instanceId: String, showsOpenWork: Bool = true) {
+    _store = StateObject(wrappedValue: CloudPaneStore(syncService: syncService))
+    self.instanceId = instanceId
+    self.showsOpenWork = showsOpenWork
+  }
+
+  var body: some View {
+    NavigationStack {
+      CloudMachineScreen(store: store, instanceId: instanceId, showsOpenWork: showsOpenWork)
+        .toolbar {
+          ToolbarItem(placement: .cancellationAction) {
+            Button("Done") { dismiss() }
+          }
+        }
+    }
+    .task { await store.reload() }
+    .cloudLaneActionsHost()
   }
 }
 
@@ -171,6 +210,8 @@ final class CloudPaneStore: ObservableObject {
   @Published var actionError: String?
   /// One clock per read: "ran 3 h ago" moves when the list is read again.
   @Published private(set) var now = Date()
+  /// Bumped by each pull to refresh: cards with reads of their own read again.
+  @Published private(set) var refreshes = 0
 
   let syncService: SyncService
 
@@ -261,6 +302,12 @@ final class CloudPaneStore: ObservableObject {
     }
     await readLimitsThroughComputer()
     await reloadSignIns()
+  }
+
+  /// A pull to refresh: the page, and each card's own read.
+  func refresh() async {
+    refreshes += 1
+    await reload()
   }
 
   /// The page from the account server, with this phone's own sign-in.
@@ -438,11 +485,22 @@ final class CloudPaneStore: ObservableObject {
 
 /// A computer as the dashboard draws it, from the account server's row.
 /// Nil for a row with no id.
+/// The account server's computer status in the brain list's words
+/// (`computerStateOf` on the server): "sleeping" read as "Needs a look".
+func cloudPhoneMachineState(serverStatus status: String) -> String {
+  switch status {
+  case "running", "restarting": return "running"
+  case "sleeping": return "asleep"
+  case "waking", "provisioning", "updating": return "starting"
+  default: return status
+  }
+}
+
 func cloudPhoneMachine(from instance: CloudServerInstance) -> CloudPhoneMachine? {
   var object: [String: Any] = [
     "instanceId": instance.id,
     // A computer saving its work for the idle cleanup is on its way down.
-    "state": instance.idleSaving ? "stopping" : instance.status,
+    "state": instance.idleSaving ? "stopping" : cloudPhoneMachineState(serverStatus: instance.status),
   ]
   if let name = instance.name { object["name"] = name }
   if let machineKey = instance.machineKey { object["machineKey"] = machineKey }
@@ -452,6 +510,10 @@ func cloudPhoneMachine(from instance: CloudServerInstance) -> CloudPhoneMachine?
     object["lane"] = lane
   }
   object["pastDue"] = instance.pastDue
+  // "Safe to delete" and the delete's warning read it.
+  if let work = instance.laneWork {
+    object["laneWork"] = ["unpushed": work.unpushed as Any? ?? NSNull(), "prState": work.prState as Any? ?? NSNull()]
+  }
   guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
   return try? JSONDecoder().decode(CloudPhoneMachine.self, from: data)
 }

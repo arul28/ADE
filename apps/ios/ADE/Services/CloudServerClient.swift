@@ -55,16 +55,20 @@ struct CloudServerInstance: Decodable, Equatable {
   /// needed even when `status` reads running (`idleSaving`, newer servers).
   let idleSaving: Bool
   let metadata: [String: String]
+  /// Its lane's work as it last read it while awake (`laneWork`); nil before
+  /// its first report and from older servers.
+  let laneWork: CloudPhoneMachine.LaneWork?
 
-  private enum CodingKeys: String, CodingKey { case id, name, status, pastDue, idleSaving, metadata }
+  private enum CodingKeys: String, CodingKey { case id, name, status, pastDue, idleSaving, metadata, laneWork }
 
-  init(id: String, name: String?, status: String, pastDue: Bool, idleSaving: Bool = false, metadata: [String: String]) {
+  init(id: String, name: String?, status: String, pastDue: Bool, idleSaving: Bool = false, metadata: [String: String], laneWork: CloudPhoneMachine.LaneWork? = nil) {
     self.id = id
     self.name = name
     self.status = status
     self.pastDue = pastDue
     self.idleSaving = idleSaving
     self.metadata = metadata
+    self.laneWork = laneWork
   }
 
   init(from decoder: Decoder) throws {
@@ -75,6 +79,7 @@ struct CloudServerInstance: Decodable, Equatable {
     pastDue = c.lenient(Bool.self, forKey: .pastDue) ?? false
     idleSaving = c.lenient(Bool.self, forKey: .idleSaving) ?? false
     metadata = c.lenient([String: String].self, forKey: .metadata) ?? [:]
+    laneWork = c.lenient(CloudPhoneMachine.LaneWork.self, forKey: .laneWork)
   }
 
   private func fact(_ key: String) -> String? {
@@ -373,9 +378,34 @@ struct CloudServerClient {
     }
     guard bytes.count == backup.patchBytes else { throw Failure.unreadable }
     let name = (backup.laneName ?? backup.branchRef ?? "lane").replacingOccurrences(of: "[^A-Za-z0-9._-]+", with: "-", options: .regularExpression)
-    let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(name.prefix(60))-saved-work.patch")
+    // Its own folder per download: two lanes with one name never share a file.
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let url = folder.appendingPathComponent("\(name.prefix(60))-saved-work.patch")
     try bytes.write(to: url, options: [.atomic, .completeFileProtection])
     return url
+  }
+
+  /// Every saved lane work the account keeps (`GET /cloud/backups`), newest first.
+  func allLaneBackups() async throws -> [CloudLaneBackupRow] {
+    try decode(LaneBackupList.self, from: try await send("GET", "cloud/backups", timeout: 30)).backups
+  }
+
+  /// The person's delete of one lane's saved work (`POST /cloud/backups/:m/:lane/forget`).
+  /// The server refuses it (409 `backup_computer_live`) while the lane's computer exists.
+  func forgetLaneBackup(_ backup: CloudLaneBackupRow) async throws {
+    _ = try await send("POST", "cloud/backups/\(segment(backup.machineKey))/\(segment(backup.laneId))/forget", body: Data("{}".utf8), timeout: 30)
+  }
+
+  /// Deletes a lane's computer, and with it the lane and its saved work
+  /// (`DELETE /cloud/instances/:id`, a person's delete). Needs no wake.
+  func deleteInstance(_ instanceId: String) async throws {
+    _ = try await send("DELETE", "cloud/instances/\(segment(instanceId))", body: Data(#"{"reason":"user"}"#.utf8), timeout: 60)
+  }
+
+  /// Deletes the saved chats of one lane of a computer (`DELETE /cloud/chats/:m/lanes/:lane`).
+  func deleteSavedChats(machineKey: String, laneId: String) async throws {
+    _ = try await send("DELETE", "cloud/chats/\(segment(machineKey))/lanes/\(segment(laneId))", timeout: 30)
   }
 
   func start(instanceId: String) async throws {
@@ -389,8 +419,10 @@ struct CloudServerClient {
 
   /// Holds a message for an existing cloud chat and wakes its computer. The
   /// same `messageId` again answers the same message (the client's send id).
-  func queueMessage(machineKey: String, chatId: String, messageId: String, text: String) async throws -> CloudChatQueueResult {
-    let body = try JSONSerialization.data(withJSONObject: ["messageId": messageId, "text": text])
+  func queueMessage(machineKey: String, chatId: String, messageId: String, text: String, attachments: [[String: Any]] = []) async throws -> CloudChatQueueResult {
+    var payload: [String: Any] = ["messageId": messageId, "text": text]
+    if !attachments.isEmpty { payload["attachments"] = attachments }
+    let body = try JSONSerialization.data(withJSONObject: payload)
     return try decode(
       CloudChatQueueResult.self,
       from: try await send("POST", "cloud/chats/\(segment(machineKey))/\(segment(chatId))/messages", body: body, timeout: 30)
@@ -426,6 +458,7 @@ struct CloudServerClient {
     _ path: String,
     query: [URLQueryItem] = [],
     body: Data? = nil,
+    contentType: String = "application/json",
     timeout: TimeInterval = 12
   ) async throws -> Data {
     var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
@@ -440,7 +473,7 @@ struct CloudServerClient {
       request.setValue(correlationID, forHTTPHeaderField: "X-ADE-Correlation-ID")
       if let body {
         request.httpBody = body
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
       }
       request.timeoutInterval = timeout
       request.cachePolicy = .reloadIgnoringLocalCacheData

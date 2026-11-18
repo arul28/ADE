@@ -31,6 +31,9 @@ final class LaneRemoteMachinesModel: ObservableObject {
   static let readTimeoutNanoseconds: UInt64 = 8_000_000_000
 
   @Published private(set) var machines: [MachineLanes] = []
+  /// Whether a refresh has published since the last reset: an empty
+  /// `machines` before it means "not read yet", not "no lanes".
+  @Published private(set) var hasRead = false
   /// The last successful read of each machine: shown while a read runs or
   /// after it fails.
   /// Keyed by `laneRemoteReadKey`: a read belongs to one machine's checkout.
@@ -88,8 +91,10 @@ final class LaneRemoteMachinesModel: ObservableObject {
       let read = isLive
         ? (lastRead[key] ?? laneRemoteRosterSnapshots(repo))
         : laneRemoteRosterSnapshots(repo)
-      // Badge counts by the Hub's rule, from that machine's roster.
-      let snapshots = read.map { snapshot -> LaneListSnapshot in
+      // Badge counts by the Hub's rule, from that machine's roster. An ADE
+      // Cloud lane computer's main checkout is only its lane's clone: left out,
+      // as on desktop (`crossMachineLanes.ts`).
+      let snapshots = laneSnapshotsWithoutCloudMainCheckout(read, machineKey: repo.machineKey, sync: sync).map { snapshot -> LaneListSnapshot in
         guard let rosterLaneId = workParseRemoteLaneId(snapshot.lane.id)?.laneId else { return snapshot }
         var next = snapshot
         next.runtime = laneRuntimeByHubRule(snapshot.runtime, rosterLaneId: rosterLaneId, chats: repo.chats)
@@ -106,12 +111,14 @@ final class LaneRemoteMachinesModel: ObservableObject {
       ))
     }
     if next != machines { machines = next }
+    if !hasRead { hasRead = true }
   }
 
   func reset() {
     generation &+= 1
     lastRead = [:]
     if !machines.isEmpty { machines = [] }
+    if hasRead { hasRead = false }
   }
 }
 
@@ -168,6 +175,14 @@ func laneRuntimeByHubRule(
   next.endedCount = max(0, sessions - running - awaiting)
   next.sessionCount = sessions
   return next
+}
+
+/// A machine's lanes minus its main checkout when the machine is an ADE Cloud
+/// lane computer: that computer exists for its one lane.
+@MainActor
+func laneSnapshotsWithoutCloudMainCheckout(_ snapshots: [LaneListSnapshot], machineKey: String?, sync: SyncService) -> [LaneListSnapshot] {
+  guard sync.isCloudFleetKey(machineKey) else { return snapshots }
+  return snapshots.filter { $0.lane.laneType != "primary" }
 }
 
 /// The focused machine's lane rows with badge counts by the Hub's rule, from

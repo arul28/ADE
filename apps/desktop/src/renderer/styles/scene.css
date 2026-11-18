@@ -65,6 +65,36 @@
   mix-blend-mode: overlay;
 }
 
+/* Fake frost (`scene/SceneFrost.tsx`): the box's slice of the picture under a
+   plain blur, then the box's tint. It replaces a backdrop-filter, which on
+   macOS makes Chromium draw the whole window again for every change. Under
+   the box's content (`z-index: -1` in the box's own stacking context). */
+.ade-scene-frost {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+/* Three blur radii past each edge, so the blur has picture to draw from at
+   the edges instead of fading into nothing there. */
+.ade-scene-frost-blur {
+  position: absolute;
+  inset: calc(-3 * var(--scene-frost-blur, 20px));
+  filter: blur(var(--scene-frost-blur, 20px)) saturate(var(--scene-frost-saturate, 1.25));
+}
+.ade-scene-frost-tint {
+  position: absolute;
+  inset: 0;
+  background: var(--scene-frost-tint, transparent);
+  box-shadow: var(--scene-frost-inset, none);
+}
+/* Nothing in the frost moves: no fade, so the blur is drawn once. */
+.ade-scene-frame[data-variant="frost"] {
+  transition: none;
+}
+
 /* The picture is the hero: the wordmarks step aside while one is on screen. */
 html[data-scene="image"] .ade-draft-wordmark {
   display: none;

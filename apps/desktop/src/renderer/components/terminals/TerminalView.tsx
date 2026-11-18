@@ -4390,7 +4390,7 @@ export function TerminalView({
         />
       ) : null}
       {exited != null ? (
-        <div className="pointer-events-none absolute bottom-2 right-2 rounded-lg border border-border/15 bg-card backdrop-blur-sm shadow-card px-2 py-1 text-[11px] text-muted-fg">
+        <div className="pointer-events-none absolute bottom-2 right-2 rounded-lg border border-border/15 bg-card shadow-card px-2 py-1 text-[11px] text-muted-fg">
           exited {exited}
         </div>
       ) : null}
@@ -4425,7 +4425,7 @@ export function TerminalView({
       {scrollHint != null && exited == null ? (
         <div
           data-ade-terminal-scroll-hint={scrollHint.toolType}
-          className="absolute bottom-2 right-2 flex items-center gap-2 rounded-lg border border-border/15 bg-card/95 backdrop-blur-sm shadow-card px-2 py-1 text-[11px] text-muted-fg"
+          className="absolute bottom-2 right-2 flex items-center gap-2 rounded-lg border border-border/15 bg-card/95 shadow-card px-2 py-1 text-[11px] text-muted-fg"
         >
           <span>
             Faster: <span className="font-medium text-fg">{scrollHint.keys}</span>

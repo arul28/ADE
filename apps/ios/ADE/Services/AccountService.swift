@@ -1432,7 +1432,12 @@ final class AccountService: ObservableObject {
   func verifyEmailCode(_ code: String) async throws {
     let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let emailVerificationKind else {
-      ProductAnalytics.shared.captureSignInOutcome(.failed)
+      ProductAnalytics.shared.captureSignInOutcome(
+        .failed,
+        provider: ADEAnalyticsSignInProvider.email.rawValue,
+        reason: ADEAnalyticsSignInFailureReason.notStarted.rawValue,
+        errorCode: "missing_attempt"
+      )
       throw AccountError.message("Start the email verification again.")
     }
     lastError = nil
@@ -1448,7 +1453,7 @@ final class AccountService: ObservableObject {
         authenticationOutcome == .newAccount ? .newAccount : .returningUser
       )
     } catch {
-      ProductAnalytics.shared.captureSignInOutcome(.failed)
+      recordSignInFailure(provider: .email, error: error)
       throw error
     }
   }
@@ -1465,7 +1470,7 @@ final class AccountService: ObservableObject {
         authenticationOutcome == .newAccount ? .newAccount : .returningUser
       )
     } catch {
-      ProductAnalytics.shared.captureSignInOutcome(.failed)
+      recordSignInFailure(provider: analyticsProvider(provider), error: error)
       throw error
     }
   }
@@ -1483,9 +1488,33 @@ final class AccountService: ObservableObject {
         authenticationOutcome == .newAccount ? .newAccount : .returningUser
       )
     } catch {
-      ProductAnalytics.shared.captureSignInOutcome(.failed)
+      recordSignInFailure(provider: .apple, error: error)
       throw error
     }
+  }
+
+  /// A failed sign-in, with a closed reason and Clerk's code when it has one.
+  /// The message, the email and any token stay on the device.
+  private func recordSignInFailure(provider: ADEAnalyticsSignInProvider, error: Error) {
+    let failure = ProductAnalytics.signInFailure(
+      provider: provider,
+      error: error,
+      clerkCode: (error as? ClerkAPIError)?.code
+    )
+    ProductAnalytics.shared.captureSignInOutcome(
+      .failed,
+      provider: failure.provider.rawValue,
+      reason: failure.reason.rawValue,
+      errorCode: failure.errorCode
+    )
+  }
+
+  private func analyticsProvider(_ provider: OAuthProvider) -> ADEAnalyticsSignInProvider {
+    let name = String(describing: provider).lowercased()
+    if name.contains("github") { return .github }
+    if name.contains("google") { return .google }
+    if name.contains("apple") { return .apple }
+    return .oauth
   }
 
   func signOut() async {

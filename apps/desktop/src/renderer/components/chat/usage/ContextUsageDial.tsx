@@ -2,7 +2,7 @@ import { Link, useInRouterContext } from "react-router-dom";
 import { settingsRouteFor } from "../../settings/settingsManifest";
 import { providerDisplayName } from "../../../../shared/pendingInputLabels";
 import { HeaderSheet } from "../../app/HeaderSheet";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   HIDDEN_CONTEXT_COMPACT,
   providerSupportsManualCompact,
@@ -12,6 +12,7 @@ import { SmartTooltip, type SmartTooltipContent } from "../../ui/SmartTooltip";
 import { cn } from "../../ui/cn";
 import { formatContextTokens, type ContextUsageViewModel } from "./contextUsageModel";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../../lib/webZoom";
+import { alignLoopsToBeat } from "../../../lib/workBeat";
 
 /**
  * Circular context-window dial for the composer footer. The ring fills as the
@@ -194,6 +195,14 @@ export function ContextUsageDial({
     [compact, modelLabel, usage],
   );
 
+  // The pulse joins the 50 ms beat when it starts, so its steps land on the
+  // frames the thinking indicator already draws (`alignLoopsToBeat`).
+  const pulseRef = useRef<HTMLSpanElement>(null);
+  const pulsing = Boolean(active || compactionPulse) && usage.state === "measured" && usage.ratio != null;
+  useLayoutEffect(() => {
+    if (pulsing) alignLoopsToBeat(pulseRef.current);
+  }, [pulsing]);
+
   const { ratio, usedTokens } = usage;
   if (ratio == null && usedTokens == null) return null;
 
@@ -211,8 +220,16 @@ export function ContextUsageDial({
       <span className="relative inline-flex h-5 w-5 shrink-0 items-center justify-center">
         {/* The pulse runs on this HTML wrapper, never on the SVG circle:
             Chromium repaints an animated SVG element on the main thread every
-            frame, and a Work grid can show several working chats at once. */}
-        <span className={cn("inline-flex", (active || compactionPulse) && "motion-safe:animate-pulse")}>
+            frame, and a Work grid can show several working chats at once.
+            It stays off the step clock (`data-loop-clock="off"`): the clock
+            would seek it from a main-thread timer at each step, and every
+            seek cost a main frame and a commit while the chat worked. On the
+            compositor its 50 ms steps share the thinking indicator's frames. */}
+        <span
+          ref={pulseRef}
+          className={cn("inline-flex", pulsing && "motion-safe:animate-pulse")}
+          data-loop-clock="off"
+        >
         <svg viewBox="0 0 20 20" className="h-5 w-5 -rotate-90" aria-hidden>
           <circle cx="10" cy="10" r={RING_RADIUS} fill="none" stroke="currentColor" strokeWidth="2.5" className="text-fg/[0.09]" />
           <circle

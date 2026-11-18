@@ -402,7 +402,8 @@ extension LanesTabView {
       }
     }
     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-      if actionable {
+      // Archive runs on the lane's computer: none for a lane whose ADE Cloud computer is asleep.
+      if actionable, !laneRestsOnCloud(laneId, sync: syncService) {
         archiveOrRestoreButton(snapshot)
           .tint(snapshot.lane.archivedAt == nil ? ADEColor.warning : ADEColor.success)
       }
@@ -434,11 +435,39 @@ extension LanesTabView {
     }
   }
 
+  /// "Manage lane"; for a lane whose ADE Cloud computer is asleep, "Manage
+  /// computer" (size, free, delete: none of them wakes it).
+  @ViewBuilder
   func manageLaneButton(_ snapshot: LaneListSnapshot) -> some View {
-    Button {
-      detailSheetTarget = LaneDetailSheetTarget(laneId: snapshot.lane.id, snapshot: snapshot, initialSection: .git)
-    } label: {
-      Label("Manage lane", systemImage: "slider.horizontal.3")
+    if laneRestsOnCloud(snapshot.lane.id, sync: syncService) {
+      if let instanceId = cloudLaneComputer(snapshot.lane.id, sync: syncService)?.id {
+        Button {
+          CloudLaneActions.shared.manageComputer(instanceId: instanceId, fromMenu: true)
+        } label: {
+          Label("Manage computer", systemImage: "slider.horizontal.3")
+        }
+      }
+    } else {
+      Button {
+        detailSheetTarget = LaneDetailSheetTarget(laneId: snapshot.lane.id, snapshot: snapshot, initialSection: .git)
+      } label: {
+        Label("Manage lane", systemImage: "slider.horizontal.3")
+      }
+    }
+  }
+
+  /// "Delete lane" for a lane on its own ADE Cloud computer, awake or
+  /// asleep: the account deletes the computer, with no wake.
+  @ViewBuilder
+  func cloudLaneDeleteButton(_ snapshot: LaneListSnapshot) -> some View {
+    if let target = cloudLaneDeleteTarget(laneId: snapshot.lane.id, laneName: snapshot.lane.name, sync: syncService, onDeleted: {
+      await reloadAfterLaneAction(snapshot.lane.id, refreshRemote: true)
+    }) {
+      Button(role: .destructive) {
+        CloudLaneActions.shared.delete(target, fromMenu: true)
+      } label: {
+        Label("Delete lane", systemImage: "trash")
+      }
     }
   }
 
@@ -452,7 +481,13 @@ extension LanesTabView {
     // Built once per pass, not once per row.
     let chips = laneMachineChips
     let remoteSections = visibleRemoteMachineLanes
-    if syncService.isAccountProjectScope, remoteLanes.machines.isEmpty {
+    let accountHasNoLanes = syncService.isAccountProjectScope
+      // A failed read did not show there are none: its machine row says so.
+      && remoteLanes.machines.allSatisfy { $0.snapshots.isEmpty && $0.error == nil }
+    if accountHasNoLanes, !remoteLanes.hasRead {
+      // The first read of the cloud lanes is still out: nothing to say yet.
+      EmptyView()
+    } else if accountHasNoLanes {
       // No computer's copy, and no cloud lane yet.
       ADEEmptyStateView(
         symbol: ADECloudMachine.symbol,
@@ -713,19 +748,23 @@ extension LanesTabView {
     } label: {
       LanePinLabel(pinned: pinnedLaneIds.contains(snapshot.lane.id))
     }
-    Menu {
-      ForEach(LaneColorPalette.entries) { entry in
-        let used = LaneColorPalette.colorsInUse(amongLanes: laneSnapshots.map(\.lane), excluding: snapshot.lane.id)
-        let isTaken = used.contains(entry.hex.lowercased()) && snapshot.lane.color?.lowercased() != entry.hex.lowercased()
-        Button {
-          Task { await applyLaneColor(entry.hex, to: snapshot.lane.id) }
-        } label: {
-          Label(entry.name, systemImage: snapshot.lane.color?.lowercased() == entry.hex.lowercased() ? "checkmark.circle.fill" : "circle.fill")
+    // Color and archive run on the lane's computer.
+    let resting = laneRestsOnCloud(snapshot.lane.id, sync: syncService)
+    if !resting {
+      Menu {
+        ForEach(LaneColorPalette.entries) { entry in
+          let used = LaneColorPalette.colorsInUse(amongLanes: laneSnapshots.map(\.lane), excluding: snapshot.lane.id)
+          let isTaken = used.contains(entry.hex.lowercased()) && snapshot.lane.color?.lowercased() != entry.hex.lowercased()
+          Button {
+            Task { await applyLaneColor(entry.hex, to: snapshot.lane.id) }
+          } label: {
+            Label(entry.name, systemImage: snapshot.lane.color?.lowercased() == entry.hex.lowercased() ? "checkmark.circle.fill" : "circle.fill")
+          }
+          .disabled(isTaken || !canRunLiveActions)
         }
-        .disabled(isTaken || !canRunLiveActions)
+      } label: {
+        Label("Color", systemImage: "paintpalette")
       }
-    } label: {
-      Label("Color", systemImage: "paintpalette")
     }
     Button {
       openLaneIds = [snapshot.lane.id]
@@ -750,7 +789,10 @@ extension LanesTabView {
       }
       .disabled(!canRunLiveActions)
     }
-    archiveOrRestoreButton(snapshot, archiveRole: .destructive)
+    if !resting {
+      archiveOrRestoreButton(snapshot, archiveRole: .destructive)
+    }
+    cloudLaneDeleteButton(snapshot)
     Button {
       UIPasteboard.general.string = snapshot.lane.worktreePath
     } label: {
@@ -789,7 +831,11 @@ extension LanesTabView {
         try await syncService.refreshLaneSnapshots(includeDecorations: includeDecorations)
       }
       let loadedSnapshots = laneSnapshotsByHubRule(
-        try await syncService.fetchLaneListSnapshots(includeArchived: true),
+        laneSnapshotsWithoutCloudMainCheckout(
+          try await syncService.fetchLaneListSnapshots(includeArchived: true),
+          machineKey: syncService.focusedMachineKey,
+          sync: syncService
+        ),
         roster: syncService.activeProject.flatMap { syncService.rosterProject(for: $0) }
       )
       let loadedPullRequests = try await syncService.fetchPullRequestListItems()

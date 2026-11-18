@@ -506,6 +506,7 @@ import {
 } from "../terminals/cliLaunch";
 import { CenteredWorkSurfaceHeader } from "../work/WorkSurfaceHeader";
 import { WorkActivityModule } from "../usage/ActivityModule";
+import { SceneFrost } from "../../scene/SceneFrost";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { cursorCloudAgentWebUrl, cursorCloudErrorMessage, resolveCursorCloudPrCreateFields, pushAutoCreatedLaneOriginForCursorCloud, ensureExistingLaneOriginReadyForCursorCloud } from "../../lib/cursorCloudUtils";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
@@ -6087,12 +6088,18 @@ export function AgentChatPane({
   }, [composerSessionId, sendArrived, setAttachments, setDraft, unsentNoticeEvents, unsentReconcile, unsentReconcileSessionId]);
   // Another machine's chat: pinned there, or on the machine this project tab
   // itself is bound to.
+  // The notice belongs to the chat that was open when it was raised: another
+  // chat opened in this pane doesn't show it, and going back shows it again.
+  // One raised with no chat open (a draft's first send) shows as before.
+  const noticeOwnerRef = useRef<{ notice: typeof chatNotice; sessionId: string | null }>({ notice: null, sessionId: null });
+  if (noticeOwnerRef.current.notice !== chatNotice) noticeOwnerRef.current = { notice: chatNotice, sessionId: selectedSessionId };
+  const paneNotice = noticeOwnerRef.current.sessionId == null || noticeOwnerRef.current.sessionId === selectedSessionId ? noticeForThisChat : null;
   const shownNotice = shownChatNotice(
-    noticeForThisChat,
+    paneNotice,
     (chatRuntimePin ?? projectBinding)?.kind === "remote",
     // Read when the notice renders: the saved-chats read marks a chat whose
     // cloud computer no longer exists (no connection, or gone from the list).
-    chatNotice != null && selectedSessionId != null
+    paneNotice != null && selectedSessionId != null
       && savedChatComputerGone(chatForeignPin, selectedSessionId),
     chatCloudLane ? (chatCloudLane.laneName.trim() || laneLabel?.trim() || null) : null,
   );
@@ -6495,6 +6502,10 @@ export function AgentChatPane({
   // computer is asleep or a new one is set up. Account level, by the chat's
   // machine key; read on open and focus only (`useAdeCloudChatQueue`).
   const cloudQueue = useAdeCloudChatQueue({ pin: chatForeignPin, sessionId: selectedSessionId });
+  // The send card follows this launch and shows its message; the queue list leaves that message out.
+  const followedCloudLaunchId = cloudQueueSend?.chatId === selectedSessionId && cloudQueueSend.wake === "launching"
+    ? cloudQueueSend.launchId
+    : null;
   // A queued row goes when its message arrives in the transcript. The user
   // message carries the `clientSendId` of its send, which is the row's
   // `messageId`, so a row matches by id first. An older host writes no id:
@@ -22320,8 +22331,8 @@ export function AgentChatPane({
         ) : null}
         {renderedSessionId === selectedSessionId ? (
           <CloudQueuedMessages
-            messages={cloudQueue.messages}
-            failed={cloudQueue.failed}
+            messages={cloudQueue.messages.filter((message) => !message.launchId || message.launchId !== followedCloudLaunchId)}
+            failed={cloudQueue.failed.filter((message) => !message.launchId || message.launchId !== followedCloudLaunchId)}
             waking={cloudQueue.waking && !(cloudQueueSend?.chatId === selectedSessionId && cloudQueueSend.wake === "launching")}
             style={RUNTIME_BANNER_STYLE}
             onCancel={cloudQueue.cancel}
@@ -22728,6 +22739,8 @@ export function AgentChatPane({
                             data-draft-depart="fade"
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
+                            {/* Frosted over a scene picture, without a live blur. */}
+                            {appPanelOpen ? null : <SceneFrost />}
                             <div className="flex min-w-0 items-center gap-2">
                               {/* Machine first, then that machine's lanes. Splitting
                                   the two keeps the lane list flat and one machine
@@ -22897,6 +22910,7 @@ export function AgentChatPane({
                             )}
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
+                            {appPanelOpen ? null : <SceneFrost />}
                             {laneAccentColor ? (
                               <LaneAccentDot lane={{ color: laneAccentColor }} size={8} />
                             ) : (

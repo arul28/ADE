@@ -70,12 +70,13 @@ export const NOTICE_TONE_RANK: Record<NoticeTone, number> = {
 
 /**
  * The card material shared by floating banners and toasts: the theme card
- * colour, a hair of translucency with blur, and the app's float shadow.
+ * colour and the app's float shadow. It is opaque with no backdrop blur: the
+ * old 96 % card with a blur showed almost nothing through, and on macOS a
+ * backdrop-filter on the page makes Chromium redraw the whole window for every
+ * change while the notice is up.
  */
 export const NOTICE_FLOAT_SURFACE = {
-  background: "color-mix(in srgb, var(--color-card) 96%, transparent)",
-  backdropFilter: "blur(14px)",
-  WebkitBackdropFilter: "blur(14px)",
+  background: "var(--color-card)",
   boxShadow: "var(--shadow-float)",
 } as const;
 

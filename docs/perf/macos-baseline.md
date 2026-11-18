@@ -729,6 +729,44 @@ you add a poll, a timer, a spawn, a read or a background job.
   60 wakeups a second. `apps/desktop/src/renderer/lib/caretRest.ts` rests the
   caret after 10 s without input, with `caret-animation: manual` in CSS. Apply
   the same rule to any other idle animation or ticker.
+- **No backdrop-filter that stays on the page.** On macOS, one element with a
+  `backdrop-filter` anywhere on the page, even an invisible one, makes
+  Chromium redraw the whole window for every change: a streamed word, a caret,
+  a timer. A long chat had about 100 (one per code block's hidden Copy
+  button), plus one on each of its always-on surfaces: the composer, every
+  message and tool card, the attachment chips, the new-chat shelf, a floating
+  tip. So every frame of a stream or of typing was a full 1600 x 1000 redraw
+  instead of the changed strip. Put the blur only on a surface that is open for
+  a short time (a menu, a popover, a hover state), and give the blur the same
+  condition that shows the element. A blur over a solid surface shows nothing;
+  use a solid colour there. A box that stays over the scene picture keeps its
+  frost with `SceneFrost` (`scene/SceneFrost.tsx`): its slice of the picture
+  under a plain `filter` blur, drawn once, with no backdrop-filter. An element
+  that stays shown on a touch surface (`[@media(hover:none)]`) takes a solid
+  plate for the same reason. Check with the harness dirty rects or Quartz
+  Debug's flash screen updates.
+  A computed `backdrop-filter` of `none` does not prove the element has no
+  blur: the renderer's CSS build keeps only the prefixed
+  `-webkit-backdrop-filter` for a hand-written rule (lightningcss drops the
+  unprefixed one), and that property paints the same blur. Read
+  `getComputedStyle(el).webkitBackdropFilter` too, or count the declarations in
+  the source.
+- **Loops that show together step together.** Each loop that a working chat
+  shows (the thinking glyph, sheen and twinkle, the context dial's pulse)
+  costs a frame per step of its own unless its steps land on the same
+  instants as the others. Step every 50 ms (`lib/workBeat.ts`), give every
+  segment a step timing whose steps are whole beats (a hold included: no
+  `ease`, no 75 ms steps), and start the loop on the beat with
+  `alignLoopsToBeat` when it mounts or comes back from a rest. A loop that
+  shows beside a compositor loop takes `data-loop-clock="off"`: the step clock
+  seeks it from a main-thread timer, and each seek is a main frame and a
+  commit (the dial's pulse cost about 5 main frames and 8 commits a second).
+- **No rotating box around a moving layer.** On macOS a compositor animation
+  inside a rotating ancestor made every frame a full-window redraw: the
+  thinking glyph's strip moved inside a box that turned. Put the turn into the
+  frames themselves (`ThinkingIndicator.tsx` computes each shape's rotation
+  and scale), or keep rotating and moving layers apart, and check the dirty
+  rects again.
 - **A prewarm starts on intent, not on focus.** Start a provider prewarm on the
   first keystroke. A prewarm on focus holds 150-420 MB for a chat that the user
   never writes in.

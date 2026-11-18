@@ -10,7 +10,7 @@ ADE agents edit files and run commands, so permissions matter. The goal is simpl
 
 <CardGroup cols={2}>
   <Card title="Lane scope" icon="code-branch">
-    Sessions run inside the selected lane's worktree under `.ade/worktrees/`, isolated from your primary checkout and from other lanes.
+    Sessions run inside the selected lane's worktree under `.ade/worktrees/`, isolated from your main checkout and from other lanes.
   </Card>
   <Card title="Provider permission modes" icon="robot">
     Each provider runtime exposes its own approval modes; ADE maps them to a common set.
@@ -25,7 +25,7 @@ ADE agents edit files and run commands, so permissions matter. The goal is simpl
 
 ## Lane scope
 
-A lane is a git worktree. Chats, terminals, CLI sessions, and the processes they start are scoped to that worktree, so an agent working a task can't reach into your primary checkout or another lane's files. Do agent edits in lanes and keep the primary checkout for inspection — it's your real working tree and the safer default to leave alone.
+A lane is a git worktree. Chats, terminals, CLI sessions, and the processes they start are scoped to that worktree, so an agent working a task can't reach into your main checkout or another lane's files. Do agent edits in lanes and keep the main checkout for inspection — it's your real working tree and the safer default to leave alone.
 
 ## Per-agent tool control
 
@@ -54,8 +54,8 @@ Local config isn't trust-gated — you only need to trust your own overrides. Tr
 
 ## Practical defaults
 
-- Do agent edits in worktree lanes, not the primary checkout.
-- Keep the primary checkout for inspection or manual commands.
+- Do agent edits in worktree lanes, not the main checkout.
+- Keep the main checkout for inspection or manual commands.
 - Review diffs before committing or pushing.
 - Use stricter approval modes for unfamiliar repositories.
 - Keep provider keys and tokens out of shared config and out of Git.

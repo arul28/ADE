@@ -12367,7 +12367,7 @@ export function createAgentChatService(args: {
   ptyService?: (
     Pick<
       ReturnType<typeof createPtyService>,
-      "create" | "sendToSession" | "enrichSessions" | "canAcceptScheduledTurn" | "getRuntimeState"
+      "create" | "sendToSession" | "enrichSessions" | "canAcceptScheduledTurn" | "canTakeTypedMessage" | "getRuntimeState"
     >
     // Optional so narrow test doubles keep compiling. `listTerminals` /
     // `previewTerminal` serve composer @-mentions (and a CLI child's report
@@ -51737,6 +51737,7 @@ export function createAgentChatService(args: {
   // boundary (`agentCliWakes.ts`). The later helpers are read at call time.
   const {
     agentCliWakeDeferred,
+    agentCliTypingDeferred,
     agentCliOwnedByAnotherRuntime,
     deliverWakeToSession,
     wakeAgentCliParent,
@@ -72980,7 +72981,7 @@ export function createAgentChatService(args: {
       if (isChatToolType(row.toolType)) return true;
       return row.tracked && isTrackedAgentCliToolType(row.toolType) && !row.archivedAt;
     },
-    wakeDeferred: (sessionId) => agentCliWakeDeferred(sessionId),
+    wakeDeferred: (sessionId) => agentCliTypingDeferred(sessionId),
     ownedByAnotherBrain: chatOwnedByAnotherBrain,
     getMovedAwayTarget: (sessionId) => getCrossMachineMoveLock(sessionId, "chat_wait"),
     assertDeliverableHere: (sessionId) => {
@@ -83423,7 +83424,8 @@ export function createAgentChatService(args: {
         // A quiet-output heuristic is not a turn boundary: a CLI can think for
         // longer than the idle timer without printing. The PTY service checks
         // provider-specific visible composer markers plus a short quiet window.
-        return ptyService?.canAcceptScheduledTurn(schedule.sessionId) !== true;
+        // The wake is typed text, so background agents alone do not hold it.
+        return ptyService?.canTakeTypedMessage(schedule.sessionId) !== true;
       }
       // Another live brain runs this chat and fires the row at its own turn
       // boundary; firing it here would start a second provider process. A
@@ -84795,7 +84797,7 @@ ${schedule.prompt}`
      * another runtime took the terminal). Same path as scheduled work and wakes.
      */
     agentCliCanTakeText: (sessionId: string) =>
-      isTrackedAgentCliSession(sessionId) && !agentCliWakeDeferred(sessionId),
+      isTrackedAgentCliSession(sessionId) && !agentCliTypingDeferred(sessionId),
     typeIntoAgentCli: async ({ sessionId, text }: { sessionId: string; text: string }) => {
       if (!isTrackedAgentCliSession(sessionId)) {
         throw new Error(`Session '${sessionId}' is not an agent CLI session.`);

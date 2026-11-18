@@ -477,6 +477,18 @@ func workChatStageAttachmentOnHost(
 }
 
 @MainActor
+/// The staged files' bytes for a message the account holds (a sleeping ADE
+/// Cloud chat). A file restored from a saved draft has no bytes on the phone.
+func workChatCloudQueuedFiles(_ attachments: [WorkChatInputAttachment]) throws -> [CloudQueuedFile] {
+  try workChatInputReadyAttachments(attachments).map { attachment in
+    guard let data = attachment.uploadData ?? attachment.image?.jpegData(compressionQuality: 0.85) else {
+      throw NSError(domain: "ADE", code: 47, userInfo: [NSLocalizedDescriptionKey: "\(attachment.filename) isn't on this phone anymore. Attach it again."])
+    }
+    let contentType = attachment.uploadData == nil ? "image/jpeg" : attachment.mimeType
+    return CloudQueuedFile(name: attachment.filename, contentType: contentType, data: data)
+  }
+}
+
 func workChatSaveInputAttachments(
   _ attachments: [WorkChatInputAttachment],
   syncService: SyncService,
@@ -1223,7 +1235,7 @@ private struct WorkChatAttachmentChip: View {
           Image(systemName: loadFailed ? "photo.badge.exclamationmark" : "photo")
             .font(.system(size: 18, weight: .semibold))
             .foregroundStyle(Color.white.opacity(0.82))
-          Text(loadFailed ? "On desktop" : (isUploading ? "Sending" : "Image"))
+          Text(loadFailed ? "No preview" : (isUploading ? "Sending" : "Image"))
             .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(Color.white.opacity(0.72))
             .lineLimit(1)
@@ -1334,6 +1346,16 @@ private struct WorkChatAttachmentChip: View {
         loadFailed = true
         return
       }
+    }
+
+    // The chat's own machine first: a chat on an ADE Cloud computer or a
+    // second computer keeps its files there, not on the focused machine.
+    if let chatSessionId, !chatSessionId.isEmpty,
+       let dataUrl = try? await syncService.chatScopedImageDataUrl(sessionId: chatSessionId, path: attachment.path),
+       let image = WorkChatAttachmentImagePreview.image(fromDataUrl: dataUrl, maxPixelSize: maxPixelSize) {
+      previewImage = image
+      loadFailed = false
+      return
     }
 
     guard let laneId, !laneId.isEmpty else {

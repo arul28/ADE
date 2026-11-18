@@ -625,6 +625,13 @@ struct WorkSidebarSectionHeader: View {
 struct WorkSessionLaneMenuActions {
   var colorAvailable: Bool = false
   var manageAvailable: Bool = false
+  /// Per lane: it lives on an ADE Cloud computer that is asleep. Such a lane
+  /// has no colour row (it needs the computer), and "Manage lane" becomes
+  /// "Manage computer" (account actions, no wake).
+  var restsOnCloud: (LaneSummary) -> Bool = { _ in false }
+  /// Per lane: its ADE Cloud computer still exists (a saved-only lane's was
+  /// deleted, so it has nothing to manage).
+  var hasCloudComputer: (LaneSummary) -> Bool = { _ in false }
   var onStartChat: (LaneSummary) -> Void = { _ in }
   var onToggleWorkPin: (LaneSummary) -> Void = { _ in }
   var isWorkPinned: (LaneSummary) -> Bool = { _ in false }
@@ -688,7 +695,8 @@ struct WorkLaneContextMenuContent: View {
     } label: {
       Label("Copy", systemImage: "doc.on.doc")
     }
-    if actions.colorAvailable {
+    let resting = actions.restsOnCloud(lane)
+    if actions.colorAvailable, !resting {
       Menu {
         ForEach(LaneColorPalette.entries) { entry in
           Button {
@@ -709,7 +717,15 @@ struct WorkLaneContextMenuContent: View {
         Label("Color", systemImage: "paintpalette")
       }
     }
-    if actions.manageAvailable {
+    if resting {
+      if actions.hasCloudComputer(lane) {
+        Button {
+          actions.onManage(lane)
+        } label: {
+          Label("Manage computer", systemImage: "slider.horizontal.3")
+        }
+      }
+    } else if actions.manageAvailable {
       Button {
         actions.onManage(lane)
       } label: {
@@ -1333,11 +1349,21 @@ struct WorkSessionListRow: View {
       } label: {
         Label("Go to lane", systemImage: "arrow.triangle.branch")
       }
-      if let lane, let laneMenu, laneMenu.manageAvailable {
-        Button {
-          laneMenu.onManage(lane)
-        } label: {
-          Label("Manage lane", systemImage: "slider.horizontal.3")
+      if let lane, let laneMenu {
+        if laneMenu.restsOnCloud(lane) {
+          if laneMenu.hasCloudComputer(lane) {
+            Button {
+              laneMenu.onManage(lane)
+            } label: {
+              Label("Manage computer", systemImage: "slider.horizontal.3")
+            }
+          }
+        } else if laneMenu.manageAvailable {
+          Button {
+            laneMenu.onManage(lane)
+          } label: {
+            Label("Manage lane", systemImage: "slider.horizontal.3")
+          }
         }
       }
       if let pullRequest {

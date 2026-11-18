@@ -58,7 +58,7 @@ struct LanePeekPreview: View {
     VStack(alignment: .leading, spacing: 10) {
       HStack(alignment: .firstTextBaseline, spacing: 8) {
         WorkLaneLogoMark(color: laneAccent, laneIcon: snapshot.lane.icon, emoji: snapshot.lane.emoji, size: 12)
-        Text(snapshot.lane.name)
+        Text(snapshot.lane.displayName)
           .font(.headline)
           .foregroundStyle(laneAccent)
         if let pullRequest {

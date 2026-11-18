@@ -41,6 +41,7 @@ import { CloudProviderError, type CloudProvider } from "./provider";
 import { LAUNCH_COMPUTER_DELETED, deleteComputer, logCloud, ownedComputer, parseJsonColumn, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome } from "./createOutcome";
 import { launchChannel, readUpdateChannel, readUpdateTargets } from "./updates";
+import { markKeepLaneStatement } from "./lanesWithoutComputer";
 import type { ServerGitCheck } from "./accountVault";
 import {
   LAUNCH_MESSAGE_ID,
@@ -184,7 +185,7 @@ export function isLaunchJoinRequest(path: string, method: string): boolean {
   return method === "POST" && route?.action === "join" && route.rest.length === 0;
 }
 
-const r2KeyOf = (userId: string, launchId: string, fileId: string) => `launches/${userId}/${launchId}/${fileId}`;
+export const r2KeyOf = (userId: string, launchId: string, fileId: string) => `launches/${userId}/${launchId}/${fileId}`;
 const r2PrefixOf = (userId: string, launchId: string) => `launches/${userId}/${launchId}/`;
 
 /** Compares two hex digests without stopping at the first difference. */
@@ -897,7 +898,9 @@ async function handlePutFile(request: Request, env: CloudEnv, userId: string, la
 async function handleGetFile(env: CloudEnv, row: LaunchRow, fileId: string): Promise<Response> {
   if (!FILE_ID.test(fileId)) return notFound();
   const request = parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" });
-  const named = request?.chat?.attachments?.some((file) => file.fileId === fileId);
+  // A started launch serves the files its first message names. A draft serves
+  // any of its files to its owner: a queued chat message names its files there.
+  const named = row.state === "draft" || request?.chat?.attachments?.some((file) => file.fileId === fileId);
   const object = named && env.CLOUD_CHATS ? await env.CLOUD_CHATS.get(r2KeyOf(row.user_id, row.launch_id, fileId)) : null;
   if (!object) return notFound();
   return new Response(object.body, {
@@ -1375,7 +1378,45 @@ export async function failUnjoinedLaunches(
       reportCloudFailure("cloud.launch_never_joined_end_failed", { launchId: row.launch_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
     });
   }
+  // A failed launch that continued a lane with no computer, before its agent
+  // ran: the new computer took the lane (its adoption ended the lane's row
+  // here) but never made it, so every later send would go to a computer
+  // without the lane or its chat. Its computer goes, and the lane is kept
+  // without one again, so the next send starts a new computer as before.
+  const continued = (await env.DB.prepare(`
+    select l.* from cloud_launches l join cloud_computers c on c.instance_id = l.instance_id and c.user_id = l.user_id
+    where l.state = 'failed' and l.continue_chat_id is not null and l.lane_id is not null and c.deleted_at is null
+      and not exists (
+        select 1 from json_each(case when json_valid(l.stages_json) then l.stages_json else '[]' end)
+        where json_extract(value, '$.id') = ? and coalesce(json_extract(value, '$.status'), 'pending') <> 'pending'
+      )
+    limit ?
+  `).bind(AGENT_STAGE, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
+  for (const row of continued) {
+    try {
+      const computer = await ownedComputer(env, row.user_id, row.instance_id!);
+      if (!computer) continue;
+      const facts = {
+        laneId: computer.lane_id ?? row.lane_id,
+        laneName: computer.lane_name ?? row.lane_name,
+        projectOrigin: computer.lane_project_origin ?? row.project_origin,
+        branch: computer.lane_branch ?? continuedBranchOf(row),
+      };
+      if (facts.laneId && facts.laneName) await markKeepLaneStatement(env, computer, facts, "freed").run();
+      await deleteComputer(env, provider, computer, { who: "launch_continue", reason: "launch_continue_failed" }, now);
+      logCloud("cloud.launch_continue_failed_lane_kept", { userId: row.user_id, launchId: row.launch_id, instanceId: row.instance_id });
+    } catch (error) {
+      reportCloudFailure("cloud.launch_continue_failed_end_failed", { launchId: row.launch_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+    }
+  }
   return ended;
+}
+
+/** The branch a continue launch named for its lane, from its stored request. */
+function continuedBranchOf(row: LaunchRow): string | null {
+  const request = parseJsonColumn<{ lane?: { existingBranch?: unknown } } | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" });
+  const branch = request?.lane?.existingBranch;
+  return typeof branch === "string" && branch.trim() ? branch.trim() : null;
 }
 
 /** Most launch records one tick deletes; the rest wait for the next. */

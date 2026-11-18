@@ -57,6 +57,9 @@ struct WorkModelPickerSheet: View {
   /// Reports the Copilot tiers with each selection, before `onSelect` fires.
   let onSelectCopilotTiers: ((String, String?) -> Void)?
   let onSelect: (WorkModelOption, String?, String, Bool) -> Void
+  /// ADE Cloud's models, when the chat starts on ADE Cloud: the picker lists
+  /// these instead of asking the connected machine, which may not exist.
+  let cloudCatalog: CloudModelCatalog?
 
   init(
     currentModelId: String,
@@ -78,8 +81,10 @@ struct WorkModelPickerSheet: View {
     currentCopilotAutoTier: String? = nil,
     copilotAutoTierPending: Bool = false,
     onSelectCopilotTiers: ((String, String?) -> Void)? = nil,
+    cloudCatalog: CloudModelCatalog? = nil,
     onSelect: @escaping (WorkModelOption, String?, String, Bool) -> Void
   ) {
+    self.cloudCatalog = cloudCatalog
     self.currentModelId = currentModelId
     self.currentProvider = currentProvider
     self.currentReasoningEffort = currentReasoningEffort
@@ -122,6 +127,8 @@ struct WorkModelPickerSheet: View {
   @State private var rawCatalogGroups: [WorkModelCatalogGroup]?
   @State private var scopedCatalogGroups: [WorkModelCatalogGroup]?
   @State private var isLoadingCatalog = false
+  /// Why ADE Cloud's model list didn't load (the account server failed).
+  @State private var cloudCatalogError: String?
   @State private var didPickInitialSelection = false
   @State private var selectedProviderTabKey: String?
   @State private var selectedModelId: String
@@ -242,6 +249,8 @@ struct WorkModelPickerSheet: View {
         topControlBar
         if isLoadingCatalog && catalog.isEmpty && !customHarnessesAvailable {
           loadingState
+        } else if let cloudCatalogError, catalog.isEmpty {
+          cloudCatalogErrorState(cloudCatalogError)
         } else if catalog.isEmpty && !customHarnessesAvailable {
           catalogEmptyState
         } else {
@@ -314,11 +323,22 @@ struct WorkModelPickerSheet: View {
         picker.load(syncService: syncService)
       }
     }
-    .task(id: "\(currentModelId)\u{0}\(currentProvider)") {
+    .task(id: "\(currentModelId)\u{0}\(currentProvider)\u{0}\(cloudCatalog.map { "\($0.version ?? "")/\($0.providers.count)" } ?? "")") {
       await loadLiveCatalog()
       pickInitialSelectionIfNeeded()
       if case .providerGroup(let key, _) = selection {
         await refreshCatalog(for: key)
+      }
+      // The host lists a provider whose models come from its own CLI or a
+      // probe (OpenCode, Cursor, Droid, Pi, the ACP providers…) only once it
+      // has read them. A group that is not listed has no tile to tap, so its
+      // per-group refresh never runs: ask for each missing one here. One at a
+      // time, so the last catalog applied is the most complete.
+      if cloudCatalog == nil {
+        for key in Self.refreshableGroupKeys where rawCatalogGroups?.contains(where: { $0.key == key }) != true {
+          guard !Task.isCancelled else { return }
+          await refreshCatalog(for: key)
+        }
       }
     }
     // The scoped catalog is cached, so a change to either scoping input must
@@ -565,9 +585,33 @@ struct WorkModelPickerSheet: View {
       Spacer(minLength: 24)
       ProgressView()
         .tint(ADEColor.accent)
-      Text("Loading models from the paired machine…")
+      Text(cloudCatalog == nil ? "Loading models from the paired machine…" : "Loading ADE Cloud’s models…")
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
+      Spacer(minLength: 24)
+    }
+    .frame(maxWidth: .infinity)
+  }
+
+  private func cloudCatalogErrorState(_ message: String) -> some View {
+    VStack(spacing: 12) {
+      Spacer(minLength: 24)
+      Image(systemName: "exclamationmark.icloud")
+        .font(.title3.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+      Text("Couldn't load ADE Cloud's models.")
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      Text(message)
+        .font(.footnote)
+        .foregroundStyle(ADEColor.textSecondary)
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, 28)
+      Button("Retry") {
+        Task { await loadLiveCatalog() }
+      }
+      .buttonStyle(.bordered)
+      .tint(ADEColor.accent)
       Spacer(minLength: 24)
     }
     .frame(maxWidth: .infinity)
@@ -695,6 +739,23 @@ struct WorkModelPickerSheet: View {
 
   @MainActor
   private func loadLiveCatalog() async {
+    if var cloudCatalog {
+      if cloudCatalog.providers.isEmpty {
+        let launches = AccountCloudLaunchStore.shared
+        cloudCatalogError = nil
+        isLoadingCatalog = true
+        await launches.loadCatalogIfNeeded(using: syncService)
+        isLoadingCatalog = false
+        guard !Task.isCancelled else { return }
+        if let loaded = launches.catalog {
+          cloudCatalog = loaded
+        } else {
+          cloudCatalogError = launches.catalogError ?? "Check your connection, then try again."
+        }
+      }
+      setHostGroups(workModelCatalogGroups(cloudCatalog: cloudCatalog))
+      return
+    }
     isLoadingCatalog = true
     defer { isLoadingCatalog = false }
 
@@ -712,16 +773,16 @@ struct WorkModelPickerSheet: View {
   }
 
   @MainActor
+  /// Groups whose models the host reads from the provider itself
+  /// (`AgentChatModelCatalogRefreshProvider`); Claude and Codex always list.
+  static let refreshableGroupKeys = [
+    "opencode", "cursor", "droid", "pi", "muse", "qwen", "kimi", "grok",
+    "copilot", "devin", "antigravity", "lmstudio", "ollama",
+  ]
+
   private func refreshCatalog(for groupKey: String) async {
-    let refreshProvider: String?
-    switch groupKey {
-    case "opencode", "cursor", "droid", "pi", "muse", "lmstudio", "ollama",
-         "qwen", "kimi", "grok", "copilot", "devin", "antigravity":
-      refreshProvider = groupKey
-    default:
-      refreshProvider = nil
-    }
-    guard let refreshProvider else { return }
+    guard cloudCatalog == nil, Self.refreshableGroupKeys.contains(groupKey) else { return }
+    let refreshProvider = groupKey
     do {
       let hostCatalog = try await modelCatalog(mode: "refresh-stale", refreshProvider: refreshProvider)
       guard !Task.isCancelled else { return }

@@ -57,7 +57,16 @@ import { AdeWordmark } from "../ui/AdeWordmark";
  * as one flow with the sign-in card between them.
  */
 
-export function FirstRunWelcome({ onStart, onSkip }: { onStart: () => void; onSkip: () => void }) {
+export function FirstRunWelcome({
+  onStart,
+  onSkip,
+  skipLabel = "Skip setup",
+}: {
+  onStart: () => void;
+  onSkip: () => void;
+  /** ADE Web has no setup to skip: its link skips the tour instead. */
+  skipLabel?: string;
+}) {
   const agents = useMemo(() => firstRunAgents(), []);
   return (
     <div className="ade-glass-card ade-fr-welcome" data-testid="first-run-welcome">
@@ -93,7 +102,7 @@ export function FirstRunWelcome({ onStart, onSkip }: { onStart: () => void; onSk
           <ArrowRight size={16} weight="bold" className="ade-glass-primary-arrow" />
         </button>
         <button type="button" className="ade-glass-link" onClick={onSkip}>
-          Skip setup
+          {skipLabel}
         </button>
       </div>
     </div>

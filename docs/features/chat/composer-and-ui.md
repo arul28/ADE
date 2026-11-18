@@ -40,7 +40,7 @@ Unqualified files are in `apps/desktop/src/renderer/components/chat/`.
 | `CodexVoice.tsx`, `VoiceSessionCard.tsx`, `main/services/chat/codexVoiceSession.ts`, `codexVoiceNarration.ts`, `codexVoiceHost.ts`, `shared/codexVoice.ts`, `components/settings/VoiceConversationSection.tsx` | Voice conversations; see [Voice conversations](#voice-conversations). |
 | `resources/voice/voice-glossary.json`, `resources/whisper/README.md` | The dictation glossary and binary notes; `materialize-whisper-resources.mjs` builds `transcribe-cli` from a pinned commit (git-ignored; the model downloads at runtime). |
 | `components/work/useSessionLifecycleSnapshot.ts` | The read behind `ChatLifecyclePill` (settled, snoozed): the Work session cache, then the cross-machine lane snapshot; a render-only timer repaints an expired snooze. Wake now calls `wakeSessionNow` (`sessionLifecycleActions.ts`). |
-| `ChatSurfaceShell.tsx` | Floating header, body and footer. `canvasFill` overrides `--chat-canvas-bg` (the Work draft passes `transparent`). On Work, `.ade-chat-shell-header` uses `--ade-work-chrome-rail-h` like `.ade-tool-header`. |
+| `ChatSurfaceShell.tsx` | Floating header, body and footer: tinted, opaque chrome with no `backdrop-filter`, because one on the page makes Chromium on macOS redraw the whole window for every change. `canvasFill` overrides `--chat-canvas-bg` (the Work draft passes `transparent`). On Work, `.ade-chat-shell-header` uses `--ade-work-chrome-rail-h` like `.ade-tool-header`. |
 | `ChatComposerShell.tsx` | Composer input chrome. |
 | `chatComposerOverlayInset.tsx`, `ChatJumpToLatestPill.tsx` | The composer stack's height and element go through `ChatComposerOverlayContext`; consumers write it to DOM styles (`useChatComposerOverlayInset`, `ChatComposerOverlayClear`), never React state. The jump pill docks in `data-chat-composer-jump-slot` while the chip row shows a chip (`useChatComposerJumpSlot`). |
 | `ChatAttachmentTray.tsx`, `ChatAttachmentPreviewModal.tsx` | Attachment tray for the composer and sent messages; see [Attachment handling](#attachment-handling). |
@@ -151,7 +151,7 @@ composer publishes its target through
 4. Mounts the header, list, composer and side panels by `executionMode` and
    capabilities.
 
-`ChatSurfaceShell` gives a floating glass header, a body on `--chat-canvas-bg`
+`ChatSurfaceShell` gives a floating header (tinted and opaque, no backdrop blur), a body on `--chat-canvas-bg`
 (or `canvasFill`; the empty Work draft is transparent) and a composer footer.
 
 In an open Work chat (`overlayFooter`) the footer floats over the body and the
@@ -206,6 +206,15 @@ re-resolved by identity:
   Switching back to the source machine drops the pending remap.
 - An unknown lane on an unchanged machine stays an error. A catalog with zero
   lanes keeps the selection unresolved until the real list arrives.
+
+Over a scene picture, the shelf and the Chat / CLI switch are frosted with
+`SceneFrost` (`renderer/scene/SceneFrost.tsx`), not with a `backdrop-filter`:
+each mounts its slice of the window-sized picture under a plain `filter` blur,
+with its own tint on top (`styles/scene.css`). The blur is drawn once, so typing
+the first message redraws only what changed. Without a picture they keep a flat
+tint. The activity card under the shelf stays an opaque plate with no blur. The
+slice follows its box when the box moves: `SceneImageLayer` with
+`variant="frost"` also watches the boxes around it for a size change.
 
 **Loading hold.** A foreign machine with no lane read yet holds the selection
 and shows `Loading lanes for <machine>…` (one string for the placeholder and

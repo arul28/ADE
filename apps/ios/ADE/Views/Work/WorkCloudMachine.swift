@@ -109,8 +109,15 @@ struct WorkCloudLaunchCard: View {
         }
       } else if running {
         HStack(spacing: 8) {
-          Button("Open chat", action: onOpenChat)
-            .buttonStyle(ADEKitButtonStyle(prominent: true))
+          if record?.sessionId != nil {
+            Button("Open chat", action: onOpenChat)
+              .buttonStyle(ADEKitButtonStyle(prominent: true))
+          } else {
+            ProgressView().controlSize(.small)
+            Text("Opening the chat…")
+              .font(.system(size: 12))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
           Button("Hide") { launches.hide(entry.launchId) }
             .buttonStyle(ADEKitButtonStyle())
         }
@@ -675,76 +682,5 @@ private struct CloudQueueFollowModifier: ViewModifier {
           }
         }
       }
-  }
-}
-
-/// The models ADE Cloud runs, from the account server's catalog, one
-/// section per provider. A provider that signs in only in ADE desktop
-/// stays selectable: the desktop's sign-in carries to ADE Cloud.
-struct CloudModelPickerSheet: View {
-  let provider: String
-  let modelId: String
-  let onPick: (String, String) -> Void
-  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
-  @ObservedObject private var launches = AccountCloudLaunchStore.shared
-  @Environment(\.dismiss) private var dismiss
-
-  var body: some View {
-    NavigationStack {
-      List {
-        if let catalog = launches.catalog {
-          if catalog.providers.isEmpty {
-            Text("ADE Cloud lists no models for this account.")
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-          ForEach(catalog.providers, id: \.provider) { entry in
-            Section {
-              ForEach(entry.models, id: \.id) { model in
-                Button {
-                  onPick(entry.provider, model.id)
-                  dismiss()
-                } label: {
-                  HStack {
-                    Text(model.displayName)
-                      .foregroundStyle(ADEColor.textPrimary)
-                    Spacer(minLength: 8)
-                    if entry.provider == provider && model.id == modelId {
-                      Image(systemName: "checkmark")
-                        .foregroundStyle(ADEColor.accent)
-                        .accessibilityLabel("Selected")
-                    }
-                  }
-                  .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-              }
-            } header: {
-              Text(entry.label)
-            } footer: {
-              if entry.remoteSignIn == "desktop" {
-                Text(cloudDesktopSignInSentence(label: entry.label))
-              }
-            }
-          }
-        } else if let error = launches.catalogError {
-          Text(error).foregroundStyle(ADEColor.danger)
-        } else {
-          HStack(spacing: 8) {
-            ProgressView().controlSize(.small)
-            Text("Loading ADE Cloud's models…").foregroundStyle(ADEColor.textSecondary)
-          }
-        }
-      }
-      .navigationTitle("Models on ADE Cloud")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Done") { dismiss() }
-        }
-      }
-    }
-    .presentationDetents([.medium, .large])
-    .task { await launches.loadCatalogIfNeeded(using: syncPublishes.service) }
-    .adeInspectable("Work.NewChat.CloudModels")
   }
 }

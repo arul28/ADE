@@ -47,7 +47,7 @@ RUN curl -fsSL https://ade-app.dev/install.sh -o /tmp/install.sh \
       ADE_INSTALL_NO_PROMPT=1 ADE_INSTALL_NO_PATH=1 sh /tmp/install.sh \
  && chmod -R a+rX /opt/ade && rm /tmp/install.sh \
  && ln -s /opt/ade/bin/ade /usr/local/bin/ade \
- && ade --version
+ && DO_NOT_TRACK=1 ADE_SENTRY_DISABLED=1 ADE_TEMPLATE_CHECK=1 ade --version
 
 # The GitHub CLI. Agents run `gh` (PRs, issues, checks), and ADE's `gh` shim
 # (githubShellShim.ts) only adds the account's GitHub token and then runs the
@@ -121,6 +121,7 @@ RUN set -eu; baked=/opt/ade-tools; scratch=/tmp/ade-bake; mkdir -p "$baked"; \
     for tool in $ADE_BAKED_TOOLS; do \
       root="$scratch/$tool"; \
       if ! HOME="$scratch/home" ADE_HOME="$scratch/home/.ade" ADE_TOOLS_ROOT="$root" \
+           DO_NOT_TRACK=1 ADE_SENTRY_DISABLED=1 ADE_TEMPLATE_CHECK=1 \
            ade tools ensure "$tool" > "$scratch.log" 2>&1 \
          || [ -z "$(find "$root" -name .install-complete 2>/dev/null | head -n 1)" ]; then \
         echo "bake: $tool did not install; it downloads on first use" >&2; cat "$scratch.log" >&2 || true; \

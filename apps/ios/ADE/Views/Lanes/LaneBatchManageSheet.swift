@@ -75,17 +75,30 @@ struct LaneBatchManageSheet: View {
     snapshots.map(\.lane).filter { $0.status.dirty && $0.laneType != "primary" }.map(\.name)
   }
 
+  /// Lanes on an ADE Cloud computer: each is deleted from its own menu,
+  /// where the account deletes its computer too (a host delete would leave
+  /// the computer running). One whose computer is asleep can't be archived.
+  private var cloudLaneIds: Set<String> {
+    Set(snapshots.map(\.lane.id).filter { cloudLaneComputer($0, sync: syncService) != nil || laneRestsOnCloud($0, sync: syncService) })
+  }
+
+  private var cloudLaneNames: [String] {
+    let ids = cloudLaneIds
+    return snapshots.map(\.lane).filter { ids.contains($0.id) && $0.laneType != "primary" }.map(\.name)
+  }
+
   private var deletableLaneIds: [String] {
-    snapshots
+    let cloud = cloudLaneIds
+    return snapshots
       .map(\.lane)
-      .filter { $0.laneType != "primary" && (deleteForce || !$0.status.dirty) }
+      .filter { $0.laneType != "primary" && (deleteForce || !$0.status.dirty) && !cloud.contains($0.id) }
       .map(\.id)
   }
 
   private var archivableLaneIds: [String] {
     snapshots
       .map(\.lane)
-      .filter { $0.archivedAt == nil && $0.laneType != "primary" }
+      .filter { $0.archivedAt == nil && $0.laneType != "primary" && !laneRestsOnCloud($0.id, sync: syncService) }
       .map(\.id)
   }
 
@@ -104,7 +117,7 @@ struct LaneBatchManageSheet: View {
                 )
                 .frame(width: 18)
                 VStack(alignment: .leading, spacing: 2) {
-                  Text(snapshot.lane.name)
+                  Text(snapshot.lane.displayName)
                     .font(.system(size: 14.5, weight: .medium))
                     .foregroundStyle(ADEColor.textPrimary)
                     .lineLimit(1)
@@ -153,6 +166,13 @@ struct LaneBatchManageSheet: View {
                 LaneTextField("Remote name", text: $deleteRemoteName)
                   .textInputAutocapitalization(.never)
                   .autocorrectionDisabled()
+              }
+
+              if !cloudLaneNames.isEmpty {
+                ADESettingsNotice(
+                  message: "Not deleted here: \(cloudLaneNames.joined(separator: ", ")). Delete an ADE Cloud lane from its own menu, so its computer goes with it.",
+                  tone: .neutral
+                )
               }
 
               if !dirtyLaneNames.isEmpty {

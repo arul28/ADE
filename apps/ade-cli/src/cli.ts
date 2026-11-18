@@ -32533,6 +32533,9 @@ async function runServe(
       secretsDir: layout.secretsDir,
       logger: headlessProjectLogger,
       account: brainAccountAuthService,
+      onAccountSignedIn: (status) => {
+        syncAccountAnalyticsIdentity(status, brainProductAnalytics);
+      },
       directoryBaseUrl: getSharedAccountDirectoryBaseUrl,
       clerkIssuer: () => getSharedAccountAttestationConfig().issuer,
       projectRegistry,
@@ -32568,6 +32571,26 @@ async function runServe(
           logger: headlessProjectLogger,
           restore: (restoreArgs) => chat.restoreSavedCloudChat(restoreArgs),
           restoreCli: (restoreArgs) => chat.restoreSavedCloudCli(restoreArgs),
+          adopt: adoptRestoredCloudChat,
+          hold: holdRestoringCloudChat,
+          release: releaseRestoringCloudChat,
+        }, args);
+      },
+      // A lane that came back here brings its other saved chats (C3).
+      restoreLaneChats: async (projectId, args) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        const api = await accountCloudApi();
+        if (!chat || !api) return 0;
+        const [{ restoreLaneChats }, { adoptRestoredCloudChat, holdRestoringCloudChat, releaseRestoringCloudChat }] = await Promise.all([
+          import("./services/cloudChats/cloudChatRestore"),
+          import("./services/cloudChats/cloudChatUploader"),
+        ]);
+        return await restoreLaneChats({
+          api,
+          instanceId: cloudInstanceId,
+          machineKey: machineCloudRelayStore.getMachineIdentity().machineKey,
+          logger: headlessProjectLogger,
+          restore: (restoreArgs) => chat.restoreSavedCloudChat(restoreArgs),
           adopt: adoptRestoredCloudChat,
           hold: holdRestoringCloudChat,
           release: releaseRestoringCloudChat,

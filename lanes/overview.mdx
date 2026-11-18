@@ -10,14 +10,14 @@ A **lane** is ADE's name for a git worktree: an isolated branch and working copy
   <img src="/media/current/lanes.jpg" alt="The Lanes tab with a lane selected" />
 </Frame>
 
-## The primary lane vs. your lanes
+## The main checkout vs. your lanes
 
-When you open a repository, your existing checkout — the repo root — becomes the **primary lane**. It always exists and can't be deleted. Agents *can* work in it, but it's your real working tree, so the safer habit is to leave the primary lane alone and do agent work in fresh lanes.
+When you open a repository, your existing checkout — the repo root — becomes the **main checkout**. It always exists and can't be deleted. Agents *can* work in it, but it's your real working tree, so the safer habit is to leave the main checkout alone and do agent work in fresh lanes.
 
-Everything else is a lane you create. Each new lane is its own git worktree under `.ade/worktrees/`, completely isolated from the primary checkout and from other lanes.
+Everything else is a lane you create. Each new lane is its own git worktree under `.ade/worktrees/`, completely isolated from the main checkout and from other lanes.
 
 <Note>
-You don't pick a "lane type" — the primary lane is just your repo root, and every other lane is a worktree. What differs is **how** you bring a lane into being.
+You don't pick a "lane type" — the main checkout is just your repo root, and every other lane is a worktree. What differs is **how** you bring a lane into being.
 </Note>
 
 ## Ways to create a lane
@@ -105,7 +105,7 @@ A lane is more than a branch — it's a full parallel workspace.
 
 ADE has one rule for organizing your work: **a repository is one project, and every working tree of that repository is a lane inside it.**
 
-- The repository's main checkout is the project root. It becomes the **primary lane**, which always exists and is edit-protected.
+- The repository root is the project root. It becomes the **main checkout**, which always exists and is edit-protected.
 - Lanes ADE creates for you live under `.ade/worktrees/` inside the project.
 - Worktrees you created yourself with `git worktree add` can be attached as lanes too, wherever they live on disk.
 
@@ -119,7 +119,7 @@ If you point ADE at a directory that is a linked worktree, ADE recognizes it and
 - **Not a lane yet** — ADE offers to attach it as a lane in the owning project and take you there. This is the recommended path.
 - **Owning repo not added yet** — ADE offers to add the main repository as the project and open the worktree as a lane in it, in one step.
 
-You can still choose **Open as a separate project** if you really want the worktree to stand alone — for example, if your main clone is a bare repository and there is no primary checkout to open.
+You can still choose **Open as a separate project** if you really want the worktree to stand alone — for example, if your main clone is a bare repository and there is no main checkout to open.
 
 ### Merging a stray worktree project
 

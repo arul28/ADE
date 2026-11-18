@@ -107,13 +107,22 @@ const CONNECTED_CHAT_WAIT_MS = 15_000;
  */
 export function WebCloudSetupCards({ originUrl, className }: { originUrl: string | null; className?: string }) {
   const { entries } = useAccountCloudLaunches();
-  const shown = useMemo(
-    () => launchesForOrigin(entries, originUrl).filter((entry) => (
+  const cloudIndex = useAdeCloudLaneComputers();
+  const shown = useMemo(() => {
+    // A failed launch whose lane is on another computer now was replaced by a
+    // later launch: it is no longer something to retry (a Retry would make the
+    // lane a second computer).
+    const replaced = (record: CloudLaunchRecord | null) => record?.state === "failed"
+      && record.laneId != null
+      && cloudIndex.computers.some((computer) => (
+        computer.laneId === record.laneId && computer.instanceId !== record.instanceId && computer.state !== "deleting"
+      ));
+    return launchesForOrigin(entries, originUrl).filter((entry) => (
       entry.record?.state !== "cancelled"
+      && !replaced(entry.record)
       && (launchInProgress(entry) || entry.startError != null || entry.record?.state === "failed" || entry.startedHere)
-    )),
-    [entries, originUrl],
-  );
+    ));
+  }, [entries, originUrl, cloudIndex.computers]);
   const readySessionIds = useMemo(
     () => shown.flatMap((entry) => (entry.record?.sessionId ? [entry.record.sessionId] : [])),
     [shown],
@@ -122,7 +131,6 @@ export function WebCloudSetupCards({ originUrl, className }: { originUrl: string
   const workspace = useOptionalWebWorkspace();
   const navigate = useNavigate();
   const webMachines = useWebMachines();
-  const cloudIndex = useAdeCloudLaneComputers();
   // "Open chat" on a launch whose computer this tab has not connected: connect it first, then open the chat.
   const [opening, setOpening] = useState<CloudLaunchRecord | null>(null);
   const machineOf = (record: CloudLaunchRecord) => {

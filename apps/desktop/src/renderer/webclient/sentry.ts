@@ -23,11 +23,16 @@ import { webClientVersion } from "../lib/webClientMode";
 export function initWebClientSentry(): void {
   const devOptIn = new URLSearchParams(window.location.search).get("ade_sentry_dev") === "1";
   if (!import.meta.env.PROD && !devOptIn) return;
-  if (navigator.doNotTrack === "1") return;
+  if (navigator.doNotTrack === "1" || navigator.webdriver) return;
   // An analytics opt-out recorded in an earlier build covers error tracking too.
   if (window.localStorage?.getItem("ade:web-product-analytics-enabled") === "false") return;
   const hooks = createSentryEventHooks();
   const version = webClientVersion();
+  const releaseChannel = resolveReleaseChannel({
+    env: {},
+    packaged: import.meta.env.PROD,
+    version,
+  });
   Sentry.init({
     dsn: SENTRY_DSNS.web,
     release: sentryReleaseName(version),
@@ -50,13 +55,15 @@ export function initWebClientSentry(): void {
     beforeSendLog: hooks.beforeSendLog,
   });
   connectSentry(Sentry);
-  // No `is_internal`: a browser has no team-install marker. No `arch`: a
-  // browser does not say it reliably.
+  // No team-install marker in a browser. A development build that opted in
+  // (`?ade_sentry_dev=1`) is still internal. No `arch`: a browser does not
+  // say it reliably.
   Sentry.setTags({
     ...sentryCommonTags({
       surface: "web",
       client: "web",
-      releaseChannel: resolveReleaseChannel({ env: {}, packaged: import.meta.env.PROD, version }),
+      releaseChannel,
+      isInternal: releaseChannel === "development" ? true : undefined,
     }),
     process: "web-client",
   });

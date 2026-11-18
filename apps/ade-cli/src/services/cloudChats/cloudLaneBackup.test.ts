@@ -259,6 +259,22 @@ describe("lane backups", () => {
     expect(git(origin, "for-each-ref")).toBe(originBefore);
   });
 
+  it("a lane branch on neither GitHub nor a backup starts again at the default branch, without a push, and says so", async () => {
+    const { origin } = seedOrigin();
+    const originBefore = git(origin, "for-each-ref");
+    const server = fakeServer();
+    const project = path.join(root, "project");
+    git(root, "clone", "-q", origin, project);
+
+    const made = await prepareLaneBranchFromBackup({ api: server.api, machineKey: "key-new", laneId: LANE, branchRef: "ade/never-on-github", projectRoot: project, logger });
+
+    expect(made).toEqual({ created: true, branch: "ade/never-on-github", note: "ade/never-on-github wasn't on GitHub, so ADE started it again from main." });
+    expect(git(project, "rev-parse", "refs/heads/ade/never-on-github")).toBe(git(project, "rev-parse", "refs/remotes/origin/main"));
+    // A retry finds the branch it made: still not published.
+    expect(await prepareLaneBranchFromBackup({ api: server.api, machineKey: "key-new", laneId: LANE, branchRef: "ade/never-on-github", projectRoot: project, logger })).toEqual(made);
+    expect(git(origin, "for-each-ref")).toBe(originBefore);
+  });
+
   it("a branch GitHub deleted after its push (a squash merge) is saved again with its pushed commits, and a new computer gets them all back", async () => {
     const { origin, source } = seedOrigin();
     write(source, "pushed.ts", "export const pushed = 1;\n");

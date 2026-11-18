@@ -67,7 +67,7 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import { isUuid } from "../../../../desktop/src/shared/uuid";
 import type { ProjectRegistry } from "../projects/projectRegistry";
-import type { AccountAuthService } from "./accountAuthService";
+import type { AccountAuthService, AccountAuthStatus } from "./accountAuthService";
 import type { HeadlessApprovalResult } from "./cloudHeadlessApproval";
 import { deliverQueuedMessagesWithRetry, isFinalRefusal } from "./cloudLaunchMessages";
 import { SIGN_IN_STAGE, SIGN_IN_WAIT_MS, waitForProviderSignIn, type ProviderReady } from "./cloudLaunchSignInWait";
@@ -155,6 +155,12 @@ export type CloudBootLaunchDeps = {
     kind?: "chat" | "cli";
   }) => Promise<{ sessionId: string; promptSent?: boolean }>;
   /**
+   * A lane that comes back here (a new computer for a kept lane, or a continue)
+   * gets its other saved chats back too (`restoreLaneChats`): their old computer
+   * is gone, so they list under this one. Returns how many came back.
+   */
+  restoreLaneChats?: (projectId: string, args: { laneId: string; projectKey: string }) => Promise<number>;
+  /**
    * Waits until the chat's running turn is over; false when it still runs at the
    * wait's limit. Claude takes a send during a turn and then fails that turn, so
    * a queued message goes only to an idle chat.
@@ -188,6 +194,8 @@ type BootState = {
    * is done, so a restart does it then.
    */
   continueChat?: PendingContinue | null;
+  /** A lane that came back: its other saved chats come back once it is ready. Kept until done, so a restart does it then. */
+  laneChatsOwed?: { laneId: string; projectKey: string } | null;
 };
 
 /** A fork-continue `follow` runs when the lane is ready (`BootState.continueChat`). */
@@ -460,6 +468,10 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
 
     // Past the clone, anything that stops the hand-off is the launch's failure, reported as one.
     let pendingContinue: PendingContinue | null = null;
+    // A lane that comes back (its branch is kept, or a chat of it continues) brings its other chats.
+    const laneChatsOwed = deps.restoreLaneChats && (request.continueChat || request.lane.existingBranch)
+      ? { laneId: request.lane.id, projectKey: request.project.origin }
+      : null;
     try {
       const attachments = await saveCloudFiles(
         path.join(project.rootPath, ".ade", "attachments", `launch-${launchId}`),
@@ -523,7 +535,13 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
       writeState(deps.stateFile, { launchId, phase: "ended", projectId: project.projectId, ...(landed ? {} : { unsent: update }) });
       return;
     }
-    writeState(deps.stateFile, { launchId, phase: "handed_off", projectId: project.projectId, ...(pendingContinue ? { continueChat: pendingContinue } : {}) });
+    writeState(deps.stateFile, {
+      launchId,
+      phase: "handed_off",
+      projectId: project.projectId,
+      ...(pendingContinue ? { continueChat: pendingContinue } : {}),
+      ...(laneChatsOwed ? { laneChatsOwed } : {}),
+    });
     logger.info("cloud_boot_launch.handed_off", { launchId, projectId: project.projectId });
   });
 
@@ -767,6 +785,7 @@ async function follow(
   let continued = ours?.continuedSessionId ?? null;
   let continuedKind = ours?.continuedKind ?? null;
   let pendingContinue = continued ? null : ours?.continueChat ?? null;
+  let laneChatsOwed = ours?.laneChatsOwed ?? null;
   const chatOf = (snapshot: ChatLaunchSnapshot): string | null =>
     snapshot.sessionCreated && snapshot.sessionId ? snapshot.sessionId : snapshot.phase === "completed" ? continued : null;
   const save = (state: BootState) => writeState(deps.stateFile, {
@@ -775,6 +794,7 @@ async function follow(
     ...(continued ? { continuedSessionId: continued } : {}),
     ...(continued && continuedKind ? { continuedKind } : {}),
     ...(pendingContinue ? { continueChat: pendingContinue } : {}),
+    ...(laneChatsOwed ? { laneChatsOwed } : {}),
   });
   /**
    * The lane is ready: restore the saved chat here with its own id, then send
@@ -860,6 +880,18 @@ async function follow(
         save({ launchId, phase: "ended", projectId, ...(landed ? {} : { unsent: update }) });
         return true;
       }
+    }
+    // After the continued chat (its copy is here by then, so it isn't restored twice). A failure never fails the launch.
+    if (snapshot.phase === "completed" && laneChatsOwed) {
+      const owed = laneChatsOwed;
+      try {
+        const count = await deps.restoreLaneChats?.(projectId, { laneId: snapshot.laneId || owed.laneId, projectKey: owed.projectKey }) ?? 0;
+        logger.info("cloud_boot_launch.lane_chats_restored", { launchId, count });
+      } catch (error) {
+        logger.warn("cloud_boot_launch.lane_chats_restore_failed", { launchId, error: errorText(error) });
+      }
+      laneChatsOwed = null;
+      save({ launchId, phase: "handed_off", projectId });
     }
     const terminal = TERMINAL.has(snapshot.phase);
     // The chat's creation is part of the shape, so the report that names the chat goes even with no stage change.
@@ -958,6 +990,12 @@ export type CloudBootLaunchHost = {
   secretsDir: string;
   logger: Logger;
   account: AccountAuthService;
+  /**
+   * The computer signed in during this launch. The brain identifies the
+   * account at process start, which is before this sign-in, so without this
+   * the computer stays an anonymous install until the next start.
+   */
+  onAccountSignedIn?: (status: AccountAuthStatus) => void;
   directoryBaseUrl: () => string | null;
   /** The Clerk issuer this machine signs in with (`CLERK_ISSUER`); its join link must be on its hosts. */
   clerkIssuer: () => string;
@@ -980,6 +1018,8 @@ export type CloudBootLaunchHost = {
   typeIntoCli?: CloudBootLaunchDeps["typeIntoCli"];
   /** Fork-continue: restores the saved chat here (`cloudChatRestore.ts`). */
   continueChat?: CloudBootLaunchDeps["continueChat"];
+  /** A lane that came back: its other saved chats come back here (`restoreLaneChats`). */
+  restoreLaneChats?: CloudBootLaunchDeps["restoreLaneChats"];
 };
 
 /**
@@ -1050,7 +1090,11 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
         isSignedIn: () => account.getStatus().signedIn,
         // A computer that just booted can start its sign-in before its network is up.
         startDeviceLogin: () => account.startDeviceLogin({ retryUnreachableForMs: 60_000 }),
-        pollDeviceLogin: (sessionId) => account.pollDeviceLogin(sessionId),
+        pollDeviceLogin: async (sessionId) => {
+          const result = await account.pollDeviceLogin(sessionId);
+          if (result.status === "signed_in") host.onAccountSignedIn?.(result.authStatus);
+          return result;
+        },
       },
       approveHeadless: (url, signal) => headless.approveSignInLink({
         url,
@@ -1069,6 +1113,7 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
       waitForChatIdle: host.waitForChatIdle,
       typeIntoCli: host.typeIntoCli,
       continueChat: host.continueChat,
+      restoreLaneChats: host.restoreLaneChats,
       launches: async (projectId) => {
         const service = await host.chatLaunchService(projectId);
         if (!service) throw new Error("This ADE runtime can't run a lane launch.");
@@ -1079,6 +1124,11 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
         };
       },
       afterJoin: async () => {
+        // The poll reports `signed_in` itself. A sign-in that landed another
+        // way (the poll expired, or this computer was already signed in)
+        // still has to identify, or the launch's first events stay anonymous.
+        const status = account.getStatus();
+        if (status.signedIn) host.onAccountSignedIn?.(status);
         const client = await host.cloudClient();
         if (!client) return;
         await enableCloudSleep(client, cloudInstanceId, { logger });

@@ -110,6 +110,10 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   var attentionRequestedAt: String? = nil
   var attentionMessage: String? = nil
   var lastTurnFailedAt: String? = nil
+  /// Phone-only: an ADE Cloud saved chat whose running turn ADE stopped when
+  /// its computer slept, stopped or was deleted (saved status `interrupted`).
+  /// Its Work row reads Stopped, as on desktop. Hosts never send it.
+  var stoppedForRest: Bool? = nil
   var exitCode: Int? = nil
   // Settle override + snooze visibility overlay (ADE-125 lifecycle). Same
   // additive contract: hosts that predate the fields simply omit them.
@@ -941,9 +945,10 @@ extension RemoteRosterChat {
       goal: nil,
       toolType: toolType,
       title: (title?.isEmpty == false ? title! : "Untitled chat"),
-      status: strings.status,
+      // "disposed" is the Stopped phase (`workCanonicalSessionState`).
+      status: stoppedForRest == true ? "disposed" : strings.status,
       startedAt: lifecycleTimestamp,
-      endedAt: status == .ended ? lifecycleTimestamp : nil,
+      endedAt: status == .ended || stoppedForRest == true ? lifecycleTimestamp : nil,
       lastActivityAt: lifecycleTimestamp.isEmpty ? nil : lifecycleTimestamp,
       archivedAt: archived == true ? lifecycleTimestamp : nil,
       settledAt: settledAt,
@@ -1034,4 +1039,11 @@ func rosterDerivedChatSummary(_ payload: [String: Any]) -> AgentChatSessionSumma
   else { return nil }
   summary.rosterDerived = true
   return summary
+}
+
+extension RemoteRosterLane {
+  /// The name every screen shows; the primary lane reads "Main checkout".
+  var displayName: String {
+    laneType == "primary" ? "Main checkout" : name
+  }
 }

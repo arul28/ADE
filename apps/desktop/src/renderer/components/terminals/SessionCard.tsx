@@ -1,4 +1,5 @@
 import React from "react";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import {
   Alarm,
@@ -945,7 +946,8 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       <GitHubStackBadge key="github-stack" stack={githubStack} compact bare />,
     );
   }
-  const inlineLaneName = lane?.name ?? session.laneName;
+  // The main checkout reads "Main checkout", never its stored name "Primary".
+  const inlineLaneName = lane ? laneDisplayName(lane) : session.laneName;
   if (showLaneIdentity && inlineLaneName) {
     whereParts.push(
       <span
@@ -1134,7 +1136,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     value: (
       <span style={laneAccent ? { color: toneText(laneAccent) } : undefined}>
         <LaneNamingLabel
-          laneName={lane?.name ?? session.laneName}
+          laneName={lane ? laneDisplayName(lane) : session.laneName}
           naming={namingLane}
         />
       </span>

@@ -725,6 +725,7 @@ import type {
   AdeAccountSyncHostStartResult,
   AdeAccountSessionRepairResult,
   AccountSettingRow,
+  AccountSettingsPullState,
   AccountSettingsResult,
   McpRegistryCheck,
   McpRegistryContext,
@@ -5256,7 +5257,8 @@ declare global {
         remove?: (
           args: { scope: string; key: string } & AccountSettingsWriteOptions,
         ) => Promise<AccountSettingsResult<null>>;
-        sync: () => Promise<AccountSettingsResult<null>>;
+        /** The value: whether the pull reached the account (`ready`), or null when it cannot say (an older brain, ADE Web). */
+        sync: () => Promise<AccountSettingsResult<AccountSettingsPullState>>;
         onChanged?: (listener: () => void) => () => void;
       };
       /**

@@ -16,7 +16,7 @@ export function sentryProcessTags(args: {
       surface: args.surface,
       client: args.surface === "desktop" ? "desktop" : "runtime",
       releaseChannel: args.releaseChannel,
-      isInternal: isInternalInstall(),
+      isInternal: isInternalInstall() || args.releaseChannel === "development",
       arch: process.arch,
     }),
     process: args.processName,

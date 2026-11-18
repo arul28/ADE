@@ -4,7 +4,13 @@ import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import { safeJsonParse, writeTextAtomic } from "../shared/utils";
-import { doNotTrackRequested } from "../../../shared/doNotTrack";
+import { doNotTrackRequested, isTruthyEnvFlag } from "../../../shared/doNotTrack";
+import {
+  isAutomatedTelemetryEnvironment,
+  isDevelopmentTelemetryRuntime,
+  telemetryEnvironment,
+} from "../../../shared/telemetryEnvironment";
+import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import type { ReleaseChannel } from "../../../shared/packageChannel";
 import { normalizeAdeUsageClientSurface } from "../../../shared/types/usage";
 import {
@@ -711,15 +717,30 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   let pendingIngressDrops = 0;
   const optOutMarkerPath = `${args.stateFilePath}.disabled`;
   // Team installs mark themselves with ADE_ANALYTICS_INTERNAL=1 or an empty
-  // `<state file>.internal` marker, so dashboards can leave them out.
-  let internalInstall: boolean | null = null;
-  const isInternalInstall = (): boolean => {
-    if (internalInstall == null) {
-      internalInstall = process.env.ADE_ANALYTICS_INTERNAL === "1"
+  // `<state file>.internal` marker. That is the only thing `$identify` may
+  // raise on the person: a development sign-in must not, because the flag is
+  // never lowered and the person filter would then hide their real usage.
+  let teamInstall: boolean | null = null;
+  const isTeamInstall = (): boolean => {
+    if (teamInstall == null) {
+      teamInstall = process.env.ADE_ANALYTICS_INTERNAL === "1"
         || fs.existsSync(`${args.stateFilePath}.internal`);
     }
-    return internalInstall;
+    return teamInstall;
   };
+  const isInternalEvent = (): boolean =>
+    isTeamInstall()
+    || isAutomatedTelemetryEnvironment()
+    || isDevelopmentTelemetryRuntime({
+      runtimeMode: args.runtimeMode,
+      releaseChannel,
+    });
+  const telemetryProperties = (): Record<string, unknown> => ({
+    is_internal: isInternalEvent(),
+    release_channel: releaseChannel,
+    environment: telemetryEnvironment({ releaseChannel, runtimeMode: args.runtimeMode }),
+    ...(isAdeCloudComputer() ? { ade_cloud: true } : {}),
+  });
   let volatileOptOut = false;
   let optOutCanRecoverFromPersistedOptIn = false;
   let optOutWatcherStarted = false;
@@ -799,10 +820,13 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   const isRuntimeDisabled = () =>
     process.env.ADE_DISABLE_PRODUCT_ANALYTICS === "1"
     || doNotTrackRequested()
+    || isAutomatedTelemetryEnvironment()
     || (
       (
         process.env.NODE_ENV === "development"
         || args.runtimeMode === "desktop_development"
+        || isTruthyEnvFlag(process.env.ADE_DEV_BRAIN)
+        || releaseChannel === "development"
       )
       && process.env.ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT !== "1"
     )
@@ -858,8 +882,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         properties: {
           surface: "api",
           ...productAnalyticsEventContext("ade_analytics_budget", "api", null),
-          is_internal: isInternalInstall(),
-          release_channel: releaseChannel,
+          ...telemetryProperties(),
           ...machineProperty(),
           sent_count: summary.sentCount,
           dropped_count: summary.droppedCount,
@@ -963,6 +986,9 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
           event: "$identify",
           properties: {
             $anon_distinct_id: anonymousId,
+            // On the event, not on the person. A development sign-in is
+            // internal here and still does not raise the person flag.
+            ...telemetryProperties(),
             $set: {
               plan: "free",
               platform: process.platform,
@@ -971,11 +997,12 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
               // distinct id stays the hash every ADE client and the sign-up
               // webhook use, which keeps one person one person.
               clerk_user_id: normalizedUserId,
-              // Only ever raised, never lowered: the account directory marks
-              // ADE's own accounts internal from Clerk, and a sign-in on an
-              // unmarked machine must not undo that (recording and every
-              // person-filtered insight key off it).
-              ...(isInternalInstall() ? { is_internal: true } : {}),
+              // Only ever raised, never lowered, and only for an explicit team
+              // install. The account directory marks ADE's own accounts
+              // internal from Clerk, and a sign-in on an unmarked machine
+              // must not undo that. A development runtime tags its events
+              // internal without marking the account.
+              ...(isTeamInstall() ? { is_internal: true } : {}),
             },
             $geoip_disable: true,
           },
@@ -1163,8 +1190,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         ...eventProperties,
         surface,
         ...productAnalyticsEventContext(input.event, surface, typedProperties ?? input.properties),
-        is_internal: isInternalInstall(),
-        release_channel: releaseChannel,
+        ...telemetryProperties(),
         ...machineProperty(),
         app_version: appVersion,
         runtime_mode: safeProductAnalyticsString(args.runtimeMode) ?? "unknown",

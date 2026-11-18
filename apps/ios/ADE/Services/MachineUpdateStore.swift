@@ -445,6 +445,16 @@ final class MachineUpdateStore: ObservableObject {
     return MachineUpdateTarget(id: key, name: machine.title, symbol: machine.symbol, version: machine.appVersion, targetVersion: targetVersion)
   }
 
+  /// Behind on its track, but its ADE predates updates from another device:
+  /// it has to be updated on the machine itself once.
+  func needsUpdateOnMachine(_ machine: SettingsMachine) -> Bool {
+    guard let key = machine.machineKey, machine.isLive,
+          syncService?.cloudMachineFleetKeys.contains(key) != true,
+          targetVersion(forMachineVersion: machine.appVersion) != nil,
+          !isBusy(machine) else { return false }
+    return !canAsk(machineKey: key)
+  }
+
   /// Asked, confirming, updating, or not back yet on the version it was sent to.
   func isBusy(_ machine: SettingsMachine) -> Bool {
     guard let key = machine.machineKey else { return false }

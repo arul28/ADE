@@ -220,6 +220,9 @@ struct WorkRootSyncInputs: Equatable {
   /// Other machines' checkouts of the focused repository (their chats join
   /// the list). Tracked only while the list is visible.
   var remoteMachineRepos: [WorkRemoteMachineRepo] = []
+  /// The project `remoteMachineRepos` was matched for: a rebuild that runs
+  /// after a project switch drops rows matched for the old one.
+  var remoteMachineReposProjectId: String?
   /// The Machine filter's choices: the focused machine, then the machines in
   /// `remoteMachineRepos`. Tracked only while the list is visible.
   var machineFilterOptions: [WorkMachineFilterOption] = []
@@ -287,6 +290,7 @@ struct WorkRootSyncInputs: Equatable {
     // Every paired machine with a copy whose work lists: live, reconnecting,
     // or an ADE Cloud computer. An offline, parked or disconnected computer's
     // rows are not listed.
+    remoteMachineReposProjectId = activeProject?.id
     if let fleet, !fleet.listedMachines.isEmpty, let activeProject {
       let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
         ?? workRepoIdentity(originUrl: sync.rosterProject(for: activeProject)?.repoOriginUrl)
@@ -2401,6 +2405,8 @@ struct WorkRootListScreen: View, Equatable {
     WorkSessionLaneMenuActions(
       colorAvailable: inputs.laneColorAvailable,
       manageAvailable: inputs.laneManageAvailable,
+      restsOnCloud: { [syncService] lane in laneRestsOnCloud(lane.id, sync: syncService) },
+      hasCloudComputer: { [syncService] lane in cloudLaneComputer(lane.id, sync: syncService) != nil },
       onStartChat: startChatInLane,
       onToggleWorkPin: toggleWorkPin,
       isWorkPinned: { workPinnedLaneIds.contains($0.id) },

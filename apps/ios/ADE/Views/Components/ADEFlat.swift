@@ -2,7 +2,8 @@ import SwiftUI
 
 /// The flat content layer: rows on the page background with hairlines between
 /// them, like the desktop. Controls that float over content (bars, segmented
-/// controls, menus, sheets, toasts) stay Liquid Glass; content never gets a
+/// controls, menus, sheets) stay Liquid Glass; toasts are solid pills so they
+/// stay readable over busy content; content never gets a
 /// card fill. Cards use the kit (`ADEKit.swift`); `adeGlassCard` is left only
 /// for the Work composer and chat cards.
 enum ADEFlat {
@@ -118,14 +119,18 @@ struct ADEFlatInlineNotice: View {
   }
 }
 
-/// A short action result ("Branch deleted") shown as a glass toast.
+/// A short action result ("Branch deleted") shown as a floating pill.
 struct ADEToastMessage: Equatable, Identifiable {
   enum Kind { case success, failure, info }
   let id = UUID()
+  /// The headline, short: "Couldn’t open ADE", "Branch deleted".
   let text: String
   var kind: Kind = .success
-  /// One button on the toast ("Undo"). A toast with an action stays 6 s.
+  /// One button on the toast ("Undo", "Retry"). A toast with an action stays 6 s.
   var action: ADEToastAction? = nil
+  /// Why, in one plain line under the headline. Keep the headline short and
+  /// put the reason here rather than joining both with a colon.
+  var detail: String? = nil
 
   static func == (lhs: ADEToastMessage, rhs: ADEToastMessage) -> Bool {
     lhs.id == rhs.id
@@ -146,12 +151,67 @@ struct ADEToastMessage: Equatable, Identifiable {
     case .info: return ADEColor.accent
     }
   }
+
+  /// A failure stays long enough to read its reason.
+  var duration: Duration {
+    if action != nil { return .seconds(6) }
+    return kind == .failure ? .seconds(5) : .seconds(3)
+  }
 }
 
 /// The button on a toast, such as Undo.
 struct ADEToastAction {
   let title: String
   let perform: () -> Void
+}
+
+/// The pill itself. Solid (not glass), so it stays readable over busy cards;
+/// the tone shows only on the icon and a faint edge, never as a fill.
+private struct ADEToastPill: View {
+  let message: ADEToastMessage
+  let onAction: () -> Void
+
+  private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 20, style: .continuous) }
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Image(systemName: message.symbol)
+        .font(.system(size: 16, weight: .semibold))
+        .foregroundStyle(message.tint)
+        .accessibilityHidden(true)
+      VStack(alignment: .leading, spacing: 1) {
+        Text(message.text)
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(message.detail == nil ? 2 : 1)
+        if let detail = message.detail, !detail.isEmpty {
+          Text(detail)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(2)
+        }
+      }
+      .fixedSize(horizontal: false, vertical: true)
+      if let action = message.action {
+        Button(action: onAction) {
+          Text(action.title)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 32)
+            .background(ADEColor.accent.opacity(0.14), in: Capsule(style: .continuous))
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+      }
+    }
+    .padding(.leading, 14)
+    .padding(.trailing, message.action == nil ? 16 : 7)
+    .padding(.vertical, message.detail == nil ? 10 : 8)
+    .background(ADEColor.surfaceBackground, in: shape)
+    .overlay(shape.strokeBorder(message.tint.opacity(0.28), lineWidth: 0.8))
+    .shadow(color: Color.black.opacity(0.28), radius: 14, x: 0, y: 6)
+  }
 }
 
 private struct ADEToastModifier: ViewModifier {
@@ -163,36 +223,25 @@ private struct ADEToastModifier: ViewModifier {
   func body(content: Content) -> some View {
     content.overlay(alignment: .bottom) {
       if let message {
-        HStack(spacing: 8) {
-          Image(systemName: message.symbol)
-            .foregroundStyle(message.tint)
-          Text(message.text)
-            .font(.footnote.weight(.medium))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(2)
-          if let action = message.action {
-            Button {
-              action.perform()
-              self.message = nil
-            } label: {
-              Text(action.title)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(ADEColor.accent)
-                .padding(.leading, 4)
-                .frame(minHeight: 32)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-          }
+        ADEToastPill(message: message) {
+          message.action?.perform()
+          self.message = nil
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, message.action == nil ? 10 : 4)
-        .glassEffect(in: Capsule(style: .continuous))
+        // Hugs its words, up to a readable width.
+        .frame(maxWidth: 440)
+        .padding(.horizontal, 16)
         .padding(.bottom, 12 + bottomInset)
+        // Tap or swipe down to put it away.
+        .onTapGesture { self.message = nil }
+        .gesture(
+          DragGesture(minimumDistance: 12).onEnded { value in
+            if value.translation.height > 12 { self.message = nil }
+          }
+        )
         .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
         .id(message.id)
         .task(id: message.id) {
-          try? await Task.sleep(for: .seconds(message.action == nil ? 3 : 6))
+          try? await Task.sleep(for: message.duration)
           guard !Task.isCancelled, self.message?.id == message.id else { return }
           self.message = nil
         }
@@ -205,9 +254,61 @@ private struct ADEToastModifier: ViewModifier {
 }
 
 extension View {
-  /// Shows `message` as a glass toast for 3 s. `bottomInset` lifts it
+  /// Shows `message` as a floating pill for 3 s (5 s for a failure, 6 s
+  /// with an action). `bottomInset` lifts it
   /// above a bar the screen keeps at the bottom.
   func adeToast(_ message: Binding<ADEToastMessage?>, bottomInset: CGFloat = 0) -> some View {
     modifier(ADEToastModifier(message: message, bottomInset: bottomInset))
   }
 }
+
+#if DEBUG
+/// Every kind of toast pill over busy content (`-adePreviewScreen toasts`).
+struct ADEToastPreviewHost: View {
+  var body: some View {
+    ZStack(alignment: .bottom) {
+      ScrollView {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
+          ForEach(0..<12, id: \.self) { index in
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+              .fill(ADEColor.cardBackground)
+              .frame(height: 150)
+              .overlay(alignment: .topLeading) {
+                Text("Project \(index + 1)")
+                  .font(.headline)
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .padding(14)
+              }
+          }
+        }
+        .padding(16)
+      }
+      VStack(spacing: 12) {
+        ADEToastPill(message: ADEToastMessage(text: "Changed the icon for ADE.", kind: .info), onAction: {})
+        ADEToastPill(message: ADEToastMessage(text: "Branch deleted", action: ADEToastAction(title: "Undo") {}), onAction: {})
+        ADEToastPill(
+          message: ADEToastMessage(text: "Couldn't change Fast mode", kind: .failure, detail: "This machine's project connection isn't ready yet."),
+          onAction: {}
+        )
+        ADEToastPill(
+          message: ADEToastMessage(
+            text: "Couldn’t open ADE",
+            kind: .failure,
+            action: ADEToastAction(title: "Retry") {},
+            detail: "The computer took too long to answer."
+          ),
+          onAction: {}
+        )
+      }
+      .frame(maxWidth: 440)
+      .padding(.horizontal, 16)
+      .padding(.bottom, 24)
+    }
+    .background(ADEColor.pageBackground.ignoresSafeArea())
+  }
+}
+
+#Preview("Toasts") {
+  ADEToastPreviewHost()
+}
+#endif

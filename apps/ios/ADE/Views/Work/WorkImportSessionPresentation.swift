@@ -13,6 +13,7 @@ extension ExternalSessionSummary {
   var laneDisplayName: String {
     switch home?.kind {
     case "lane":
+      if home?.laneType == "primary" { return "Main checkout" }
       let name = home?.laneName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       return name.isEmpty ? "Lane" : name
     case "removed-lane":

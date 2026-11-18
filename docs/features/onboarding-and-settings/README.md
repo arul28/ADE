@@ -1388,12 +1388,18 @@ screens and the three help tiers below.
 
 It runs once per computer and is stored in global app state
 (`welcomeVideo.completedAt` / `dismissedAt`), so a computer set up before it
-existed never sees it. It runs on, and reads, the computer ADE opens on; the
-hosted web client has no first run.
+existed never sees it. It runs on, and reads, the computer ADE opens on.
+
+ADE Web shows only the welcome card, and only to an account created on or after
+2026-11-18 that has not started onboarding anywhere (`webWelcomeDue` in
+`FirstRunSteps.tsx` reads the account's `onboarding.progress` first; if it
+cannot, no card). **Get started** marks onboarding started; **Skip the tour**
+skips it on every device; Escape only closes the card. It waits while the
+shared-lane page (`/shared`) is open.
 
 1. **Welcome.** One card on the gate's glass: headline, one sentence, provider
-   marks, **Get started** and **Skip setup** (skip also stops every later
-   hint).
+   marks, **Get started** and **Skip setup**. Skipping setup still leaves the
+   tour for the first project.
 2. **Sign in**, if this computer has no ADE session.
 3. **Connect your agents** (`FirstRunAgents.tsx`, `FirstRunAgentRail.tsx`).
    Each agent's 3D logo (`providerBrand`) hangs from a rail, sign-in-capable
@@ -1440,17 +1446,22 @@ hosted web client has no first run.
    their CLI. Left-out chats are stored as `provider:sessionId`
    (`excludedKeys`); it is an exclusion list, so chats started after setup
    still come in.
-6. **The tour** (`components/onboarding/tour/`). A violet ADE cursor glides to a
-   real control, a ring settles and a card explains it: the lane chip (the
-   checkout is the primary lane), the prompt box, its permission/model/effort
-   controls, the lane menu, importing chats, the chats list, opening a chat,
-   the Tools pane, a new chat, a new project tab, Home and its edit tools,
-   Connections.
+6. **The tour** (`components/onboarding/tour/`). It starts only inside a
+   project the person opened (never on Home or the welcome screen; the screens
+   before a project explain themselves). A violet ADE cursor glides to a real
+   control, a ring settles and a card explains it, six cards ("N of 6"): the
+   prompt box, its permission/model/effort controls, where it runs (the Run on
+   menu: this computer, another computer or ADE Cloud, with the lane picker
+   beside it: main checkout or a new lane), the chats list, the first chat,
+   and the Tools pane. A person who already has chats gets **Open a chat**
+   instead of the first chat (both are card 5); the Tools step is skipped
+   when the pane is open.
    - With no chats, the step is **Send your first chat**: a new chat in the
-     primary lane with "In one sentence, what is this project?" on a cheap
+     main checkout with "In one sentence, what is this project?" on a cheap
      runnable model (Haiku, Luna or Composer when connected, else the cheapest
      the registry knows). The user sends it. That model is not saved as
      last-used; a model the user picks there is.
+   - The finish card points at ADE Tips for the rest.
    - Some steps ask for the click; every card has Next and Back; nothing is
      dimmed. Leaving shows a **Tour paused** pill with **Show me**; the step
      returns when its control is on screen, across reloads. A step with
@@ -1480,8 +1491,9 @@ pager.
   no dialog, setup or tour, only once onboarding finished or was skipped
   before this launch; after 8 s with no key or click, and never while a
   focused text field holds text or a terminal has focus. On screen counts as
-  seen. A page older than the account (`accountCreatedAtFromUserId`) never
-  shows by itself.
+  seen. A page older than the account (`accountCreatedAtFromUserId`) or than
+  21 days never shows by itself. At most two pages a showing, a week apart,
+  and only when the unasked budget allows (below).
 - **After an update** this computer installed: on the new version's first
   launch, after the splash, up to three unseen pages then the release notes
   since the old version. The logo flies from the splash's last box into the
@@ -1525,12 +1537,39 @@ startup-context tip points at the provider's initial context inventory.
 - **Tip cards** (`useFeatureTipCard`): a while into a session, one untried tip
   in the corner (icon, title, Try it, Not now, screenshot), in a per-computer
   random order. One corner card at a time with suggestions, never during
-  onboarding, not within 30 minutes of a suggestion; up to three a day, two
-  hours apart, each once (trying it elsewhere counts); it never uses a
-  suggestion's per-launch slot. ADE Tips' header turns them off.
+  onboarding, not within 30 minutes of a suggestion; up to two a week, two
+  days apart, within the unasked budget, each once (trying it elsewhere
+  counts); it never uses a suggestion's per-launch slot. ADE Tips' header turns them off. A tip with
+  `card: false` (setup and power-user tips such as Beta track, Headless,
+  Keyboard, Quick slots, Music) stays in ADE Tips but is never a card, and
+  ADE Web never offers a `desktopOnly` tip (`tipOfferedAsCard`).
 - **Testing**: `npm run dev:desktop -- --first-run --keep` reopens as a
   returning user; dev palette **Dev: Suggestions test mode** (no limits) and
   **Dev: Reset Tips, suggestions and What's new** (`resetOnboardingTiers`).
+
+### The unasked budget and onboarding sync
+
+Everything ADE shows that the person did not ask for (What's new opening by
+itself, tip cards, surveys, situational suggestions) shares one budget
+(`renderer/onboarding/unaskedBudget.ts`): at most one a day (20 h gap),
+nothing in a new account's first three days. A suggestion is never held back
+by it, but spends it.
+
+Onboarding lives on the account as one setting, `onboarding.progress`
+(`shared/onboardingProgressRecord.ts`, `ACCOUNT_SCOPE_ALL`): started, skipped,
+tour done, hint answers, tips already offered, and the last unasked showing.
+`onboardingSync.ts` reconciles on open, sign-in, a remote settings change and
+1.5 s after a local change: it reads the account copy (the desktop pulls its
+brain's copy once per account first), merges (later times win, the earlier
+start, tips join; "Show me around again" sets `resetAt`, which drops older
+tour and hint answers everywhere), adopts the result locally and writes back
+only when the account lacked something. What a computer held before its
+first account signed in belongs to that account; when another account signs
+in there, its copy replaces the computer's. The shared pass loop is
+`renderer/lib/accountValueSync.ts` (also used by What's new seen pages); a
+desktop brain pull counts only when `accountSettings.sync` reports `ready`. The desktop goes through its brain,
+ADE Web through the account relay. Signed out or offline, the local copy
+decides. No polling.
 
 ### Situational suggestions
 

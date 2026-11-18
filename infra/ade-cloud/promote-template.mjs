@@ -224,7 +224,16 @@ async function test(build, minVersion, expectVersion) {
       resources: { cpu: 2, memory: 4, disk: 4 },
       auto_sleep: false,
       metadata: { created_by: "ade-template-check", template_check_run: run },
-      ...(minVersion ? { env: { ADE_MIN_VERSION: minVersion } } : {}),
+      // This computer exists to prove the image. It is not a person: the brain
+      // it starts, and every `ade` command the test runs, stay out of PostHog
+      // and Sentry. ADE_TEMPLATE_CHECK is the same signal inside the process,
+      // for a build that does not also see DO_NOT_TRACK.
+      env: {
+        DO_NOT_TRACK: "1",
+        ADE_SENTRY_DISABLED: "1",
+        ADE_TEMPLATE_CHECK: "1",
+        ...(minVersion ? { ADE_MIN_VERSION: minVersion } : {}),
+      },
     }, 360_000);
     lap("create_answered", start);
     const id = instance.id;

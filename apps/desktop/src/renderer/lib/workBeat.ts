@@ -31,3 +31,27 @@ export function msToNextBeat(periodMs: number = WORK_BEAT_MS, nowMs: number = pe
   const into = ((nowMs % periodMs) + periodMs) % periodMs;
   return Math.max(1, Math.ceil(periodMs - into));
 }
+
+/**
+ * Puts every running loop under `root` on the beat: each infinite CSS
+ * animation starts at time 0 of the document timeline, a whole number of
+ * beats. Loops whose steps are 50 ms long then change on the same frames, so
+ * the compositor draws one frame for all of them instead of one for each.
+ *
+ * `animationPhaseAlignment.ts` does the same for every loop when its
+ * `animationstart` event arrives, a frame after the loop starts. Call this in
+ * a layout effect when a surface mounts its loops or takes them back from a
+ * rest (`animation: none`), so the first frame is on the beat too. It reads
+ * the animations once (one style update) and sets no timer.
+ *
+ * A loop the step clock runs (`steppedLoopClock.ts`, playback rate 0) is left
+ * to it, and so is any loop that is not infinite (Settings, Reduce motion).
+ */
+export function alignLoopsToBeat(root: Element | null): void {
+  if (!root || typeof root.getAnimations !== "function") return;
+  for (const animation of root.getAnimations({ subtree: true })) {
+    if (animation.playbackRate !== 1 || animation.playState !== "running") continue;
+    if (animation.effect?.getTiming().iterations !== Infinity) continue;
+    if (animation.startTime !== 0) animation.startTime = 0;
+  }
+}

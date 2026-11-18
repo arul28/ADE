@@ -12,10 +12,10 @@ This is the shortest path from an open repository to a reviewed change. It assum
 
 ## 1. Create a lane
 
-A **lane** is ADE's name for a git worktree: an isolated branch and working copy for one task. It keeps agent work out of your primary checkout, so you can run several tasks in parallel without colliding.
+A **lane** is ADE's name for a git worktree: an isolated branch and working copy for one task. It keeps agent work out of your main checkout, so you can run several tasks in parallel without colliding.
 
 <Note>
-Your repo root is already the **primary lane** — it always exists and is edit-protected. You don't pick a "lane type"; you add a new worktree lane for the task, branched off your default branch.
+Your repo root is already the **main checkout** — it always exists and is edit-protected. You don't pick a "lane type"; you add a new worktree lane for the task, branched off your default branch.
 </Note>
 
 <Steps>
@@ -87,7 +87,7 @@ Add a GET /health endpoint that returns { "status": "ok" } and add one test for 
     - Press **Stop** and ask for a shorter plan.
     - Paste the exact test or build error back into the chat.
     - Switch to a stronger model for the session.
-    - Keep the task inside the lane — don't move it to your primary checkout.
+    - Keep the task inside the lane — don't move it to your main checkout.
   </Accordion>
 </AccordionGroup>
 
