@@ -121,7 +121,12 @@ a process outside that folder causes by holding a file open (a dev brain from a
 checkout with the installed `resources\app.asar` open did it on 2026-11-18,
 and the PC sat on the hidden box for two hours with no ADE and no service). The
 hook answers the box, reopens the old ADE when the run is a silent update, and
-exits with code 2, leaving the old install in place for a later retry.
+exits with code 2, leaving the old install in place for a later retry. Before
+that reopen it closes any live update window through the window's own cancel
+file (killing it after 5 s), because the running window is the installed
+release's script: while it beats a non-failed heartbeat, the old ADE would take
+the launch as a hand-launch mid-install and exit. A window for an install on
+quit is left alone and ADE stays closed, the same rule the window follows.
 
 The window also writes a heartbeat. A copy of the old ADE opened by hand during
 the install (the person sees nothing happening and clicks the shortcut) reads

@@ -81,6 +81,20 @@
 ; place (the uninstaller already put its files back), exit with code 2. A silent
 ; update also reopens that old ADE, which puts its background service back, so
 ; the machine comes back online on the old version and can retry later.
+;
+; That reopen must not meet a live "Updating ADE" window first. The window is
+; the INSTALLED release's script (ADE copies it before starting this installer),
+; and while it beats a non-failed heartbeat the old ADE takes any launch as a
+; hand-launch mid-install, brings the window forward and exits
+; (deferToRunningWindowsInstall). A window from before the watchdog never opens
+; ADE itself, so the machine would stay offline. ADE_RELEASE_UPDATE_WINDOW
+; closes each live window through its own cancel file (progress-args.json names
+; the run), which every released script honors and which removes its heartbeat,
+; and stops it after 5s if it is still up. Only a window beating in the last 30s
+; counts, so a stale heartbeat whose pid now names another PowerShell is skipped. A window for an install the person
+; quit into is left alone and answers 1: they closed ADE themselves, so it is
+; not reopened, the same rule the watchdog follows.
+!define ADE_RELEASE_UPDATE_WINDOW `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$r=0;foreach($$d in @(Get-ChildItem -Directory -Path (Join-Path $$env:LOCALAPPDATA 'ADE') -Filter 'update-progress-*' -EA 0)){try{$$b=Get-Content -LiteralPath (Join-Path $$d.FullName 'progress.json') -Raw -EA Stop|ConvertFrom-Json;$$a=Get-Content -LiteralPath (Join-Path $$d.FullName 'progress-args.json') -Raw -EA Stop|ConvertFrom-Json}catch{continue};$$p=Get-Process -Id ([int]$$b.pid) -EA 0;if(!$$p -or $$p.ProcessName -ne 'powershell' -or ([DateTimeOffset]::UtcNow-[DateTimeOffset]$$b.updatedAt).TotalSeconds -gt 30){continue};if($$a.quitInstall){$$r=1;continue};[IO.File]::WriteAllText((Join-Path $$d.FullName 'progress.json.cancel'),[string]$$a.runId);if(!$$p.WaitForExit(5000)){Stop-Process -Id $$p.Id -Force -EA 0}};exit $$r"`
 !macro adeHandleUninstallResult
   ${If} ${Errors}
     DetailPrint `Uninstall was not successful. Not able to launch uninstaller!`
@@ -91,8 +105,14 @@
     MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0" /SD IDOK
     ${If} ${isUpdated}
     ${AndIf} ${Silent}
-      DetailPrint "Reopening the installed ADE so its background service comes back."
-      Exec '"$INSTDIR\${APP_EXECUTABLE_FILENAME}"'
+      nsExec::Exec `${ADE_RELEASE_UPDATE_WINDOW}`
+      Pop $0
+      ${If} $0 == 1
+        DetailPrint "The update ran on quit: leaving ADE closed."
+      ${Else}
+        DetailPrint "Reopening the installed ADE so its background service comes back."
+        Exec '"$INSTDIR\${APP_EXECUTABLE_FILENAME}"'
+      ${EndIf}
     ${EndIf}
     SetErrorLevel 2
     Quit
