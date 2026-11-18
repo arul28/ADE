@@ -5917,6 +5917,18 @@ const EMPTY_FIND_EXCLUDED_KEYS: ReadonlySet<string> = new Set();
 
 /** Estimated height per message row (px) used before real measurement. */
 const ESTIMATED_ROW_HEIGHT = 80;
+/**
+ * The virtual box while the list follows the bottom: its rows sit at its end.
+ * Rows that just mounted keep their estimated height in the box until they
+ * measure; estimates that ran high left that slack under the last message, and
+ * the view pinned to the end showed an empty pane for a frame. At the end, the
+ * slack sits above the mounted rows, out of view.
+ */
+const END_ALIGNED_VIRTUAL_BOX_STYLE: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  justifyContent: "flex-end",
+};
 /** Column width assumed by the per-row estimate before the column is measured. */
 const ESTIMATE_DEFAULT_COLUMN_WIDTH_PX = 720;
 /** The per-row estimate is recomputed only when the column width moves a full step. */
@@ -9704,8 +9716,10 @@ function AgentChatMessageListMain({
             /* ── Virtualized path: only render rows in / near the viewport ── */
             <div className="flex min-w-0 max-w-full flex-col gap-[length:var(--chat-row-gap)]">
               {/* A minimum, not a height: a mounted row that grew since this
-                  render pushes what follows down instead of drawing over it. */}
-              <div style={{ minHeight: totalHeight, position: "relative" }}>
+                  render pushes what follows down instead of drawing over it.
+                  Following the bottom, its rows sit at its end
+                  (END_ALIGNED_VIRTUAL_BOX_STYLE). */}
+              <div style={{ minHeight: totalHeight, position: "relative", ...(stickToBottom ? END_ALIGNED_VIRTUAL_BOX_STYLE : null) }}>
                 {/* Top spacer pushes rendered rows to their correct scroll position */}
                 <div style={{ height: offsetTop }} aria-hidden />
                 <div className="flex flex-col gap-[length:var(--chat-row-gap)]">
