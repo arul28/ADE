@@ -468,6 +468,7 @@ final class AccountProjectStore: ObservableObject {
     lastAttemptAt = nil
     failureCount = 0
     askedUnknownIdentities = []
+    machineKeysReadFor = []
     guard AccountConfig.directoryBaseURL != nil else {
       publish(state: AccountProjectListState(), display: [:], lastSuccessAt: nil, phase: .unconfigured)
       return
@@ -493,6 +494,7 @@ final class AccountProjectStore: ObservableObject {
     lastAttemptAt = nil
     failureCount = 0
     askedUnknownIdentities = []
+    machineKeysReadFor = []
     publish(state: AccountProjectListState(), display: [:], lastSuccessAt: nil, phase: .inactive)
   }
 
@@ -738,8 +740,10 @@ final class AccountProjectStore: ObservableObject {
 
   /// A copy on a computer the account's machine list does not have yet (a lane
   /// just started on ADE Cloud from another computer): read the list once for
-  /// it, so the phone can pair and show that computer.
-  private func readMachinesForUnknownCopies() {
+  /// it, so the phone can pair and show that computer. Runs when the rows
+  /// change and again when the machine list loads, so a copy that arrived
+  /// before the first machine read is not missed.
+  func readMachinesForUnknownCopies() {
     let account = AccountService.shared
     guard account.machinesState == .loaded else { return }
     let known = Set(account.machines.map { $0.machineKey.lowercased() })

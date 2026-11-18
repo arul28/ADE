@@ -166,7 +166,7 @@ extension SyncService {
   /// account's name for it ("windows") when it has one, as Settings shows it,
   /// else the computer's own host name.
   var focusedMachineDisplayName: String {
-    focusedMachineKey.flatMap { cloudLaneComputerName(fleetKey: $0) } ?? focusedMachineAccountName ?? "This machine"
+    isCloudFleetKey(focusedMachineKey) ? ADECloudMachine.name : focusedMachineAccountName ?? "This machine"
   }
 
   /// `focusedMachineDisplayName` without the placeholder: nil when the phone

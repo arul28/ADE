@@ -148,25 +148,58 @@ func duoHomeMachines(syncService: SyncService, fleet: MachineFleet) -> [DuoHomeM
       isLive: health.transport == .connected
     )
   ]
+  // ADE Cloud is one machine however many lane computers it has: they fold
+  // into one row (the focused row when the phone is on one of them), "Live"
+  // when any is, else "Asleep" while the account says they all rest.
+  let focusedIsCloud = syncService.isCloudFleetKey(syncService.focusedMachineKey)
+  var cloud: (projects: Int, working: Int, live: Bool, asleep: Bool, state: MachineFleet.MachineState?) =
+    (0, 0, false, true, nil)
+  var hasCloud = false
   for machine in fleet.machines {
     let working = machine.projects.reduce(0) { partial, project in
       partial + project.chats.filter(\.countsTowardRunning).count
     }
-    // ADE Cloud computers read "ADE Cloud · <lane>" (as `ade` lists them),
-    // so two of them are told apart, and "Asleep" while the account says so
-    // instead of the link's Offline or Paused.
     let asleep = machine.state != .live
       && syncService.cloudServerInstance(fleetKey: machine.machineKey)?.isResting == true
+    if syncService.isCloudFleetKey(machine.machineKey) {
+      if focusedIsCloud {
+        rows[0].projectCount += machine.projects.count
+        rows[0].workingCount += working
+        continue
+      }
+      hasCloud = true
+      cloud.projects += machine.projects.count
+      cloud.working += working
+      cloud.live = cloud.live || machine.state == .live
+      cloud.asleep = cloud.asleep && asleep
+      if cloud.state == nil || machine.state == .live { cloud.state = machine.state }
+      continue
+    }
     rows.append(
       DuoHomeMachine(
         id: machine.machineKey,
-        name: syncService.cloudLaneComputerName(fleetKey: machine.machineKey) ?? machine.name,
-        statusWord: asleep ? "Asleep" : duoMachineFleetStateWord(machine.state),
-        tone: asleep ? .neutral : duoMachineFleetStateTone(machine.state),
+        name: machine.name,
+        statusWord: duoMachineFleetStateWord(machine.state),
+        tone: duoMachineFleetStateTone(machine.state),
         projectCount: machine.projects.count,
         workingCount: working,
         isLive: machine.state == .live
       )
+    )
+  }
+  if hasCloud, let state = cloud.state {
+    let asleep = !cloud.live && cloud.asleep
+    rows.insert(
+      DuoHomeMachine(
+        id: "duo-ade-cloud",
+        name: ADECloudMachine.name,
+        statusWord: asleep ? "Asleep" : duoMachineFleetStateWord(state),
+        tone: asleep ? .neutral : duoMachineFleetStateTone(state),
+        projectCount: cloud.projects,
+        workingCount: cloud.working,
+        isLive: cloud.live
+      ),
+      at: 1
     )
   }
   return rows

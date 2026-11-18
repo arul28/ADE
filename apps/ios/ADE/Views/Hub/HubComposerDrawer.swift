@@ -553,9 +553,16 @@ struct HubInlineComposer: View {
       sectionLabel("Lane")
       ScrollView {
         LazyVStack(spacing: 2) {
-          if !pickedMachineIsCloud { autoCreateLaneRow }
-          ForEach(lanesForPickedProject) { lane in
-            laneRow(lane)
+          if pickedMachineIsCloud {
+            // ADE Cloud is one machine: the lanes of each of its computers.
+            ForEach(cloudLaneChoices) { choice in
+              laneRow(choice.lane, copy: choice.copy)
+            }
+          } else {
+            autoCreateLaneRow
+            ForEach(lanesForPickedProject) { lane in
+              laneRow(lane)
+            }
           }
         }
         .padding(4)
@@ -604,17 +611,23 @@ struct HubInlineComposer: View {
     }
     let primaryName = syncService.focusedMachineDisplayName
     let primaryAccountKey = account.machine(forFleetKey: syncService.focusedMachineKey)?.machineKey
+    let primaryIsCloud = syncService.isCloudFleetKey(syncService.focusedMachineKey)
     for project in syncService.projects {
-      add(HubComposerCopy(machineKey: nil, machineName: primaryName, accountMachineKey: primaryAccountKey, project: project))
+      add(HubComposerCopy(
+        machineKey: nil, machineName: primaryName, accountMachineKey: primaryAccountKey,
+        project: project, isCloud: primaryIsCloud
+      ))
     }
     for machine in machineFleet.composerDestinationMachines {
       let accountKey = account.machine(forFleetKey: machine.machineKey)?.machineKey
+      let isCloud = syncService.isCloudFleetKey(machine.machineKey)
       for rosterProject in machine.projects {
         add(HubComposerCopy(
           machineKey: machine.machineKey,
-          machineName: syncService.cloudLaneComputerName(fleetKey: machine.machineKey) ?? machine.name,
+          machineName: isCloud ? ADECloudMachine.name : machine.name,
           accountMachineKey: accountKey,
-          project: rosterProject.asRemoteMachineProjectSummary
+          project: rosterProject.asRemoteMachineProjectSummary,
+          isCloud: isCloud
         ))
       }
     }
@@ -643,6 +656,7 @@ struct HubInlineComposer: View {
   @ViewBuilder
   private func entryRow(_ entry: HubComposerProjectEntry) -> some View {
     let isSelected = entry.copies.contains(where: isPicked)
+    let destinations = hubComposerDestinationCopies(entry.copies, isPicked: isPicked)
     Button {
       guard !isSelected else { return }
       let last = entry.accountProjectId.flatMap { StartOnMemory.lastMachine(for: $0) }
@@ -658,7 +672,7 @@ struct HubInlineComposer: View {
             .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
-          if entry.copies.count == 1, let only = entry.copies.first, only.machineKey != nil {
+          if destinations.count == 1, let only = destinations.first, only.machineKey != nil {
             Text(only.machineName)
               .font(.system(size: 11.5))
               .foregroundStyle(ADEColor.textMuted)
@@ -681,8 +695,8 @@ struct HubInlineComposer: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    if isSelected, entry.copies.count > 1 {
-      HubComposerStartOnChips(copies: entry.copies, isSelected: isPicked, onPick: pick)
+    if isSelected, destinations.count > 1 {
+      HubComposerStartOnChips(copies: destinations, isSelected: isPicked, onPick: pick)
     }
   }
 
@@ -751,11 +765,16 @@ struct HubInlineComposer: View {
     .buttonStyle(.plain)
   }
 
-  private func laneRow(_ lane: RemoteRosterLane) -> some View {
-    let isSelected = lane.id == selectedLaneId
+  /// `copy`: the ADE Cloud computer the lane is on, picked with the lane.
+  private func laneRow(_ lane: RemoteRosterLane, copy: HubComposerCopy? = nil) -> some View {
+    let isSelected = lane.id == selectedLaneId && (copy.map(isPicked) ?? true)
     let tint = LaneColorPalette.displayColor(forHex: lane.color)
     let branch = normalizedPrBranchName(lane.branchRef)
     return Button {
+      if let copy, !isPicked(copy) {
+        pickedMachineKey = copy.machineKey
+        pickedProjectId = copy.project.id
+      }
       selectedLaneId = lane.id
       destinationPickerPresented = false
     } label: {
@@ -1386,6 +1405,39 @@ struct HubInlineComposer: View {
   /// left out and no new lane is made there.
   private var pickedMachineIsCloud: Bool {
     syncService.isCloudFleetKey(pickedMachineKey ?? syncService.focusedMachineKey)
+  }
+
+  private struct CloudLaneChoice: Identifiable {
+    let lane: RemoteRosterLane
+    /// Nil: the picked computer.
+    let copy: HubComposerCopy?
+    var id: String { "\(copy?.id ?? "")|\(lane.id)" }
+  }
+
+  /// The picked project's lanes on every ADE Cloud computer (each holds one),
+  /// so ADE Cloud lists as one machine; a pick routes to the lane's computer.
+  /// Signed out (no account entries): the picked computer's lanes.
+  private var cloudLaneChoices: [CloudLaneChoice] {
+    let cloudCopies = composerEntries?
+      .first { $0.copies.contains(where: isPicked) }?
+      .copies.filter(\.isCloud) ?? []
+    guard !cloudCopies.isEmpty else {
+      return lanesForPickedProject.map { CloudLaneChoice(lane: $0, copy: nil) }
+    }
+    return cloudCopies.flatMap { copy in
+      cloudLanes(on: copy).map { CloudLaneChoice(lane: $0, copy: copy) }
+    }
+  }
+
+  private func cloudLanes(on copy: HubComposerCopy) -> [RemoteRosterLane] {
+    let lanes: [RemoteRosterLane]
+    if let key = copy.machineKey {
+      lanes = machineFleet.machine(for: key)?.projects.first { $0.projectId == copy.project.id }?.lanes ?? []
+    } else {
+      lanes = syncService.projects.first { $0.id == copy.project.id }
+        .flatMap { syncService.rosterProject(for: $0)?.lanes } ?? []
+    }
+    return lanes.filter { ($0.laneType ?? "") != "primary" }
   }
 
   private func lanes(forProjectId id: String) -> [RemoteRosterLane] {

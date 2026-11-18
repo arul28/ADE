@@ -791,7 +791,10 @@ extension SyncService {
     return (UserDefaults.standard.stringArray(forKey: Self.seenCloudFleetKeysDefaultsKey) ?? []).contains(focusedKey)
   }
 
-  @MainActor private enum DeletedFocusedCloudComputer { static var left: Set<String> = [] }
+  /// The deleted focused computers this launch has left. Once left (and no
+  /// longer linked), `forgetDeletedCloudComputerPairings` forgets that pairing
+  /// too, focused or not.
+  @MainActor enum DeletedFocusedCloudComputer { static var left: Set<String> = [] }
 
   /// The project open on this phone was on an ADE Cloud computer the account
   /// has since deleted (its lane was deleted, here or on another device). A
@@ -820,10 +823,18 @@ extension SyncService {
     // with none, the Hub shows instead of the deleted computer's lanes.
     if let next = machineFleet?.machines.first(where: { $0.state == .live && !isCloudFleetKey($0.machineKey) })?.machineKey {
       cloudServerLog.notice("cloud_server focused_computer=deleted action=focus_live_machine")
-      Task { @MainActor [weak self] in _ = await self?.switchFocus(toMachineKey: next) }
-    } else if !projectHubPresented, activeAccountProjectId == nil {
-      cloudServerLog.notice("cloud_server focused_computer=deleted action=show_hub")
-      showProjectHub()
+      Task { @MainActor [weak self] in
+        // The deleted computer is no longer focused: drop its pairing.
+        guard await self?.switchFocus(toMachineKey: next) == true else { return }
+        self?.forgetDeletedCloudComputerPairings()
+      }
+    } else {
+      if !projectHubPresented, activeAccountProjectId == nil {
+        cloudServerLog.notice("cloud_server focused_computer=deleted action=show_hub")
+        showProjectHub()
+      }
+      // Its pairing goes too, or it reconnects to a computer that is gone.
+      forgetDeletedCloudComputerPairings()
     }
   }
 
@@ -942,15 +953,6 @@ extension SyncService {
       return String(fleetKey.dropFirst(ADECloudMachine.savedFleetKeyPrefix.count))
     }
     return AccountService.shared.machine(forFleetKey: fleetKey)?.machineKey
-  }
-
-  /// "ADE Cloud · <lane>" for a lane's cloud computer (as `ade` lists it), so
-  /// two of them are told apart; nil for any other machine.
-  func cloudLaneComputerName(fleetKey: String) -> String? {
-    guard isCloudFleetKey(fleetKey),
-          let lane = CloudLaneComputerLabels.laneName(machineKey: cloudAccountMachineKey(fleetKey: fleetKey))
-    else { return nil }
-    return "\(ADECloudMachine.name) · \(lane)"
   }
 
   /// Whether a fleet key names an ADE Cloud computer (asleep, awake or deleted).

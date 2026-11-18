@@ -29983,17 +29983,20 @@ extension SyncService {
   /// Cloud" that never answers. A pairing is a deleted cloud computer when
   /// this phone knew it as one (it left the cloud set, or its host or relay
   /// key is a cloud computer's) and neither the account's machines nor its
-  /// ADE Cloud computers list it now. The focused one is left to
-  /// `leaveDeletedFocusedCloudComputer`.
+  /// ADE Cloud computers list it now. The focused one is forgotten only once
+  /// `leaveDeletedFocusedCloudComputer` has left it and its link is down.
   func forgetDeletedCloudComputerPairings() {
     let account = AccountService.shared
     guard account.machinesState == .loaded, cloudServerReadFinished else { return }
     let liveCloudKeys = Set(cloudServerInstances.compactMap { $0.machineKey?.lowercased() })
+    let focusedLeft = focusedMachineKey.map { DeletedFocusedCloudComputer.left.contains($0) } == true
+      && connectionState != .connected
     let inputs = [
       account.machines.map(\.machineKey).sorted().joined(separator: ","),
       cloudMachineFleetKeys.sorted().joined(separator: ","),
       liveCloudKeys.sorted().joined(separator: ","),
       focusedMachineKey ?? "",
+      focusedLeft ? "left" : "",
     ].joined(separator: "|")
     guard inputs != DeletedCloudPairings.lastInputs else { return }
     DeletedCloudPairings.lastInputs = inputs
@@ -30001,7 +30004,7 @@ extension SyncService {
     let accountKeys = Set(account.machines.map { $0.machineKey.lowercased() })
     for entry in fleetMachineProfiles() {
       let key = entry.machineKey
-      guard key != focusedMachineKey, !cloudMachineFleetKeys.contains(key),
+      guard key != focusedMachineKey || focusedLeft, !cloudMachineFleetKeys.contains(key),
             account.machine(forFleetKey: key) == nil
       else { continue }
       let profile = entry.profile

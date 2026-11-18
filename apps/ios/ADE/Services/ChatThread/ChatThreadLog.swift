@@ -85,7 +85,8 @@ extension ChatThreadEngine {
        input.events.isEmpty, input.pinnedEvents.isEmpty,
        !(sequenced.isEmpty && unsequenced.isEmpty) {
       hostSnapshotReceived = true
-      noteLogChange(outcomes: outcomes, appended: appended)
+      // No rows changed, but the turn hint above may have: publish a frame.
+      pendingTimeline = max(pendingTimeline, .presentationOnly)
       pendingUrgent = true
       return
     }

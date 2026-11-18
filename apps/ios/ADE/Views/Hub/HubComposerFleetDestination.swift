@@ -48,6 +48,8 @@ struct HubComposerCopy: Equatable, Identifiable {
   /// The account machine key, when the account lists the computer.
   let accountMachineKey: String?
   let project: MobileProjectSummary
+  /// On an ADE Cloud lane computer: every one of them is the one ADE Cloud.
+  var isCloud = false
 
   /// One computer can hold two folders of a project, and two computers can
   /// share a name: the folder on its computer is the identity.
@@ -119,6 +121,25 @@ func hubComposerDefaultCopy(
   let mains = entry.copies.filter(isMain)
   return mains.first { $0.machineKey == nil } ?? mains.first
     ?? entry.copies.first { $0.machineKey == nil } ?? entry.copies.first
+}
+
+/// Pure: the destinations a project offers, one per computer, with every
+/// ADE Cloud lane computer folded into one ADE Cloud (the picked one when one
+/// is, else the first), where the first of them stood. Its lanes then list
+/// together (`cloudLaneChoices`).
+func hubComposerDestinationCopies(
+  _ copies: [HubComposerCopy],
+  isPicked: (HubComposerCopy) -> Bool
+) -> [HubComposerCopy] {
+  let cloud = copies.filter(\.isCloud)
+  guard cloud.count > 1, let representative = cloud.first(where: isPicked) ?? cloud.first else { return copies }
+  var placed = false
+  return copies.compactMap { copy in
+    guard copy.isCloud else { return copy }
+    if placed { return nil }
+    placed = true
+    return representative
+  }
 }
 
 /// The computers of the chosen project, as small chips under its row.

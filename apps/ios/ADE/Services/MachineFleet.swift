@@ -296,6 +296,8 @@ final class MachineFleet: ObservableObject {
           self.syncService?.resolveCloudMachineKeys()
           // Their saved chats, read from the account server itself.
           self.syncService?.refreshCloudServerIfStale()
+          // A project copy on a computer this list still lacks reads it once more.
+          AccountProjectStore.shared.readMachinesForUnknownCopies()
           // Machine names come from the directory: a rename shows at once.
           self.schedulePublish()
           self.accountMachinesLoaded(machines, cameOnline: cameOnline)
