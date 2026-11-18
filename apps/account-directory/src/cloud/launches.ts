@@ -185,7 +185,7 @@ export function isLaunchJoinRequest(path: string, method: string): boolean {
   return method === "POST" && route?.action === "join" && route.rest.length === 0;
 }
 
-const r2KeyOf = (userId: string, launchId: string, fileId: string) => `launches/${userId}/${launchId}/${fileId}`;
+export const r2KeyOf = (userId: string, launchId: string, fileId: string) => `launches/${userId}/${launchId}/${fileId}`;
 const r2PrefixOf = (userId: string, launchId: string) => `launches/${userId}/${launchId}/`;
 
 /** Compares two hex digests without stopping at the first difference. */
@@ -898,7 +898,9 @@ async function handlePutFile(request: Request, env: CloudEnv, userId: string, la
 async function handleGetFile(env: CloudEnv, row: LaunchRow, fileId: string): Promise<Response> {
   if (!FILE_ID.test(fileId)) return notFound();
   const request = parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" });
-  const named = request?.chat?.attachments?.some((file) => file.fileId === fileId);
+  // A started launch serves the files its first message names. A draft serves
+  // any of its files to its owner: a queued chat message names its files there.
+  const named = row.state === "draft" || request?.chat?.attachments?.some((file) => file.fileId === fileId);
   const object = named && env.CLOUD_CHATS ? await env.CLOUD_CHATS.get(r2KeyOf(row.user_id, row.launch_id, fileId)) : null;
   if (!object) return notFound();
   return new Response(object.body, {
