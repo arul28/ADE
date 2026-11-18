@@ -14,6 +14,7 @@ import { trustedHttpsOrigin } from "../trustedOrigin";
 import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, rememberLaunchSetupDisk, routeLaunches, startServerLaunch, type LaunchRouteDeps } from "./launches";
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
 import { handleMoveStart, routeMoves, type MoveRouteDeps } from "./moves";
+import { handleFreeStart, routeFrees } from "./frees";
 import { serverGitCheck } from "./accountVault";
 import { routeAccountSignIns } from "./accountSignIns";
 import { routeAccountSecrets } from "./accountSecrets";
@@ -417,7 +418,7 @@ async function blockedNow(env: CloudEnv, userId: string): Promise<Response | nul
 }
 
 /** The instance actions that start, restart or wake the computer. */
-const WAKING_ACTIONS: ReadonlySet<string> = new Set(["POST start", "POST update", "POST resize", "POST move"]);
+const WAKING_ACTIONS: ReadonlySet<string> = new Set(["POST start", "POST update", "POST resize", "POST move", "POST free"]);
 
 /** Writes the status from a provider answer, on change only. */
 async function recordStatus(env: CloudEnv, computer: ComputerRow, status: string, now: number, reason: string): Promise<void> {
@@ -1335,6 +1336,16 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   "POST fork": handleFork,
   // To the other kind (Standard ↔ Full), run here a step at a time (`moves.ts`).
   "POST move": (request, env, computer, provider, ctx) => handleMoveStart(request, env, computer, moveDepsFor(env, provider, ctx)),
+  "POST free": (request, env, computer, provider, ctx) => handleFreeStart(request, env, computer, {
+    ...moveDepsFor(env, provider, ctx),
+    // A resting computer wakes to push its work: the same rules as a command's wake (hours, the awake cap).
+    wakeRefusal: async () => {
+      if (isMeteredStatus(computer.status)) return null;
+      const { blocked } = await wakeBlocker(env, computer.user_id, ctx.now);
+      if (blocked) return blocked.response;
+      return (await awakeRoom(env, computer, ctx.now, AWAKE_CAP_WAIT_MS))?.response ?? null;
+    },
+  }),
   "POST exec": handleExec,
   "POST backups": async (_request, _env, computer, provider) => json(await provider.createBackup(computer.instance_id)),
   "POST signed-url": async (request, _env, computer, provider) => {
@@ -1876,6 +1887,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (path === CLOUD_PATHS.moves || path.startsWith(`${CLOUD_PATHS.moves}/`)) {
     return providerCall(() => routeMoves(request, path, env, caller.userId, moveDepsFor(env, provider, ctx)));
   }
+  // A server free's record: rows only.
+  if (path.startsWith(`${CLOUD_PATHS.frees}/`)) return routeFrees(request, path, env, caller.userId);
   // The job's rows only; the minute cron does the work.
   if (path === CLOUD_PATHS.projectComputersDelete || path.startsWith(`${CLOUD_PATHS.projectComputersDelete}/`)) {
     return routeProjectComputersDelete(request, path, env, caller.userId, now);

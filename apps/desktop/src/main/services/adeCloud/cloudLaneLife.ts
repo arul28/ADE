@@ -26,9 +26,10 @@ import type { ChatLaunchStageStatus, RemoteRuntimeProjectRecord } from "../../..
 import { getErrorMessage } from "../shared/utils";
 import { expectedErrorKind } from "../../../shared/expectedError";
 import { moveCloudMachine, type CloudCopyDeps } from "./cloudMachineCopy";
-import { KEEP_AWAKE_STATE_COMMAND, agentWorkOf, prepareStopCommand, shellJobId } from "../../../../../account-directory/src/cloud/computerCommands";
+import { KEEP_AWAKE_STATE_COMMAND, keepAwakeOf, prepareStopCommand, shellJobId } from "../../../../../account-directory/src/cloud/computerCommands";
 import { CLOUD_MACHINE_KEY_METADATA, formerMachineKeysOf, type createCloudMachines } from "./cloudMachines";
 import { CloudProviderError, type CloudInstance, type CloudLogger, type CloudProvider } from "./cloudProvider";
+import type { CloudFreeRecord } from "../../../../../account-directory/src/cloud/contract";
 
 /**
  * The life of an ADE Cloud lane's computer after its launch, in this app's
@@ -81,6 +82,9 @@ const CONNECT_WAIT_MS = 10 * 60_000;
 const CONNECT_RETRY_MS = 5_000;
 /** A finished job's card stays this long, then its record goes. */
 const FINISHED_JOB_KEEP_MS = 24 * 60 * 60_000;
+/** A server free is followed this often, for at most this long (a push takes up to 3 minutes; a wake a few more). */
+const FREE_POLL_MS = 2_000;
+const FREE_FOLLOW_MAX_MS = 15 * 60_000;
 // A lane's saved chats are read in pages of this size, at most this many pages.
 const SAVED_CHAT_PAGE = 200;
 const SAVED_CHAT_PAGES = 20;
@@ -224,7 +228,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
    * Whether the agent's work keeps the computer busy, from its keep-awake
    * facts: `idle` (asleep counts), `busy`, or `unknown` when they can't be read.
    */
-  const agentWork = async (instanceId: string): Promise<"idle" | "busy" | "unknown"> => {
+  const agentWork = async (instanceId: string): Promise<"idle" | "busy" | "setup" | "unknown"> => {
     const client = await deps.client();
     const instance = await client.getInstance(instanceId);
     if (instance.status !== "running") return "idle";
@@ -233,7 +237,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       return null;
     });
     if (!read) return "unknown";
-    const work = agentWorkOf(read.stdout);
+    const work = keepAwakeOf(read.stdout);
     if (work === "unknown") logger.warn?.("cloud.lane_keep_awake_unreadable", { instanceId });
     return work;
   };
@@ -326,6 +330,43 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
   };
 
   /**
+   * The free run by ADE's server (`frees.ts`): it goes on with this app
+   * closed. Null when the server has no such route (an older one), so the
+   * caller runs it here.
+   */
+  const freeOnServer = async (instanceId: string, laneId: string, machineKey: string | null): Promise<CloudLaneFreeResult | null> => {
+    const client = await deps.client();
+    if (!client.startFree || !client.readFree) return null;
+    let free: CloudFreeRecord;
+    try {
+      free = await client.startFree(instanceId, randomUUID());
+    } catch (error) {
+      // The computer was read just before: a 404 here is a server with no such route.
+      if (error instanceof CloudProviderError && error.status === 404) return null;
+      return { ok: false, message: getErrorMessage(error), lane: null };
+    }
+    const deadline = now() + FREE_FOLLOW_MAX_MS;
+    while (free.state !== "done" && free.state !== "failed" && free.state !== "cancelled") {
+      if (disposed) return { ok: false, message: "ADE quit while the computer was being freed. ADE Cloud finishes it on its own.", lane: null };
+      if (now() > deadline) return { ok: false, message: "Freeing the computer is taking a while. ADE Cloud goes on with it; check again in a few minutes.", lane: null };
+      await sleep(FREE_POLL_MS);
+      const last = free;
+      free = await client.readFree(last.freeId).catch((error: unknown) => {
+        logger.warn?.("cloud.lane_free_read_failed", { instanceId, error: getErrorMessage(error) });
+        return last;
+      });
+    }
+    logger.info?.("cloud.lane_freed", { instanceId, onServer: true, state: free.state, laneKept: free.laneKept });
+    if (free.state !== "done") return { ok: false, message: free.error ?? free.message, lane: null };
+    forgetConnections(machineKey, instanceId);
+    deps.changed();
+    const kept = free.laneKept
+      ? await client.listLanesWithoutComputer().then((lanes) => lanes.find((entry) => entry.laneId === laneId) ?? null, () => null)
+      : null;
+    return { ok: true, message: free.message, lane: kept };
+  };
+
+  /**
    * Pushes the lane's work, then removes its computer and keeps the lane. A
    * push that can't save everything keeps the computer as it is.
    */
@@ -338,8 +379,12 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     if (!instance) return fail("ADE Cloud has no such computer.");
     const lane = cloudMachineLaneFactsOf(instance.metadata);
     if (!lane) return fail("This computer wasn't made for one lane, so there is no lane to keep. Delete it, or keep it.");
+    const onServer = await freeOnServer(args.instanceId, lane.laneId, instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null);
+    if (onServer) return onServer;
+    // An older server: this app runs the free itself.
     // A running agent could write again after its lane was pushed.
     const work = await agentWork(args.instanceId);
+    if (work === "setup") return fail("This lane is still being set up. Finish signing in, or cancel the setup, then free the computer.");
     if (work === "busy") return fail("The agent is still working. Stop it or wait, then free the computer.");
     if (work === "unknown") return fail("ADE couldn't tell whether the agent is still working, so the computer stays. Try again in a moment.");
     // Archived lanes too: their work goes with the computer.

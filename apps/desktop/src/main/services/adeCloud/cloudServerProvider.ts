@@ -17,6 +17,7 @@ import {
   type CloudCheckoutResult,
   type CloudInviteRedeemResult,
   type CloudLaneWithoutComputer,
+  type CloudFreeRecord,
   type CloudMoveRecord,
   type CloudPhoneStart,
   type CloudPhoneState,
@@ -97,6 +98,14 @@ function readMoveRecord(value: unknown): CloudMoveRecord {
     throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
   }
   return body as unknown as CloudMoveRecord;
+}
+
+function readFreeRecord(value: unknown): CloudFreeRecord {
+  const body = record(value);
+  if (typeof body?.freeId !== "string" || typeof body.state !== "string" || typeof body.instanceId !== "string") {
+    throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+  }
+  return body as unknown as CloudFreeRecord;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -392,6 +401,14 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async cancelMove(moveId): Promise<CloudMoveRecord> {
       return readMoveRecord(await request("DELETE", `${CLOUD_PATHS.moves}/${encodeURIComponent(moveId)}`));
+    },
+
+    async startFree(id, freeId): Promise<CloudFreeRecord> {
+      return readFreeRecord(await request("POST", instancePath(id, "free"), { body: { freeId } }));
+    },
+
+    async readFree(freeId): Promise<CloudFreeRecord> {
+      return readFreeRecord(await request("GET", `${CLOUD_PATHS.frees}/${encodeURIComponent(freeId)}`));
     },
 
     async setInstanceMetadata(id, metadata): Promise<void> {

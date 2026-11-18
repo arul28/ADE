@@ -361,3 +361,74 @@ export function registerProjectsCommand(roots: readonly string[]): string {
     return `mkdir -p '${root}/.ade/secrets' && printf moved > '${root}/.ade/secrets/sync-host-copied'; ade projects add '${root}' >/dev/null 2>&1 || echo "failed ${root}"`;
   }).join("; ");
 }
+
+/** Busy reasons that are a lane still being set up (`cloudKeepAwake.ts`), not an agent at work. */
+const SETUP_WORK = new Set(["setup", "lane_setup", "first_clone", "lane_launch"]);
+
+/**
+ * `KEEP_AWAKE_STATE_COMMAND`'s output read for freeing a computer: `setup`
+ * when only a lane's setup keeps it busy (a launch still cloning, or waiting
+ * for a provider sign-in), `busy` for an agent's work, `unknown` when it
+ * can't be read.
+ */
+export function keepAwakeOf(stdout: string): "idle" | "busy" | "setup" | "unknown" {
+  try {
+    const state = JSON.parse(stdout.trim()) as { busy?: unknown; reasons?: unknown };
+    const reasons = (Array.isArray(state.reasons) ? state.reasons.filter((reason): reason is string => typeof reason === "string") : [])
+      .filter((reason) => !NOT_AGENT_WORK.has(reason));
+    if (state.busy !== true || reasons.length === 0) return "idle";
+    return reasons.every((reason) => SETUP_WORK.has(reason)) ? "setup" : "busy";
+  } catch {
+    return "unknown";
+  }
+}
+
+/* ---- A computer's lanes, pushed to GitHub ---- */
+
+/**
+ * Commits and pushes every project's lanes on the computer (`ade cloud
+ * push-work`), or with `check` only reads what isn't pushed (`ade cloud
+ * work-state`; never `push-work --check`: an older ADE ignores the flag and
+ * pushes). ADE on the computer answers a few seconds after a start.
+ */
+export function pushWorkCommand(check: boolean): string {
+  return [
+    'export PATH="$ADE_HOME/bin:$PATH"',
+    'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
+    check ? "ade cloud work-state --json" : "ade cloud push-work --json",
+  ].join("\n");
+}
+
+/** One lane as `ade cloud push-work` left it (`CloudPushWorkLane` in the CLI). */
+export type PushWorkLane = {
+  laneId: string;
+  laneName: string;
+  branchRef: string;
+  primary: boolean;
+  state: "pushed" | "clean" | "unpushed" | "failed" | "skipped" | string;
+};
+
+/** `push-work`'s or `work-state`'s answer; `lanes` is null from an ADE too old to list them. Null when unreadable. */
+export function readPushWorkTally(stdout: string): { pushed: number; failed: number; skipped: number; lanes: PushWorkLane[] | null } | null {
+  try {
+    const parsed = JSON.parse(stdout.trim()) as { result?: Record<string, unknown> } & Record<string, unknown>;
+    const tally = (parsed.result ?? parsed) as Record<string, unknown>;
+    const lanes = Array.isArray(tally.lanes)
+      ? tally.lanes.flatMap((entry): PushWorkLane[] => {
+        if (!entry || typeof entry !== "object") return [];
+        const lane = entry as Record<string, unknown>;
+        if (typeof lane.laneId !== "string") return [];
+        return [{
+          laneId: lane.laneId,
+          laneName: typeof lane.laneName === "string" ? lane.laneName : "",
+          branchRef: typeof lane.branchRef === "string" ? lane.branchRef : "",
+          primary: lane.primary === true,
+          state: typeof lane.state === "string" ? lane.state : "unpushed",
+        }];
+      })
+      : null;
+    return { pushed: Number(tally.pushed) || 0, failed: Number(tally.failed) || 0, skipped: Number(tally.skipped) || 0, lanes };
+  } catch {
+    return null;
+  }
+}

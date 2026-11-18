@@ -33,6 +33,8 @@
  *   PUT    /cloud/instances/:id/metadata       { ok: true }
  *   POST   /cloud/instances/:id/exec           { exitCode, stdout, stderr }
  *   POST   /cloud/instances/:id/move           CloudMoveRecord   (CloudMoveRequest; 201 new, 200 the same move again or the move of this computer already running)
+ *   POST   /cloud/instances/:id/free           CloudFreeRecord   ({ freeId }: push every lane's work, then delete the computer and keep its lane; 201 new, 200 the same id again)
+ *   GET    /cloud/frees/:free                  CloudFreeRecord
  *   GET    /cloud/moves                        CloudMoveList   (moves still running, and those that ended in the last day)
  *   GET    /cloud/moves/:move                  CloudMoveRecord
  *   DELETE /cloud/moves/:move                  CloudMoveRecord   (cancel; only before the copy starts, 409 `move_started` after)
@@ -189,6 +191,7 @@ export const CLOUD_PATHS = {
   launches: "/cloud/launches",
   /** A computer moved to the other kind by the server (`moves.ts`): `GET` the list, `GET`/`DELETE` `/:move`. Started with `POST /cloud/instances/:id/move`. */
   moves: "/cloud/moves",
+  frees: "/cloud/frees",
   /** The account vault's ADE Cloud sign-ins, for the web (`accountSignIns.ts`): status only, never a value. */
   signIns: "/cloud/sign-ins",
   /** Models per provider for a client with no computer (`models.ts`). */
@@ -2097,6 +2100,37 @@ export type CloudMoveRecord = {
 
 /** `GET /cloud/moves`: newest first, at most 20. */
 export type CloudMoveList = { moves: CloudMoveRecord[] };
+
+/* ---- A computer freed (its lane kept), run by the server ---- */
+
+/**
+ * - `checking`: woken if it rests (uses hours), and nothing may be running on it.
+ * - `pushing`: every lane's work is committed and pushed, then read once more.
+ * - `deleting`: the lane is kept and the computer deleted.
+ * - `done`, `failed`, `cancelled`: over. A failure deletes nothing.
+ */
+export type CloudFreeState = "checking" | "pushing" | "deleting" | "done" | "failed" | "cancelled";
+
+export type CloudFreeRecord = {
+  freeId: string;
+  instanceId: string;
+  /** The computer's name when it began. */
+  name: string;
+  laneId: string | null;
+  laneName: string | null;
+  /** The branch the lane goes on from (the push names it). */
+  branchRef: string | null;
+  state: CloudFreeState;
+  /** One plain sentence for the UI. */
+  message: string;
+  /** One plain sentence when it failed. */
+  error: string | null;
+  /** Once done: whether ADE Cloud kept the lane (its next message makes a new computer on the branch). Null before. */
+  laneKept: boolean | null;
+  cancellable: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
 
 /**
  * What a launch waiting on a provider sign-in shows (`waiting_for_sign_in`).

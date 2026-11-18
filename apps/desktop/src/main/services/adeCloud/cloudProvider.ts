@@ -22,6 +22,7 @@ import type {
   CloudInstance,
   CloudInviteRedeemResult,
   CloudLaneWithoutComputer,
+  CloudFreeRecord,
   CloudMoveRecord,
   CloudMoveRequest,
   CloudPaidPlanId,
@@ -166,6 +167,13 @@ export type CloudProvider = {
   startMove?(id: string, input: CloudMoveRequest): Promise<CloudMoveRecord>;
   readMove?(moveId: string): Promise<CloudMoveRecord>;
   cancelMove?(moveId: string): Promise<CloudMoveRecord>;
+  /**
+   * Frees a computer (its lane kept), run by ADE's server (`POST /cloud/instances/:id/free`):
+   * it pushes every lane's work, checks it again and deletes the computer with no app open;
+   * `readFree` follows it. An older server answers 404.
+   */
+  startFree?(id: string, freeId: string): Promise<CloudFreeRecord>;
+  readFree?(freeId: string): Promise<CloudFreeRecord>;
   /** Replaces the metadata (it is not merged). */
   setInstanceMetadata(id: string, metadata: Record<string, string>): Promise<void>;
   /** Whether the server can make a computer right now (its pinned image exists). */

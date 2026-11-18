@@ -580,6 +580,33 @@ struct CloudServerClient {
     _ = try await send("DELETE", "cloud/moves/\(segment(moveId))", timeout: 30)
   }
 
+  /// Frees a computer on the account server (`POST /cloud/instances/:id/free`):
+  /// it pushes every lane's work, checks it again and deletes the computer,
+  /// keeping its lane, with no app open. Followed here until it ends (or 15
+  /// minutes). Nil from a server older than the route, so the caller runs it.
+  func freeOnServer(instanceId: String) async -> CloudComputerOutcome? {
+    var free: CloudServerFree
+    do {
+      let body = try JSONSerialization.data(withJSONObject: ["freeId": UUID().uuidString.lowercased()])
+      free = try decode(CloudServerFree.self, from: try await send("POST", "cloud/instances/\(segment(instanceId))/free", body: body, timeout: 30))
+    } catch Failure.noAccess {
+      // The computer was read just before: a 404 is a server with no such route.
+      return nil
+    } catch {
+      return CloudComputerOutcome(ok: false, message: cloudServerFailureMessage(error))
+    }
+    let deadline = Date().addingTimeInterval(15 * 60)
+    while !["done", "failed", "cancelled"].contains(free.state) {
+      if Date() > deadline || Task.isCancelled {
+        return CloudComputerOutcome(ok: false, message: "Freeing the computer is taking a while. ADE Cloud goes on with it; check again in a few minutes.")
+      }
+      try? await Task.sleep(nanoseconds: 2_000_000_000)
+      if let read = try? decode(CloudServerFree.self, from: try await send("GET", "cloud/frees/\(segment(free.freeId))")) { free = read }
+    }
+    if free.state == "done" { return CloudComputerOutcome(ok: true, message: free.message) }
+    return CloudComputerOutcome(ok: false, message: free.error ?? free.message)
+  }
+
   /// One path segment, with `/` encoded too. Every route file uses it.
   func segment(_ value: String) -> String {
     value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? value
@@ -672,6 +699,17 @@ func cloudServerFailure(status: Int, body: Data) -> CloudServerClient.Failure {
 /// A move of a computer to the other kind, as the account server runs it
 /// (`CloudMoveRecord`). `message` is the one sentence to show; a state this
 /// app doesn't know shows only that sentence and counts as still running.
+/// A free the account server runs (`CloudFreeRecord`).
+struct CloudServerFree: Decodable, Equatable {
+  let freeId: String
+  let instanceId: String
+  /// `checking`, `pushing`, `deleting`, `done`, `failed`, `cancelled`.
+  let state: String
+  let message: String
+  let error: String?
+  let laneKept: Bool?
+}
+
 struct CloudServerMove: Decodable, Equatable, Identifiable {
   let moveId: String
   let sourceInstanceId: String
@@ -907,7 +945,7 @@ extension CloudServerClient {
     return (!left.isEmpty, left, nil)
   }
 
-  enum AgentWork { case idle, busy, unknown }
+  enum AgentWork { case idle, busy, setup, unknown }
 
   /// Whether the agent's work keeps the computer busy, from its keep-awake
   /// facts (`agentWork`): asleep counts as idle; facts it can't read are unknown.
@@ -918,8 +956,11 @@ extension CloudServerClient {
           let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return .unknown }
     // A person watching a tool, or a timer due soon, is not the agent's work.
     let reasons = (state["reasons"] as? [Any] ?? []).compactMap { $0 as? String }
-    let busy = state["busy"] as? Bool == true && !reasons.allSatisfy { $0 == "in_use" || $0 == "schedule" }
-    return busy ? .busy : .idle
+    let working = reasons.filter { $0 != "in_use" && $0 != "schedule" }
+    guard state["busy"] as? Bool == true, !working.isEmpty else { return .idle }
+    // Only the lane's setup (a launch still cloning, or waiting for a provider sign-in) is not an agent's work.
+    let setup: Set<String> = ["setup", "lane_setup", "first_clone", "lane_launch"]
+    return working.allSatisfy { setup.contains($0) } ? .setup : .busy
   }
 
   /// Deletes a computer and waits until the server confirms it is gone (a 404
@@ -963,6 +1004,8 @@ extension CloudServerClient {
     guard let laneId = box.laneId, box.laneName != nil else {
       return fail("This computer wasn't made for one lane, so there is no lane to keep. Delete it, or keep it.")
     }
+    // ADE's server runs the free itself (it goes on with the app closed); an older server runs it from here.
+    if let onServer = await freeOnServer(instanceId: instanceId) { return onServer }
     // A running agent could write again after its lane was pushed.
     let work: AgentWork
     do {
@@ -970,6 +1013,7 @@ extension CloudServerClient {
     } catch {
       return fail(cloudServerFailureMessage(error))
     }
+    if work == .setup { return fail("This lane is still being set up. Finish signing in, or cancel the setup, then free the computer.") }
     if work == .busy { return fail("The agent is still working. Stop it or wait, then free the computer.") }
     if work == .unknown { return fail("ADE couldn't tell whether the agent is still working, so the computer stays. Try again in a moment.") }
     let ran = await runPushWork(instanceId: instanceId, check: false)

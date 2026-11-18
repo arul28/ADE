@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { reportExtraPhoneMinutes, setExtraPhoneMinutes } from "../src/cloud/phoneBilling";
-import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, type CloudAccountState, type CloudMoveRecord } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, type CloudAccountState, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
 import { runIdleCleanup } from "../src/cloud/idleCleanup";
@@ -3871,3 +3871,115 @@ describe("ADE Cloud server moves", () => {
     expect((await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json() as { state: string }).state).toBe("done");
   });
 });
+
+describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
+  const FREE = "8b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e";
+  const lane = (state: string, extra: Row = {}) => ({ laneId: "lane-1", laneName: "Fix login", branchRef: "ade/fix-login", primary: false, state, ...extra });
+  /** What the computer's shell prints for the free's commands. */
+  let shell: { keepAwake: string; push: string; check: string };
+  let ran: string[];
+
+  beforeEach(() => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { name: "Widgets", machine_key: "mk_source", lane_id: "lane-1", lane_name: "Fix login" });
+    provide(harness, INSTANCE, "running", { ade_machine_key: "mk_source", ade_lane_id: "lane-1", ade_lane_name: "Fix login" });
+    shell = {
+      keepAwake: JSON.stringify({ busy: false, reasons: [] }),
+      push: JSON.stringify({ pushed: 1, failed: 0, skipped: 0, lanes: [lane("pushed")] }),
+      check: JSON.stringify({ pushed: 0, failed: 0, skipped: 0, lanes: [lane("clean")] }),
+    };
+    ran = [];
+    harness.net.hooks.exec = (_id, command) => {
+      ran.push(command);
+      if (command.includes("keep-awake.json")) return { exit_code: 0, stdout: shell.keepAwake };
+      if (command.includes("ade cloud push-work")) return { exit_code: 0, stdout: shell.push };
+      if (command.includes("ade cloud work-state")) return { exit_code: 0, stdout: shell.check };
+      return null;
+    };
+  });
+
+  const run = () => runCloudMoves(harness.env, {
+    provider: createCloudProvider("provider-key"),
+    createComputer: (userId, provider, extras) => createComputer(harness.env, userId, provider, extras, { now: clock, waitUntil: undefined }),
+  });
+  const job = () => harness.row("select * from cloud_jobs where job_id = ?", FREE);
+  const drive = async () => {
+    for (let tick = 0; tick < 50 && job().step !== "end"; tick += 1) {
+      clock += 16_000;
+      await run();
+    }
+    expect(job().step).toBe("end");
+  };
+  const start = () => harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/free`, { freeId: FREE });
+  const record = async () => await (await harness.send(OWNER, "GET", `/cloud/frees/${FREE}`)).json() as CloudFreeRecord;
+  const keptLanes = async () => ((await (await harness.send(OWNER, "GET", "/cloud/lanes/without-computer")).json()) as { lanes?: Array<{ laneId: string; branchRef: string | null }> }).lanes ?? [];
+
+  it("pushes the work, checks it again, then deletes the computer and keeps its lane on the pushed branch", async () => {
+    const started = await start();
+    expect(started.status).toBe(201);
+    expect(await started.json()).toEqual(expect.objectContaining({ freeId: FREE, instanceId: INSTANCE, laneId: "lane-1", state: "checking", cancellable: true }));
+    // The same id again answers the same free.
+    expect((await start()).status).toBe(200);
+    await drive();
+
+    expect(await record()).toEqual(expect.objectContaining({ state: "done", laneKept: true, branchRef: "ade/fix-login", error: null }));
+    // Nothing deleted before the push and the check after it.
+    const push = ran.findIndex((command) => command.includes("ade cloud push-work"));
+    const check = ran.findIndex((command) => command.includes("ade cloud work-state"));
+    expect(push).toBeGreaterThan(-1);
+    expect(check).toBeGreaterThan(push);
+    expect(harness.net.instances.has(INSTANCE)).toBe(false);
+    expect(computer(harness).deleted_at).not.toBeNull();
+    expect(await keptLanes()).toEqual([expect.objectContaining({ laneId: "lane-1", branchRef: "ade/fix-login" })]);
+  });
+
+  it("wakes a resting computer to push its work", async () => {
+    harness.net.instances.get(INSTANCE)!.status = "sleeping";
+    harness.exec("update cloud_computers set status = 'sleeping' where instance_id = ?", INSTANCE);
+    expect((await start()).status).toBe(201);
+    await drive();
+    expect(providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/start$`)).length).toBeGreaterThan(0);
+    expect(await record()).toEqual(expect.objectContaining({ state: "done", laneKept: true }));
+  });
+
+  it.each<[string, () => void, string]>([
+    ["only the lane's setup is running (a launch waiting for a provider sign-in)", () => {
+      shell.keepAwake = JSON.stringify({ busy: true, reasons: ["setup", "in_use"] });
+    }, "This lane is still being set up. Finish signing in, or cancel the setup, then free the computer."],
+    ["an agent is working", () => {
+      shell.keepAwake = JSON.stringify({ busy: true, reasons: ["chat", "setup"] });
+    }, "The agent is still working. Stop it or wait, then free the computer."],
+    ["what is running can't be read", () => {
+      shell.keepAwake = "";
+    }, "ADE couldn't tell whether the agent is still working, so the computer stays. Try again in a moment."],
+    ["a lane couldn't be pushed", () => {
+      shell.push = JSON.stringify({ pushed: 0, failed: 1, skipped: 0, lanes: [lane("failed")] });
+    }, "ADE couldn't push all work on this computer (Fix login), so it stays. Open the lane to see why, then try again."],
+    ["work changed while it pushed", () => {
+      shell.check = JSON.stringify({ pushed: 0, failed: 0, skipped: 0, lanes: [lane("unpushed")] });
+    }, "Work changed on this computer while ADE pushed it (Fix login), so it stays. Try again."],
+    ["the check after the push can't say", () => {
+      shell.check = JSON.stringify({ pushed: 0, failed: 0, skipped: 0 });
+    }, "ADE couldn't confirm all work is on GitHub, so the computer stays. Try again."],
+  ])("%s: nothing is deleted and no lane is kept", async (_label, arrange, why) => {
+    arrange();
+    expect((await start()).status).toBe(201);
+    await drive();
+    expect(await record()).toEqual(expect.objectContaining({ state: "failed", error: why, laneKept: null }));
+    expect(harness.net.instances.has(INSTANCE)).toBe(true);
+    expect(computer(harness).deleted_at).toBeNull();
+    expect(computer(harness).lane_keep_reason).toBeNull();
+    expect(providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`))).toHaveLength(0);
+    expect(await keptLanes()).toEqual([]);
+  });
+
+  it("refuses a computer with no lane before anything starts", async () => {
+    harness.exec("update cloud_computers set lane_id = null, lane_name = null where instance_id = ?", INSTANCE);
+    harness.net.instances.get(INSTANCE)!.metadata = {};
+    const noLane = await start();
+    expect(noLane.status).toBe(409);
+    expect(((await noLane.json()) as { error?: { code?: string } }).error?.code).toBe("no_lane");
+    expect(harness.rows("select job_id from cloud_jobs")).toEqual([]);
+  });
+});
+
