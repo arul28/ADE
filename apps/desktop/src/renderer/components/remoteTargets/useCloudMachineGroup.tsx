@@ -138,6 +138,7 @@ export function useCloudMachineGroup(args: {
       catalog={cloudCatalogOf(cloudResult?.account)}
       work={ctx.work}
       pending={cloudActions.pendingById[ctx.box.instanceId] ?? null}
+      approvalUrl={cloudActions.approvalById[ctx.box.instanceId] ?? null}
       error={cloudActions.errorById[ctx.box.instanceId] ?? null}
       onDismissError={() => cloudActions.dismissError(ctx.box.instanceId)}
       onWake={wakeOnCard ? () => void cloudActions.wake(ctx) : null}

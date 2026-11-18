@@ -57,6 +57,7 @@ import {
 } from "../../../../account-directory/src/cloud/contract";
 import type { CloudProvider } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import { parseChatLaunchArgs } from "../../../../desktop/src/main/services/chat/chatLaunchArgs";
+import { HOST_INSTANCE_ENV } from "../sync/hostInstanceGuard";
 import { saveCloudFiles, withAttachmentPaths } from "../cloudChats/cloudAttachmentFiles";
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { CloudApiError, type CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
@@ -322,6 +323,48 @@ function readReplacedEnvLaunch(adeDir: string): string | null {
 }
 
 /**
+ * The launch a join file named, kept (without its code) under `$ADE_HOME`
+ * once the file is gone, with the host it was read on: a brain that restarts
+ * before the launch ended goes on with it. A copy of this computer (another
+ * host) never takes it up.
+ */
+const TAKEN_FILE_LAUNCH_FILE = "cloud/launch-join-taken.json";
+/** `runCloudBootLaunch`'s state, under `$ADE_HOME` (`startCloudBootLaunch`). */
+const BOOT_STATE_FILE = "cloud/boot-launch.json";
+
+function noteTakenFileLaunch(adeDir: string, launchId: string, env: NodeJS.ProcessEnv, logger: Logger): void {
+  const host = env[HOST_INSTANCE_ENV]?.trim();
+  if (!host) return;
+  try {
+    const noted = path.join(adeDir, TAKEN_FILE_LAUNCH_FILE);
+    fs.mkdirSync(path.dirname(noted), { recursive: true });
+    fs.writeFileSync(noted, JSON.stringify({ launchId, host }), { mode: 0o600 });
+  } catch (error) {
+    logger.warn("cloud_boot_launch.file_launch_note_failed", { error: errorText(error) });
+  }
+}
+
+/** The launch a join file named on this host, while its boot hasn't ended; the note goes once it has, or on another host. */
+function takenFileLaunch(adeDir: string, env: NodeJS.ProcessEnv, logger: Logger): string | null {
+  const noted = path.join(adeDir, TAKEN_FILE_LAUNCH_FILE);
+  let parsed: { launchId?: unknown; host?: unknown };
+  try {
+    parsed = JSON.parse(fs.readFileSync(noted, "utf8")) as typeof parsed;
+  } catch {
+    return null;
+  }
+  const launchId = typeof parsed.launchId === "string" && isUuid(parsed.launchId) ? parsed.launchId : null;
+  const host = env[HOST_INSTANCE_ENV]?.trim();
+  const boot = launchId ? readState(path.join(adeDir, BOOT_STATE_FILE), logger) : null;
+  const ended = boot?.launchId === launchId && boot?.phase === "ended";
+  if (!launchId || !host || parsed.host !== host || ended) {
+    fs.rmSync(noted, { force: true });
+    return null;
+  }
+  return launchId;
+}
+
+/**
  * The server launch this computer runs at brain start: the join file a
  * server copy handed it (`CLOUD_LAUNCH_JOIN_FILE`), else its env's
  * (`takeCloudLaunchEnv`; those leave this process's env either way).
@@ -332,11 +375,15 @@ function readReplacedEnvLaunch(adeDir: string): string | null {
  *   whose launch is spent and names the original. That env launch is noted
  *   and left alone at every later start, so a restart after the join never
  *   takes it up (its code would be refused anyway: it names another computer).
+ * - A restart after the file was read and before its launch ended goes on
+ *   with that launch, with no code: signed in, it reports the launch done;
+ *   not signed in, it can't join, and the server hands the file again.
  */
 export function takeCloudLaunch(adeDir: string, logger: Logger, env: NodeJS.ProcessEnv = process.env): { launchId: string; joinCode: string | null } | null {
   const fromEnv = takeCloudLaunchEnv(env);
   const fromFile = takeCloudLaunchJoinFile(adeDir, logger);
   if (fromFile) {
+    noteTakenFileLaunch(adeDir, fromFile.launchId, env, logger);
     if (fromEnv && fromEnv.launchId !== fromFile.launchId) {
       try {
         const noted = path.join(adeDir, REPLACED_ENV_LAUNCH_FILE);
@@ -349,11 +396,12 @@ export function takeCloudLaunch(adeDir: string, logger: Logger, env: NodeJS.Proc
     logger.info("cloud_boot_launch.join_file_read", { launchId: fromFile.launchId, replacedEnvLaunch: fromEnv?.launchId ?? null });
     return fromFile;
   }
-  if (fromEnv && readReplacedEnvLaunch(adeDir) === fromEnv.launchId) {
-    logger.info("cloud_boot_launch.env_launch_replaced", { launchId: fromEnv.launchId });
-    return null;
-  }
-  return fromEnv;
+  const envLaunch = fromEnv && readReplacedEnvLaunch(adeDir) === fromEnv.launchId ? null : fromEnv;
+  if (fromEnv && !envLaunch) logger.info("cloud_boot_launch.env_launch_replaced", { launchId: fromEnv.launchId });
+  if (envLaunch) return envLaunch;
+  const taken = takenFileLaunch(adeDir, env, logger);
+  if (taken) logger.info("cloud_boot_launch.file_launch_resumed", { launchId: taken });
+  return taken ? { launchId: taken, joinCode: null } : null;
 }
 
 const doneStage = (id: string, detail: string | null = null): CloudLaunchStage => ({ id, status: "done", detail });
@@ -1159,7 +1207,7 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
       launchId: launchEnv.launchId,
       joinCode: launchEnv.joinCode,
       instanceId: cloudInstanceId,
-      stateFile: path.join(host.adeDir, "cloud", "boot-launch.json"),
+      stateFile: path.join(host.adeDir, BOOT_STATE_FILE),
       logger,
       api: () => {
         const base = host.directoryBaseUrl();

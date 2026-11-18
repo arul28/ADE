@@ -13,6 +13,7 @@ import type { CloudCopyRecord } from "../../../../../account-directory/src/cloud
  */
 
 const POLL_MS = 4_000;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Reads that fail in a row before this tab stops following. */
 const READ_FAILURES = 30;
 
@@ -44,8 +45,10 @@ export function createWebCloudCopies(api: () => CloudApiClient | null) {
         emit({ requestId, stage: "failed", message, error: message });
         return;
       }
-      if (record.message !== lastLine) {
-        lastLine = record.message;
+      // A fresh approval link with the same line is news too: the card's Approve opens the current one.
+      const line = `${record.message}|${record.approvalUrl ?? ""}`;
+      if (line !== lastLine) {
+        lastLine = line;
         const stage = record.state === "copying" ? "creating" : record.state === "joining" ? "signing_in" : "approve_elsewhere";
         emit({ requestId, stage, message: record.message, ...(instanceId ? { instanceId } : {}), ...(record.approvalUrl ? { approvalUrl: record.approvalUrl } : {}) });
       }
@@ -76,19 +79,25 @@ export function createWebCloudCopies(api: () => CloudApiClient | null) {
       if (!client) throw new Error("Sign in to ADE here to copy a computer.");
       const shape = args.shape ? cloudShape(args.shape as CloudShapeId) : null;
       if (args.shape && !shape) throw new Error("Pick a size.");
-      let record: CloudCopyRecord;
-      try {
-        record = await client.startCopy(args.instanceId, {
-          copyId: crypto.randomUUID(),
-          ...(args.name?.trim() ? { name: args.name.trim() } : {}),
-          ...(shape ? { resources: { cpu: shape.cpu, memoryGb: shape.memoryGb } } : {}),
-          origin: "person",
-        });
-      } catch (error) {
-        // An older server has no copies; only the desktop app can copy there.
-        if (error instanceof CloudApiError && error.status === 404) throw new Error("Copy this computer from the ADE desktop app. ADE Cloud can't copy it from here yet.");
-        throw error;
-      }
+      const start = async (copyId: string): Promise<CloudCopyRecord> => {
+        try {
+          return await client.startCopy(args.instanceId, {
+            copyId,
+            ...(args.name?.trim() ? { name: args.name.trim() } : {}),
+            ...(shape ? { resources: { cpu: shape.cpu, memoryGb: shape.memoryGb } } : {}),
+            origin: "person",
+          });
+        } catch (error) {
+          // An older server has no copies; only the desktop app can copy there.
+          if (error instanceof CloudApiError && error.status === 404) throw new Error("Copy this computer from the ADE desktop app. ADE Cloud can't copy it from here yet.");
+          throw error;
+        }
+      };
+      // The copy's id is the card's request id when it is one, so a retried start follows the same copy, as on the desktop.
+      const requestCopyId = args.requestId.trim().toLowerCase();
+      let record = await start(UUID.test(requestCopyId) ? requestCopyId : crypto.randomUUID());
+      // That copy ended without one: a Retry makes a new one.
+      if (record.state === "failed" || record.state === "cancelled") record = await start(crypto.randomUUID());
       followed.set(args.requestId, record.copyId);
       void follow(args.requestId, record).finally(() => followed.delete(args.requestId));
       return { started: true };

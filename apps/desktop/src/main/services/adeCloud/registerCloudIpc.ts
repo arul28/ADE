@@ -63,7 +63,7 @@ import type { CloudProvider } from "./cloudProvider";
 import { setCloudAsleepCheck, setCloudRestChanged, setCloudUpdateBlocker, setCloudWakeForUse } from "./cloudWakeHook";
 import { startCloudSleepWatch } from "./cloudSleepWatch";
 import { setCloudDesktopActions } from "./cloudDesktopActions";
-import { copyCloudMachine, moveCloudMachine, type CloudCopyDeps } from "./cloudMachineCopy";
+import { CLOUD_STOP_FOLLOWING, copyCloudMachine, moveCloudMachine, type CloudCopyDeps } from "./cloudMachineCopy";
 import { reconnectCloudMachine } from "./cloudReconnect";
 import { sendToAllWindows } from "./broadcast";
 import {
@@ -807,7 +807,9 @@ export function registerCloudIpc(args: {
   /**
    * A copy or move from the machine card: answers at once and reports like a
    * create (`cloudCreateProgress`, ending in done or failed), since a fork
-   * or a move runs for minutes. Stopped when the window that asked goes away.
+   * or a move runs for minutes. When the window that asked goes away, one
+   * run here stops, and one ADE's server runs goes on there (only this app
+   * stops following it); only Cancel (`cloudCancelCreate`) cancels that.
    */
   const startLongAction = (
     event: Electron.IpcMainInvokeEvent,
@@ -818,7 +820,7 @@ export function registerCloudIpc(args: {
     const sender = event.sender;
     const controller = new AbortController();
     creates.set(requestId, controller);
-    const onSenderGone = () => controller.abort();
+    const onSenderGone = () => controller.abort(CLOUD_STOP_FOLLOWING);
     sender.once("destroyed", onSenderGone);
     const send = (progress: CloudCreateProgress) => {
       if (sender.isDestroyed()) return;

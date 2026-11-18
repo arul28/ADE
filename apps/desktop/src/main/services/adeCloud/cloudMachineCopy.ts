@@ -141,6 +141,14 @@ export async function copyCloudMachine(
   return await copyHere(deps, client, { ...args, requestId }, onProgress, options);
 }
 
+/**
+ * The abort reason of a follower that went away (the window that asked
+ * closed): a copy or move ADE's server runs goes on there, and only the
+ * following here stops. Any other abort is the person's Cancel.
+ */
+export const CLOUD_STOP_FOLLOWING = "ade_cloud_stop_following";
+const stoppedFollowing = (signal: AbortSignal | undefined): boolean => signal?.aborted === true && signal.reason === CLOUD_STOP_FOLLOWING;
+
 /** The server's answers that mean "run the copy from here": copies off, or a computer on an older ADE (an older server answers 404). */
 const COPY_HERE_CODES = new Set(["server_copy_unavailable", "copy_needs_update"]);
 /** An agent maker, as the server names a copy's origin. */
@@ -200,50 +208,77 @@ async function copyOnServer(
   let lastLine = "";
   let handedUrl: string | null = null;
   let failures = 0;
-  for (;;) {
-    if (options.signal?.aborted && record.cancellable && client.cancelCopy) {
-      // Before the copy signs in the server deletes it (now, or at its step's end); after, it is a whole computer.
-      const current = record;
-      record = await client.cancelCopy(copyId).catch((error: unknown): CloudCopyRecord => {
-        logger.warn?.("cloud.machine_copy_cancel_failed", { copyId, error: getErrorMessage(error) });
-        return { ...current, cancellable: false };
-      });
-    }
-    const line = record.message;
-    if (record.state === "copying") {
-      if (line !== lastLine) progress("creating", line, record.targetInstanceId);
-    } else if (record.state === "joining") {
-      if (!forkMs) forkMs = Date.now() - startedAt;
-      if (line !== lastLine) progress("signing_in", line, record.targetInstanceId);
-    } else if (record.state === "needs_approval") {
-      if (line !== lastLine) progress("approve_elsewhere", line, record.targetInstanceId, record.approvalUrl);
-      // With no window here (a brain on its own), the link goes to the person, once per link.
-      if (record.approvalUrl && record.approvalUrl !== handedUrl && !deps.approveInWindow && deps.handOffApproval) {
-        handedUrl = record.approvalUrl;
-        let userCode = "";
-        try {
-          userCode = new URL(record.approvalUrl).searchParams.get("user_code") ?? "";
-        } catch {
-          // A link with no code still opens the approval page.
+  /** The approval window open for one link (the desktop): closed when the copy goes on, or ends. */
+  const approval: { open: { url: string; controller: AbortController } | null } = { open: null };
+  const closeApproval = () => {
+    approval.open?.controller.abort();
+    approval.open = null;
+  };
+  try {
+    for (;;) {
+      if (options.signal?.aborted) {
+        // Its window went away: only the following stops; the copy goes on on ADE Cloud.
+        if (stoppedFollowing(options.signal)) throw new Error(`ADE stopped following the copy here. It goes on on ADE Cloud; ${record.name} shows up under your computers.`);
+        if (record.cancellable && client.cancelCopy) {
+          // The person's Cancel. Before the copy signs in the server deletes it (now, or at its step's end); after, it is a whole computer.
+          const current = record;
+          record = await client.cancelCopy(copyId).catch((error: unknown): CloudCopyRecord => {
+            logger.warn?.("cloud.machine_copy_cancel_failed", { copyId, error: getErrorMessage(error) });
+            return { ...current, cancellable: false };
+          });
         }
-        deps.handOffApproval({ url: record.approvalUrl, userCode, name: record.name });
+      }
+      // A fresh approval link with the same line is news too: the card's Approve opens the current one.
+      const line = `${record.message}|${record.approvalUrl ?? ""}`;
+      if (record.state === "needs_approval" && record.approvalUrl) {
+        const url = record.approvalUrl;
+        if (deps.approveInWindow && approval.open?.url !== url) {
+          // With a window here (the desktop), the link opens in it, once per link, as a copy made here does.
+          closeApproval();
+          const controller = new AbortController();
+          approval.open = { url, controller };
+          void deps.approveInWindow({ url, mode: "browser", title: `Approve ${record.name}`, signal: controller.signal, onNeedsPerson: () => undefined })
+            .catch((error: unknown) => logger.warn?.("cloud.machine_copy_approval_window_failed", { copyId, error: getErrorMessage(error) }));
+        } else if (!deps.approveInWindow && deps.handOffApproval && url !== handedUrl) {
+          // With no window here (a brain on its own), the link goes to the person, once per link.
+          handedUrl = url;
+          let userCode = "";
+          try {
+            userCode = new URL(url).searchParams.get("user_code") ?? "";
+          } catch {
+            // A link with no code still opens the approval page.
+          }
+          deps.handOffApproval({ url, userCode, name: record.name });
+        }
+      } else {
+        closeApproval();
+      }
+      if (record.state === "copying") {
+        if (line !== lastLine) progress("creating", record.message, record.targetInstanceId);
+      } else if (record.state === "joining") {
+        if (!forkMs) forkMs = Date.now() - startedAt;
+        if (line !== lastLine) progress("signing_in", record.message, record.targetInstanceId);
+      } else if (record.state === "needs_approval") {
+        if (line !== lastLine) progress("approve_elsewhere", record.message, record.targetInstanceId, record.approvalUrl);
+      }
+      lastLine = line;
+      if (record.state === "done") break;
+      if (record.state === "failed") throw new Error(record.error ?? record.message);
+      if (record.state === "cancelled") throw new CloudCreateCancelled(record.message || "The copy was cancelled.");
+      await sleep(SERVER_MOVE_POLL_MS);
+      try {
+        record = await client.readCopy(copyId);
+        failures = 0;
+      } catch (error) {
+        failures += 1;
+        if (error instanceof CloudProviderError && error.status === 404) throw new Error("ADE Cloud lost track of the copy. Check your computers list.");
+        if (failures >= SERVER_MOVE_READ_FAILURES) {
+          throw new Error(`ADE can't reach ADE Cloud to follow the copy. It goes on there; check your computers list. (${getErrorMessage(error)})`);
+        }
       }
     }
-    lastLine = line;
-    if (record.state === "done") break;
-    if (record.state === "failed") throw new Error(record.error ?? record.message);
-    if (record.state === "cancelled") throw new CloudCreateCancelled(record.message || "The copy was cancelled.");
-    await sleep(SERVER_MOVE_POLL_MS);
-    try {
-      record = await client.readCopy(copyId);
-      failures = 0;
-    } catch (error) {
-      failures += 1;
-      if (error instanceof CloudProviderError && error.status === 404) throw new Error("ADE Cloud lost track of the copy. Check your computers list.");
-      if (failures >= SERVER_MOVE_READ_FAILURES) {
-        throw new Error(`ADE can't reach ADE Cloud to follow the copy. It goes on there; check your computers list. (${getErrorMessage(error)})`);
-      }
-    }
+  } finally {
+    closeApproval();
   }
   const targetId = record.targetInstanceId!;
   logger.info?.("cloud.machine_copied", { sourceId: args.instanceId, instanceId: targetId, onServer: true });
@@ -472,8 +507,10 @@ async function moveOnServer(
     name: from.sourceName,
   });
   for (;;) {
+    // Its window went away: only the following stops; the move goes on on ADE Cloud.
+    if (stoppedFollowing(options.signal)) throw new Error(`ADE stopped following the move here. It goes on on ADE Cloud; check ${record.sourceName}'s card.`);
     if (options.signal?.aborted && record.cancellable && client.cancelMove) {
-      // Before the copy the server undoes it (now, or at its step's end); after, it goes on there to the end.
+      // The person's Cancel. Before the copy the server undoes it (now, or at its step's end); after, it goes on there to the end.
       const current = record;
       record = await client.cancelMove(moveId).catch((error: unknown): CloudMoveRecord => {
         logger.warn?.("cloud.machine_move_cancel_failed", { moveId, error: getErrorMessage(error) });

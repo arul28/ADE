@@ -143,6 +143,17 @@ export function useCloudBoxActions(args: {
   const { refresh, onAccountChanged, forgetTarget } = args;
   const [pendingById, setPendingById] = useState<Record<string, CloudBoxPending>>({});
   const [errorById, setErrorById] = useState<Record<string, CloudBoxActionError>>({});
+  /** A long action's sign-in link, while its new computer waits for the person's approval. */
+  const [approvalById, setApprovalById] = useState<Record<string, string>>({});
+  const setApproval = useCallback((instanceId: string, url: string | null) => {
+    setApprovalById((current) => {
+      if ((current[instanceId] ?? null) === url) return current;
+      const next = { ...current };
+      if (url) next[instanceId] = url;
+      else delete next[instanceId];
+      return next;
+    });
+  }, []);
   const [resizing, setResizing] = useState<CloudBoxContext | null>(null);
 
   const setPending = useCallback((instanceId: string, pending: CloudBoxPending | null) => {
@@ -308,12 +319,15 @@ export function useCloudBoxActions(args: {
   const runLong = useCallback(async (ctx: CloudBoxContext, kind: "copy" | "move" | "reconnect", start: (requestId: string) => Promise<{ started: boolean }>) => {
     const bridge = window.ade?.cloud;
     if (!bridge?.onCreateProgress) return;
-    const requestId = `${kind}-${ctx.box.instanceId}-${Date.now()}`;
+    // A UUID: a copy or move ADE's server runs takes it as its own id, so a start sent twice is one copy.
+    const requestId = crypto.randomUUID();
     const { instanceId } = ctx.box;
     setPending(instanceId, kind);
     setError(instanceId, null);
     const off = bridge.onCreateProgress((progress) => {
       if (progress.requestId !== requestId) return;
+      // The new computer's sign-in stopped on the person: the card offers Approve until it goes on.
+      setApproval(instanceId, progress.stage === "approve_elsewhere" ? progress.approvalUrl ?? null : null);
       if (progress.stage === "done") {
         off();
         setPending(instanceId, null);
@@ -333,9 +347,10 @@ export function useCloudBoxActions(args: {
     } catch (error) {
       off();
       setPending(instanceId, null);
+      setApproval(instanceId, null);
       setError(instanceId, { message: extractError(error), blocker: null });
     }
-  }, [onAccountChanged, refresh, setError, setPending]);
+  }, [onAccountChanged, refresh, setApproval, setError, setPending]);
 
   const copyBox = useCallback(async (ctx: CloudBoxContext) => {
     const copyMachine = window.ade.cloud?.copyMachine;
@@ -489,6 +504,8 @@ export function useCloudBoxActions(args: {
   return {
     pendingById,
     errorById,
+    /** A copy's or move's sign-in link, while the new computer waits for the person (its card's Approve). */
+    approvalById,
     dismissError: (instanceId: string) => setError(instanceId, null),
     /** Shows a failure of an action run outside this hook (a lane job) where its own failures show. */
     reportError: (instanceId: string, message: string) => setError(instanceId, { message, blocker: null }),

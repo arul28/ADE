@@ -45,6 +45,22 @@ describe("takeCloudLaunch: a server copy's join file", () => {
     expect(takeCloudLaunch(adeDir, logger, { ADE_LAUNCH_ID: NEWER, ADE_LAUNCH_JOIN: "newer-code" })).toEqual({ launchId: NEWER, joinCode: "newer-code" });
   });
 
+  it.each<[string, Record<string, string>, string | null, { launchId: string; joinCode: null } | null]>([
+    ["on the same computer, before its launch ended, goes on with it, with no code", { ADE_HOST_INSTANCE_ID: "cloud:copy1" }, null, { launchId: LAUNCH, joinCode: null }],
+    ["once its launch ended, takes none", { ADE_HOST_INSTANCE_ID: "cloud:copy1" }, "ended", null],
+    ["on a copy of this computer, takes none", { ADE_HOST_INSTANCE_ID: "cloud:copy2" }, null, null],
+    ["on a host that names no computer, takes none", {}, null, null],
+  ])("a restart after the file was read, %s", async (_label, laterEnv, bootPhase, expected) => {
+    hand(JSON.stringify({ launchId: LAUNCH, join: "copy-code" }));
+    expect(takeCloudLaunch(adeDir, logger, { ...spentEnv(), ADE_HOST_INSTANCE_ID: "cloud:copy1" })).toEqual({ launchId: LAUNCH, joinCode: "copy-code" });
+    if (bootPhase) fs.writeFileSync(path.join(adeDir, "cloud", "boot-launch.json"), JSON.stringify({ launchId: LAUNCH, phase: bootPhase }));
+
+    expect(takeCloudLaunch(adeDir, logger, { ...spentEnv(), ...laterEnv })).toEqual(expected);
+    // Never the code: only the launch is kept.
+    const kept = fs.readdirSync(path.join(adeDir, "cloud")).map((name) => fs.readFileSync(path.join(adeDir, "cloud", name), "utf8")).join("\n");
+    expect(kept).not.toContain("copy-code");
+  });
+
   it.each([
     ["no file", null],
     ["a damaged file", "{\"launchId\": \"not-a-launch\", \"join\""],

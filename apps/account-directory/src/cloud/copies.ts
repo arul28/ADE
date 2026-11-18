@@ -20,7 +20,7 @@ import {
   type JobRow,
   type StepResult,
 } from "./jobs";
-import { bindCopyLaunchStatement, machineLaunchMinVersion, openCopyLaunchJoin, prepareCopyLaunch, readLaunch } from "./launches";
+import { bindCopyLaunchStatement, launchCodeStillJoins, machineLaunchMinVersion, openCopyLaunchJoin, prepareCopyLaunch, readLaunch } from "./launches";
 import { cloudSizeFor, cloudSizeForTier, type CloudSize } from "./plans";
 import { CloudProviderError } from "./provider";
 import { deleteComputer, isPendingId, logCloud, ownedComputer, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
@@ -103,6 +103,8 @@ type CopyFacts = {
   /** How often the fork was handed its sign-in, and when last. */
   hands?: number;
   handedAt?: number;
+  /** Why the copy failed, bare, for an undo that keeps a copy that signed in. */
+  failure?: string;
 };
 
 function paramsOf(job: JobRow): CopyParams {
@@ -137,7 +139,8 @@ const sourceNameOf = (job: JobRow): string => job.source_name || paramsOf(job).s
 
 /* ---- The record ---- */
 
-export function copyRecordOf(job: JobRow): CloudCopyRecord {
+/** `signedIn`: the copy's launch is done, so the copy is a computer of the account and is never cancelled. */
+export function copyRecordOf(job: JobRow, signedIn = false): CloudCopyRecord {
   const params = paramsOf(job);
   const finished = job.state === "done" || job.state === "failed" || job.state === "cancelled";
   return {
@@ -152,10 +155,15 @@ export function copyRecordOf(job: JobRow): CloudCopyRecord {
     approvalUrl: job.state === "needs_approval" ? job.approval_url : null,
     error: job.state === "failed" ? job.error : null,
     targetMachineKey: job.target_machine_key,
-    cancellable: !finished && job.cancel_requested_at == null && CANCELLABLE_STEPS.has(job.step),
+    cancellable: !finished && !signedIn && job.cancel_requested_at == null && CANCELLABLE_STEPS.has(job.step),
     createdAt: job.created_at,
     updatedAt: job.updated_at,
   };
+}
+
+/** Whether the copy's launch is done: from then on the copy is a computer of the account, kept whatever the job does next. */
+async function copySignedIn(env: CloudEnv, job: JobRow): Promise<boolean> {
+  return job.target_launch_id ? (await readLaunch(env, job.target_launch_id))?.state === "done" : false;
 }
 
 /* ---- The steps ---- */
@@ -306,9 +314,11 @@ async function join(env: CloudEnv, job: JobRow, ctx: JobContext, params: CopyPar
   }
   if (launch.state !== "done") {
     const facts = factsOf(job);
-    // Never used: the brain that read the code stopped before it joined. The same code again, in the same window.
-    if (launch.state === "joining" && launch.join_used_at == null && facts.handedAt != null
-      && ctx.now - facts.handedAt > REHAND_AFTER_MS && (facts.hands ?? 1) < MAX_HANDS) {
+    // The brain that read the code stopped before it joined, or after it used the code and before it signed in
+    // (nothing claimed for a while): the same code again, in the same window, while the join still takes it.
+    if (launch.state === "joining" && facts.handedAt != null && ctx.now - facts.handedAt > REHAND_AFTER_MS
+      && (launch.join_used_at == null || ctx.now - launch.join_used_at > REHAND_AFTER_MS)
+      && (facts.hands ?? 1) < MAX_HANDS && await launchCodeStillJoins(env, launch)) {
       return { kind: "next", step: "hand" };
     }
     return { kind: "wait", delayMs: JOIN_POLL_MS, patch: { state: "joining", approval_url: null, message: joiningMessage(params) } };
@@ -353,6 +363,9 @@ async function runCopyStep(env: CloudEnv, job: JobRow, ctx: JobContext): Promise
  * deleted (its account machine row goes with it). A fork the provider made
  * whose reservation isn't adopted yet is waited for (the minute tick adopts
  * it by its tag), so it is never left behind. False while there is more to do.
+ *
+ * A copy whose launch is done (it signed in, even during this cancel) is a
+ * computer of the account: it is kept, and the record says so.
  */
 async function undoCopy(env: CloudEnv, job: JobRow, ctx: JobContext, why: "failed" | "cancelled"): Promise<boolean> {
   const params = paramsOf(job);
@@ -367,7 +380,13 @@ async function undoCopy(env: CloudEnv, job: JobRow, ctx: JobContext, why: "faile
       update cloud_launches set state = 'cancelled', approval_url = null, sign_in_json = null, updated_at = ?
       where launch_id = ? and state not in ('done', 'cancelled', 'failed') returning instance_id
     `).bind(ctx.now, job.target_launch_id).first<{ instance_id: string | null }>();
-    targetId = targetId ?? launch?.instance_id ?? (await readLaunch(env, job.target_launch_id))?.instance_id ?? null;
+    // Nothing closed: the launch was over already, maybe signed in a moment ago.
+    const over = launch ? null : await readLaunch(env, job.target_launch_id);
+    if (over?.state === "done") {
+      await keepSignedInCopy(env, job, ctx, why);
+      return true;
+    }
+    targetId = targetId ?? launch?.instance_id ?? over?.instance_id ?? null;
     if (!targetId) {
       const reserved = await env.DB.prepare("select instance_id from cloud_computers where user_id = ? and request_id = ? and deleted_at is null limit 1")
         .bind(job.user_id, job.target_launch_id).first<{ instance_id: string }>();
@@ -387,13 +406,43 @@ async function undoCopy(env: CloudEnv, job: JobRow, ctx: JobContext, why: "faile
   }
 }
 
+/** Why a copy failed, as one clause ending in a stop. */
+function failureClause(error: string): string {
+  const why = /^ADE\b/.test(error) ? error : `${error.charAt(0).toLowerCase()}${error.slice(1)}`;
+  return /[.!?…]$/.test(why) ? why : `${why}.`;
+}
+
+/**
+ * A copy that signed in before its job stopped: kept, never deleted. A cancel
+ * that came too late finishes it (named, done, its machine key on the record);
+ * a failure after the sign-in stays failed and says the copy was kept.
+ */
+async function keepSignedInCopy(env: CloudEnv, job: JobRow, ctx: JobContext, why: "failed" | "cancelled"): Promise<void> {
+  const params = paramsOf(job);
+  const source = sourceNameOf(job);
+  const target = job.target_instance_id ? await ownedComputer(env, job.user_id, job.target_instance_id) : null;
+  const machineKey = job.target_machine_key ?? target?.machine_key ?? null;
+  logCloud("cloud.copy_kept_signed_in", { jobId: job.job_id, instanceId: job.target_instance_id, why });
+  if (why === "cancelled") {
+    if (job.target_instance_id) await name(env, { ...job, target_machine_key: machineKey }, params);
+    await ctx.save({
+      state: "done",
+      message: `${params.name} had already signed in, so the copy wasn't cancelled. Delete it from its card if you don't want it.`,
+      ...(machineKey ? { target_machine_key: machineKey } : {}),
+    });
+    return;
+  }
+  const sentence = `ADE couldn't finish copying ${source}: ${failureClause(factsOf(job).failure ?? "something went wrong")} ${params.name} had already signed in, so ADE kept it. ${source} is as it was.`;
+  await ctx.save({ message: sentence, error: sentence, ...(machineKey ? { target_machine_key: machineKey } : {}) });
+}
+
 registerJobKind(COPY_JOB_KIND, {
   run: runCopyStep,
   failed: (job, error) => {
-    const why = /^ADE\b/.test(error) ? error : `${error.charAt(0).toLowerCase()}${error.slice(1)}`;
     const tail = job.target_instance_id ? `${sourceNameOf(job)} is as it was, and the copy was deleted.` : `${sourceNameOf(job)} is as it was.`;
-    const sentence = `ADE couldn't copy ${sourceNameOf(job)}: ${/[.!?…]$/.test(why) ? why : `${why}.`} ${tail}`;
-    return { state: "failed", message: sentence, error: sentence, approval_url: null };
+    const sentence = `ADE couldn't copy ${sourceNameOf(job)}: ${failureClause(error)} ${tail}`;
+    // The bare reason, for an undo that keeps a copy that signed in meanwhile.
+    return { state: "failed", message: sentence, error: sentence, approval_url: null, facts_json: withFacts(job, { failure: error }) };
   },
   undo: undoCopy,
   cancellable: (step) => CANCELLABLE_STEPS.has(step),
@@ -540,7 +589,7 @@ export async function routeCopies(request: Request, path: string, env: CloudEnv,
       select * from cloud_jobs where user_id = ? and kind = ? and (state not in ('done', 'failed', 'cancelled') or updated_at > ?)
       order by created_at desc limit ?
     `).bind(userId, COPY_JOB_KIND, deps.now - LIST_FINISHED_MS, LIST_LIMIT).all<JobRow>()).results ?? [];
-    return json({ copies: rows.map(copyRecordOf) } satisfies CloudCopyList);
+    return json({ copies: rows.map((row) => copyRecordOf(row)) } satisfies CloudCopyList);
   }
   const copyId = path.slice("/cloud/copies/".length);
   if (!isUuid(copyId)) return notFound();
@@ -548,12 +597,13 @@ export async function routeCopies(request: Request, path: string, env: CloudEnv,
   if (!job || job.user_id !== userId || job.kind !== COPY_JOB_KIND) return notFound();
   if (request.method === "GET") {
     nudgeJob(env, job, deps, deps.waitUntil, deps.now);
-    return json(copyRecordOf(job));
+    return json(copyRecordOf(job, await copySignedIn(env, job)));
   }
   if (request.method !== "DELETE") return notFound();
   // Over without a copy: nothing is left to cancel.
   if (job.state === "cancelled" || job.state === "failed") return json(copyRecordOf(job));
-  if (job.state === "done" || !CANCELLABLE_STEPS.has(job.step)) {
+  // Signed in (its launch is done, though the job may not have seen it yet): a computer of the account now.
+  if (job.state === "done" || !CANCELLABLE_STEPS.has(job.step) || await copySignedIn(env, job)) {
     return fail("copy_signed_in", "The copy already signed in, so it can't be cancelled now. Delete it from its card if you don't want it.", 409);
   }
   await requestJobCancel(env, job.job_id, deps.now);

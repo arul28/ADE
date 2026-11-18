@@ -1126,6 +1126,16 @@ export function bindCopyLaunchStatement(env: CloudEnv, launchId: string, instanc
 }
 
 /**
+ * Whether the join would still take this launch's code from its computer:
+ * never used, or used by a sign-in nobody approved yet with rejoins left
+ * (the join's own rule for a brain that restarted mid-sign-in).
+ */
+export async function launchCodeStillJoins(env: CloudEnv, launch: Pick<LaunchRow, "join_used_at" | "join_rejoins" | "join_user_code">): Promise<boolean> {
+  if (launch.join_used_at == null) return true;
+  return launch.join_rejoins < MAX_REJOINS && !(await signInApproved(env, launch.join_user_code));
+}
+
+/**
  * Opens a copy's join for its fork and works its code out again from the
  * kept salt (the code itself is never stored), for the one exec that hands
  * it over. The window opens once: handing the code again (a brain that lost

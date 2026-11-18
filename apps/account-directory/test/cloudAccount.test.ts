@@ -4068,6 +4068,26 @@ describe("ADE Cloud server copies", () => {
     expect((await join(hands[0]!.join)).status).toBe(200);
   });
 
+  it.each<[string, boolean, number]>([
+    ["nobody approved its sign-in: it is handed the code again", false, 2],
+    ["its sign-in was approved: the code is spent, never handed again", true, 1],
+  ])("a fork whose brain used its code and stopped before it signed in, when %s", async (_label, approved, hands) => {
+    expect((await start()).status).toBe(201);
+    await drive("join");
+    // The code is used late in its hand's first minutes.
+    clock += 3 * 60_000;
+    expect((await join(handed()[0]!.join)).status).toBe(200);
+    if (approved) harness.exec("update device_authorizations set status = 'approved' where user_code = ?", USER_CODE);
+    // Handed long ago, but claimed a moment ago: still signing in, left alone.
+    clock += 2 * 60_000;
+    await run();
+    expect(handed()).toHaveLength(1);
+
+    clock += 5 * 60_000;
+    await run();
+    expect(handed()).toHaveLength(hands);
+  });
+
   it("a cancel before the copy signs in deletes the fork and closes its sign-in", async () => {
     expect((await start()).status).toBe(201);
     await drive("join");
@@ -4084,6 +4104,37 @@ describe("ADE Cloud server copies", () => {
     // Another account sees no such copy.
     expect((await harness.send(OTHER, "DELETE", `/cloud/copies/${COPY}`)).status).toBe(404);
     expect((await harness.send(OTHER, "GET", `/cloud/copies/${COPY}`)).status).toBe(404);
+  });
+
+  it.each<[string, () => Promise<void>, Partial<CloudCopyRecord>]>([
+    ["a cancel after it signed in, before the job read it", async () => {
+      await signedIn();
+      const late = await harness.send(OWNER, "DELETE", `/cloud/copies/${COPY}`);
+      expect(late.status).toBe(409);
+      expect(await late.json()).toEqual({ error: expect.objectContaining({ code: "copy_signed_in" }) });
+      expect((await record()).cancellable).toBe(false);
+    }, { state: "done", message: "Copied Widgets into Widgets copy.", targetMachineKey: "mk_copy" }],
+    ["a cancel asked as it signed in", async () => {
+      harness.exec("update cloud_jobs set cancel_requested_at = ? where job_id = ?", clock, COPY);
+      await signedIn();
+    }, { state: "done", message: "Widgets copy had already signed in, so the copy wasn't cancelled. Delete it from its card if you don't want it.", targetMachineKey: "mk_copy" }],
+    ["a failure after it signed in", async () => {
+      // Signed in with no machine key on its row yet, and ADE Cloud can't read the copy to find it.
+      expect((await harness.send(OWNER, "PUT", `/cloud/launches/${job().target_launch_id as string}/stages`, { state: "done" })).status).toBe(200);
+      for (let attempt = 0; attempt < 5; attempt += 1) harness.net.once.push({ match: /GET .*\/instances\/copied123456$/, reply: new Error("the provider is down") });
+    }, { state: "failed", error: "ADE couldn't finish copying Widgets: could not reach ADE Cloud. Try again. Widgets copy had already signed in, so ADE kept it. Widgets is as it was." }],
+  ])("%s: the copy is kept, never deleted", async (_label, act, expected) => {
+    expect((await start()).status).toBe(201);
+    await drive("join");
+    await act();
+    await drive("end");
+
+    expect(await record()).toEqual(expect.objectContaining(expected));
+    expect(launch().state).toBe("done");
+    expect(harness.net.instances.has(TARGET)).toBe(true);
+    expect(computer(harness, TARGET).deleted_at).toBeNull();
+    expect(providerCalls(harness, /DELETE .*\/instances\//)).toHaveLength(0);
+    expect(harness.net.instances.has(INSTANCE)).toBe(true);
   });
 
   it("a step that dies after the provider made the fork runs again and adopts it, never making a second one", async () => {
