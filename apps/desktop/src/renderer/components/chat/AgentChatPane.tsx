@@ -650,7 +650,7 @@ import {
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 import { registerTranscriptGauge } from "../../lib/rendererMemorySnapshot";
 import { useActiveRepositoryTab, useActiveStartOn, useTabCopyPin } from "../../state/repositoryScope";
-import type { StartOnChoice } from "../../../shared/repositoryTab";
+import { repositoryReaderAddress, type StartOnChoice } from "../../../shared/repositoryTab";
 import { recordStartOnLastMachine } from "./startOnLastMachine";
 
 /**
@@ -4188,6 +4188,12 @@ function isMissingParallelLaunchLaneError(error: unknown): boolean {
 
 /** Why a Run on row other than This computer is off in parallel models. */
 const PARALLEL_MODELS_HERE_ONLY = "Parallel models runs on this computer.";
+/** The way out of an unavailable draft machine, as the person reads it ("This computer or ADE Cloud"). */
+function draftRecoveryChoices(thisComputer: boolean, adeCloud: boolean): string {
+  if (thisComputer && adeCloud) return `${THIS_MACHINE_NAME} or ${ADE_CLOUD_NAME}`;
+  return adeCloud ? ADE_CLOUD_NAME : THIS_MACHINE_NAME;
+}
+
 /** A second Send of the same ADE Cloud draft this soon after the first is the same launch. */
 const ADE_CLOUD_REPEAT_SEND_MS = 5_000;
 
@@ -6016,10 +6022,14 @@ export function AgentChatPane({
       : turnActiveBySessionState),
     [idleChatSessionId, turnActiveBySessionState],
   );
-  // The tab's own copy, for the draft's branch picks (an ADE Cloud start).
+  // The tab's own copy, or null while its computer is offline.
   const tabCopyPin = useTabCopyPin();
-  const tabCopyPinRef = useRef(tabCopyPin);
-  tabCopyPinRef.current = tabCopyPin;
+  /**
+   * The copy the draft's branch picks were read from (an ADE Cloud start's
+   * "Push this branch?"): the tab's copy, else the first online copy, as the
+   * lane form reads it. Null with none online. Written where "Start on" is read.
+   */
+  const draftBranchCopyPinRef = useRef<OpenProjectBinding | null>(tabCopyPin);
   // A personal chat's adapter is bound to its machine; see `chatApiPin`.
   const isBoundScopePaneRef = useRef(isBoundScopePane);
   isBoundScopePaneRef.current = isBoundScopePane;
@@ -14890,7 +14900,12 @@ export function AgentChatPane({
     // to another machine (`cloudSend.notice` below keeps Send off).
     const cloudSend = adeCloudModeRef.current ? adeCloudSendRef.current : null;
     if (!cloudSend && draftMachineUnavailableRef.current) {
-      setError({ message: "The selected machine is not currently available.", kind: "status" });
+      setError({
+        message: draftCloudRecoveryAvailableRef.current
+          ? "The selected machine is not currently available. Choose ADE Cloud to run it there."
+          : "The selected machine is not currently available.",
+        kind: "status",
+      });
       return;
     }
     const draftLaneCatalogLoadingMessage = cloudSend ? null : draftLaneCatalogLoadingMessageRef.current;
@@ -14973,7 +14988,7 @@ export function AgentChatPane({
         // before the computer is made. Send waits here; the draft stays.
         const branchReady = await adeCloudStartBranchReady(
           draftNewLaneConfig ? chatLaunchLaneConfigFromDraft(draftNewLaneConfig) : null,
-          tabCopyPinRef.current,
+          draftBranchCopyPinRef.current,
         );
         if (!branchReady.go) {
           draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
@@ -18511,6 +18526,7 @@ export function AgentChatPane({
   // "Start on" for the open repository: a new chat starts on the machine of
   // its first available copy unless the person picks another.
   const { choices: draftStartOnChoices, defaultChoice: draftStartOnChoice } = useActiveStartOn(showDraftLaunchControls);
+  draftBranchCopyPinRef.current = tabCopyPin ?? repositoryReaderAddress(draftStartOnChoices);
   // The tab's machine is reconnecting: a new chat keeps starting there instead
   // of moving to the first copy that is online now.
   const draftTabTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
@@ -18579,7 +18595,23 @@ export function AgentChatPane({
     && selectedDraftMachineId === ADE_CLOUD_MACHINE_ID
     && !cursorCloudMode
     && !devinCloudMode;
-  const adeCloudMode = (adeCloudPicked || adeCloudTabDraft) && adeCloud.available;
+  // The tab's computer is offline and no copy is online: the draft goes to
+  // ADE Cloud (as the new lane dialog does) until the person picks a computer
+  // or another cloud. A computer with no copy ("Start on" may list cloning
+  // there first) is never a silent default: it needs a clone. Not while the
+  // tab's computer is reconnecting, nor when ADE Cloud can't start anything.
+  const adeCloudStartOnDraft = draftStartOnChoice?.kind !== "copy"
+    && draftStartOnChoices.some((choice) => choice.kind === "cloud" && choice.available)
+    && tabCopyPin == null
+    && !isAdeCloudBinding(projectBinding)
+    && !draftTabMachineReconnecting
+    && selectedDraftMachineId === boundLaneMachineId
+    && selectedDraftMachine == null
+    && !cursorCloudMode
+    && !devinCloudMode
+    && !parallelChatMode
+    && adeCloud.doBlock == null;
+  const adeCloudMode = (adeCloudPicked || adeCloudTabDraft || adeCloudStartOnDraft) && adeCloud.available;
   adeCloudModeRef.current = adeCloudMode;
   adeCloudAccountRef.current = adeCloud.account;
   const adeCloudLaneComputers = adeCloud.computers;
@@ -18787,6 +18819,13 @@ export function AgentChatPane({
     (option) => option.id === THIS_MACHINE_ID,
   );
   const draftMachineRecoveryAvailable = draftMachineUnavailable && canUseThisComputerForDraft;
+  /** The picked machine is gone and ADE Cloud can take the draft instead. */
+  const draftCloudRecoveryAvailable = draftMachineUnavailable
+    && adeCloud.available
+    && adeCloud.doBlock == null
+    && !parallelChatMode;
+  const draftCloudRecoveryAvailableRef = useRef(draftCloudRecoveryAvailable);
+  draftCloudRecoveryAvailableRef.current = draftCloudRecoveryAvailable;
   const laneMachineOptionIds = useMemo(() => laneMachineOptions.map((option) => option.id), [laneMachineOptions]);
   const selectReadyMachine = useCallback((machineId: string) => {
     keepLaneOnMachine(null);
@@ -18838,12 +18877,13 @@ export function AgentChatPane({
    * with access, even with no lanes yet and before the account answers.
    */
   const draftShelfMachineOptions = useMemo<DraftMachineOption[]>(() => {
-    const unavailableMachine = draftMachineRecoveryAvailable
+    // Once ADE Cloud is the pick, the gone machine is not the draft's any more.
+    const unavailableMachine = (draftMachineRecoveryAvailable || (draftCloudRecoveryAvailable && !adeCloudMode))
       && selectedDraftMachineId
       ? {
           id: selectedDraftMachineId,
           name: "Unavailable machine",
-          unavailableReason: "This machine is disconnected. Choose This computer to continue.",
+          unavailableReason: `This machine is disconnected. Choose ${draftRecoveryChoices(draftMachineRecoveryAvailable, draftCloudRecoveryAvailable)} to continue.`,
         }
       : null;
     const orderOf = (machineId: string) => {
@@ -18905,15 +18945,35 @@ export function AgentChatPane({
     // A tab on ADE Cloud is bound to ADE Cloud itself: its stand-in row would
     // be a second "ADE Cloud" named "This computer".
     const tabOnAdeCloud = boundLaneMachineId === ADE_CLOUD_MACHINE_ID;
+    // The tab's machine when no computer is listed: This computer only when
+    // it is this one. A remote one goes by its own name, and while it is
+    // offline it can't be picked (the draft goes to ADE Cloud meanwhile).
+    const standInName = projectBinding?.kind === "remote"
+      ? projectBinding.runtimeName?.trim() || projectBinding.hostname?.trim() || "The tab's computer"
+      : null;
+    const standInRow: DraftMachineOption = standInName && boundLaneMachineId !== THIS_MACHINE_ID
+      ? {
+          id: boundLaneMachineId,
+          name: standInName,
+          ...(tabCopyPin == null
+            ? {
+                detail: "Offline",
+                unavailableReason: adeCloudRow.length && !adeCloudUnavailableReason
+                  ? `${standInName} is offline. Choose ADE Cloud to continue.`
+                  : `${standInName} is offline.`,
+              }
+            : {}),
+        }
+      : withThisComputerName({ id: boundLaneMachineId, name: THIS_MACHINE_NAME });
     if (!cursorCloudCanLaunch && !devinCloudCanLaunch) {
       return [
-        ...(machines.length || !adeCloudRow.length || tabOnAdeCloud ? machines : [withThisComputerName({ id: boundLaneMachineId, name: THIS_MACHINE_NAME })]),
+        ...(machines.length || !adeCloudRow.length || tabOnAdeCloud ? machines : [standInRow]),
         ...adeCloudRow,
       ];
     }
     const withLocal = machines.length || tabOnAdeCloud
       ? machines
-      : [withThisComputerName({ id: boundLaneMachineId, name: THIS_MACHINE_NAME })];
+      : [standInRow];
     // Cursor and Devin Cloud launch from whichever computer the chat is set
     // to, through that computer's shared sign-in (the launch carries its pin).
     // What still keeps a row from being picked (no lane, the git remote
@@ -18950,6 +19010,7 @@ export function AgentChatPane({
   }, [
     adeCloud.available,
     adeCloud.runOnLine,
+    adeCloudMode,
     adeCloudUnavailableReason,
     boundLaneMachineId,
     cursorCloudCanLaunch,
@@ -18960,11 +19021,14 @@ export function AgentChatPane({
     // The first open reads this computer's name again, in case the app's
     // own sync read had not come back when the list was first built.
     draftMachinePickerOpened,
+    draftCloudRecoveryAvailable,
     draftMachineRecoveryAvailable,
     draftSetupMachineRows,
     laneMachineOptions,
     parallelChatMode,
+    projectBinding,
     selectedDraftMachineId,
+    tabCopyPin,
   ]);
   const placedDraftMachines = useMachinePlacement(laneMachineOptions, draftMachinePickerOpened && showDraftLaunchControls);
   const draftAutoMachine = useMemo(() => {
@@ -19078,6 +19142,10 @@ export function AgentChatPane({
     handleDraftMachineChange(THIS_MACHINE_ID);
     setError(null);
   }, [handleDraftMachineChange, markDraftCloudChosen, setCursorCloudMode, setError]);
+  // The picked machine is gone: ADE Cloud takes the draft (a new lane there).
+  const useAdeCloudForDraft = useCallback(() => {
+    handleDraftShelfMachineChange(ADE_CLOUD_MACHINE_ID);
+  }, [handleDraftShelfMachineChange]);
   /**
    * The bound machine's own name. Reached only when the picked machine IS the
    * bound one, so it must never label a remote-bound tab "This computer".
@@ -22326,6 +22394,9 @@ export function AgentChatPane({
               actions: [
                 ...(draftMachineRecoveryAvailable
                   ? [{ label: "Use this computer", onClick: useThisComputerForDraft }]
+                  : []),
+                ...(draftCloudRecoveryAvailable && !adeCloudMode
+                  ? [{ label: "Use ADE Cloud", onClick: useAdeCloudForDraft }]
                   : []),
                 ...(restorableErrorDraftLaunchJob
                   ? [{

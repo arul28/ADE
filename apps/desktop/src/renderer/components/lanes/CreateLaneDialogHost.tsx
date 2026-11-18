@@ -413,6 +413,10 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   const readerPin = useActiveRepositoryReader(open);
   const readerPinRef = useRef(readerPin);
   readerPinRef.current = readerPin;
+  // The tab's project, online or not: an ADE Cloud launch only names the
+  // repository with it and keeps it as the launch's pin (main moves it to the
+  // new computer), as the composer and the other cloud surfaces do.
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const tabScopeKey = useAppStore(selectActiveProjectStateKey);
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
 
@@ -858,8 +862,8 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
         return;
       }
       if (createMode === "existing" && !createImportBranch) return;
-      if (!readerPin) {
-        setCreateError("Connect a computer that has this project to start a lane on ADE Cloud.");
+      if (!projectBinding) {
+        setCreateError("Open a project to start a lane on ADE Cloud.");
         return;
       }
       const typedBranch = createMode === "new" ? editedBranchName?.trim() ?? "" : "";
@@ -896,7 +900,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
         setCreateError(problem);
         return;
       }
-      // A picked branch must be on GitHub before the computer is made ("Push this branch?").
+      // A picked branch must be on GitHub before the computer is made ("Push
+      // this branch?"), asked of the copy it was read from. With no copy online
+      // the launch goes with the branch as GitHub has it.
       const branchReady = await adeCloudStartBranchReady(args.laneConfig, targetPinRef.current ?? readerPinRef.current);
       if (!branchReady.go) {
         if (branchReady.error) setCreateError(branchReady.error);
@@ -904,7 +910,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       }
       resetCreateDialogState();
       onOpenChange(false);
-      void startAdeCloudLaunch({ args, sizeId: adeCloud.tierId, sizeChoice: adeCloud.sizeChoice, originUrl: repoOriginUrl, binding: readerPin });
+      void startAdeCloudLaunch({ args, sizeId: adeCloud.tierId, sizeChoice: adeCloud.sizeChoice, originUrl: repoOriginUrl, binding: projectBinding });
       return;
     }
 
@@ -999,7 +1005,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     createSelectedEmoji,
     createSelectedLinearIssue,
     tabScopeKey,
-    readerPin,
+    projectBinding,
     selectedIsTab,
     tabStore,
     refreshLanes,

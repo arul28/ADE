@@ -21,6 +21,10 @@
  * The check does not ask GitHub whether the token still works: a revoked
  * token passes here and the clone says so.
  *
+ * Only a definite "none" refuses. A vault this process can't read (the
+ * desktop's background service down) is not "none": the new computer reads
+ * the account's vault itself, so that launch goes on with a warning.
+ *
  * A public repository needs no credential. With none in the account, ADE
  * asks GitHub's API about the repository once, without a token: public goes
  * on, not visible (private, or gone) is refused with the way out, and no
@@ -186,12 +190,20 @@ export async function cloudGitPreflight(
   if (visibility === "public") return { ok: true, via: "public" };
   if (visibility === "not_visible") {
     const name = `${repo.owner}/${repo.repo}`;
+    // This computer couldn't read the vault (its background service is down,
+    // or the read failed): that is not "no sign-in". The new computer reads
+    // the account's vault itself, so the launch goes on and the card warns.
+    if (credential.reason === "unreadable") {
+      return {
+        ok: true,
+        via: "unknown",
+        warning: `${name} isn't public on GitHub, and ADE couldn't read your account's GitHub sign-in on this computer. The new computer reads it itself; if no sign-in follows your account, its clone fails until GitHub is connected in Settings › GitHub.`,
+      };
+    }
     return {
       ok: false,
-      reason: credential.reason,
-      message: credential.reason === "unreadable"
-        ? `${name} isn't public on GitHub, and ADE couldn't read your account's GitHub sign-in on this computer, so a cloud computer couldn't clone it. ${CONNECT_GITHUB_HINT}`
-        : `${name} isn't public on GitHub, and your ADE account has no GitHub sign-in a cloud computer can clone it with. ${CONNECT_GITHUB_HINT}`,
+      reason: "none",
+      message: `${name} isn't public on GitHub, and your ADE account has no GitHub sign-in a cloud computer can clone it with. ${CONNECT_GITHUB_HINT}`,
     };
   }
   return {

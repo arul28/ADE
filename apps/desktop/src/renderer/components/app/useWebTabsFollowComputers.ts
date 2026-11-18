@@ -169,7 +169,8 @@ export function useWebTabsFollowComputers({
         ? {
             accountProjectId: repositoryId ?? group.id,
             displayName: recordNameForRef.current(group) ?? tab.displayName,
-            gitOriginUrl: tab.gitOriginUrl ?? null,
+            // A copy with no stamped origin still names its repository: the group has it.
+            gitOriginUrl: tab.gitOriginUrl?.trim() || `https://${group.origin}`,
             iconDataUrl: tab.iconDataUrl ?? null,
           }
         : null;
