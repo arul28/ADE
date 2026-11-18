@@ -42,8 +42,9 @@ struct CloudPhoneMachine: Decodable, Identifiable, Equatable, Hashable {
   }
 
   /// What uses its disk, as it last measured itself while awake (`diskUsage`).
-  struct DiskUsage: Decodable, Equatable {
-    struct Part: Decodable, Equatable {
+  /// Codable: a direct read hands the account server's copy to the page.
+  struct DiskUsage: Codable, Equatable {
+    struct Part: Codable, Equatable {
       let kind: String
       let label: String
       let gb: Double
@@ -262,7 +263,7 @@ struct CloudPhoneAccount: Decodable, Equatable {
 
   /// A computer the idle cleanup warned about, or kept because its work
   /// couldn't be saved (`CloudIdleCleanupEntry`). The phone shows the warning
-  /// and how to keep it; "Keep it" is on the desktop.
+  /// and how to keep it; "Keep it" is on the computer's page.
   struct IdleCleanup: Decodable, Equatable {
     struct IgnoredFiles: Decodable, Equatable {
       let paths: [String]

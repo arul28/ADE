@@ -13,7 +13,8 @@ struct CloudMachineScreen: View {
       if let machine = store.machine(instanceId) {
         VStack(alignment: .leading, spacing: 16) {
           CloudMachineFacts(store: store, machine: machine)
-          CloudDiskParts(machine: machine, now: store.now)
+          CloudDiskParts(store: store, machine: machine)
+          CloudMachineSizeCard(store: store, machine: machine)
           CloudMachineControls(store: store, machine: machine, showsOpenWork: showsOpenWork)
         }
         .padding(16)
@@ -85,17 +86,28 @@ struct CloudMachineFacts: View {
 }
 
 /// What uses the disk, as the computer last measured itself while awake.
-/// ADE doesn't wake it to look.
+/// ADE doesn't wake it to look. Parts marked safe to clear can be cleared from
+/// here (the desktop's Look inside › Clear caches).
 struct CloudDiskParts: View {
+  @ObservedObject var store: CloudPaneStore
   let machine: CloudPhoneMachine
-  let now: Date
+  @State private var confirmClear = false
+
+  private var clearableGb: Double {
+    (machine.diskUsage?.items ?? []).filter { $0.clearable == true }.reduce(0) { $0 + $1.gb }
+  }
+
+  private var canClear: Bool {
+    clearableGb > 0 && store.canManage && (machine.isAwake || machine.isAsleep)
+  }
 
   var body: some View {
     if machine.resources != nil {
+      let busy = store.busy.contains(machine.instanceId) || machine.isMoving
       ADEKitCard(
         title: "What uses the disk",
         symbol: "internaldrive",
-        hint: machine.diskUsage.map { "Measured \(cloudAgo($0.measuredAt, now: now))" }
+        hint: machine.diskUsage.map { "Measured \(cloudAgo($0.measuredAt, now: store.now))" }
       ) {
         if let usage = machine.diskUsage, !usage.items.isEmpty {
           VStack(alignment: .leading, spacing: 9) {
@@ -113,6 +125,13 @@ struct CloudDiskParts: View {
             Text("\(cloudGb(usage.totalGb)) used of \(cloudGb(machine.resources?.diskGb ?? 0))\(machine.isAwake ? "" : ". Asleep: its last measure.")")
               .font(.system(size: 12))
               .foregroundStyle(ADEColor.textMuted)
+            if canClear {
+              Button { confirmClear = true } label: {
+                Label("Clear \(cloudGb(clearableGb)) of caches", systemImage: "sparkles")
+              }
+              .buttonStyle(ADEKitButtonStyle())
+              .disabled(busy)
+            }
           }
         } else {
           Text("The computer measures its disk while it's awake and idle, at most every few hours. Its first measure shows here then.")
@@ -121,24 +140,117 @@ struct CloudDiskParts: View {
             .fixedSize(horizontal: false, vertical: true)
         }
       }
+      .confirmationDialog("Clear caches on \(machine.displayName)?", isPresented: $confirmClear, titleVisibility: .visible) {
+        Button("Clear caches") { Task { await store.clearCaches(machine) } }
+        Button("Cancel", role: .cancel) {}
+      } message: {
+        Text("\(machine.isAwake ? "ADE deletes" : "ADE wakes the computer, then deletes") package and build caches. Repositories, dependencies, images and emulators stay. It measures its disk again when it's next idle.")
+      }
     }
   }
 }
 
-/// What the phone can do with a computer: open its work (an asleep one opens
-/// what ADE Cloud keeps for its lane, with no wake), sleep or wake it, delete
-/// its lane (the computer goes with it) or a computer that holds no lane, and
-/// download the lane's saved work.
-/// A lane's size and freeing its computer run the desktop's lane steps, so
-/// they stay in the ADE desktop app.
+/// The computer's size: the sizes of its own kind, each with how fast it uses
+/// hours (never a price). A change restarts it now, so running chats and
+/// terminals stop; their chats are saved first. The other kind (standard ↔
+/// full computer) is a move to a new computer, which only ADE on a computer
+/// makes, so it shows why and stays off.
+struct CloudMachineSizeCard: View {
+  @ObservedObject var store: CloudPaneStore
+  let machine: CloudPhoneMachine
+  @State private var ask: CloudPhoneTier?
+
+  var body: some View {
+    let tiers = store.tiers
+    if store.canManage, let current = cloudPhoneTier(of: machine, in: tiers) {
+      let busy = store.busy.contains(machine.instanceId) || machine.isMoving
+      let otherKind = tiers.first { $0.type != current.type }
+      ADEKitCard(title: "Size", symbol: "cpu", hint: "More CPU and memory use hours faster.", flush: true) {
+        VStack(alignment: .leading, spacing: 0) {
+          ForEach(Array(tiers.enumerated()), id: \.element.id) { index, tier in
+            if index > 0 { ADESettingsHairline() }
+            row(tier, current: current, busy: busy)
+          }
+          if let otherKind {
+            Text(cloudPhoneKindChangeReason(to: otherKind))
+              .font(.system(size: 12))
+              .foregroundStyle(ADEColor.textMuted)
+              .fixedSize(horizontal: false, vertical: true)
+              .padding(.horizontal, ADEKit.inset)
+              .padding(.top, 4)
+              .padding(.bottom, 12)
+          }
+        }
+      }
+      .confirmationDialog(
+        "Change \(machine.displayName) to \(ask?.label ?? "this size")?",
+        isPresented: Binding(get: { ask != nil }, set: { if !$0 { ask = nil } }),
+        titleVisibility: .visible,
+        presenting: ask
+      ) { tier in
+        Button("Change to \(tier.label)") { Task { await store.changeSize(machine, to: tier) } }
+        Button("Cancel", role: .cancel) {}
+      } message: { tier in
+        Text("It restarts on the new size, so running chats and terminals stop. Their chats are saved first. \(tier.rateLine).")
+      }
+    }
+  }
+
+  private func row(_ tier: CloudPhoneTier, current: CloudPhoneTier, busy: Bool) -> some View {
+    let isCurrent = tier.id == current.id
+    let sameKind = tier.type == current.type
+    return Button { ask = tier } label: {
+      HStack(spacing: 12) {
+        Image(systemName: tier.symbol)
+          .font(.system(size: 13, weight: .medium))
+          .foregroundStyle(CloudBrandColor.mark)
+          .frame(width: 28, height: 28)
+          .background(CloudBrandColor.violet.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        VStack(alignment: .leading, spacing: 2) {
+          HStack(spacing: 6) {
+            Text(tier.label).font(.system(size: 14.5, weight: .semibold)).foregroundStyle(ADEColor.textPrimary)
+            if tier.full { ADEKitTag(text: "Full computer") }
+            if isCurrent { ADEKitTag(text: "Current", tone: .ok) }
+          }
+          Text("\(tier.cpu) CPU · \(cloudGbText(tier.memoryGb)) GB memory")
+            .font(.system(size: 12.5))
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+        Spacer(minLength: 8)
+        Text(cloudHoursRate(tier.rate))
+          .font(.system(size: 13, weight: .semibold))
+          .monospacedDigit()
+          .foregroundStyle(CloudBrandColor.mark)
+      }
+      .padding(.horizontal, ADEKit.inset)
+      .padding(.vertical, 10)
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .buttonStyle(ADEKitRowButtonStyle(dimsWhenDisabled: !isCurrent))
+    .disabled(isCurrent || !sameKind || busy)
+    .accessibilityHint(isCurrent ? "Its size now." : sameKind ? "\(tier.rateLine). It restarts on the new size." : cloudPhoneKindChangeReason(to: tier))
+  }
+}
+
+/// What the phone can do with a computer, with or without a computer of the
+/// person's own: open its work (an asleep one opens what ADE Cloud keeps for
+/// its lane, with no wake), sleep or wake it, keep it from the idle cleanup,
+/// update it, free its computer (the lane stays), delete its lane (the
+/// computer goes with it) or a computer that holds no lane, and download the
+/// lane's saved work. Its size and caches are the cards above.
 struct CloudMachineControls: View {
   @ObservedObject var store: CloudPaneStore
   let machine: CloudPhoneMachine
   /// False when this page was opened from the lane's own at-rest screen.
   var showsOpenWork = true
   @State private var confirmDelete = false
+  @State private var confirmFree = false
 
-  private var busy: Bool { store.busy.contains(machine.instanceId) || machine.isMoving }
+  private var working: Bool { store.busy.contains(machine.instanceId) }
+  private var busy: Bool { working || machine.isMoving }
+  private var idle: CloudPhoneAccount.IdleCleanup? {
+    store.account?.dueForDeletion.first { $0.instanceId == machine.instanceId }
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -176,15 +288,30 @@ struct CloudMachineControls: View {
             .buttonStyle(ADEKitButtonStyle(prominent: true))
           }
         }
-        if store.canWrite {
+        if store.canManage {
+          if idle != nil {
+            Button { ADEHaptics.light(); Task { await store.keep(machine) } } label: { Label("Keep it", systemImage: "clock.arrow.circlepath") }
+              .buttonStyle(ADEKitButtonStyle(tone: .warn))
+              .disabled(busy)
+          }
           if machine.isAwake {
-            Button { Task { await store.run("sleep", on: machine) } } label: { Label("Sleep now", systemImage: "moon") }
+            Button { ADEHaptics.light(); Task { await store.sleep(machine) } } label: { Label("Sleep now", systemImage: "moon") }
               .buttonStyle(ADEKitButtonStyle())
               .disabled(busy)
           } else if machine.isAsleep {
-            Button { Task { await store.run("wake", on: machine) } } label: { Label("Wake", systemImage: "sun.max") }
+            Button { ADEHaptics.light(); Task { await store.wake(machine) } } label: { Label("Wake", systemImage: "sun.max") }
               .buttonStyle(ADEKitButtonStyle())
               .disabled(busy || store.outOfHours)
+          }
+          if store.serverInstance(machine.instanceId)?.updateBehind == true {
+            Button { ADEHaptics.light(); Task { await store.update(machine) } } label: { Label("Update", systemImage: "arrow.triangle.2.circlepath") }
+              .buttonStyle(ADEKitButtonStyle())
+              .disabled(busy)
+          }
+          if machine.lane != nil {
+            Button { confirmFree = true } label: { Label("Free computer", systemImage: "shippingbox") }
+              .buttonStyle(ADEKitButtonStyle())
+              .disabled(busy)
           }
           if machine.noLane {
             Button(role: .destructive) { confirmDelete = true } label: { Label("Delete computer", systemImage: "trash") }
@@ -199,20 +326,38 @@ struct CloudMachineControls: View {
             .disabled(busy)
         }
       }
+      if working {
+        HStack(spacing: 8) {
+          ProgressView().controlSize(.small)
+          Text("ADE Cloud is on it. Freeing a computer or changing its size can take a few minutes.")
+            .font(.system(size: 12))
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      if let error = store.actionError {
+        ADESettingsNotice(message: error, tone: .crit, dismiss: { store.actionError = nil })
+      }
       if let lane = machine.lane {
         CloudSavedWorkRow(syncService: store.syncService, laneId: lane.laneId, machineKey: machine.machineKey)
       }
       Text(machine.noLane
         ? "Deleting it removes everything on its disk for good."
-        : "Change its size or free its computer in the ADE desktop app.")
+        : "Free computer pushes the lane's work to GitHub, then removes the computer. The lane and its chats stay; your next message makes a new computer.")
         .font(.system(size: 12))
         .foregroundStyle(ADEColor.textMuted)
         .fixedSize(horizontal: false, vertical: true)
     }
     .confirmationDialog("Delete \(machine.displayName)?", isPresented: $confirmDelete, titleVisibility: .visible) {
-      Button("Delete it", role: .destructive) { Task { await store.run("delete", on: machine) } }
+      Button("Delete it", role: .destructive) { Task { await store.deleteComputer(machine) } }
     } message: {
       Text("Everything on its disk is gone for good: repos, lanes, and any work not pushed.")
+    }
+    .confirmationDialog("Free the computer of \(machine.displayName)?", isPresented: $confirmFree, titleVisibility: .visible) {
+      Button("Free the computer") { Task { await store.freeComputer(machine) } }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("ADE pushes its work to GitHub, then removes the computer. The lane and its chats stay. Your next message makes a new computer.")
     }
   }
 }

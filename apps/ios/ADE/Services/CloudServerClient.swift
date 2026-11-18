@@ -58,8 +58,31 @@ struct CloudServerInstance: Decodable, Equatable {
   /// Its lane's work as it last read it while awake (`laneWork`); nil before
   /// its first report and from older servers.
   let laneWork: CloudPhoneMachine.LaneWork?
+  /// `vm` for a full computer; anything else is a standard one.
+  let type: String?
+  /// Its CPU, memory (GB) and disk (GB); nil when the server doesn't say.
+  let resources: Resources?
+  /// When it last did work, else when it was last awake (ms); when it was made (s).
+  let lastActiveAt: Double?
+  let created: Double?
+  /// What uses its disk, as it last measured while awake.
+  let diskUsage: CloudPhoneMachine.DiskUsage?
+  /// The image it runs (`ade@N`), its channel's current image, and `updating`
+  /// or `failed` while an update isn't settled. Older servers leave them out.
+  let templateVersion: String?
+  let targetTemplate: String?
+  let updateState: String?
 
-  private enum CodingKeys: String, CodingKey { case id, name, status, pastDue, idleSaving, metadata, laneWork }
+  struct Resources: Decodable, Equatable {
+    let cpu: Int
+    let memory: Double
+    let disk: Double
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, name, status, pastDue, idleSaving, metadata, laneWork, type, resources, lastActiveAt, created, diskUsage
+    case templateVersion, targetTemplate, updateState
+  }
 
   init(id: String, name: String?, status: String, pastDue: Bool, idleSaving: Bool = false, metadata: [String: String], laneWork: CloudPhoneMachine.LaneWork? = nil) {
     self.id = id
@@ -69,6 +92,14 @@ struct CloudServerInstance: Decodable, Equatable {
     self.idleSaving = idleSaving
     self.metadata = metadata
     self.laneWork = laneWork
+    type = nil
+    resources = nil
+    lastActiveAt = nil
+    created = nil
+    diskUsage = nil
+    templateVersion = nil
+    targetTemplate = nil
+    updateState = nil
   }
 
   init(from decoder: Decoder) throws {
@@ -80,6 +111,20 @@ struct CloudServerInstance: Decodable, Equatable {
     idleSaving = c.lenient(Bool.self, forKey: .idleSaving) ?? false
     metadata = c.lenient([String: String].self, forKey: .metadata) ?? [:]
     laneWork = c.lenient(CloudPhoneMachine.LaneWork.self, forKey: .laneWork)
+    type = c.lenient(String.self, forKey: .type)
+    resources = c.lenient(Resources.self, forKey: .resources)
+    lastActiveAt = c.lenient(Double.self, forKey: .lastActiveAt)
+    created = c.lenient(Double.self, forKey: .created)
+    diskUsage = c.lenient(CloudPhoneMachine.DiskUsage.self, forKey: .diskUsage)
+    templateVersion = c.lenient(String.self, forKey: .templateVersion)
+    targetTemplate = c.lenient(String.self, forKey: .targetTemplate)
+    updateState = c.lenient(String.self, forKey: .updateState)
+  }
+
+  /// Its channel has a newer image and no update is under way: Update moves it there.
+  var updateBehind: Bool {
+    guard let target = targetTemplate.flatMap({ nonEmptyTrimmed($0) }) else { return false }
+    return target != templateVersion && updateState != "updating"
   }
 
   private func fact(_ key: String) -> String? {
@@ -400,9 +445,57 @@ struct CloudServerClient {
   }
 
   /// Deletes a lane's computer, and with it the lane and its saved work
-  /// (`DELETE /cloud/instances/:id`, a person's delete). Needs no wake.
-  func deleteInstance(_ instanceId: String) async throws {
-    _ = try await send("DELETE", "cloud/instances/\(segment(instanceId))", body: Data(#"{"reason":"user"}"#.utf8), timeout: 60)
+  /// (`DELETE /cloud/instances/:id`, a person's delete: no `who`). Needs no
+  /// wake. With `keepLaneBranch` the server keeps the lane as a lane without
+  /// a computer on that branch (a free, `reason: "freed"`).
+  func deleteInstance(_ instanceId: String, keepLaneBranch: String? = nil) async throws {
+    var payload: [String: Any] = ["reason": keepLaneBranch == nil ? "user" : "freed"]
+    if let keepLaneBranch { payload["keepLane"] = ["branchRef": keepLaneBranch] }
+    let body = try JSONSerialization.data(withJSONObject: payload)
+    _ = try await send("DELETE", "cloud/instances/\(segment(instanceId))", body: body, timeout: 60)
+  }
+
+  /// One computer of the account (`GET /cloud/instances/:id`); `.noAccess` once it is gone.
+  func instance(_ instanceId: String) async throws -> CloudServerInstance {
+    try decode(CloudServerInstance.self, from: try await send("GET", "cloud/instances/\(segment(instanceId))"))
+  }
+
+  /// `POST /cloud/instances/:id/sleep`: it uses no hours until it wakes. Answers its status.
+  @discardableResult
+  func sleep(instanceId: String) async throws -> String {
+    status(of: try await send("POST", "cloud/instances/\(segment(instanceId))/sleep", body: Data("{}".utf8), timeout: 180), or: "sleeping")
+  }
+
+  /// A person's resize (`POST /cloud/instances/:id/resize`): the computer
+  /// restarts at that CPU and memory. No CPU or memory keeps the size the
+  /// server has (a disk-only grow); `computerIdle` says its work is saved,
+  /// which a disk grow of a running computer needs. Answers its status.
+  @discardableResult
+  func resize(instanceId: String, cpu: Int?, memoryGb: Double?, diskGb: Int? = nil, computerIdle: Bool = false) async throws -> String {
+    var payload: [String: Any] = [:]
+    if let cpu { payload["cpu"] = cpu }
+    if let memoryGb { payload["memory"] = memoryGb.rounded() == memoryGb ? Int(memoryGb) as Any : memoryGb }
+    if let diskGb { payload["disk"] = diskGb }
+    if computerIdle { payload["computerIdle"] = true }
+    let body = try JSONSerialization.data(withJSONObject: payload)
+    return status(of: try await send("POST", "cloud/instances/\(segment(instanceId))/resize", body: body, timeout: 180), or: "updating")
+  }
+
+  /// Runs a shell command on the computer (`POST /cloud/instances/:id/exec`),
+  /// as the desktop does for a lane's push and save. A sleeping computer
+  /// wakes for it (that uses hours, and is refused at 0 hours).
+  func exec(instanceId: String, command: String, timeoutMs: Int) async throws -> CloudExecResult {
+    let body = try JSONSerialization.data(withJSONObject: ["command": command, "timeoutMs": timeoutMs])
+    return try decode(
+      CloudExecResult.self,
+      from: try await send("POST", "cloud/instances/\(segment(instanceId))/exec", body: body, timeout: TimeInterval(timeoutMs) / 1000 + 10)
+    )
+  }
+
+  /// `{ status }` of a lifecycle answer, or `fallback` when it says none.
+  private func status(of data: Data, or fallback: String) -> String {
+    struct Answer: Decodable { let status: String? }
+    return (try? JSONDecoder().decode(Answer.self, from: data))?.status.flatMap { nonEmptyTrimmed($0) } ?? fallback
   }
 
   /// Deletes the saved chats of one lane of a computer (`DELETE /cloud/chats/:m/lanes/:lane`).
@@ -410,8 +503,10 @@ struct CloudServerClient {
     _ = try await send("DELETE", "cloud/chats/\(segment(machineKey))/lanes/\(segment(laneId))", timeout: 30)
   }
 
-  func start(instanceId: String) async throws {
-    _ = try await send("POST", "cloud/instances/\(segment(instanceId))/start", body: Data("{}".utf8), timeout: 120)
+  /// Wakes (or starts) a computer. Answers its status: `running` once up.
+  @discardableResult
+  func start(instanceId: String) async throws -> String {
+    status(of: try await send("POST", "cloud/instances/\(segment(instanceId))/start", body: Data("{}".utf8), timeout: 120), or: "running")
   }
 
   /// A person's update (`POST /cloud/instances/:id/update`): the computer
@@ -537,4 +632,362 @@ func cloudServerFailure(status: Int, body: Data) -> CloudServerClient.Failure {
   }
   if status == 403 { return message.map { .refused(code: code ?? "forbidden", message: $0) } ?? .unauthorized }
   return .server(status, message: message)
+}
+
+/// What `POST /cloud/instances/:id/exec` answered. An answer missing a part reads as a failed run.
+struct CloudExecResult: Decodable {
+  let exitCode: Int
+  let stdout: String
+  let stderr: String
+
+  private enum CodingKeys: String, CodingKey { case exitCode, stdout, stderr }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    exitCode = c.lenient(Int.self, forKey: .exitCode) ?? -1
+    stdout = c.lenient(String.self, forKey: .stdout) ?? ""
+    stderr = c.lenient(String.self, forKey: .stderr) ?? ""
+  }
+}
+
+// MARK: - A computer's lane steps, from the phone alone
+
+// The desktop's steps for one ADE Cloud computer (`cloudLaneLife.ts`,
+// `cloudMachines.ts`, `cloudDiskUsage.ts`), run with the phone's own sign-in
+// through the same account-server routes, so a phone with no computer of the
+// person's own frees a lane, changes its size and clears its caches the same
+// way, in the same words. Account-level: each names a computer of the
+// account by its ADE Cloud id, never a pin.
+
+/// One lane as `ade cloud push-work` left it (`CloudPushWorkLane`). Older computers leave the list out.
+struct CloudPushWorkLane: Equatable {
+  let laneId: String
+  let laneName: String
+  let branchRef: String
+  let primary: Bool
+  let dirty: Bool
+  let ahead: Int
+  /// `clean`, `pushed`, `failed` or `unpushed` (anything else reads as unpushed).
+  let state: String
+
+  /// "main checkout", else the lane's name, else its branch (`cloudWorkLaneName`).
+  var shownName: String { primary ? "main checkout" : (laneName.isEmpty ? branchRef : laneName) }
+  /// Work that is still only on the computer.
+  var isLeft: Bool { state == "unpushed" || state == "failed" }
+}
+
+/// `ade cloud push-work` / `work-state`'s tally (`CloudPushWorkTally`).
+struct CloudPushWorkTally: Equatable {
+  let pushed: Int
+  let failed: Int
+  let skipped: Int
+  let lanes: [CloudPushWorkLane]?
+
+  /// The command's JSON (`{ result: … }` or the tally itself), or nil when it isn't JSON (`readPushAllTally`).
+  init?(stdout: String) {
+    guard let data = stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+          let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+    let tally = parsed["result"] as? [String: Any] ?? parsed
+    func count(_ key: String) -> Int {
+      if let number = tally[key] as? NSNumber { return number.intValue }
+      if let text = tally[key] as? String { return Int(text) ?? 0 }
+      return 0
+    }
+    pushed = count("pushed")
+    failed = count("failed")
+    skipped = count("skipped")
+    if let raw = tally["lanes"] as? [Any] {
+      let known: Set<String> = ["clean", "pushed", "failed", "unpushed"]
+      lanes = raw.compactMap { entry in
+        guard let lane = entry as? [String: Any], let laneId = lane["laneId"] as? String else { return nil }
+        let state = lane["state"] as? String ?? ""
+        return CloudPushWorkLane(
+          laneId: laneId,
+          laneName: lane["laneName"] as? String ?? "",
+          branchRef: lane["branchRef"] as? String ?? "",
+          primary: lane["primary"] as? Bool == true,
+          dirty: lane["dirty"] as? Bool == true,
+          ahead: (lane["ahead"] as? NSNumber)?.intValue ?? 0,
+          state: known.contains(state) ? state : "unpushed"
+        )
+      }
+    } else {
+      lanes = nil
+    }
+  }
+
+  /// The lanes whose work is still only on the computer (`toWorkLanes`).
+  var leftLanes: [CloudPushWorkLane] { (lanes ?? []).filter(\.isLeft) }
+}
+
+/// How one of these steps went: whether it did it, and the sentence to show.
+struct CloudComputerOutcome {
+  let ok: Bool
+  let message: String
+}
+
+/// Commits and pushes every project's lanes on the computer (`ade cloud
+/// push-work`), or only reads what isn't pushed (`ade cloud work-state`,
+/// never `push-work --check`: an older ADE ignores the flag and pushes). ADE
+/// on a computer that just started answers a few seconds after the start.
+func cloudPushWorkCommand(check: Bool) -> String {
+  [
+    #"export PATH="$ADE_HOME/bin:$PATH""#,
+    #"i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done"#,
+    check ? "ade cloud work-state --json" : "ade cloud push-work --json",
+  ].joined(separator: "\n")
+}
+
+/// Stops running turns and agent CLIs and writes the saved chat copy, before a restart (`prepareStopCommand`).
+let cloudPrepareStopCommand = #"export PATH="$ADE_HOME/bin:$PATH""# + "\nade cloud prepare-stop --timeout 40"
+
+/// What keeps the computer awake, as its brain wrote it (`KEEP_AWAKE_STATE_COMMAND`).
+let cloudKeepAwakeStateCommand = #"cat "$ADE_HOME/cloud/keep-awake.json" 2>/dev/null"#
+
+/// The caches ADE may clear (`CLOUD_CLEARABLE_CACHES`), each inside the home
+/// folder, never through a link: package and tool caches and Docker's build
+/// cache. Never a repository, a dependency folder, an image or an emulator,
+/// and never the browsers and ADE kept in `.cache` (`KEEP_IN_CACHES`). The
+/// disk's last measure is dropped, so the computer measures again at its next
+/// idle step. Prints the disk's used KB before and after.
+let cloudClearCachesCommand = """
+home="$HOME"
+used() { df -Pk "$home" 2>/dev/null | awk 'NR==2 {print $3}'; }
+before=$(used)
+for folder in .cache .npm/_cacache .local/share/pnpm/store .pnpm-store .bun/install/cache .yarn/berry/cache .gradle/caches .cargo/registry/cache; do
+  full="$home/$folder"
+  { [ -d "$full" ] && [ ! -L "$full" ]; } || continue
+  for entry in "$full"/* "$full"/.[!.]* "$full"/..?*; do
+    { [ -e "$entry" ] || [ -L "$entry" ]; } || continue
+    case "${entry##*/}" in ms-playwright|puppeteer|ade) continue ;; esac
+    rm -rf -- "$entry"
+  done
+done
+docker builder prune --force >/dev/null 2>&1 || true
+rm -f "$ADE_HOME/cloud/disk-usage.json"
+after=$(used)
+printf '{"beforeKb":%s,"afterKb":%s}\\n' "${before:-null}" "${after:-null}"
+"""
+
+extension CloudServerClient {
+  /// Bounded so a frozen push can't outlast the short wake it runs in (`PUSH_ALL_WORK_TIMEOUT_MS`).
+  static let pushWorkTimeoutMs = 3 * 60_000
+
+  /// Wakes (or starts) a computer, trying again for a few seconds while it is
+  /// still changing state (`wakeThroughTransition`). The server's refusals
+  /// (out of hours, blocked, too many awake) are not tried again.
+  func wakeThroughTransition(instanceId: String) async throws {
+    let deadline = Date().addingTimeInterval(15)
+    while true {
+      do {
+        try await start(instanceId: instanceId)
+        return
+      } catch Failure.server(let status, _) where (status == 409 || status >= 500) && Date() < deadline {
+        try await Task.sleep(for: .milliseconds(500))
+      }
+    }
+  }
+
+  /// Runs push-work on the computer (`runPushWork`): it wakes a resting
+  /// computer, which uses hours. Its tally, or nil with why.
+  func runPushWork(instanceId: String, check: Bool) async -> (tally: CloudPushWorkTally?, error: String?) {
+    do {
+      try await wakeThroughTransition(instanceId: instanceId)
+      let ran = try await exec(instanceId: instanceId, command: cloudPushWorkCommand(check: check), timeoutMs: Self.pushWorkTimeoutMs)
+      if ran.exitCode == 0, let tally = CloudPushWorkTally(stdout: ran.stdout) { return (tally, nil) }
+      let unknown = "\(ran.stderr)\n\(ran.stdout)".range(of: #"unknown (cloud )?command|method not found|can't read this computer's work"#, options: [.regularExpression, .caseInsensitive]) != nil
+      if check, ran.exitCode != 0, unknown { return (nil, "This computer's ADE is too old to say what isn't pushed.") }
+      return (nil, "ADE couldn't read this computer's work.")
+    } catch {
+      return (nil, cloudServerFailureMessage(error))
+    }
+  }
+
+  /// Whether any lane's work is only on the computer (`workState`): nil when it can't say.
+  func workState(instanceId: String) async -> (unpushed: Bool?, unpushedLanes: [CloudPushWorkLane], message: String?) {
+    let ran = await runPushWork(instanceId: instanceId, check: true)
+    guard let tally = ran.tally else { return (nil, [], ran.error ?? "ADE couldn't read this computer's work.") }
+    guard tally.lanes != nil else { return (nil, [], "This computer's ADE is too old to say what isn't pushed.") }
+    let left = tally.leftLanes
+    if tally.failed > 0 { return (nil, left, "ADE couldn't read every project on this computer.") }
+    return (!left.isEmpty, left, nil)
+  }
+
+  enum AgentWork { case idle, busy, unknown }
+
+  /// Whether the agent's work keeps the computer busy, from its keep-awake
+  /// facts (`agentWork`): asleep counts as idle; facts it can't read are unknown.
+  func agentWork(instanceId: String) async throws -> AgentWork {
+    guard try await instance(instanceId).status == "running" else { return .idle }
+    guard let read = try? await exec(instanceId: instanceId, command: cloudKeepAwakeStateCommand, timeoutMs: 30_000),
+          let data = read.stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+          let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return .unknown }
+    // A person watching a tool, or a timer due soon, is not the agent's work.
+    let reasons = (state["reasons"] as? [Any] ?? []).compactMap { $0 as? String }
+    let busy = state["busy"] as? Bool == true && !reasons.allSatisfy { $0 == "in_use" || $0 == "schedule" }
+    return busy ? .busy : .idle
+  }
+
+  /// Deletes a computer and waits until the server confirms it is gone (a 404
+  /// or `deleted`), as `cloudMachines.run("delete")` does. A repeat delete's
+  /// 404 is what a delete wants. False when the delete was taken but isn't
+  /// finished yet.
+  func deleteInstanceConfirmed(_ instanceId: String, keepLaneBranch: String? = nil) async throws -> Bool {
+    do {
+      try await deleteInstance(instanceId, keepLaneBranch: keepLaneBranch)
+    } catch Failure.noAccess {
+      // Already gone.
+    }
+    for attempt in 0..<15 {
+      do {
+        if try await instance(instanceId).isGone { return true }
+      } catch Failure.noAccess {
+        return true
+      } catch {
+        // Read again on the next round.
+      }
+      if attempt < 14 { try? await Task.sleep(for: .seconds(2)) }
+    }
+    return false
+  }
+
+  /// "Keep the lane, free its computer" (`freeLane`): refused while the agent
+  /// works; the work (archived lanes too) is pushed and checked again, and
+  /// anything left keeps the computer. Then the computer goes and the server
+  /// keeps the lane, with its chats, as a lane without a computer: the next
+  /// message makes a new computer on the same branch.
+  func freeLane(instanceId: String) async -> CloudComputerOutcome {
+    func fail(_ message: String) -> CloudComputerOutcome { CloudComputerOutcome(ok: false, message: message) }
+    let box: CloudServerInstance
+    do {
+      box = try await instance(instanceId)
+    } catch Failure.noAccess {
+      return fail("ADE Cloud has no such computer.")
+    } catch {
+      return fail(cloudServerFailureMessage(error))
+    }
+    guard let laneId = box.laneId, box.laneName != nil else {
+      return fail("This computer wasn't made for one lane, so there is no lane to keep. Delete it, or keep it.")
+    }
+    // A running agent could write again after its lane was pushed.
+    let work: AgentWork
+    do {
+      work = try await agentWork(instanceId: instanceId)
+    } catch {
+      return fail(cloudServerFailureMessage(error))
+    }
+    if work == .busy { return fail("The agent is still working. Stop it or wait, then free the computer.") }
+    if work == .unknown { return fail("ADE couldn't tell whether the agent is still working, so the computer stays. Try again in a moment.") }
+    let ran = await runPushWork(instanceId: instanceId, check: false)
+    guard let tally = ran.tally else {
+      return fail("ADE couldn't push this lane's work, so the computer stays: \(cloudWithoutStop(ran.error ?? "no answer")).")
+    }
+    let left = tally.leftLanes
+    if tally.failed > 0 || !left.isEmpty || (tally.lanes == nil && tally.skipped > 0) {
+      let names = left.map(\.shownName).filter { !$0.isEmpty }
+      return fail("ADE couldn't push all work on this computer\(names.isEmpty ? "" : " (\(names.joined(separator: ", ")))"), so it stays. Open the lane to see why, then try again.")
+    }
+    // Read once more after the push: anything new or unknown keeps the computer.
+    let after = await workState(instanceId: instanceId)
+    if after.unpushed != false {
+      let names = after.unpushedLanes.map(\.shownName).filter { !$0.isEmpty }
+      return fail(after.unpushed == true
+        ? "Work changed on this computer while ADE pushed it\(names.isEmpty ? "" : " (\(names.joined(separator: ", ")))"), so it stays. Try again."
+        : "ADE couldn't confirm all work is on GitHub, so the computer stays: \(cloudWithoutStop(after.message ?? "no answer")).")
+    }
+    let ownLane = tally.lanes?.first { $0.laneId == laneId } ?? tally.lanes?.first { !$0.primary }
+    guard let branchRef = nonEmptyTrimmed(ownLane?.branchRef) ?? box.laneBranch else {
+      return fail("ADE couldn't tell which branch this lane is on, so the computer stays.")
+    }
+    // A refusal (the server couldn't read the lane, or knows none) deleted
+    // nothing: its sentence is shown as it is, and the lane is not freed.
+    do {
+      guard try await deleteInstanceConfirmed(instanceId, keepLaneBranch: branchRef) else {
+        return fail("ADE Cloud took the delete but hasn't finished it yet. Check again in a minute; if the computer is still there, delete it again.")
+      }
+    } catch {
+      return fail(cloudServerFailureMessage(error))
+    }
+    let kept = (try? await lanesWithoutComputer())?.contains { $0.laneId == laneId } == true
+    // The computer is gone but an older server didn't keep the lane.
+    return CloudComputerOutcome(ok: true, message: kept
+      ? "The work is on GitHub and the computer is removed. The next message makes a new computer on the same branch."
+      : "The work is on GitHub and the computer is removed. Start a new lane on its branch to go on.")
+  }
+
+  /// A size change in place, now (`changeTier` with `timing: "now"`, kind
+  /// `resize`): running turns stop and the chats' saved copy is written, then
+  /// the computer restarts at the new CPU and memory. A computer that was
+  /// awake and comes back asleep is woken, as the desktop's wait does. A
+  /// change to the other kind (standard ↔ full) is a move to a new computer,
+  /// which only ADE on a computer makes.
+  func changeSize(instanceId: String, to tier: CloudPhoneTier) async -> CloudComputerOutcome {
+    func fail(_ message: String) -> CloudComputerOutcome { CloudComputerOutcome(ok: false, message: message) }
+    let box: CloudServerInstance
+    do {
+      box = try await instance(instanceId)
+    } catch Failure.noAccess {
+      return fail("ADE Cloud has no such computer.")
+    } catch {
+      return fail(cloudServerFailureMessage(error))
+    }
+    guard (box.type == "vm" ? "vm" : "default") == tier.type else {
+      return fail(cloudPhoneKindChangeReason(to: tier))
+    }
+    guard let current = box.resources, current.cpu > 0, current.memory > 0 else {
+      return fail("ADE Cloud didn't say how big this computer is, so ADE can't resize it.")
+    }
+    if current.cpu == tier.cpu && current.memory == tier.memoryGb { return fail("It's already \(tier.label).") }
+    let wasAwake = box.status == "running"
+    if wasAwake {
+      // Stops what still runs and writes the saved chat copy, so the chats
+      // read the same while the computer restarts. A save that fails goes on:
+      // the person chose to restart now.
+      _ = try? await exec(instanceId: instanceId, command: cloudPrepareStopCommand, timeoutMs: 90_000)
+    }
+    do {
+      var status = try await resize(instanceId: instanceId, cpu: tier.cpu, memoryGb: tier.memoryGb)
+      // A resize leaves it asleep on some sizes: wake it, as a send would.
+      if wasAwake, status == "sleeping" || status == "stopped" {
+        status = (try? await start(instanceId: instanceId)) ?? status
+      }
+      return CloudComputerOutcome(ok: true, message: status == "running"
+        ? "Resized to \(tier.label). ADE on it is starting again."
+        : "Resizing to \(tier.label). It is back in a few minutes.")
+    } catch {
+      return fail(cloudServerFailureMessage(error))
+    }
+  }
+
+  /// Clears a computer's caches (`clearCloudDiskCaches`). It wakes a resting
+  /// computer, which uses hours. Answers how much it freed.
+  func clearCaches(instanceId: String) async -> CloudComputerOutcome {
+    do {
+      try await wakeThroughTransition(instanceId: instanceId)
+      let ran = try await exec(instanceId: instanceId, command: cloudClearCachesCommand, timeoutMs: 5 * 60_000)
+      guard ran.exitCode == 0 else { return CloudComputerOutcome(ok: false, message: "ADE couldn't clear this computer's caches. Try again.") }
+      let line = ran.stdout.split(separator: "\n").last.map(String.init) ?? ""
+      let sizes = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]
+      let before = (sizes?["beforeKb"] as? NSNumber)?.doubleValue
+      let after = (sizes?["afterKb"] as? NSNumber)?.doubleValue
+      let freedGb = before.flatMap { b in after.map { max(0, (b - $0) / (1024 * 1024)) } } ?? 0
+      return CloudComputerOutcome(ok: true, message: "Freed \(cloudGb(freedGb)).")
+    } catch {
+      return CloudComputerOutcome(ok: false, message: cloudServerFailureMessage(error))
+    }
+  }
+}
+
+/// A sentence without its last full stop, to go inside another one.
+private func cloudWithoutStop(_ text: String) -> String {
+  text.hasSuffix(".") ? String(text.dropLast()) : text
+}
+
+/// Why the phone doesn't move a computer to the other kind: a move makes a
+/// new computer, copies the old one's files over and pairs ADE with it, which
+/// only ADE on a computer does (`moveCloudMachine`).
+func cloudPhoneKindChangeReason(to tier: CloudPhoneTier) -> String {
+  tier.full
+    ? "Moving to a full computer makes a new computer; start it from ADE on a computer."
+    : "Moving to a standard computer makes a new computer; start it from ADE on a computer."
 }

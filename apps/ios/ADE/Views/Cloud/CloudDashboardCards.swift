@@ -318,7 +318,7 @@ struct CloudNotices: View {
           ADESettingsNotice(message: "You're out of hours. Your computers wait until your hours reset. Running work saves and stops.", tone: .warn)
         }
         if let disk = account.disk, let limit = disk.limitGb, limit > 0, disk.usedGb / limit >= 0.8 {
-          ADESettingsNotice(message: "Your disk is \(Int((disk.usedGb / limit * 100).rounded()))% full. Free some space in the ADE desktop app before your lanes need more.", tone: .warn)
+          ADESettingsNotice(message: "Your disk is \(Int((disk.usedGb / limit * 100).rounded()))% full. Free some space before your lanes need more.", tone: .warn)
         }
         if let cleanup = account.planCleanup, let message = cloudPlanCleanupMessage(cleanup) {
           ADESettingsNotice(message: message, tone: .warn)
@@ -352,8 +352,16 @@ struct CloudLanesCard: View {
   }
 
   var body: some View {
-    ADEKitCard(title: "Lanes and computers", symbol: "desktopcomputer", count: "\(store.machines.count)", hint: hint, flush: true) {
-      if store.machines.isEmpty {
+    // An unread list is not an empty one: the server's sentence, no count.
+    let unread = store.machines.isEmpty ? store.instancesError : nil
+    ADEKitCard(title: "Lanes and computers", symbol: "desktopcomputer", count: unread == nil ? "\(store.machines.count)" : nil, hint: unread == nil ? hint : nil, flush: true) {
+      if let unread {
+        ADESettingsNotice(message: unread, tone: .warn, actionTitle: "Try again") {
+          Task { await store.reload() }
+        }
+        .padding(.horizontal, ADEKit.inset)
+        .padding(.bottom, ADEKit.inset)
+      } else if store.machines.isEmpty {
         Text("No cloud lanes yet. Pick ADE Cloud under Run on when you send a message: ADE makes a computer for the lane, and it shows here.")
           .font(.system(size: 13))
           .foregroundStyle(ADEColor.textSecondary)
@@ -381,7 +389,10 @@ struct CloudLanesCard: View {
       busy: store.busy.contains(machine.instanceId)
     )
     if pushes {
-      NavigationLink(value: machine) { rowView }
+      // A link that carries its page, not a value: Settings' stack keeps a
+      // `[String]` path, which can't hold a machine, so a value link there
+      // did nothing.
+      NavigationLink { CloudMachineScreen(store: store, instanceId: machine.instanceId) } label: { rowView }
         .buttonStyle(ADEKitRowButtonStyle())
     } else {
       Button {
