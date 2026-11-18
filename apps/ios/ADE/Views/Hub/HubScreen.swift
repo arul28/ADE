@@ -141,7 +141,13 @@ struct HubScreen: View {
     let ownMachines = account.machines.filter { machine in
       machine.online && syncService.accountHasOwnComputer([machine])
     }
-    return ownMachines.max { ($0.lastSeenAt ?? 0) < ($1.lastSeenAt ?? 0) }
+    // An awake computer before one that reports sleep (a closed lid can
+    // still list online), then the newest.
+    return ownMachines.max { lhs, rhs in
+      let lhsAwake = lhs.sleepState != .asleep, rhsAwake = rhs.sleepState != .asleep
+      if lhsAwake != rhsAwake { return rhsAwake }
+      return (lhs.lastSeenAt ?? 0) < (rhs.lastSeenAt ?? 0)
+    }
   }
 
   /// Re-checks the candidate when the account's computers or the
@@ -796,8 +802,11 @@ struct HubScreen: View {
       // running, serves it without waking (and paying for) a sleeping one.
       // A computer the phone keeps dialing but the account shows asleep or
       // gone does not answer: it ranks after a cloud copy.
-      let resting = machineFleet.restingCloudMachines.contains { $0.machineKey == location.machineKey }
-      if isCloud ? !resting : machineFleet.accountShowsAwake(location.machineKey) { return 1 }
+      // A cloud computer's own row says whether it runs; a paired one that
+      // sleeps is not in the resting list.
+      let cloudAwake = isCloud && (syncService.cloudServerInstance(fleetKey: location.machineKey)?.isAwake
+        ?? !machineFleet.restingCloudMachines.contains { $0.machineKey == location.machineKey })
+      if isCloud ? cloudAwake : machineFleet.accountShowsAwake(location.machineKey) { return 1 }
       if isCloud { return 2 }
       return 3
     }

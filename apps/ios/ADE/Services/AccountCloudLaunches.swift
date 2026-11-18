@@ -394,6 +394,8 @@ final class AccountCloudLaunchStore: ObservableObject {
   @Published private(set) var entries: [Entry] = []
   /// Files not yet on the server, per launch: a retried start sends the rest.
   private var pendingFiles: [String: [LaunchFile]] = [:]
+  /// Launches whose start (uploads, then the start call) is running.
+  private var startingLaunchIds: Set<String> = []
   /// Finished or failed launches the person hid on this phone (until the account changes).
   @Published private var hiddenIds: Set<String> = []
   @Published private(set) var catalog: CloudModelCatalog?
@@ -588,6 +590,11 @@ final class AccountCloudLaunchStore: ObservableObject {
   }
 
   private func runStart(_ launchId: String, body: RemoteJSONValue, using sync: SyncService) async {
+    // One start per launch at a time: two cards retrying it would upload and
+    // drop each other's files.
+    guard !startingLaunchIds.contains(launchId) else { return }
+    startingLaunchIds.insert(launchId)
+    defer { startingLaunchIds.remove(launchId) }
     let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else {
       patch(launchId) { $0.startError = "Sign in to ADE to start a chat on ADE Cloud." }
@@ -597,7 +604,9 @@ final class AccountCloudLaunchStore: ObservableObject {
     while let file = pendingFiles[launchId]?.first {
       do {
         _ = try await client.uploadLaunchFile(launchId: launchId, fileId: file.fileId, data: file.data, contentType: file.contentType)
-        pendingFiles[launchId]?.removeFirst()
+        // Signed out or another account meanwhile: start nothing for it.
+        guard generation == accountGeneration else { return }
+        pendingFiles[launchId]?.removeAll { $0.fileId == file.fileId }
       } catch {
         guard generation == accountGeneration else { return }
         let reason = cloudServerFailureMessage(error)

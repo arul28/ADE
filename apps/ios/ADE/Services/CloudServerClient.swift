@@ -378,7 +378,10 @@ struct CloudServerClient {
     }
     guard bytes.count == backup.patchBytes else { throw Failure.unreadable }
     let name = (backup.laneName ?? backup.branchRef ?? "lane").replacingOccurrences(of: "[^A-Za-z0-9._-]+", with: "-", options: .regularExpression)
-    let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(name.prefix(60))-saved-work.patch")
+    // Its own folder per download: two lanes with one name never share a file.
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let url = folder.appendingPathComponent("\(name.prefix(60))-saved-work.patch")
     try bytes.write(to: url, options: [.atomic, .completeFileProtection])
     return url
   }

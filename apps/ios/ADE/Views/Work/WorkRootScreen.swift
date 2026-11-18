@@ -2402,6 +2402,7 @@ struct WorkRootListScreen: View, Equatable {
       colorAvailable: inputs.laneColorAvailable,
       manageAvailable: inputs.laneManageAvailable,
       restsOnCloud: { [syncService] lane in laneRestsOnCloud(lane.id, sync: syncService) },
+      hasCloudComputer: { [syncService] lane in cloudLaneComputer(lane.id, sync: syncService) != nil },
       onStartChat: startChatInLane,
       onToggleWorkPin: toggleWorkPin,
       isWorkPinned: { workPinnedLaneIds.contains($0.id) },

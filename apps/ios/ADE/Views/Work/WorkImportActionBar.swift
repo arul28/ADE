@@ -238,7 +238,7 @@ struct WorkImportActionBar: View {
   }
 
   private var lockedChip: some View {
-    let name = lockedLane?.displayName ?? session.home?.laneName ?? "its lane"
+    let name = lockedLane?.displayName ?? (session.home?.laneType == "primary" ? "Main checkout" : session.home?.laneName) ?? "its lane"
     let color = LaneColorPalette.displayColor(
       forHex: lockedLane?.color ?? session.home?.color,
       fallback: ADEColor.textSecondary

@@ -987,7 +987,7 @@ func workModelCatalogGroups(cloudCatalog: CloudModelCatalog) -> [WorkModelCatalo
         isDefault: model.id == entry.defaultModelId,
         reasoningEfforts: model.reasoningTiers.map { AgentChatModelReasoningEffort(effort: $0, description: "") },
         defaultReasoningEffort: model.defaultReasoningEffort,
-        serviceTiers: model.fast ? ["fast"] : nil
+        serviceTiers: model.fast ? ["fast"] : []
       )
     }
   }

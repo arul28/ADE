@@ -200,7 +200,7 @@ struct CloudMachineControls: View {
         }
       }
       if let lane = machine.lane {
-        CloudSavedWorkRow(syncService: store.syncService, laneId: lane.laneId)
+        CloudSavedWorkRow(syncService: store.syncService, laneId: lane.laneId, machineKey: machine.machineKey)
       }
       Text(machine.noLane
         ? "Deleting it removes everything on its disk for good."
@@ -252,6 +252,9 @@ func cloudGitHubRepo(origin: String?) -> GitHubDirectRepoRef? {
 struct CloudSavedWorkRow: View {
   let syncService: SyncService
   let laneId: String
+  /// The computer whose lane this shows (account machine key): its own
+  /// backup wins over another computer's copy of the same lane.
+  var machineKey: String? = nil
   /// In its own card (a lane's page); bare inside another card.
   var framed = false
   @State private var backup: CloudLaneBackupRow?
@@ -273,7 +276,9 @@ struct CloudSavedWorkRow: View {
 
   private func load() async {
     guard let client = await syncService.cloudServerClient() else { return }
-    backup = (try? await client.laneBackups(laneId: laneId))?.filter { $0.laneId == laneId }.max { $0.savedAt < $1.savedAt }
+    let rows = (try? await client.laneBackups(laneId: laneId))?.filter { $0.laneId == laneId } ?? []
+    let own = machineKey.map { key in rows.filter { $0.machineKey.lowercased() == key.lowercased() } } ?? []
+    backup = (own.isEmpty ? rows : own).max { $0.savedAt < $1.savedAt }
   }
 }
 
@@ -631,7 +636,7 @@ struct CloudLaneDeleteSheet: View {
                 : "ADE can't tell whether all of this lane's work is on GitHub. Deleting the lane deletes ADE Cloud's saved copy too.",
               tone: .warn
             )
-            CloudSavedWorkRow(syncService: syncService, laneId: target.laneId)
+            CloudSavedWorkRow(syncService: syncService, laneId: target.laneId, machineKey: target.accountMachineKey)
           }
           Button(role: .destructive) {
             Task { await delete() }

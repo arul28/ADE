@@ -1938,7 +1938,8 @@ struct WorkNewChatScreen: View {
       provider: entry.provider,
       modelId: modelId,
       effort: reasoningEffort,
-      fast: codexFastMode && fastModeAllowed,
+      // Only a model ADE Cloud runs fast; the saved preference stays.
+      fast: codexFastMode && fastModeAllowed && entry.models.contains { $0.id == modelId && $0.fast },
       files: files,
       existingLane: existingLane,
       newLaneName: existingLane == nil ? autoCreatedLaneName(opener: rawText) : nil,

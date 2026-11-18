@@ -16927,6 +16927,11 @@ final class SyncService: ObservableObject {
       // Files ride a live link only: wake the computer first.
       await wakeSavedCloudChatComputer(key)
     }
+    // Files read for the queue, but the computer came back meanwhile: the
+    // caller uploads them over the live link instead of sending text alone.
+    if (attachments ?? []).isEmpty, !cloudFiles.isEmpty {
+      throw CloudChatFilesNeedLiveLink()
+    }
     let response = try await sendCommand(
       action: chatActionName("chat.send", sessionId: sessionId),
       args: args,
@@ -17226,9 +17231,14 @@ final class SyncService: ObservableObject {
     dataUrl: String,
     filename: String,
     targetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil
+    targetProjectRootPath: String? = nil,
+    chatSessionId: String? = nil
   ) async throws -> SavedChatTempAttachment {
-    try requireInvokableRemoteAction("chat.saveTempAttachment")
+    // A chat's own computer (an ADE Cloud chat's) may not be the focused one:
+    // its live link decides, else the focused machine's.
+    if chatSessionId.map({ !canInvokeChatRemoteAction("chat.saveTempAttachment", sessionId: $0) }) ?? true {
+      try requireInvokableRemoteAction("chat.saveTempAttachment")
+    }
     var args: [String: Any] = ["dataUrl": dataUrl]
     let trimmedFilename = filename.trimmingCharacters(in: .whitespacesAndNewlines)
     if !trimmedFilename.isEmpty {
@@ -17266,7 +17276,8 @@ final class SyncService: ObservableObject {
       dataUrl: dataUrl,
       filename: filename,
       targetProjectId: scope.projectId,
-      targetProjectRootPath: scope.rootPath
+      targetProjectRootPath: scope.rootPath,
+      chatSessionId: sessionId
     )
   }
 
@@ -17514,7 +17525,9 @@ final class SyncService: ObservableObject {
         userInfo: [NSLocalizedDescriptionKey: "Personal chats accept images only."]
       )
     }
-    try requireInvokableRemoteAction(workChatFileAttachmentHostAction)
+    if chatSessionId.map({ $0.isEmpty || !canInvokeChatRemoteAction(workChatFileAttachmentHostAction, sessionId: $0) }) ?? true {
+      try requireInvokableRemoteAction(workChatFileAttachmentHostAction)
+    }
     var projectId = targetProjectId
     var rootPath = targetProjectRootPath
     if let chatSessionId, !chatSessionId.isEmpty, projectId == nil, rootPath == nil {

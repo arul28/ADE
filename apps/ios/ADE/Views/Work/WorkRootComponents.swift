@@ -629,6 +629,9 @@ struct WorkSessionLaneMenuActions {
   /// has no colour row (it needs the computer), and "Manage lane" becomes
   /// "Manage computer" (account actions, no wake).
   var restsOnCloud: (LaneSummary) -> Bool = { _ in false }
+  /// Per lane: its ADE Cloud computer still exists (a saved-only lane's was
+  /// deleted, so it has nothing to manage).
+  var hasCloudComputer: (LaneSummary) -> Bool = { _ in false }
   var onStartChat: (LaneSummary) -> Void = { _ in }
   var onToggleWorkPin: (LaneSummary) -> Void = { _ in }
   var isWorkPinned: (LaneSummary) -> Bool = { _ in false }
@@ -715,10 +718,12 @@ struct WorkLaneContextMenuContent: View {
       }
     }
     if resting {
-      Button {
-        actions.onManage(lane)
-      } label: {
-        Label("Manage computer", systemImage: "slider.horizontal.3")
+      if actions.hasCloudComputer(lane) {
+        Button {
+          actions.onManage(lane)
+        } label: {
+          Label("Manage computer", systemImage: "slider.horizontal.3")
+        }
       }
     } else if actions.manageAvailable {
       Button {
@@ -1346,10 +1351,12 @@ struct WorkSessionListRow: View {
       }
       if let lane, let laneMenu {
         if laneMenu.restsOnCloud(lane) {
-          Button {
-            laneMenu.onManage(lane)
-          } label: {
-            Label("Manage computer", systemImage: "slider.horizontal.3")
+          if laneMenu.hasCloudComputer(lane) {
+            Button {
+              laneMenu.onManage(lane)
+            } label: {
+              Label("Manage computer", systemImage: "slider.horizontal.3")
+            }
           }
         } else if laneMenu.manageAvailable {
           Button {

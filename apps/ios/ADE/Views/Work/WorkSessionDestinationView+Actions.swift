@@ -202,13 +202,27 @@ extension WorkSessionDestinationView {
             chatSessionId: sessionId
           )
           updateLocalEchoAttachments(echoId: echoId, attachments: liveRefs.isEmpty ? nil : liveRefs)
-          delivery = try await syncService.sendChatMessage(
-            sessionId: sessionId,
-            text: text,
-            attachments: liveRefs.isEmpty ? nil : liveRefs,
-            includeThreadComments: includeThreadComments,
-            compactFirst: compactFirst
-          )
+          do {
+            delivery = try await syncService.sendChatMessage(
+              sessionId: sessionId,
+              text: text,
+              attachments: liveRefs.isEmpty ? nil : liveRefs,
+              includeThreadComments: includeThreadComments,
+              compactFirst: compactFirst
+            )
+          } catch where workChatErrorIndicatesActiveTurn(error) {
+            // The woken computer is mid-turn: steer, as below.
+            if atomicDispatchMode == nil {
+              updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+            }
+            delivery = try await syncService.steerChatSession(
+              sessionId: sessionId,
+              text: text,
+              attachments: liveRefs.isEmpty ? nil : liveRefs,
+              dispatchMode: atomicDispatchMode,
+              includeThreadComments: includeThreadComments
+            )
+          }
         } catch where workChatErrorIndicatesActiveTurn(error) {
           if workChatIsManualCompactCommand(text) {
             ADEHaptics.error()
