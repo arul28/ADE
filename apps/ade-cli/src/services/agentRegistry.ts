@@ -118,6 +118,10 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
       /\bfactory\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
       /\b(?:invalid|missing|no)\s+factory(?:_api_key| api key)\b/i,
       /\bfactory(?:_api_key| api key)\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
+      // The Droid SDK's whole error on a computer with no Droid sign-in (a new
+      // ADE Cloud computer the sign-in was not carried to). It names no agent,
+      // so it counts only for a Droid chat.
+      /^no access token available\.?$/i,
     ],
   },
   {

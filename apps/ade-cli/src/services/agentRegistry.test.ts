@@ -112,6 +112,11 @@ describe("classifyAgentCliError", () => {
       category: "unauthenticated",
       authCommand: "droid",
     });
+    expect(classifyAgentCliError("No access token available", "droid")).toMatchObject({
+      agent: "droid",
+      category: "unauthenticated",
+    });
+    expect(classifyAgentCliError("No access token available", "codex")?.agent).not.toBe("droid");
     expect(classifyAgentCliError("Factory Droid completed successfully", "droid")).toBeNull();
   });
 

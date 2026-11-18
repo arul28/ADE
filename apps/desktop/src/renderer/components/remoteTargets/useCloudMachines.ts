@@ -4,6 +4,8 @@ import { captureError } from "../../../shared/sentry/capture";
 import { extractError } from "../../lib/format";
 import { cloudLaneIndexFresh, noteCloudLaneMachines } from "../../state/adeCloudLaneIndex";
 import { noteCloudAccountRead, setCloudAccountFed } from "../../state/cloudAccountStore";
+import { chatLaunchStore } from "../../state/chatLaunchStore";
+import { isChatLaunchSucceeded } from "../../../shared/chatLaunch";
 
 /** While a box is waking, sleeping or resizing, how often its state is read again. */
 const SETTLING_POLL_MS = 4_000;
@@ -169,6 +171,35 @@ export function refreshCloudMachinesIfStale(): void {
   if (now - staleRefreshAt < STALE_REFRESH_GAP_MS) return;
   staleRefreshAt = now;
   refreshCloudMachines();
+}
+
+/**
+ * A desktop launch to ADE Cloud that just got its computer's project (clone
+ * done) or its agent: read the account's computers again, once for each. The
+ * lane index then knows the new computer, so its lane reads "on ADE Cloud"
+ * and its main checkout stays out of the lane lists. Without this, a launch
+ * made while no Connections surface was open left the index at its last read
+ * (the second of two parallel lanes showed as a plain machine). ADE Web's
+ * launches do the same in `accountCloudLaunches`.
+ */
+const cloudLaunchReadsDone = new Set<string>();
+if (typeof window !== "undefined") {
+  chatLaunchStore.subscribe((state) => {
+    let read = false;
+    for (const entry of Object.values(state.entries)) {
+      const launch = entry.snapshot;
+      if (!launch.cloud) continue;
+      if (launch.cloud.binding && !cloudLaunchReadsDone.has(`${launch.launchId}:binding`)) {
+        cloudLaunchReadsDone.add(`${launch.launchId}:binding`);
+        read = true;
+      }
+      if (isChatLaunchSucceeded(launch) && !cloudLaunchReadsDone.has(`${launch.launchId}:started`)) {
+        cloudLaunchReadsDone.add(`${launch.launchId}:started`);
+        read = true;
+      }
+    }
+    if (read) refreshCloudMachines();
+  });
 }
 
 const subscribe = (listener: () => void) => subscribeWith(listener, true);
