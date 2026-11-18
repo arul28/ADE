@@ -17,6 +17,7 @@ import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { AppStoreProvider, createProjectAppStore, useAppStore } from "./appStore";
 import { buildAllMachineLanes, buildForeignSessionLanes, createLaneMachineRouter } from "./laneMachineRouting";
 import { rowShowsConnected } from "./cloudRestingRows";
+import { noteCloudLaneMachines } from "./adeCloudLaneIndex";
 import { refreshCloudSavedChats } from "./cloudSavedChatsSync";
 import { useCloudMachines } from "../components/remoteTargets/useCloudMachines";
 import {
@@ -2777,6 +2778,64 @@ describe("lane actions resolve against the lane's machine", () => {
     expect(laptop?.blockedReason).toMatch(/offline/);
     // A stale slice of the tab's own machine is not a foreign lane.
     expect(bySession.has(THIS_MACHINE_ID)).toBe(false);
+  });
+});
+
+describe("an ADE Cloud lane computer adds no main checkout to the lane lists", () => {
+  afterEach(() => noteCloudLaneMachines([]));
+
+  const lane = (laneId: string) => ({ laneId, laneName: laneId, projectOrigin: "github.com/o/r" });
+  const slice = (machineId: string, hostname: string | null, online: boolean) => ({
+    machineId,
+    machineName: machineId,
+    targetId: machineId.startsWith("cloud-saved:") ? null : machineId,
+    projectId: "proj",
+    binding: {
+      kind: "remote",
+      key: `${machineId}:proj`,
+      targetId: machineId,
+      runtimeName: machineId,
+      projectId: "proj",
+      rootPath: "/repo",
+      displayName: "repo",
+      ...(hostname ? { hostname } : {}),
+    } as OpenProjectBinding,
+    online,
+    // Kept from a read made before the lane index named the computer.
+    lanes: [
+      makeLane({ id: `${machineId}-main`, name: "Primary", laneType: "primary", branchRef: "main" }),
+      makeLane({ id: `${machineId}-lane`, name: "Cloud lane" }),
+    ],
+    sessions: [],
+    prs: [],
+    lastSyncedAtMs: Date.now(),
+    lanesSyncedAtMs: Date.now(),
+    error: null,
+  });
+
+  it.each([
+    { name: "a connected lane computer", slice: slice("target-a", "i-a", true), primaryListed: false },
+    { name: "an asleep lane computer's saved slice", slice: slice("cloud-saved:key-b", null, false), primaryListed: false },
+    { name: "a move's new computer while the old one still holds the lane", slice: slice("target-c-new", "i-c-new", true), primaryListed: false },
+    { name: "an ADE Cloud computer made without a lane", slice: slice("target-d", "i-d", true), primaryListed: true },
+    { name: "another computer of the person's own", slice: slice("target-studio", "studio.local", true), primaryListed: true },
+  ])("$name", ({ slice: entry, primaryListed }) => {
+    noteCloudLaneMachines([
+      { instanceId: "i-a", machineKey: "key-a", state: "running", lane: lane("lane-a") },
+      { instanceId: "i-b", machineKey: "key-b", state: "stopped", lane: lane("lane-b") },
+      { instanceId: "i-c", machineKey: "key-c", state: "stopped", lane: lane("lane-c") },
+      { instanceId: "i-c-new", machineKey: "key-c-new", state: "running", lane: lane("lane-c"), replacesInstanceId: "i-c" },
+      { instanceId: "i-d", machineKey: "key-d", state: "running" },
+    ] as never);
+    const all = buildAllMachineLanes({
+      activeBinding: { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" },
+      activeLanes: [makeLane({ id: "local-main", name: "Primary", laneType: "primary", branchRef: "main" })],
+      machines: { [entry.machineId]: entry },
+    });
+    const primaries = all.lanes.filter((row) => row.lane.laneType === "primary").map((row) => row.key);
+    expect(primaries).toEqual(primaryListed ? ["local-main", `${entry.machineId}:${entry.machineId}-main`] : ["local-main"]);
+    // Its lane still lists.
+    expect(all.lanes.some((row) => row.key === `${entry.machineId}:${entry.machineId}-lane`)).toBe(true);
   });
 });
 

@@ -39,12 +39,20 @@ import type { CloudLaneWithoutComputer } from "../../shared/cloudLaneLaunch";
 import { distinctMachineNames, machineIdOfSlot, THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../shared/machineIdentity";
 import { formatMachineVersions } from "../../shared/machineVersions";
 import type { MachineAddress } from "../../shared/repositoryTab";
-import { adeCloudLaneComputerForMachine, adeCloudLaneComputersNow, machineLabelForMachine, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
+import {
+  adeCloudLaneComputerForMachine,
+  adeCloudLaneComputersNow,
+  machineLabelForMachine,
+  useAdeCloudLaneComputers,
+  type AdeCloudComputerId,
+  type AdeCloudLaneComputer,
+} from "./adeCloudLaneIndex";
 import {
   useAppStore,
   useRootAppStore,
   type CrossMachineMachineLanes,
 } from "./appStore";
+import { listedLanesOfMachine } from "./cloudRestingRows";
 import { useCrossMachineLaneSync } from "./crossMachineLanes";
 
 /** One version, or both when the machine's app and brain drift ("1.2.123 · brain 1.2.125"). */
@@ -312,6 +320,8 @@ export function buildAllMachineLanes(input: {
    */
   adeCloud?: {
     computers: readonly AdeCloudLaneComputer[];
+    /** Every ADE Cloud computer of the index (`useAdeCloudLaneComputers().cloudComputers`); else the ones last read. */
+    cloudComputers?: readonly AdeCloudComputerId[];
     withoutComputer?: readonly CloudLaneWithoutComputer[];
     repoOriginIdentity?: string | null;
   };
@@ -404,7 +414,8 @@ export function buildAllMachineLanes(input: {
     sessionsByMachineId.set(entry.machineId, entry.sessions);
     const machineLanes: LaneSummary[] = [];
     const seen = new Set<string>();
-    for (const lane of entry.lanes) {
+    // An ADE Cloud lane computer adds no main checkout, awake or asleep.
+    for (const lane of listedLanesOfMachine(entry, laneComputers, input.adeCloud?.cloudComputers)) {
       if (seen.has(lane.id)) continue;
       seen.add(lane.id);
       machineLanes.push(lane);
@@ -533,10 +544,10 @@ export function useAllMachineLanes(active = true): AllMachineLanes {
   const activeBinding = useAppStore((state) => state.projectBinding);
   const activeLanes = useAppStore((state) => state.lanes);
   const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
-  const { computers } = useAdeCloudLaneComputers();
+  const { computers, cloudComputers } = useAdeCloudLaneComputers();
   return useMemo(
-    () => buildAllMachineLanes({ activeBinding: activeBinding ?? null, activeLanes, machines: machines ?? {}, adeCloud: { computers } }),
-    [activeBinding, activeLanes, machines, computers],
+    () => buildAllMachineLanes({ activeBinding: activeBinding ?? null, activeLanes, machines: machines ?? {}, adeCloud: { computers, cloudComputers } }),
+    [activeBinding, activeLanes, machines, computers, cloudComputers],
   );
 }
 

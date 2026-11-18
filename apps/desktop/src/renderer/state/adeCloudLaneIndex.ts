@@ -30,8 +30,13 @@ const STORAGE_KEY = "ade.cloudLaneComputers.v1";
 /** Every ADE Cloud computer of the account (with a lane or not), by its ids. */
 const CLOUD_COMPUTERS_STORAGE_KEY = "ade.cloudComputerIds.v1";
 
-/** An ADE Cloud computer as the account names it: its id on the provider and its account key. */
-export type AdeCloudComputerId = { instanceId: string; machineKey: string | null };
+/**
+ * An ADE Cloud computer as the account names it: its id on the provider and
+ * its account key. `hasLane`: its metadata names a lane, also while the lane
+ * index puts that lane on another computer (a move's new computer, the
+ * computer of an older launch).
+ */
+export type AdeCloudComputerId = { instanceId: string; machineKey: string | null; hasLane?: true };
 
 export type AdeCloudIndexState = IndexState;
 type IndexState = {
@@ -61,9 +66,13 @@ function readSavedCloudComputers(): AdeCloudComputerId[] {
     if (!Array.isArray(parsed)) return [];
     return parsed.flatMap((entry: unknown) => {
       if (!entry || typeof entry !== "object") return [];
-      const { instanceId, machineKey } = entry as Record<string, unknown>;
+      const { instanceId, machineKey, hasLane } = entry as Record<string, unknown>;
       return typeof instanceId === "string" && instanceId
-        ? [{ instanceId, machineKey: typeof machineKey === "string" && machineKey ? machineKey : null }]
+        ? [{
+            instanceId,
+            machineKey: typeof machineKey === "string" && machineKey ? machineKey : null,
+            ...(hasLane === true ? { hasLane: true as const } : {}),
+          }]
         : [];
     });
   } catch {
@@ -85,7 +94,7 @@ function readSaved(): IndexState {
 function signature(computers: readonly AdeCloudLaneComputer[], cloudComputers: readonly AdeCloudComputerId[]): string {
   return [
     ...computers.map((computer) => [computer.instanceId, computer.laneId, computer.laneName, computer.projectOrigin ?? "", computer.machineKey ?? "", computer.state].join("\u0001")),
-    ...cloudComputers.map((computer) => `box\u0001${computer.instanceId}\u0001${computer.machineKey ?? ""}`),
+    ...cloudComputers.map((computer) => `box\u0001${computer.instanceId}\u0001${computer.machineKey ?? ""}\u0001${computer.hasLane ? "lane" : ""}`),
   ].join("\u0002");
 }
 
@@ -96,7 +105,11 @@ export function noteCloudLaneMachines(machines: readonly CloudMachine[]): void {
   const computers = laneComputersOf(machines as readonly CloudLaneMachine[])
     .sort((a, b) => a.laneName.localeCompare(b.laneName) || a.instanceId.localeCompare(b.instanceId));
   const cloudComputers = machines
-    .map((machine) => ({ instanceId: machine.instanceId, machineKey: machine.machineKey?.trim() || null }))
+    .map((machine): AdeCloudComputerId => ({
+      instanceId: machine.instanceId,
+      machineKey: machine.machineKey?.trim() || null,
+      ...((machine as CloudLaneMachine).lane ? { hasLane: true as const } : {}),
+    }))
     .sort((a, b) => a.instanceId.localeCompare(b.instanceId));
   noteCloudLaneComputers(computers, cloudComputers);
 }
@@ -203,6 +216,26 @@ export function adeCloudLaneComputerForMachine(
   const key = machine.machineKey?.trim() || (machine.targetId ? cloudConnectionMachineKey(machine.targetId) ?? "" : "");
   if (!host && !key) return null;
   return computers.find((computer) => (host && computer.instanceId.toLowerCase() === host) || (key && computer.machineKey === key)) ?? null;
+}
+
+/**
+ * Whether a machine is an ADE Cloud lane computer: one the lane index puts a
+ * lane on, or one whose metadata names a lane while the index keeps that lane
+ * on another computer (a move's new computer, an older launch's). Such a
+ * computer exists for its one lane; its main checkout is only the clone the
+ * lane came from. A computer made without a lane is not one.
+ */
+export function isAdeCloudLaneComputerMachine(
+  machine: { hostname?: string | null; machineKey?: string | null; targetId?: string | null },
+  computers: readonly AdeCloudLaneComputer[] = state.computers,
+  cloudComputers: readonly AdeCloudComputerId[] = state.cloudComputers,
+): boolean {
+  if (adeCloudLaneComputerForMachine(machine, computers)) return true;
+  const host = machine.hostname?.trim().toLowerCase() ?? "";
+  const key = machine.machineKey?.trim() || (machine.targetId ? cloudConnectionMachineKey(machine.targetId) ?? "" : "");
+  if (!host && !key) return false;
+  return cloudComputers.some((computer) => computer.hasLane === true
+    && ((host !== "" && computer.instanceId.toLowerCase() === host) || (key !== "" && computer.machineKey === key)));
 }
 
 /**
