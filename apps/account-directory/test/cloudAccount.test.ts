@@ -4,6 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
+import { reportExtraPhoneMinutes, setExtraPhoneMinutes } from "../src/cloud/phoneBilling";
 import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, type CloudAccountState } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
@@ -3457,5 +3458,134 @@ describe("ADE Cloud lane backups", () => {
     expect((await objects()).length).toBeGreaterThan(0);
     await deleteAllAccountChats(harness.env, OWNER);
     expect([harness.rows("select lane_id from cloud_lane_backups where user_id = ?", OWNER), await objects()]).toEqual([[], []]);
+  });
+});
+
+describe("ADE Cloud iPhone minutes", () => {
+  const PHONE_PRICE = "price_phone";
+  const PHONE_METER = "ade_cloud_phone_minutes";
+  const PERIOD = NOW - 8 * DAY;
+  const OLD_PERIOD = PERIOD - 30 * DAY;
+
+  /** A paid Pro account on sub_1 that holds the iPhone-minute price, with extra minutes set as given. */
+  function seedPhoneAccount(overrides: Row = {}): void {
+    harness.env.STRIPE_PHONE_MINUTE_PRICE_ID = PHONE_PRICE;
+    harness.env.STRIPE_PHONE_METER_EVENT = PHONE_METER;
+    harness.env.NOMAC_API_KEY = "nmk_test";
+    harness.env.CLOUD_PHONE_ACCESS = "all";
+    harness.net.subscriptions.set("sub_1", { status: "active", items: { data: [{ id: "si_phone", price: { id: PHONE_PRICE } }] } });
+    seedAccount(harness, OWNER, {
+      plan: "paid",
+      paid_plan: "pro",
+      stripe_status: "active",
+      stripe_customer_id: "cus_1",
+      stripe_subscription_id: "sub_1",
+      period_start: PERIOD,
+      phone_extra_enabled: 1,
+      phone_extra_period_start: PERIOD,
+      ...overrides,
+    });
+  }
+
+  /** A phone NoMac settled: `minutes` billed, started at `startedAt`. */
+  function seedPhone(id: string, minutes: number, startedAt = PERIOD + HOUR, state = "ended"): void {
+    harness.insert("cloud_phones", {
+      phone_id: id,
+      user_id: OWNER,
+      device: "iphone",
+      state,
+      created_at: startedAt,
+      ready_at: startedAt,
+      ended_at: state === "ended" ? startedAt + minutes * 60_000 : null,
+      billed_seconds: minutes * 60,
+      cost_micros: minutes * 15_000,
+      free: 0,
+      updated_at: startedAt,
+    });
+  }
+
+  const meterReports = () => providerCalls(harness, /POST .*\/billing\/meter_events$/)
+    .map((call) => [String(call.body?.identifier), Number(call.body?.["payload[value]"])]);
+  const account = () => harness.row("select phone_extra_enabled, phone_extra_period_start, phone_extra_reported_minutes from cloud_accounts where user_id = ?", OWNER);
+
+  it.each([
+    {
+      name: "minutes past the plan this period, sent once however often the meter runs",
+      seed: () => { seedPhoneAccount(); seedPhone("ses_a", 312); },
+      act: async () => {},
+      reports: [[`ade-phone:sub_1:${PERIOD}:from-0`, 12]],
+      after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 12 },
+    },
+    {
+      name: "a lower limit stops further use but keeps the minutes already used owed",
+      seed: () => { seedPhoneAccount({ phone_extra_limit_cents: null }); seedPhone("ses_a", 340); },
+      // $0.50 allows 20 extra minutes; 40 were used under no limit.
+      act: () => setExtraPhoneMinutes(harness.env, OWNER, { enabled: true, monthlyLimitCents: 50 }, clock),
+      reports: [[`ade-phone:sub_1:${PERIOD}:from-0`, 40]],
+      after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 40 },
+    },
+    {
+      name: "an ended period is billed after it ends at its own plan's minutes, after a downgrade at the renewal",
+      // Pro's 300 minutes in the old period, Plus (80) now: 400 used bills 100, never 320.
+      seed: () => { seedPhoneAccount({ paid_plan: "plus", phone_extra_period_start: OLD_PERIOD, phone_extra_included: 300 }); seedPhone("ses_old", 400, OLD_PERIOD + HOUR); },
+      act: async () => {},
+      reports: [[`ade-phone:sub_1:${OLD_PERIOD}:from-0`, 100]],
+      after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 0 },
+    },
+    {
+      name: "a failed payment is left alone until it is paid (its period may come back)",
+      seed: () => { seedPhoneAccount({ stripe_status: "past_due", phone_extra_enabled: 2, phone_extra_period_start: OLD_PERIOD, phone_extra_included: 300 }); seedPhone("ses_old", 400, OLD_PERIOD + HOUR); },
+      act: async () => {},
+      reports: [],
+      after: { phone_extra_enabled: 2, phone_extra_period_start: OLD_PERIOD, phone_extra_reported_minutes: 0 },
+    },
+    {
+      name: "a cancelled plan's last period is billed for the minutes used while on, then extra minutes turn off",
+      seed: () => { seedPhoneAccount({ plan: "free", stripe_status: null, phone_extra_enabled: 2, phone_extra_period_start: OLD_PERIOD, phone_extra_included: 300 }); seedPhone("ses_old", 330, OLD_PERIOD + HOUR); },
+      act: async () => {},
+      reports: [[`ade-phone:sub_1:${OLD_PERIOD}:from-0`, 30]],
+      after: { phone_extra_enabled: 0, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 0 },
+    },
+  ])("extra iPhone minutes: $name", async ({ seed, act, reports, after }) => {
+    seed();
+    await act();
+    await reportExtraPhoneMinutes(harness.env, clock);
+    await reportExtraPhoneMinutes(harness.env, clock);
+    expect(meterReports()).toEqual(reports);
+    expect(account()).toEqual(after);
+  });
+
+  it("holds a running phone to what the account may still use, and the minute tick stops it then", async () => {
+    seedPhoneAccount({ phone_extra_limit_cents: null });
+    seedPhone("ses_used", 290);
+    // A phone started 5 minutes ago: Pro's 300 leave it 5 more once extra minutes go off.
+    seedPhone("ses_live", 5, clock - 5 * 60_000, "live");
+    const nomacCalls: string[] = [];
+    let state = "ready";
+    const network = harness.net.fetchStub;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!url.startsWith("https://nomac.app/api/v1/simulator/sessions/ses_live")) return network(input, init);
+      const method = init?.method ?? "GET";
+      nomacCalls.push(method);
+      if (method === "DELETE") state = "stopped";
+      return new Response(JSON.stringify({
+        session: { id: "ses_live", state, label: `ade:${OWNER}`, device: "iphone", created_at: new Date(clock - 5 * 60_000).toISOString(), ready_at: new Date(clock - 5 * 60_000).toISOString(), cost: { billed_seconds: 300, accrued_microunits: "75000" } },
+      }), { status: 200 });
+    });
+
+    await setExtraPhoneMinutes(harness.env, OWNER, { enabled: false }, clock);
+    const stopAt = Number(harness.row("select stop_at from cloud_phones where phone_id = 'ses_live'").stop_at);
+    expect(nomacCalls).not.toContain("DELETE");
+    expect(stopAt).toBe(clock + 5 * 60_000);
+
+    // Before its time the tick leaves it running; past it, the tick stops it at NoMac.
+    clock += 4 * 60_000;
+    await harness.tick();
+    expect(nomacCalls).not.toContain("DELETE");
+    clock += 2 * 60_000;
+    await harness.tick();
+    expect(nomacCalls).toContain("DELETE");
+    expect(harness.row("select state from cloud_phones where phone_id = 'ses_live'").state).toBe("ended");
   });
 });
