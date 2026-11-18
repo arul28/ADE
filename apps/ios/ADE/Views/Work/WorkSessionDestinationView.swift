@@ -646,6 +646,14 @@ struct WorkSessionDestinationView: View {
 
   /// The machine this chat lives on, for the ADE Cloud wake: another
   /// machine's key, else the focused machine's.
+  /// ADE Cloud's model list while this chat's cloud computer is not awake
+  /// (asleep, waking, deleted); nil for any other machine and an awake one.
+  var restingCloudModelCatalog: CloudModelCatalog? {
+    guard let state = cloudLaneState(fleetKey: sessionCloudMachineKey, sync: syncService, store: AccountCloudStore.shared) else { return nil }
+    if case .awake = state { return nil }
+    return AccountCloudLaunchStore.shared.catalog ?? .pending
+  }
+
   var sessionCloudMachineKey: String? {
     crossProjectContext?.machineKey
       ?? syncService.remoteChatMachineKey(sessionId: sessionId)
@@ -724,6 +732,9 @@ struct WorkSessionDestinationView: View {
   }
 
   var canSendChatMessages: Bool {
+    // A chat on a sleeping ADE Cloud computer: the account holds the send and
+    // wakes the computer, so there is no live link to require.
+    if !personalChat, syncService.chatSendsThroughCloudAccount(sessionId: sessionId) { return true }
     let sendSupported = personalChat
       ? syncService.supportsRemoteAction("personalChats.send")
       : syncService.supportsChatRemoteAction("chat.send", sessionId: sessionId)
@@ -738,7 +749,8 @@ struct WorkSessionDestinationView: View {
   }
 
   var sendWillQueueChatMessage: Bool {
-    workChatSendWillQueueMessage(
+    if !personalChat, syncService.chatSendsThroughCloudAccount(sessionId: sessionId) { return true }
+    return workChatSendWillQueueMessage(
       isLive: isLive,
       hostReachable: hostReachable,
       chatSendQueueable: personalChat
@@ -2574,6 +2586,7 @@ struct WorkSessionDestinationView: View {
       onOpenSideChat: openSideChatAction
     )
     chatView.ctoLive = ctoLiveModel
+    chatView.modelPickerCloudCatalog = restingCloudModelCatalog
     return chatView
   }
 

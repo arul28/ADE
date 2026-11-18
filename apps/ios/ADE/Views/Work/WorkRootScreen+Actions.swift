@@ -1261,6 +1261,16 @@ extension WorkRootListScreen {
   /// snapshot it needs carries runtime state the Work projection does not hold,
   /// so it is fetched on demand; the sheet only appears once it resolves.
   func manageLane(_ lane: LaneSummary) {
+    // A lane whose ADE Cloud computer is asleep: its computer's page, from
+    // the account, with no wake.
+    if laneRestsOnCloud(lane.id, sync: syncService) {
+      if let instanceId = cloudLaneComputer(lane.id, sync: syncService)?.id {
+        CloudLaneActions.shared.manageComputer(instanceId: instanceId, fromMenu: true)
+      } else {
+        actionErrorMessage = "ADE can't find this lane's computer on your account right now. Try again in a moment."
+      }
+      return
+    }
     Task { @MainActor in
       // Context-menu actions fire before iOS finishes dismissing the menu.
       // Presenting a sheet into that dismissal drops it silently.

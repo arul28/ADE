@@ -253,9 +253,8 @@ struct SettingsMachineUpdateSection: View {
 
   private func hint(target: MachineUpdateTarget?) -> String? {
     if target != nil { return "A newer build is out on this machine’s track." }
-    guard machine.isLive, let key = machine.machineKey, !store.isBusy(machine) else { return nil }
-    if store.targetVersion(forMachineVersion: machine.appVersion) != nil, !store.canAsk(machineKey: key) {
-      return "This computer’s ADE is too old to update from the phone. Update it there once."
+    if store.needsUpdateOnMachine(machine) {
+      return "This computer’s ADE is too old to update from the phone. Update it there once; after that, it updates from here."
     }
     return nil
   }

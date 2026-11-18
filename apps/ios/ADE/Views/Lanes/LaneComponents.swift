@@ -11,7 +11,7 @@ struct LaneOpenChip: View {
     let laneAccent = laneTint.text ?? ADEColor.textPrimary
     HStack(spacing: 6) {
       WorkLaneLogoMark(color: laneAccent, laneIcon: snapshot.lane.icon, emoji: snapshot.lane.emoji, size: 10)
-      Text(snapshot.lane.name)
+      Text(snapshot.lane.displayName)
         .font(.caption.weight(.medium))
         .foregroundStyle(laneAccent)
         .lineLimit(1)
@@ -25,7 +25,7 @@ struct LaneOpenChip: View {
     .frame(minHeight: 32)
     // A quiet kit pill: the lane's colour stays on its mark and name.
     .adeKitPill()
-    .accessibilityLabel("\(snapshot.lane.name)\(isPinned ? ", pinned" : "")")
+    .accessibilityLabel("\(snapshot.lane.displayName)\(isPinned ? ", pinned" : "")")
   }
 }
 
@@ -167,7 +167,7 @@ func laneStackCardAccessibilityLabel(
   isOpen: Bool,
   pullRequest: LanePrTag? = nil
 ) -> String {
-  var parts = [snapshot.lane.name, normalizedPrBranchName(snapshot.lane.branchRef)]
+  var parts = [snapshot.lane.displayName, normalizedPrBranchName(snapshot.lane.branchRef)]
   if snapshot.lane.laneType == "primary" { parts.append("primary") }
   if snapshot.lane.archivedAt != nil { parts.append("archived") }
   if snapshot.lane.status.dirty { parts.append("dirty") }
@@ -273,7 +273,7 @@ struct LaneStackCard: View, Equatable {
         .padding(.top, 1)
       VStack(alignment: .leading, spacing: 3) {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-          Text(snapshot.lane.name)
+          Text(snapshot.lane.displayName)
             .font(.system(size: 16, weight: .semibold))
             // The glyph carries the lane colour; the name stays readable (a
             // yellow or pale name on the light page failed contrast).
@@ -653,7 +653,7 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
       WorkLaneLogoMark(color: tint, laneIcon: lane.icon, emoji: lane.emoji, size: 20)
         .frame(width: 28, height: 28)
       VStack(alignment: .leading, spacing: 4) {
-        Text(lane.name)
+        Text(lane.displayName)
           .font(.title3.weight(.bold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(2)

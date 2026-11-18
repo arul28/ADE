@@ -1197,8 +1197,11 @@ struct SyncConnectAttemptTarget: Equatable {
 /// A project the machine would not open, for the hub to say so.
 struct SyncProjectOpenFailure: Equatable, Identifiable {
   let id = UUID()
-  let projectName: String
+  /// The project that failed to open, so the notice can offer Retry.
+  let project: MobileProjectSummary
   let message: String
+
+  var projectName: String { project.displayName }
 }
 
 /// Why adding a machine next to the primary failed; shown on that machine's row.
@@ -3154,6 +3157,9 @@ enum SyncUserFacingError {
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
       return "A machine on this route rejected the saved pairing — possibly a different ADE machine. ADE kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
     }
+    if syncIsSocketOpenTimeout(error) {
+      return "The computer took too long to answer."
+    }
     if isSyncHostUnavailableError(error) {
       if let snapshot = syncHostReadinessSnapshot(from: error) {
         return snapshot.body
@@ -4598,6 +4604,15 @@ final class SyncService: ObservableObject {
   /// Debounces persistence of the roster snapshot to the App Group cache.
   var rosterPersistTask: Task<Void, Never>?
   @Published var settingsPresented = false
+  /// The Settings page to open with the sheet (a row title), taken by the
+  /// Settings host when it presents.
+  @Published var settingsRequestedPage: String?
+
+  /// Opens Settings on one page, such as Machines from "Connect a computer".
+  func presentSettings(_ route: SettingsRoute) {
+    settingsRequestedPage = route.title
+    settingsPresented = true
+  }
   @Published var projectHubPresented = true {
     didSet {
       guard projectHubPresented != oldValue else { return }
@@ -5934,7 +5949,7 @@ final class SyncService: ObservableObject {
           guard self.isCurrentProjectSelection(selectionGeneration) else { return }
           syncConnectLog.notice("ADE_SYNC_TRACE project_switch failure=\(syncLogErrorSummary(error), privacy: .public)")
           self.projectOpenFailure = SyncProjectOpenFailure(
-            projectName: project.displayName,
+            project: project,
             message: SyncUserFacingError.message(for: error)
           )
           self.logProjectSwitchPhase("failed", completed: true)
@@ -6895,13 +6910,29 @@ final class SyncService: ObservableObject {
       resetChatEventState(clearHistory: false)
       resetTerminalSubscriptionState(clearHistory: true)
       logProjectSwitchPhase("reconnect_started")
-      let connectedEndpoint = try await connectUsingProfile(
-        profile,
-        token: resolvedToken,
-        connectAttemptGeneration: connectAttemptGeneration,
-        preferLiveCandidatesOnly: false,
-        publishConnecting: true
-      )
+      // The machine just answered the switch, so it is up. A socket that does
+      // not open in time means it is busy opening the project (a slow disk
+      // can hold it for seconds), not gone: try again before failing the open.
+      var switchedEndpoint: (host: String, port: Int)?
+      var openTimeoutRetries = 0
+      while switchedEndpoint == nil {
+        do {
+          switchedEndpoint = try await connectUsingProfile(
+            profile,
+            token: resolvedToken,
+            connectAttemptGeneration: connectAttemptGeneration,
+            preferLiveCandidatesOnly: false,
+            publishConnecting: true
+          )
+        } catch where syncIsSocketOpenTimeout(error)
+          && openTimeoutRetries < Self.projectSwitchOpenTimeoutRetries
+          && isCurrentConnectAttempt(connectAttemptGeneration)
+          && isCurrentProjectSelection(selectionGeneration) {
+          openTimeoutRetries += 1
+          syncConnectLog.notice("ADE_SYNC_TRACE project_switch open_timeout retry=\(openTimeoutRetries, privacy: .public)")
+        }
+      }
+      guard let connectedEndpoint = switchedEndpoint else { return }
       guard isCurrentConnectAttempt(connectAttemptGeneration), isCurrentProjectSelection(selectionGeneration) else { return }
       currentAddress = connectedEndpoint.host
       if dismissHome { projectHubPresented = false }
@@ -16847,7 +16878,8 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
     includeThreadComments: Bool = false,
-    compactFirst: Bool? = nil
+    compactFirst: Bool? = nil,
+    cloudFiles: [CloudQueuedFile] = []
   ) async throws -> SyncChatMessageDelivery {
     // Auto-route to the session's foreign project (cross-project "quick look")
     // unless the caller already named a target explicitly (e.g. the hub
@@ -16880,17 +16912,25 @@ final class SyncService: ObservableObject {
        let key = chatThreadKey(for: sessionId),
        let accountKey = savedCloudChatAccountKey(forThreadKey: key) {
       let messageId = (args["clientSendId"] as? String) ?? UUID().uuidString
-      switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, using: self) {
+      switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, files: cloudFiles, using: self) {
       case .queued:
         return .heldByServer
       case .refused(let message), .failed(let message):
         throw NSError(domain: "ADE", code: 46, userInfo: [NSLocalizedDescriptionKey: message])
       case .routeMissing:
         await wakeSavedCloudChatComputer(key)
+        // An older computer with no queue: the caller uploads the files over
+        // its now-live link and sends again.
+        if !cloudFiles.isEmpty { throw CloudChatFilesNeedLiveLink() }
       }
     } else if let key = chatThreadKey(for: sessionId), savedCloudChatAccountKey(forThreadKey: key) != nil {
       // Files ride a live link only: wake the computer first.
       await wakeSavedCloudChatComputer(key)
+    }
+    // Files read for the queue, but the computer came back meanwhile: the
+    // caller uploads them over the live link instead of sending text alone.
+    if (attachments ?? []).isEmpty, !cloudFiles.isEmpty {
+      throw CloudChatFilesNeedLiveLink()
     }
     let response = try await sendCommand(
       action: chatActionName("chat.send", sessionId: sessionId),
@@ -17191,9 +17231,14 @@ final class SyncService: ObservableObject {
     dataUrl: String,
     filename: String,
     targetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil
+    targetProjectRootPath: String? = nil,
+    chatSessionId: String? = nil
   ) async throws -> SavedChatTempAttachment {
-    try requireInvokableRemoteAction("chat.saveTempAttachment")
+    // A chat's own computer (an ADE Cloud chat's) may not be the focused one:
+    // its live link decides, else the focused machine's.
+    if chatSessionId.map({ !canInvokeChatRemoteAction("chat.saveTempAttachment", sessionId: $0) }) ?? true {
+      try requireInvokableRemoteAction("chat.saveTempAttachment")
+    }
     var args: [String: Any] = ["dataUrl": dataUrl]
     let trimmedFilename = filename.trimmingCharacters(in: .whitespacesAndNewlines)
     if !trimmedFilename.isEmpty {
@@ -17231,7 +17276,8 @@ final class SyncService: ObservableObject {
       dataUrl: dataUrl,
       filename: filename,
       targetProjectId: scope.projectId,
-      targetProjectRootPath: scope.rootPath
+      targetProjectRootPath: scope.rootPath,
+      chatSessionId: sessionId
     )
   }
 
@@ -17479,7 +17525,9 @@ final class SyncService: ObservableObject {
         userInfo: [NSLocalizedDescriptionKey: "Personal chats accept images only."]
       )
     }
-    try requireInvokableRemoteAction(workChatFileAttachmentHostAction)
+    if chatSessionId.map({ $0.isEmpty || !canInvokeChatRemoteAction(workChatFileAttachmentHostAction, sessionId: $0) }) ?? true {
+      try requireInvokableRemoteAction(workChatFileAttachmentHostAction)
+    }
     var projectId = targetProjectId
     var rootPath = targetProjectRootPath
     if let chatSessionId, !chatSessionId.isEmpty, projectId == nil, rootPath == nil {
@@ -17567,6 +17615,22 @@ final class SyncService: ObservableObject {
       targetProjectRootPath: rootPath,
       as: ChatAttachmentChunk.self
     )
+  }
+
+  /// An image a chat's message carries, read through that chat's own
+  /// machine (an ADE Cloud computer, a second computer, or the focused one).
+  /// Nil when that machine can't be asked right now (asleep, offline).
+  func chatScopedImageDataUrl(sessionId: String, path: String) async throws -> String? {
+    guard !isPersonalChatScope(sessionId: sessionId) else { return nil }
+    guard canInvokeChatRemoteAction("chat.getImageDataUrl", sessionId: sessionId) else { return nil }
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableCommand(
+      action: "chat.getImageDataUrl",
+      args: ["path": path],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: PersonalChatImageData.self
+    ).dataUrl
   }
 
   func chatImageDataUrlForChat(sessionId: String, path: String) async throws -> String {
@@ -24656,6 +24720,10 @@ final class SyncService: ObservableObject {
     return true
   }
 
+  /// More tries for a socket that did not open after a project switch the
+  /// machine already accepted (each try waits the full open timeout).
+  static let projectSwitchOpenTimeoutRetries = 2
+
   private func awaitSocketOpen(_ task: URLSessionWebSocketTask) async throws {
     try await withCheckedThrowingContinuation { continuation in
       let taskIdentifier = task.taskIdentifier
@@ -24670,7 +24738,7 @@ final class SyncService: ObservableObject {
             NSError(
               domain: "ADE",
               code: 25,
-              userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the machine connection to open."]
+              userInfo: [NSLocalizedDescriptionKey: syncSocketOpenTimeoutMessage]
             )
           )
         )
@@ -29025,6 +29093,13 @@ extension SyncService: ChatThreadTransport {
   /// link to this phone (asleep, or deleted): its transcript is the saved
   /// copy on the account server. Nil for any other chat. The focused
   /// computer counts too: its own link is down while it sleeps.
+  /// The chat runs on an ADE Cloud computer the phone has no live link to:
+  /// a send goes to the account, which holds it and wakes the computer.
+  func chatSendsThroughCloudAccount(sessionId: String) -> Bool {
+    guard let key = chatThreadKey(for: sessionId) else { return false }
+    return savedCloudChatAccountKey(forThreadKey: key) != nil
+  }
+
   func savedCloudChatAccountKey(forThreadKey key: ChatThreadKey) -> String? {
     guard isCloudFleetKey(key.machineKey) else { return nil }
     if key.machineKey == focusedMachineKey {
@@ -30133,7 +30208,9 @@ extension SyncService {
       ).flatMap({ syncNonEmpty($0.deviceId) }) else { return nil }
       namedFleetKey = "machine:\(deviceId.lowercased())"
     }
-    for machine in fleet.machines where machine.machineKey != focusedKey {
+    // Resting ADE Cloud computers too: their chats open on the saved copy
+    // the account keeps, so a push or a link never wakes one just to read.
+    for machine in fleet.machines + fleet.restingCloudMachines where machine.machineKey != focusedKey {
       if let namedFleetKey, machine.machineKey != namedFleetKey { continue }
       for project in machine.projects {
         guard let chat = project.chats.first(where: {
@@ -30587,4 +30664,14 @@ extension SyncService {
     }
     cloudMachineFleetKeys = Set(keys)
   }
+}
+
+/// The socket-open timeout's sentence: the one failure a busy machine causes.
+let syncSocketOpenTimeoutMessage = "Timed out waiting for the machine connection to open."
+
+/// Whether `error` is a socket that did not open in time.
+func syncIsSocketOpenTimeout(_ error: Error) -> Bool {
+  let nsError = error as NSError
+  return nsError.domain == "ADE" && nsError.code == 25
+    && nsError.localizedDescription == syncSocketOpenTimeoutMessage
 }

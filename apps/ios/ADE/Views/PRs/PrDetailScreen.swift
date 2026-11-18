@@ -751,7 +751,8 @@ struct PrDetailView: View {
           }
         } else {
           Button(action: openCurrentLane) { Label("Open lane", systemImage: "arrow.triangle.branch") }
-          if !isOpen {
+          // Archive runs on the lane's computer: none while its ADE Cloud computer is asleep.
+          if !isOpen, !laneRestsOnCloud(currentPr.laneId, sync: syncService) {
             Button {
               cleanupChoice = .archive
               cleanupConfirmationPresented = true
@@ -858,7 +859,7 @@ struct PrDetailView: View {
 
   private func nextStepLabel(_ action: PrNextStepAction) -> String {
     switch action {
-    case .deleteBranch: return "Delete branch"
+    case .deleteBranch: return deletesCloudLane ? "Delete lane" : "Delete branch"
     case .reopen: return "Reopen"
     case .readyForReview: return "Ready for review"
     case .resolveConflicts: return currentPr.laneId.isEmpty ? "Resolve on GitHub" : "Rebase lane"
@@ -872,6 +873,13 @@ struct PrDetailView: View {
     case .fixThreads: return "Show open threads"
     case .merge: return "Merge…"
     }
+  }
+
+  /// The PR's lane lives on its own ADE Cloud computer: its delete goes
+  /// through the account, computer and all, with no wake. Nothing then runs
+  /// git for it, so its branch on GitHub stays.
+  private var deletesCloudLane: Bool {
+    !currentPr.laneId.isEmpty && cloudLaneDeleteTarget(laneId: currentPr.laneId, laneName: currentPr.headBranch, sync: syncService) != nil
   }
 
   private func nextStepAvailable(_ action: PrNextStepAction) -> Bool {
@@ -892,6 +900,14 @@ struct PrDetailView: View {
     case .merge:
       mergeCurrentPr()
     case .deleteBranch:
+      // A lane on its own ADE Cloud computer is deleted from the account,
+      // computer and all, with no wake; a host delete would leave it running.
+      if let target = cloudLaneDeleteTarget(laneId: currentPr.laneId, laneName: currentPr.laneName ?? currentPr.headBranch, sync: syncService, onDeleted: {
+        await reload(refreshRemote: true)
+      }) {
+        CloudLaneActions.shared.delete(target)
+        return
+      }
       cleanupChoice = .deleteBranch
       cleanupConfirmationPresented = true
     case .reopen: reopenCurrentPr()
@@ -1596,7 +1612,7 @@ struct PrDetailView: View {
       stack: nativeStackMembership.map { PrDuoStackMerge(position: $0.position, size: $0.size, count: stackMergeCount) },
       isDraft: isCurrentPrDraft,
       mergedSummary: mergedSummary,
-      canArchiveLane: !currentPr.laneId.isEmpty && canRunPrActions,
+      canArchiveLane: !currentPr.laneId.isEmpty && canRunPrActions && !laneRestsOnCloud(currentPr.laneId, sync: syncService),
       canMergeAnyway: canRunPrActions
         && (nativeStackMembership == nil || stackMergeCount == 1 || syncService.supportsStackLayeredBypass),
       canOpenGitHub: canOpenCurrentPrInGitHub,
@@ -1631,6 +1647,7 @@ struct PrDetailView: View {
       runStep: runNextStep,
       stepLabel: nextStepLabel,
       stepAvailable: nextStepAvailable,
+      cleanupLabel: deletesCloudLane ? "Delete lane…" : "Delete lane and branch…",
       merge: { mergeCurrentPr() },
       mergeAnyway: { mergeAnywayConfirmationPresented = true },
       stackMerge: { stackMergeConfirmationPresented = true },
@@ -1662,7 +1679,7 @@ struct PrDetailView: View {
       },
       reactionFailed: { error in
         ADEHaptics.error()
-        toast = ADEToastMessage(text: "Couldn't add the reaction. \(error.localizedDescription)", kind: .failure)
+        toast = ADEToastMessage(text: "Couldn't add the reaction", kind: .failure, detail: error.localizedDescription)
       },
       editComment: { entry in
         guard let githubId = entry.commentGithubId else { return }
@@ -1909,6 +1926,8 @@ struct PrDuoDetailActions {
   var runStep: (PrNextStepAction) -> Void
   var stepLabel: (PrNextStepAction) -> String
   var stepAvailable: (PrNextStepAction) -> Bool
+  /// The merged PR's lane cleanup button.
+  var cleanupLabel = "Delete lane and branch…"
   var merge: () -> Void
   var mergeAnyway: () -> Void
   var stackMerge: () -> Void
@@ -2833,7 +2852,8 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
           case "threads", "review": runStep(.fixThreads)
           default: break
           }
-        }
+        },
+        cleanupLabel: actions.cleanupLabel
       )
     case .comment:
       PrDuoCommentCard(

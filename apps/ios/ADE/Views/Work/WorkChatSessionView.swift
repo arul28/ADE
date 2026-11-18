@@ -899,6 +899,9 @@ struct WorkChatSessionView: View {
   var onOpenParentSession: (() -> Void)? = nil
 
   var resolvedSessionStatus: String? = nil
+  /// Set while the chat's ADE Cloud computer is not awake: the picker lists
+  /// ADE Cloud's models instead of asking a machine the chat is not on.
+  var modelPickerCloudCatalog: CloudModelCatalog? = nil
   var lanes: [LaneSummary] = []
   var lanesRenderSignature: Int = 0
   // Host-side scroll-back: the engine reports whether older history exists
@@ -1444,6 +1447,11 @@ struct WorkChatSessionView: View {
     }
     if sending && !sendWillQueue {
       return "Sending message to machine..."
+    }
+    // A sleeping ADE Cloud computer isn't reconnecting: the banner above says
+    // a send wakes it, and the account holds the message until then.
+    if syncServiceReference.service?.chatSendsThroughCloudAccount(sessionId: session.id) == true {
+      return nil
     }
     if sendWillQueueIsReconnect, pendingSteers.isEmpty {
       return "Machine is reconnecting. Send will queue until it is back."
@@ -2304,7 +2312,10 @@ struct WorkChatSessionView: View {
           canAttach: canAttach,
           canSend: canSend && !composerSettingMutationInFlight,
           attachmentsAvailable: attachmentsAvailable,
-          canUploadAttachments: isLive && attachmentsAvailable,
+          // A chat on a sleeping ADE Cloud computer takes files too: they go
+          // to the account with the held message.
+          canUploadAttachments: (isLive && attachmentsAvailable)
+            || syncServiceReference.service?.chatSendsThroughCloudAccount(sessionId: session.id) == true,
           sending: sending && !sendWillQueue,
           settingsMutationInFlight: composerSettingMutationInFlight,
           codexFastModeOverride: pendingCodexFastMode,
@@ -3067,6 +3078,7 @@ struct WorkChatSessionView: View {
             currentCopilotAutoTier: chatSummaryContext.copilotAutoTier,
             copilotAutoTierPending: chatSummaryContext.copilotAutoTierPending,
             onSelectCopilotTiers: { context, auto in pickedCopilotTiers = (context, auto) },
+            cloudCatalog: modelPickerCloudCatalog,
             onSelect: { option, pickedReasoning, _, pickedFastMode in
               Task { @MainActor in
                 modelUpdateInFlight = true
@@ -4068,6 +4080,8 @@ private struct WorkChatComposerDraftInput: View {
   @MainActor
   private func beginAttachmentUploads() {
     guard canUploadAttachments else { return }
+    // No live link to upload to: the send carries the bytes to the account.
+    if let composerChatSessionId, syncService.chatSendsThroughCloudAccount(sessionId: composerChatSessionId) { return }
     for attachment in inputAttachments where attachment.isReady && attachment.hostRef == nil {
       WorkComposerAttachmentUploads.shared.begin(
         attachment,

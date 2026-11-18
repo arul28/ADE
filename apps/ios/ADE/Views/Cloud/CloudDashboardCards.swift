@@ -36,6 +36,7 @@ struct CloudDashboardScreen: View {
           }
           CloudNotices(store: store)
           CloudLanesCard(store: store, pushes: pushes)
+          CloudSavedLaneWorkCard(store: store)
           if let account = store.account, account.catalog != nil {
             CloudPlansCard(account: account, newPlanId: moment?.planId)
             CloudSizesCard(account: account, tiers: store.tiers)
@@ -57,7 +58,7 @@ struct CloudDashboardScreen: View {
       .padding(.bottom, 36)
     }
     .background(ADEColor.pageBackground.ignoresSafeArea())
-    .refreshable { await store.reload() }
+    .refreshable { await store.refresh() }
     .onAppear { observePlan(store.account) }
     .onChange(of: store.account) { _, account in observePlan(account) }
     .navigationTitle("ADE Cloud")

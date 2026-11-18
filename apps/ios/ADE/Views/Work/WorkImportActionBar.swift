@@ -159,19 +159,19 @@ struct WorkImportActionBar: View {
           Menu {
             Picker("Import into lane", selection: $targetLaneId) {
               ForEach(lanes) { lane in
-                Text("\(lane.emoji.map { "\($0) " } ?? "")\(lane.name)").tag(lane.id)
+                Text("\(lane.emoji.map { "\($0) " } ?? "")\(lane.displayName)").tag(lane.id)
               }
             }
           } label: {
             WorkImportPillLabel(
               symbol: "square.stack.3d.up",
               laneMark: lanes.first(where: { $0.id == targetLaneId }),
-              title: lanes.first(where: { $0.id == targetLaneId })?.name ?? "Choose lane"
+              title: lanes.first(where: { $0.id == targetLaneId })?.displayName ?? "Choose lane"
             )
           }
           .disabled(importDisabled)
           .accessibilityLabel("Import into lane")
-          .accessibilityValue(lanes.first(where: { $0.id == targetLaneId })?.name ?? "")
+          .accessibilityValue(lanes.first(where: { $0.id == targetLaneId })?.displayName ?? "")
         }
       }
     }
@@ -238,7 +238,7 @@ struct WorkImportActionBar: View {
   }
 
   private var lockedChip: some View {
-    let name = lockedLane?.name ?? session.home?.laneName ?? "its lane"
+    let name = lockedLane?.displayName ?? (session.home?.laneType == "primary" ? "Main checkout" : session.home?.laneName) ?? "its lane"
     let color = LaneColorPalette.displayColor(
       forHex: lockedLane?.color ?? session.home?.color,
       fallback: ADEColor.textSecondary

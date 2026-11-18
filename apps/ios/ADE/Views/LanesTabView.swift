@@ -305,14 +305,31 @@ struct LanesTabView: View, Equatable {
     }
     .sheet(item: $detailSheetTarget) { target in
       NavigationStack {
-        LaneDetailScreen(
-          laneId: target.laneId,
-          initialSnapshot: target.snapshot,
-          allLaneSnapshots: laneSnapshots,
-          initialSection: target.initialSection,
-          onRefreshRoot: { await reload(refreshRemote: true, includeDecorations: false) }
-        )
+        if let fleetKey = cloudLaneFleetKey(target.laneId, sync: syncService),
+           laneRestsOnCloud(target.laneId, sync: syncService),
+           let subject = cloudLaneAtRestSubject(fleetKey: fleetKey, lane: target.snapshot.lane, sync: syncService) {
+          // A lane whose ADE Cloud computer is asleep: what the account keeps
+          // for it, with no wake.
+          CloudLaneAtRestScreen(subject: subject, onAwake: {
+            detailSheetTarget = nil
+            await reloadAfterLaneAction(target.laneId, refreshRemote: true)
+          })
+          .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+              Button("Done") { detailSheetTarget = nil }
+            }
+          }
+        } else {
+          LaneDetailScreen(
+            laneId: target.laneId,
+            initialSnapshot: target.snapshot,
+            allLaneSnapshots: laneSnapshots,
+            initialSection: target.initialSection,
+            onRefreshRoot: { await reload(refreshRemote: true, includeDecorations: false) }
+          )
+        }
       }
+      .cloudLaneActionsHost()
     }
     .sheet(isPresented: $batchManagePresented) {
       LaneBatchManageSheet(

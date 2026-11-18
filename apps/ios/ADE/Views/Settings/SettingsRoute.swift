@@ -153,7 +153,9 @@ enum SettingsPageCopy {
     } catch {
       let reason = SyncUserFacingError.message(for: error)
       revert(reason)
-      return ADEToastMessage(text: "\(failure) \(reason)", kind: .failure)
+      // The headline without its full stop; the reason goes on the line below.
+      let headline = failure.hasSuffix(".") ? String(failure.dropLast()) : failure
+      return ADEToastMessage(text: headline, kind: .failure, detail: reason)
     }
   }
 }

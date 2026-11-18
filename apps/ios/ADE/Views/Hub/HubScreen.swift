@@ -1,4 +1,5 @@
 import SwiftUI
+import OSLog
 
 // The all-projects hub — the mobile app's main surface once a machine is
 // connected. Every project on every paired machine as a grid of cards with
@@ -10,6 +11,9 @@ import SwiftUI
 //
 // Replaces the connected-state layout of the old `project hub`; the
 // no-machine / connecting states are preserved here.
+/// Why a launch did or did not connect the phone by itself.
+private let hubAutoConnectLog = Logger(subsystem: "com.ade.sync", category: "connect")
+
 struct HubScreen: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   var syncService: SyncService { syncPublishes.service }
@@ -112,6 +116,53 @@ struct HubScreen: View {
     syncService.connectionState == .connected
   }
 
+  /// Set after the one automatic connect a launch makes.
+  static var autoConnectAttempted = false
+
+  /// The computer a signed-in phone with none connects to by itself: an
+  /// online computer of the person's own (never ADE Cloud), most recently
+  /// seen first. Nil once tried, while anything is attached or connecting, or
+  /// when the phone has a pairing of its own (that reconnects as before) or
+  /// the user disconnected.
+  private var hubAutoConnectAllowed: Bool {
+    !HubScreen.autoConnectAttempted
+      && account.identity != nil
+      && (syncService.connectionState == .disconnected || syncService.connectionState == .error)
+      && !syncService.canReconnectToSavedHost
+      && !syncService.hasPairedHost
+      && !syncService.primaryDisconnectedByUser
+      && machineFleet.machines.isEmpty
+  }
+
+  private var hubAutoConnectCandidate: AccountMachine? {
+    // Until the account's ADE Cloud computers are known, an online cloud
+    // computer looks like the person's own and could take the one attempt.
+    guard hubAutoConnectAllowed, syncService.cloudServerReadFinished else { return nil }
+    let ownMachines = account.machines.filter { machine in
+      machine.online && syncService.accountHasOwnComputer([machine])
+    }
+    // An awake computer before one that reports sleep (a closed lid can
+    // still list online), then the newest.
+    return ownMachines.max { lhs, rhs in
+      let lhsAwake = lhs.sleepState != .asleep, rhsAwake = rhs.sleepState != .asleep
+      if lhsAwake != rhsAwake { return rhsAwake }
+      return (lhs.lastSeenAt ?? 0) < (rhs.lastSeenAt ?? 0)
+    }
+  }
+
+  /// Re-checks the candidate when the account's computers or the
+  /// connection change.
+  private var hubAutoConnectKey: String {
+    let online = account.machines.filter(\.online).map(\.machineKey).sorted().joined(separator: ",")
+    return "\(account.identity?.userId ?? "")|\(online)|\(syncService.connectionState)|\(machineFleet.machines.count)|\(syncService.cloudServerReadFinished)"
+  }
+
+  /// A computer is on its way: the focused one or any in the fleet.
+  private var hubComputerConnecting: Bool {
+    let inputs = accountStatusInputs
+    return inputs.focusedState == .connecting || inputs.anyFleetMachineConnecting
+  }
+
   private var hubIsActive: Bool {
     syncService.shouldShowProjectHub && openChatTarget == nil
   }
@@ -168,9 +219,14 @@ struct HubScreen: View {
     }
     .onChange(of: syncService.projectOpenFailure) { _, failure in
       guard let failure else { return }
+      let project = failure.project
       projectOpenFailureToast = ADEToastMessage(
-        text: "Couldn’t open \(failure.projectName): \(failure.message)",
-        kind: .failure
+        text: "Couldn’t open \(failure.projectName)",
+        kind: .failure,
+        action: ADEToastAction(title: "Retry") { [syncService] in
+          syncService.selectProject(project)
+        },
+        detail: failure.message
       )
       syncService.projectOpenFailure = nil
     }
@@ -384,6 +440,34 @@ struct HubScreen: View {
       guard accountRebuildKey != nil else { return }
       rebuildHubProjectPresentations()
     }
+    // A signed-in phone with no computer of its own yet (a new install, a
+    // fresh sign-in) connects to the person's most recently active online
+    // computer by itself, once per launch, instead of waiting on a tap.
+    .task(id: hubAutoConnectKey) {
+      guard hubAutoConnectAllowed else { return }
+      // Nothing else reads the account's computers on a plain launch.
+      if account.machines.isEmpty { await account.loadMachines() }
+      // Tells the account's own computers from its ADE Cloud ones; the key
+      // re-runs this task when that read lands.
+      syncService.refreshCloudServerIfStale()
+      guard !Task.isCancelled, let machine = hubAutoConnectCandidate else { return }
+      // The sign-in can still be settling: wait briefly for its pairing
+      // authorization rather than spend the one attempt without it.
+      var authorization = AccountService.shared.currentPairingAuthorization
+      for _ in 0..<20 where authorization == nil {
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        guard !Task.isCancelled else { return }
+        authorization = AccountService.shared.currentPairingAuthorization
+      }
+      guard let authorization else { return }
+      hubAutoConnectLog.notice("hub_auto_connect start machine=\(machine.displayName, privacy: .private)")
+      HubScreen.autoConnectAttempted = true
+      // Its own task: this one is keyed on the connection state, which the
+      // connect itself changes, and that would cancel the connect.
+      Task { @MainActor [syncService] in
+        _ = await syncService.pairWithAccountMachine(machine, authorization: authorization)
+      }
+    }
     // The Hub coming into view reads the account list (at most once a minute).
     .task(id: hubIsActive) {
       if hubIsActive { accountProjects.refreshIfStale() }
@@ -419,8 +503,12 @@ struct HubScreen: View {
     DuoHomeWide(
       presentations: hubOverviewPresentations,
       actions: hubToolbarActions,
-      // Local folders of other reachable computers have agents too.
-      showsOverview: canShowProjects || !hubOverviewPresentations.isEmpty,
+      // Local folders of other reachable computers have agents too. Only a
+      // computer that is really connecting says so; with none (an account
+      // that runs on ADE Cloud, or a machine that dropped) the list shows
+      // its empty state instead of "Connecting" forever.
+      showsOverview: canShowProjects || !hubOverviewPresentations.isEmpty
+        || !hubComputerConnecting,
       onOpenAgent: { item in
         openHubChat(item.row.chat, lane: item.lane, project: item.project)
       },
@@ -526,7 +614,7 @@ struct HubScreen: View {
         notice: notice,
         onRetryList: { Task { await reloadAccount() } },
         onReconnect: { Task { await syncService.reconnectIfPossible(userInitiated: true) } },
-        onConnectComputer: { syncService.settingsPresented = true },
+        onConnectComputer: { syncService.presentSettings(.machines) },
         onOpenSettings: { syncService.settingsPresented = true }
       )
     }
@@ -555,7 +643,7 @@ struct HubScreen: View {
       HubAccountEmptyCard(
         kind: hubAccountEmptyKind(statusInputs),
         onRetryList: { Task { await reloadAccount() } },
-        onConnectComputer: { syncService.settingsPresented = true },
+        onConnectComputer: { syncService.presentSettings(.machines) },
         onAddProject: { addProjectSheetPresented = true }
       )
     } else if filteredHubProjectPresentations.isEmpty {
@@ -657,6 +745,24 @@ struct HubScreen: View {
     // must not move the phone to that machine later.
     pendingHubChatOpen = nil
     guard let owner = preferredFleetOwner(project.id) else {
+      if focusedMachineLeftAccount(cardId: project.id) {
+        // Its machine left the account (a deleted ADE Cloud lane): open a
+        // connected computer's copy, else the project's account view, else
+        // any other copy; never the gone machine ("ADE Cloud is offline").
+        let others = (fleetMerge.projectLocations[project.id] ?? []).filter { $0.machineKey != syncService.focusedMachineKey }
+        if let live = others.first(where: { machineFleet.machine(for: $0.machineKey)?.state == .live }) {
+          openFleetCopy(live.project, onMachine: live.machineKey, cardId: project.id)
+          return
+        }
+        if let accountId = accountJoin.accountIdByCardId[project.id] {
+          syncService.openAccountProjectScope(accountId)
+          return
+        }
+        if let copy = others.first {
+          openFleetCopy(copy.project, onMachine: copy.machineKey, cardId: project.id)
+          return
+        }
+      }
       syncService.selectProject(project)
       return
     }
@@ -668,6 +774,23 @@ struct HubScreen: View {
   /// connected computer first, then one that is connecting, then an ADE
   /// Cloud computer (opening it wakes it, which costs money, so only when no
   /// connected copy can serve), then the rest. Ties keep the card's own order.
+  /// A card on the focused machine, when the account no longer has that
+  /// machine (an ADE Cloud lane deleted with its computer): an unconnected
+  /// focus the phone can't reach again.
+  private func focusedMachineLeftAccount(cardId: String) -> Bool {
+    let account = AccountService.shared
+    guard fleetMerge.projectOwners[cardId] == nil,
+          syncService.connectionState != .connected,
+          let focusedKey = syncService.focusedMachineKey,
+          account.machinesState == .loaded,
+          account.machine(forFleetKey: focusedKey) == nil
+    else { return false }
+    // A sleeping ADE Cloud computer is still the account's.
+    guard syncService.isCloudFleetKey(focusedKey) else { return true }
+    return syncService.cloudServerReadFinished
+      && (syncService.cloudServerInstance(fleetKey: focusedKey)?.isGone ?? true)
+  }
+
   private func preferredFleetOwner(_ cardId: String) -> HubRemoteOwner? {
     guard let owner = fleetMerge.projectOwners[cardId] else { return nil }
     let candidates = [owner] + (fleetMerge.projectLocations[cardId] ?? []).filter { $0.machineKey != owner.machineKey }
@@ -675,7 +798,15 @@ struct HubScreen: View {
       let state = machineFleet.machine(for: location.machineKey)?.state
       let isCloud = syncService.cloudMachineFleetKeys.contains(location.machineKey)
       if state == .live { return 0 }
-      if state == .connecting && !isCloud { return 1 }
+      // A computer the account shows awake, or an ADE Cloud computer that is
+      // running, serves it without waking (and paying for) a sleeping one.
+      // A computer the phone keeps dialing but the account shows asleep or
+      // gone does not answer: it ranks after a cloud copy.
+      // A cloud computer's own row says whether it runs; a paired one that
+      // sleeps is not in the resting list.
+      let cloudAwake = isCloud && (syncService.cloudServerInstance(fleetKey: location.machineKey)?.isAwake
+        ?? !machineFleet.restingCloudMachines.contains { $0.machineKey == location.machineKey })
+      if isCloud ? cloudAwake : machineFleet.accountShowsAwake(location.machineKey) { return 1 }
       if isCloud { return 2 }
       return 3
     }

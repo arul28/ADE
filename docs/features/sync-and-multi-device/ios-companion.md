@@ -1047,10 +1047,16 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   blocked), the option shows the server's reason and is disabled. ADE Cloud is
   preselected in account scope and when the account has no computer of its
   own. With ADE Cloud picked, the lane list shows the project's cloud lanes,
-  and "new lane" is the default. The model chip opens the server's catalog
-  (`CloudModelPickerSheet`). The send starts a server launch
-  (`AccountCloudLaunchStore.start`, `POST /cloud/launches`), and the setup card
-  (`WorkCloudLaunchCard`) shows the steps above the composer.
+  and "new lane" is the default. The model chip opens the same
+  `WorkModelPickerSheet` as every machine, fed by the server's catalog
+  (`GET /cloud/models`, `cloudCatalog:`; `workModelCatalogGroups(cloudCatalog:)`),
+  never the connected machine's list: provider rail, favorites, efforts and
+  fast mode as anywhere else. The send uploads the first message's files
+  (`PUT /cloud/launches/:launch/files/:file`, from the bytes on the phone),
+  then starts a server launch that names them (`AccountCloudLaunchStore.start`,
+  `POST /cloud/launches`); a failed upload is the launch's start error, and
+  Retry sends the rest. The setup card (`WorkCloudLaunchCard`) shows the steps
+  above the composer.
 - **Saved chats.** `CloudServerClient.savedChats` reads pages of 200, at most
   5 pages. With no live link, a chat thread reads the saved copy through
   `AccountCloudStore` (`savedCloudChatAccountKey`). A saved subagent chat nests
