@@ -399,7 +399,7 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
       const seconds = (Date.now() - 10_000) / 1000;
       fs.utimesSync(codexPath, seconds, seconds);
     };
-    return { name, home, vault, sync, renewCalls, codexPath, writeCodex };
+    return { name, home, adeDir, vault, sync, renewCalls, codexPath, writeCodex };
   }
 
   const keyOf = (rows: Map<string, Row>) => [...rows.values()].find((row) => row.key.startsWith("codex/"))!;
@@ -479,6 +479,105 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
     expect(cloud.renewCalls).toEqual([]);
     expect([...relay.rows.values()].filter((row) => row.writerDeviceId === "device-cloud" || row.refreshOwner === "device-cloud")).toEqual([]);
     expect(keyOf(relay.rows)).toEqual(afterRenewal);
+  });
+
+  // OpenCode keeps its sign-in as a row of a SQLite store, not a file. The
+  // OpenCode server that apply writes through is the process boundary; this
+  // stand-in writes the same row into a real store, as `credential.create` does.
+  it("carries OpenCode's opencode.ai row only: access-only down to ADE Cloud and to a computer with none, never over a local one", async () => {
+    const { loadNodeSqlite } = await import("../projects/readOnlySqlite");
+    const { setOpenCodeCredentialWriter } = await import("./providerLoginApply");
+    const { DatabaseSync } = loadNodeSqlite();
+    const storeOf = (home: string) => path.join(home, ".ade", "opencode-runtime", "xdg-v1", "data", "opencode", "opencode.db");
+    const openStore = (dbPath: string) => {
+      fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+      const db = new DatabaseSync(dbPath);
+      db.exec("CREATE TABLE IF NOT EXISTS credential (id text PRIMARY KEY, integration_id text, label text NOT NULL, value text NOT NULL, connector_id text, method_id text, active integer, time_created integer NOT NULL, time_updated integer NOT NULL)");
+      return db;
+    };
+    const putRow = (dbPath: string, id: string, integration: string, value: Record<string, unknown>, active: boolean) => {
+      const db = openStore(dbPath);
+      const at = Date.now() - 10_000;
+      if (active) db.prepare("UPDATE credential SET active = NULL WHERE integration_id = ?").run(integration);
+      db.prepare("INSERT OR REPLACE INTO credential (id, integration_id, label, value, active, time_created, time_updated) VALUES (?, ?, 'Personal', ?, ?, ?, ?)")
+        .run(id, integration, JSON.stringify(value), active ? 1 : null, at, at);
+      db.close();
+    };
+    const rowsOf = (dbPath: string) => {
+      if (!fs.existsSync(dbPath)) return [];
+      const db = openStore(dbPath);
+      const rows = (db.prepare("SELECT id, integration_id AS integration, value, active FROM credential ORDER BY id").all() as Array<{ id: string; integration: string; value: string; active: number | null }>)
+        .map((row) => ({ id: row.id, integration: row.integration, active: row.active === 1, value: JSON.parse(row.value) as Record<string, unknown> }));
+      db.close();
+      return rows;
+    };
+    let busy = false;
+    setOpenCodeCredentialWriter({
+      put: async (dbPath, row) => (putRow(dbPath, row.id, "opencode", row.value, true), "ok"),
+      remove: async (dbPath, id) => {
+        if (busy) throw Object.assign(new Error("busy"), { code: "EBUSY" });
+        const db = openStore(dbPath);
+        db.prepare("DELETE FROM credential WHERE id = ?").run(id);
+        db.close();
+      },
+    });
+    try {
+      const relay = makeRelay();
+      const opencodeLogin = (refresh: string, access: string) => ({
+        type: "oauth", methodID: "device", refresh, access, expires: Date.now() + 240 * HOUR,
+        metadata: { server: "https://opencode.ai/console", accountID: "acc_1", email: "a@example.test" },
+      });
+      const owner = await makeComputer("owner", { relay, device: "device-owner", machineKey: "machine-owner", cloud: false });
+      putRow(storeOf(owner.home), "cred_owner", "opencode", opencodeLogin("refresh-owner", "access-owner"), true);
+      // An Anthropic login OpenCode holds: Claude's own login, never carried.
+      putRow(storeOf(owner.home), "cred_anthropic", "anthropic", { type: "oauth", methodID: "oauth", refresh: "refresh-anthropic", access: "access-anthropic", expires: Date.now() + HOUR }, false);
+      await owner.sync.pass();
+      await owner.vault.sync();
+      const carried = [...relay.rows.values()].filter((row) => row.kind === "provider_login" && !row.deleted);
+      expect(carried.map((row) => row.key.split("/")[0])).toEqual(["opencode"]);
+      expect(carried[0]!.refreshOwner).toBe("device-owner");
+      expect(carried[0]!.value).not.toContain("anthropic");
+
+      const cloud = await makeComputer("cloud", { relay, device: "device-cloud", machineKey: "machine-cloud", cloud: true });
+      const desk = await makeComputer("desk", { relay, device: "device-desk", machineKey: "machine-desk", cloud: false });
+      const ownDesk = await makeComputer("own-desk", { relay, device: "device-own-desk", machineKey: "machine-own-desk", cloud: false });
+      putRow(storeOf(ownDesk.home), "cred_own_desk", "opencode", opencodeLogin("refresh-own-desk", "access-own-desk"), true);
+      const ownDeskBefore = rowsOf(storeOf(ownDesk.home));
+      for (const computer of [cloud, desk, ownDesk]) {
+        await computer.sync.pass();
+        await computer.vault.sync();
+      }
+
+      // The cloud computer and the computer with no OpenCode sign-in: the owner's row, in use, with no refresh token.
+      for (const computer of [cloud, desk]) {
+        expect(rowsOf(storeOf(computer.home))).toEqual([{
+          id: expect.stringMatching(/^cred_ade[0-9a-f]{20}$/),
+          integration: "opencode",
+          active: true,
+          value: { ...opencodeLogin("", "access-owner"), expires: expect.any(Number) },
+        }]);
+      }
+      // The computer signed in to OpenCode on its own keeps its own row only.
+      expect(rowsOf(storeOf(ownDesk.home))).toEqual(ownDeskBefore);
+      // Nobody but the owner wrote or owns the owner's sign-in; the copies were not captured back.
+      expect([...relay.rows.values()].filter((row) => row.key === carried[0]!.key)).toEqual([expect.objectContaining({ writerDeviceId: "device-owner", refreshOwner: "device-owner" })]);
+      expect([...relay.rows.values()].filter((row) => row.kind === "provider_login" && !row.deleted && row.writerDeviceId === "device-cloud")).toEqual([]);
+      expect([...relay.rows.values()].filter((row) => row.kind === "provider_login" && !row.deleted && row.writerDeviceId === "device-desk")).toEqual([]);
+
+      // ADE sign-out with OpenCode's store busy: the copy is not forgotten, and the next pass removes it.
+      const [deskCopy] = rowsOf(storeOf(desk.home));
+      busy = true;
+      desk.sync.forgetAccount();
+      const appliedPath = path.join(desk.adeDir, "provider-logins", "applied.json");
+      await vi.waitFor(() => expect(JSON.parse(fs.readFileSync(appliedPath, "utf8"))).toMatchObject({ accountUserId: null, applied: { opencode: expect.anything() } }));
+      busy = false;
+      await desk.sync.pass();
+      const after = rowsOf(storeOf(desk.home));
+      expect(after.map((row) => row.id)).not.toContain(deskCopy!.id);
+      expect(after).toHaveLength(1);
+    } finally {
+      setOpenCodeCredentialWriter(null);
+    }
   });
 
   it("gives one renewal for passes that run at the same moment on the owner", async () => {

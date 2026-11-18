@@ -3112,6 +3112,10 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     Approval: --approve | --approve-session | --deny (--text is the
                                                     reason). Approvals are the person's to answer unless you were
                                                     told you may approve. --deny/--cancel also decline a question.
+                                                    A Codex plan ready to implement can go to a chat of its own:
+                                                    --new-chat (with --approve implied) starts that chat, sends it
+                                                    the plan, and prints its session id. Only the person may do
+                                                    this; the plan itself stays in the planning chat.
                                                     While a chat waits on input, 'chat message' and 'chat send' are
                                                     refused (error -32011) until it is answered. A subagent's question
                                                     is also sent to its parent chat with these commands filled in.
@@ -12333,6 +12337,7 @@ function readHandoffTarget(args: string[], sub: string, options: { modelOptional
  * prints these commands.
  */
 function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
+  const newChat = readFlag(args, ["--new-chat"]);
   const requestedItemId = readValue(args, ["--item", "--item-id"]);
   const optionArgs = readRepeatedValues(args, ["--option", "--choice"]);
   const answerArgs = readRepeatedValues(args, ["--answer"]);
@@ -12351,7 +12356,8 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
   if (chosenDecisions.length > 1) {
     throw new CliUsageError("Use only one of --approve, --approve-session, --deny, or --cancel.");
   }
-  const explicitDecision = chosenDecisions[0] ?? null;
+  const explicitDecision = chosenDecisions[0] ?? (newChat ? "accept" : null);
+  if (newChat && explicitDecision !== "accept") throw new CliUsageError("--new-chat requires approving the plan.");
   const hasAnswer = optionArgs.length > 0 || answerArgs.length > 0 || answersJson !== undefined || Boolean(text?.trim());
   if (!explicitDecision && !hasAnswer) {
     throw new CliUsageError(
@@ -12365,6 +12371,12 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
     const pendingValue = values.pending;
     const listed = !(isRecord(pendingValue) && pendingValue.ok === false);
     const requests = firstArray(unwrapActionEnvelope(pendingValue), ["requests"]) as unknown as PendingInputRequest[];
+    if (newChat) {
+      const target = requestedItemId ? requests.find((request) => (request.itemId ?? request.requestId) === requestedItemId) : requests.length === 1 ? requests[0] : null;
+      if (!target || target.source !== "codex" || target.kind !== "plan_approval" || target.providerMetadata?.planHandoffSupported !== true) {
+        throw new CliUsageError("This host does not offer a new-chat handoff for that Codex plan. Implement it here or update the host.");
+      }
+    }
     try {
       return resolvePendingInputResponse(requests, listed, {
         sessionId,
@@ -12384,7 +12396,10 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
     label: "chat respond",
     shapeResult: (values) => {
       const { itemId, decision, kind, title } = resolve(values);
-      return { answered: true, sessionId, itemId, decision, ...(kind ? { kind } : {}), ...(title ? { title } : {}) };
+      // The step's value is the action envelope (`{ domain, action, result }`);
+      // the handoff's id lives one level in, beside `ok`.
+      const actionResult = unwrapActionEnvelope(values.result);
+      return { answered: true, sessionId, itemId, decision, ...(isRecord(actionResult) && typeof actionResult.implementationSessionId === "string" ? { implementationSessionId: actionResult.implementationSessionId } : {}), ...(kind ? { kind } : {}), ...(title ? { title } : {}) };
     },
     steps: [
       {
@@ -12407,6 +12422,7 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
                 sessionId,
                 itemId,
                 decision,
+                ...(newChat ? { planAction: "new_chat" } : {}),
                 ...(answers ? { answers } : {}),
                 ...(responseText ? { responseText } : {}),
               },

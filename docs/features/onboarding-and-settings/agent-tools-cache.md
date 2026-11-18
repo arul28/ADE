@@ -80,7 +80,7 @@ has them in `node_modules`, so it never downloads them.
 | Tool | Version | Format | Integrity | Download host |
 |---|---|---|---|---|
 | `claude-code` | 0.3.321 (Claude Code 2.1.321) | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
-| `codex` | 0.167.0 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
+| `codex` | 0.169.0 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `opencode` | 2.0.29 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `copilot` | 1.0.28 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `copilot-cli` | 1.0.105 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |

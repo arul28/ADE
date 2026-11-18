@@ -181,7 +181,7 @@ describe("applyModelManifest", () => {
     expect(result.applied).toBe(false);
     expect(listenerCalls).toHaveLength(0);
     expect(getActiveModelManifest()?.manifest).toBe(BUNDLED_MODEL_MANIFEST);
-    expect(resolveModelAlias("astra")?.id).toBe("openai/gpt-6-astra");
+    expect(resolveModelAlias("astra")?.id).toBe("openai/gpt-6.2-astra");
     // Rows the bundled manifest added survive the rejected apply.
     expect(getModelById("openai/gpt-6-sol")).toBeDefined();
   });

@@ -14,6 +14,11 @@ person sees the same tabs in both:
 
 The phone never runs agents.
 
+The Work model picker includes GPT-6.2 Sol and GPT-6.2 Astra in its offline
+fallback. Sol is the default for a new Codex chat. Both models expose reasoning
+through Ultra and Fast mode; runtime-advertised efforts and service tiers take
+precedence. Older explicit model IDs retain their original meaning.
+
 ## Connect Your Phone
 
 The phone connects to a **machine**, not to a desktop window. It shows the

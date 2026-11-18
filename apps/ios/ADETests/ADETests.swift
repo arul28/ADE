@@ -21016,17 +21016,19 @@ final class ADETests: XCTestCase {
       .first(where: { $0.key == "openai" })?
       .models
 
-    XCTAssertEqual(codexModels?.prefix(8).map(\.id), [
-      "gpt-6.1-sol",
-      "gpt-6-astra",
+    XCTAssertEqual(codexModels?.prefix(10).map(\.id), [
+      "gpt-6.2-sol",
+      "gpt-6.2-astra",
       "gpt-6.1-terra",
       "gpt-6-sol",
       "gpt-6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-luna",
       "gpt-5.5",
+      "gpt-6.1-sol",
+      "gpt-6-astra",
     ])
-    XCTAssertEqual(workDefaultCatalogModelId(provider: "codex"), "gpt-6.1-sol")
+    XCTAssertEqual(workDefaultCatalogModelId(provider: "codex"), "gpt-6.2-sol")
 
     let astra = codexModels?.first(where: { $0.id == "gpt-6-astra" })
     XCTAssertEqual(astra?.displayName, "GPT-6 Astra")
@@ -21055,8 +21057,8 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(luna?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(luna?.defaultReasoningEffort, "medium")
 
-    XCTAssertTrue(workModelIdsEquivalent("astra", "openai/gpt-6-astra"))
-    XCTAssertTrue(workModelIdsEquivalent("sol", "openai/gpt-6.1-sol"))
+    XCTAssertTrue(workModelIdsEquivalent("astra", "openai/gpt-6.2-astra"))
+    XCTAssertTrue(workModelIdsEquivalent("sol", "openai/gpt-6.2-sol"))
     XCTAssertFalse(workModelIdsEquivalent("sol", "openai/gpt-6-sol"))
     XCTAssertFalse(workModelIdsEquivalent("sol", "openai/gpt-5.6-sol"))
     XCTAssertTrue(workModelIdsEquivalent("terra", "gpt-6.1-terra"))
@@ -21074,7 +21076,7 @@ final class ADETests: XCTestCase {
   func testWorkModelCatalogResolvesGPT6SolLunaAndOpus55() {
     XCTAssertEqual(workKnownModelDisplayName("openai/gpt-6-sol"), "GPT-6 Sol")
     XCTAssertEqual(workKnownModelDisplayName("gpt-6-sol"), "GPT-6 Sol")
-    XCTAssertEqual(workKnownModelDisplayName("sol"), "GPT-6.1 Sol")
+    XCTAssertEqual(workKnownModelDisplayName("sol"), "GPT-6.2 Sol")
     XCTAssertEqual(workKnownModelDisplayName("gpt-5.6-sol"), "GPT-5.6 Sol")
     XCTAssertEqual(workKnownModelDisplayName("openai/gpt-6-luna"), "GPT-6 Luna")
     XCTAssertEqual(workKnownModelDisplayName("luna"), "GPT-6 Luna")
@@ -21142,8 +21144,13 @@ final class ADETests: XCTestCase {
     // Retired Haiku 4.5 ids resolve to Haiku 5.5, which now carries reasoning tiers.
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-haiku-4-5"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-haiku-5-5"), ["low", "medium", "high", "xhigh", "max"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "astra"), ["low", "medium", "high", "xhigh", "max"])
+    // The bare aliases name the current generation, which reaches Ultra.
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "astra"), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-6.2-astra"), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-6.2-sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    // An older explicit id keeps the tiers it always had.
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-6-astra"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.6-terra"), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.6-luna"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.3-codex-spark"), ["low", "medium", "high", "xhigh"])
@@ -21364,7 +21371,7 @@ final class ADETests: XCTestCase {
       currentProvider: "codex"
     ).first?.providers.first?.models
 
-    XCTAssertEqual(models?.map(\.id), ["gpt-6.1-sol", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"])
+    XCTAssertEqual(models?.map(\.id), ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5", "gpt-6.1-sol", "gpt-6-astra"])
     XCTAssertEqual(models?.first?.defaultReasoningEffort, "low")
     XCTAssertEqual(models?.first?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(models?.first(where: { $0.id == "gpt-5.6-sol" })?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
@@ -21406,7 +21413,7 @@ final class ADETests: XCTestCase {
     let flatListWithAstra = try JSONDecoder().decode([AgentChatModelInfo].self, from: flatListWithAstraData)
     XCTAssertEqual(
       workPrioritizeGPT56ChatModels(flatListWithAstra, provider: "codex").map(\.id),
-      ["gpt-6.1-sol", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
+      ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-6.1-sol", "gpt-6-astra"]
     )
     XCTAssertEqual(workPrioritizeGPT56ChatModels(flatList, provider: "claude").map(\.id), flatList.map(\.id))
   }

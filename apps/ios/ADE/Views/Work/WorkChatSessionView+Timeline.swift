@@ -883,7 +883,10 @@ extension WorkChatSessionView {
           await dispatchPendingInputAnswer(itemId: model.id) {
             await onApproveRequest(model.id, decision, feedback)
           }
-        }
+        },
+        onImplementInNewChat: model.canImplementInNewChat && onImplementPlanInNewChat != nil
+          ? { startPlanHandoffFromCard(itemId: model.id) }
+          : nil
       )
     case .approval(let model):
       WorkApprovalComposerStrip(
@@ -953,6 +956,18 @@ extension WorkChatSessionView {
           }
         }
       )
+    }
+  }
+
+  /// The plan card's "Implement in a new chat": one handoff, run as this card's
+  /// own action so the optimistic answer, the error line and the action-in-flight
+  /// lock behave exactly as they do for Approve.
+  private func startPlanHandoffFromCard(itemId: String) {
+    guard let handler = onImplementPlanInNewChat else { return }
+    Task<Void, Never> { @MainActor in
+      _ = await dispatchPendingInputAnswer(itemId: itemId) {
+        await handler(itemId)
+      }
     }
   }
 }

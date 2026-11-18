@@ -289,7 +289,18 @@ export function createBrainChatSubscriptions(args: {
       const scope = requestedChatScope(payload);
       // No project is hosted here, so an unscoped project chat has no owner;
       // a personal chat needs the personal scope wired.
-      if (!scope || (scope === "personal" && !args.personalChatScope)) return;
+      if (!scope || (scope === "personal" && !args.personalChatScope)) {
+        // The phone gets no answer and shows "Couldn't load the transcript".
+        args.logger.warn("sync_brain.chat_subscribe_unanswered", {
+          sessionId,
+          reason: scope === "personal" ? "personal_scope_unavailable" : "no_chat_scope",
+          peerDeviceId: peer.metadata?.deviceId ?? null,
+          peerAppVersion: peer.metadata?.appVersion ?? null,
+          peerAppBuild: peer.metadata?.appBuild ?? null,
+          peerBundleId: peer.metadata?.bundleIdentifier ?? null,
+        });
+        return;
+      }
       await subscribeToScope(peer, requestId, payload, sessionId, scope, isCurrent);
     },
 

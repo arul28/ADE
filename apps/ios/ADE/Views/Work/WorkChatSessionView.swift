@@ -862,6 +862,9 @@ struct WorkChatSessionView: View {
   var onContinueUsageLimitOnAlternate: (@MainActor () async -> Void)? = nil
   var onStopSubagentTask: (@MainActor (String) async -> Void)? = nil
   let onApproveRequest: @MainActor (String, AgentChatApprovalDecision, String?) async -> Void
+  /// Approve a Codex plan and implement it in a chat of its own. Nil when this
+  /// screen's host cannot offer it; the plan card then shows Approve alone.
+  var onImplementPlanInNewChat: (@MainActor (String) async -> Void)? = nil
   let onRespondToQuestion: @MainActor (String, String, AgentChatInputAnswerValue?, String?) async -> Void
   let onSubmitQuestionAnswers: @MainActor (String, [String: AgentChatInputAnswerValue], String?) async -> Void
   let onDeclineQuestion: @MainActor (String) async -> Void
