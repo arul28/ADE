@@ -502,10 +502,16 @@ export async function rememberLaunchSetupDisk(env: CloudEnv, computer: ComputerR
     `).bind(computer.instance_id, computer.user_id, AGENT_STAGE).first<{ launch_id: string; project_origin: string; request_json: string | null }>();
     if (!row) return;
     const request = parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" });
+    // The most this repository's setup needed: a launch that started smaller (the plan's
+    // leftover, the 4 GB fallback) and grew only partway never lowers it. A row past the
+    // memory window is replaced, as `rememberedSetupDiskGb` no longer reads it.
     await env.DB.prepare(`
       insert into cloud_repo_disks (user_id, project_origin, setup_key, disk_gb, launch_id, recorded_at) values (?, ?, ?, ?, ?, ?)
-      on conflict (user_id, project_origin, setup_key) do update set disk_gb = excluded.disk_gb, launch_id = excluded.launch_id, recorded_at = excluded.recorded_at
-    `).bind(computer.user_id, row.project_origin, setupKeyOf(request), diskGb, row.launch_id, now).run();
+      on conflict (user_id, project_origin, setup_key) do update set
+        disk_gb = case when cloud_repo_disks.recorded_at > ? then max(cloud_repo_disks.disk_gb, excluded.disk_gb) else excluded.disk_gb end,
+        launch_id = case when cloud_repo_disks.recorded_at > ? and cloud_repo_disks.disk_gb > excluded.disk_gb then cloud_repo_disks.launch_id else excluded.launch_id end,
+        recorded_at = excluded.recorded_at
+    `).bind(computer.user_id, row.project_origin, setupKeyOf(request), diskGb, row.launch_id, now, now - CLOUD_AUTO_SIZE_MEMORY_MS, now - CLOUD_AUTO_SIZE_MEMORY_MS).run();
     logCloud("cloud.launch_repo_disk_recorded", { launchId: row.launch_id, diskGb });
   } catch (error) {
     reportCloudFailure("cloud.launch_repo_disk_write_failed", { message: error instanceof Error ? error.message : "unknown" });

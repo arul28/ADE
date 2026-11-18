@@ -2403,13 +2403,21 @@ describe("ADE Cloud server launcher", () => {
   // A big repository's install fills the 4 GB every computer starts with: the setup grows it,
   // the computer restarts and setup runs again. The next launch starts at that disk instead,
   // only inside the plan's included disk, so nothing new is billed or refused.
-  it.each<[string, { paid: boolean; agentStarted: boolean }, number | null, number]>([
+  // `before`: a disk an earlier setup needed, and how long ago.
+  it.each<[string, { paid: boolean; agentStarted: boolean; before?: { diskGb: number; agoMs: number } }, number | null, number]>([
     ["a paid account's next launch starts at the disk its setup grew to", { paid: true, agentStarted: false }, 8, 8],
     ["a free account's next launch starts at what its shared disk has left", { paid: false, agentStarted: false }, 8, 4],
     ["a grow after the agent started is not the setup's, and records nothing", { paid: true, agentStarted: true }, null, 4],
-  ])("%s", async (_label, { paid, agentStarted }, remembered, nextDisk) => {
+    // A launch that grew only partway keeps the most the setup needed; a Small starts at its own limit, never past it.
+    ["a smaller grow keeps the larger disk, and a Small starts at its 12 GB limit", { paid: true, agentStarted: false, before: { diskGb: 20, agoMs: DAY } }, 20, 12],
+    ["a memory past its 90 days is replaced by the new grow", { paid: true, agentStarted: false, before: { diskGb: 20, agoMs: 91 * DAY } }, 8, 8],
+  ])("%s", async (_label, { paid, agentStarted, before }, remembered, nextDisk) => {
     if (paid) harness.exec("update cloud_accounts set plan = 'paid', included_milli = 500000 where user_id = ?", OWNER);
     await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    // Written while this launch (started at 4 GB) was being made, by another computer's setup.
+    if (before) {
+      harness.insert("cloud_repo_disks", { user_id: OWNER, project_origin: "github.com/acme/widgets", setup_key: "", disk_gb: before.diskGb, launch_id: null, recorded_at: clock - before.agoMs });
+    }
     if (agentStarted) harness.exec("update cloud_launches set state = 'running', stages_json = ? where launch_id = ?", JSON.stringify([{ id: "agent", status: "running" }]), LAUNCH);
 
     const grow = await harness.send(OWNER, "POST", "/cloud/instances/madenew12345/resize", { cpu: 2, memory: 4, disk: 8, computerIdle: true, origin: "auto" });
