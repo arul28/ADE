@@ -105,7 +105,7 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 - a Work list (`sessions` or `lanes`) whose first load has failed for 30 seconds while the machine it reads is connected, or is this computer (`Work <surface> list could not load`, `renderer/lib/firstLoadRetry.ts`), once per retry run, grouped per surface and binding kind. It carries the attempts, how long it has been failing, a fixed error class and code (never the message, which can name an address), the connection state and the `correlationId` of the failed dial, so the issue links to that machine's `remote.connect_failed`. A machine that really is offline logs `work.first_load_waiting` instead, and a list that recovers logs `work.first_load_recovered`.
 - on the hosted web client, ADE's own sign-in card falling back to Clerk's hosted page (`reportUnavailable` in `renderer/webclient/account/useClerkSignIn.ts`), as a warning tagged `area: web_sign_in` and grouped by reason: `load_failed` (Clerk's environment or client request failed, or answered in a shape the card does not read) or `no_sign_in_methods` (the environment lists no method the card shows). A Clerk API change shows up here before people report it. The card's own form errors (a wrong code, a mistyped email) pass `report: false` and log nothing; a sign-in that needs a second factor hands over to Clerk's page without a report, because that is an expected path;
 - on iOS, a live machine connection (the focused one or a fleet roster link) that dropped without a close frame, code 1006 or none (`area: sync_live_drop`, `SyncLiveDropReport` in `SyncRecoveryPolicy.swift`). It carries the connection kind (`focused`, `fleet`), the route kind (`lan`, `tailnet`, `relay`), the close code, an age bucket (`under_10s` … `over_10m`) and the receive error's domain and code with its underlying domain and code, never an address or machine name, at most once per connection and route kind per 10 minutes. A drop on a connection that lived through a trip to the app's background, or that ends while the app is in the background, leaves a `sync.live_drop` breadcrumb instead of an issue: iOS suspends the app and kills its sockets without a close frame, and the failed receive surfaces on the next wake. A saved-port change leaves a `sync.route` breadcrumb (connection kind and whether the link was live), so the report shows whether the computer's sync port moved just before. A drop with a close code (a host or relay closing on purpose) is not reported;
-- on iOS, a chat that is working but draws no messages (`chat.empty_thread.<kind>`, `runEmptyThreadProbe` in `WorkSessionDestinationView.swift`), at most once per time the chat is opened. It carries the chat stream trace from `ChatStreamTrace` (subscribes, history replies applied or dropped and why, live events, socket closes) and the `chat.stream` breadcrumbs, names and counts only.
+- on iOS, one chat open whose stream went wrong, from `runEmptyThreadProbe` in `WorkSessionDestinationView.swift`, at most once per time the chat is opened: a chat that is working but draws no messages (`chat.empty_thread.<kind>`), or a live link whose transcript request the machine never answered, where the pane shows "Couldn't load the transcript" (`chat.transcript_unanswered`, plus the load failure text). It carries the chat stream trace from `ChatStreamTrace` (subscribes, history replies applied or dropped and why, live events, socket closes, the host's app version) and the `chat.stream` breadcrumbs, names and counts only.
 
 **Release-health lines.** A few info lines go to Sentry Logs (not issues, not breadcrumbs) so a release shows that it ran and updated cleanly: `app.started` (desktop, once per launch: version, running and selected track, package channel, platform, arch, whether it is the first launch after an update), `brain.started` (the brain, once per start: version, tracks, role, platform, arch), `sync.host_started` (the brain could take connections again), `autoUpdate.update_downloaded`, `autoUpdate.track_switch_started`, `autoUpdate.quit_and_install`, `db.snapshot_written` (the database copy taken before a new version opens it), `startupRecovery.went_back` (a machine left this build from the "ADE could not start" window: from and to version, trigger, databases restored) and `agent_chat.restart_resume_armed` (`RELEASE_HEALTH_EVENTS` in `shared/sentry/logBridge.ts`). They share the Sentry Logs budget below. The release skill's beta gate (`scripts/release-tools/beta-gate.mjs`) reads them, with the issues first seen in a beta and the error-level log lines, before a beta becomes stable.
 
@@ -237,7 +237,8 @@ The brain-level project-host recovery path also records
 identifier/type, command or operation identifiers, coarse result/status/state,
 step identifiers/statuses, conflict reason, and an error type; they never copy
 PIDs, socket paths, command lines, raw failure text, or recovery details into
-the log event. They are local operational outcomes, not PostHog events. The one
+the log event. They are local operational outcomes, not PostHog events.
+The one
 product event the repair does send is a single `ade_feature_used`
 (`feature: "connections"`, `action: "sync_host_recovery"`) carrying only
 `outcome` (`success` / `partial` / `failed`, where `partial` is the brain
@@ -245,6 +246,15 @@ restarting and handing the answer to the client's reconnect) and the `mobile` /
 `web` surface. It is captured on the brain, which is the only side that knows
 whether the repair worked, so one repair is one event no matter which client
 asked for it.
+
+The brain's file-backed chat ingress records
+`sync_brain.chat_subscribe_unanswered` when it drops a subscribe it cannot
+serve, which is the machine-side line for a phone showing "Couldn't load the
+transcript": the chat session id, a closed reason (`no_chat_scope` or
+`personal_scope_unavailable`), and the peer's device id, app version, app build
+and bundle identifier, so a report can name the client build that asked. It is
+a local operational line, not a PostHog event.
+
 `brain.suspend_gap` records a sleep the watchdogs would previously have
 mis-reported as an event-loop stall. Sleeps of 2 to 59 seconds are logged as
 `brain.suspend_gap` too, and the watchdog's lines name the `pid` and
@@ -2549,8 +2559,6 @@ Host-recorded mobile mutations may still appear in the canonical `ade_*` namespa
 ### Public marketing site
 
 The public-site implementation is `apps/web/src/lib/marketingAnalytics.ts` and `marketingAnalyticsBrowser.ts`, mounted by `MarketingAnalyticsBridge.tsx`. It is default-on with a browser-local opt-out (an explicit "false" preference, settable on /privacy) and uses a separate `ade_marketing_*` namespace.
-
-The same preference gates the Freebuff ad pixel (`apps/web/src/lib/freebuffPixel.ts`): it loads only when website analytics is on, and any download or copy-install click reports Freebuff's `installation_completed` goal with no event id, so Freebuff keeps one per ad click. That event means a download intent; the site cannot see an install finish.
 
 Its durable browser-local ceiling is 40 events per UTC day: 1 app open, 12 screen views, 12 conversion CTA clicks, 16 other feature clicks, 3 coarse browser error categories, and 1 budget summary. A CTA click emits only `ade_marketing_cta_clicked`, never a duplicate feature event. Per-screen/per-key caps and deduplication windows are tighter still. If durable storage is unavailable, analytics fails closed so reloads cannot bypass the budget.
 

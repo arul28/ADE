@@ -2386,6 +2386,12 @@ export type AgentChatEvent =
        */
       status?: string;
       message: string;
+      /**
+       * A chat this notice points at, so every surface can offer to open it
+       * (the plan handoff names the chat the approved plan went to). Not a
+       * deeplink in the text: a quiet notice line draws its own control.
+       */
+      openSessionId?: string;
       detail?: string | AgentChatNoticeDetail;
       /** Present only on `status: "voice_session"`; see `AgentChatVoiceSession`. */
       voiceSession?: AgentChatVoiceSession;
@@ -6860,7 +6866,13 @@ export type AgentChatDismissPendingInputArgs = {
   itemId: string;
 };
 
+export type AgentChatRespondToInputResult = { implementationSessionId: string };
+
 export type AgentChatRespondToInputArgs = {
+  /** Only an approved, main-thread Codex plan can start a new implementation chat. */
+  planAction?: "new_chat";
+  /** Stamped by trusted ingress; an agent cannot approve its own handoff. */
+  runtimeActor?: AgentChatRuntimeActor;
   sessionId: string;
   itemId: string;
   decision?: AgentChatApprovalDecision;

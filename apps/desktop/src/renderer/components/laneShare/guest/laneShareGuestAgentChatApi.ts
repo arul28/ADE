@@ -1,6 +1,7 @@
 import type {
   AgentChatEventEnvelope,
   AgentChatEventHistorySnapshot,
+  AgentChatRespondToInputArgs,
   AgentChatSessionSummary,
   AgentChatSteerResult,
 } from "../../../../shared/types";
@@ -272,7 +273,9 @@ export function createLaneShareGuestAgentChatApi(
     startSideChat: boundChatRefusal("A side chat", WHERE),
     cancelSteer: (args: Record<string, unknown>) => call<void>("chat.cancelSteer", args),
     interrupt: (args: Record<string, unknown>) => call("chat.interrupt", args),
-    respondToInput: (args: Record<string, unknown>) => call<void>("chat.respondToInput", args),
+    respondToInput: (args: AgentChatRespondToInputArgs) => args.planAction === "new_chat"
+      ? boundChatRefusal("Implementing a plan in a new chat", WHERE)()
+      : call<void>("chat.respondToInput", args),
     approve: (args: Record<string, unknown>) => call<void>("chat.approve", args),
     dismissPendingInput: (args: Record<string, unknown>) => call<void>("chat.dismissPendingInput", args),
     listPendingInputs: (args: Record<string, unknown>) => call("chat.listPendingInputs", args),

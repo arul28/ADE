@@ -330,7 +330,8 @@ Shared types and IPC:
   uses last activity. On hover or focus it swaps in snooze and settle controls
   with no layout shift.
 - `apps/desktop/src/renderer/components/terminals/SessionHoverCard.tsx` — the
-  1 s hover-intent detail card; row-to-row movement hands off at once.
+  1 s hover-intent detail card; row-to-row movement hands off at once. A key
+  press or a press outside it holds every card until the pointer moves 3 px.
 - `apps/desktop/src/renderer/components/work/useSessionLifecycleSnapshot.ts` —
   the composer's `ChatLifecyclePill` (settled and snoozed state, Wake now,
   Un-settle), from the local session cache or the cross-machine snapshot. The

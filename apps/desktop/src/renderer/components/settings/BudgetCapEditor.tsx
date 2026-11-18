@@ -9,7 +9,9 @@ import type {
 } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, recessedStyle } from "../lanes/laneDesignTokens";
 import { ModernRow, ModernRows, ModernSection, SettingsNumber, SettingsSelect, SettingsTextField } from "./primitives";
-import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { useSettingsProjectPin, withProjectSettingsBound } from "./ProjectCopyScope";
+import { useSettingsMachineScope, type SettingsMachineScope } from "./SettingsMachineScope";
+import { InlineErrorNotice } from "../ui/notice";
 
 /**
  * The spend cap editor. Mounted in settings and in the top-bar usage popup, so
@@ -115,9 +117,7 @@ export function BudgetCapEditor({
   if (!config && !onSave) {
     return (
       <div className={className}>
-        <ModernSection group="Budget" anchor="budget-cap" title="Spend cap" hint="No budget configuration loaded.">
-          {null}
-        </ModernSection>
+        <BudgetSection hint="No budget configuration loaded." />
       </div>
     );
   }
@@ -307,19 +307,7 @@ export function BudgetCapEditor({
             </div>
 
             {saveError ? (
-              <div
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 8,
-                  border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
-                  background: "color-mix(in srgb, var(--color-error) 15%, transparent)",
-                  color: COLORS.danger,
-                  fontFamily: SANS_FONT,
-                  fontSize: 11,
-                }}
-              >
-                {saveError}
-              </div>
+              <InlineErrorNotice id="settings-budget-cap-save" message={saveError} />
             ) : null}
 
             <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
@@ -356,36 +344,102 @@ export function BudgetCapEditor({
 
 /**
  * The spend cap as a settings row: owns the load/save round trip and renders
- * the editor. Lives on the Usage page because that is where spend lives; the
- * editor itself stays caller-agnostic so nothing else that mounts it changes.
+ * the editor. The cap lives in the open project's `.ade/local.yaml` on the
+ * machine the page shows, so it is read and written through that project's
+ * copy, never the machine route (which answers no budget actions).
  */
 export function BudgetCapSettings() {
-  // The cap lives in the machine's `.ade/local.yaml` and is enforced by that
-  // machine's runtime, so it is read and written there.
-  const { pin } = useSettingsMachineScope();
+  const scope = useSettingsMachineScope();
+  const projectPin = useSettingsProjectPin();
+  const projectPinKey = projectPin?.key ?? null;
   const [config, setConfig] = useState<BudgetCapConfig | null>(null);
+  const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   useEffect(() => {
+    if (!projectPin) {
+      setConfig(null);
+      setStatus("failed");
+      return;
+    }
     let cancelled = false;
-    void window.ade.usage.getBudgetConfig(pin)
-      .then((next) => { if (!cancelled) setConfig(next); })
-      .catch(() => { if (!cancelled) setSaveError("ADE could not load the spend cap."); });
+    setConfig(null);
+    setStatus("loading");
+    setSaveError(null);
+    withProjectSettingsBound(
+      window.ade.usage.getBudgetConfig(projectPin),
+      scope.machineName,
+      scope.isThisMachine,
+    )
+      .then((next) => {
+        if (cancelled) return;
+        setConfig(next);
+        setStatus("ready");
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setSaveError(error instanceof Error ? error.message : "ADE could not load the spend cap.");
+        setStatus("failed");
+      });
     return () => { cancelled = true; };
-  }, [pin]);
+    // The settings subtree remounts when the machine or project copy changes
+    // (`SettingsMachineScopeProvider` key), so this mount's pin is stable;
+    // `projectPinKey` is its identity for a re-render that carries the same copy.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectPinKey, scope.machineName, scope.isThisMachine, reloadNonce]);
 
   const onSave = useCallback(async (next: BudgetCapConfig) => {
+    // Never write after a failed load: an empty form must not replace a cap
+    // that this page could not read.
+    if (!projectPin || status !== "ready") return;
     setSaving(true);
     setSaveError(null);
     try {
-      setConfig(await window.ade.usage.saveBudgetConfig(next, pin));
+      setConfig(await withProjectSettingsBound(
+        window.ade.usage.saveBudgetConfig(next, projectPin),
+        scope.machineName,
+        scope.isThisMachine,
+      ));
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "ADE could not save the spend cap.");
     } finally {
       setSaving(false);
     }
-  }, [pin]);
+  }, [projectPin, scope.machineName, scope.isThisMachine, status]);
+
+  if (!projectPin) return <BudgetSection hint={budgetCapUnavailableHint(scope)} />;
+  if (status === "loading") return <BudgetSection hint="Loading the spend cap…" />;
+  if (status === "failed") {
+    return (
+      <BudgetSection hint="Couldn't load the spend cap.">
+        <InlineErrorNotice
+          id="settings-budget-cap-load"
+          message={saveError ?? "ADE could not load the spend cap."}
+        />
+        <button type="button" className="ade-modern-btn" onClick={() => setReloadNonce((value) => value + 1)}>
+          Try again
+        </button>
+      </BudgetSection>
+    );
+  }
 
   return <BudgetCapEditor config={config} saving={saving} saveError={saveError} onSave={onSave} />;
+}
+
+/** Why the spend cap cannot be reached on this page. */
+function budgetCapUnavailableHint(scope: SettingsMachineScope): string {
+  if (!scope.online) return `${scope.machineName} is offline. Reconnect to set its spend cap.`;
+  if (scope.isThisMachine) return "Open this project on this computer to set its spend cap.";
+  return `${scope.machineName} has no copy of this project. Open the project there to set its spend cap.`;
+}
+
+/** The spend cap's settings row, for the states before the editor can render. */
+function BudgetSection({ hint, children }: { hint: string; children?: React.ReactNode }) {
+  return (
+    <ModernSection group="Budget" anchor="budget-cap" title="Spend cap" hint={hint}>
+      {children ?? null}
+    </ModernSection>
+  );
 }

@@ -279,7 +279,7 @@ export const LANE_SHARE_GUEST_COMMANDS: Readonly<Record<string, LaneShareGuestCo
   "chat.respondToInput": {
     scope: "session",
     kinds: CHAT,
-    args: ["itemId", "decision", "answers", "responseText"],
+    args: ["itemId", "decision", "answers", "responseText", "planAction"],
     needs: (rights) => rights.decide.approvals || rights.decide.questions,
     kind: "write",
   },

@@ -1,4 +1,4 @@
-import { sha256Hex } from "../sinkUtils";
+import { readBoundedBody, sha256Hex } from "../sinkUtils";
 import { connectGitHubSentence, DEFAULT_AGENT_LIMITS, githubRepoVisibility, notifyAccount, readVaultFacts, type CloudAgentLimits, type RelayEnv, type VaultFacts } from "./accountVault";
 import { isTimeZone, nextFireAt, parseCron } from "./automationSchedule";
 import {
@@ -1087,8 +1087,9 @@ export async function handleAutomationDelivery(request: Request, env: RelayEnv, 
   const timestamp = Number(request.headers.get(CLOUD_AUTOMATION_HOOK_HEADERS.timestamp) ?? NaN);
   const signature = request.headers.get(CLOUD_AUTOMATION_HOOK_HEADERS.signature)?.trim().toLowerCase() ?? "";
   if (!ruleId || !RULE_ID.test(ruleId) || !userId || userId.length > 200 || !HOOK_ID.test(hookId) || !/^[0-9a-f]{64}$/.test(signature) || !Number.isFinite(timestamp)) return refused();
-  const text = await request.text();
-  if (text.length > 2_000_000) return fail("payload_too_large", "That delivery is too large.", 413);
+  const read = await readBoundedBody(request, 2_000_000);
+  if (!read.ok) return fail("payload_too_large", "That delivery is too large.", 413);
+  const text = read.text;
   // The owner's one row (the path names the owner), for this hook. The signature,
   // whose key is derived with the owner's id, proves the delivery is for it.
   const row = await env.DB.prepare("select * from cloud_automations where user_id = ? and rule_id = ?").bind(userId, ruleId).first<RuleRow>();

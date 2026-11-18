@@ -94,6 +94,7 @@ export const PROVIDER_NAMES: Partial<Record<ProviderLoginProvider, string>> = {
   kimi: "Kimi",
   pi: "Pi",
   droid: "Droid",
+  opencode: "OpenCode",
 };
 
 /**

@@ -17723,21 +17723,49 @@ final class SyncService: ObservableObject {
     itemId: String,
     decision: AgentChatApprovalDecision? = nil,
     answers: [String: AgentChatInputAnswerValue]? = nil,
-    responseText: String? = nil
-  ) async throws {
+    responseText: String? = nil,
+    planAction: String? = nil
+  ) async throws -> AgentChatRespondToInputResult {
     let scope = chatCommandScope(for: sessionId)
-    _ = try await sendChatCommand(
+    // A personal chat answers through `personalChats.respondToInput`, which
+    // returns only `{ action, result }`; an older host returns `{ ok: true }`.
+    // The plan handoff's id is the only field worth reading and it is absent in
+    // both, so the decode is best effort: a body that does not match must never
+    // turn a delivered answer into a reported failure.
+    let raw = try await sendChatCommand(
       action: chatActionName("chat.respondToInput", sessionId: sessionId),
       payload: AgentChatRespondToInputRequest(
         sessionId: sessionId,
         itemId: itemId,
         decision: decision,
         answers: answers,
-        responseText: responseText
+        responseText: responseText,
+        planAction: planAction
       ),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
+    let result = (try? decode(raw, as: AgentChatRespondToInputResult.self)) ?? AgentChatRespondToInputResult()
+    // A chat created on this phone's behalf belongs to the same project (and
+    // machine) as the planning chat. Carrying that routing across now is what
+    // lets the next screen read it; the row itself arrives with the next
+    // refresh.
+    if let implementationSessionId = result.implementationSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !implementationSessionId.isEmpty {
+      // The destination lives on the planning chat's computer, exactly like a
+      // side chat does. Copying only the project would leave navigation unable
+      // to build its remote context until the next roster update, so reads could
+      // go to whichever computer is focused.
+      if let remote = remoteMachineChatsBySession[sessionId] {
+        viewOwnedRemoteChatIds.insert(implementationSessionId)
+        remoteMachineChatsBySession[implementationSessionId] = remote
+      }
+      if chatCommandScopeBySession[implementationSessionId] == nil,
+         let scope = chatCommandScopeBySession[sessionId] {
+        chatCommandScopeBySession[implementationSessionId] = scope
+      }
+    }
+    return result
   }
 
   /// Throw a dismissible question away. The host rejects any card the provider
@@ -23202,7 +23230,10 @@ final class SyncService: ObservableObject {
     let remoteHostSiteId = brain?["siteId"] as? String
     let incomingHostIdentity = syncNormalizedCommandScopeValue(remoteHostIdentity)
       ?? syncNormalizedCommandScopeValue(expectedHostIdentity)
-    if let identity = syncNonEmpty(remoteHostIdentity) {
+    // The version belongs to this hello, not to the saved profile: a host that
+    // stops advertising one (or omits its device id and keeps only the profile's
+    // identity) must not keep the previous connection's version in the trace.
+    if let identity = syncNonEmpty(remoteHostIdentity) ?? syncNonEmpty(expectedHostIdentity) {
       let machineKey = HiddenMachineStore.fleetKey(deviceId: identity)
       let version = syncNonEmpty(brain?["appVersion"] as? String)
       if hostAppVersionByMachineKey[machineKey] != version {
@@ -29524,6 +29555,7 @@ extension SyncService {
     var fields = (focusedChatStreamTraces[trimmed] ?? ChatStreamTrace()).fields
     fields["path"] = "focused"
     fields["connState"] = connectionState.rawValue
+    fields["hostAppVersion"] = focusedSocketMachineKey.flatMap { hostAppVersionByMachineKey[$0] } ?? "nil"
     fields["canSendLive"] = String(canSendLiveRequests())
     fields["hostChatStreaming"] = String(supportsChatStreaming)
     fields["hostChatLogV2"] = String(supportsChatLogV2)

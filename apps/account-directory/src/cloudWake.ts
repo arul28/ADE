@@ -1,6 +1,7 @@
 import { authenticate, type CallerTokenEnv } from "./callerToken";
 import { AWAKE_COMPUTER_CAP } from "./cloud/plans";
 import { AWAKE_CAP_COUNT_SQL, PENDING_TIMEOUT_MS, logCloud, reportCloudFailure } from "./cloud/store";
+import { readBoundedJson } from "./sinkUtils";
 
 /**
  * Timed wakes for cloud machines (README, "the provider timed wakes").
@@ -44,22 +45,18 @@ export function isCloudWakeRequest(url: URL): boolean {
 const json = (body: unknown, status: number): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
-async function readBody(request: Request): Promise<Record<string, unknown> | null> {
-  try {
-    const text = await request.text();
-    if (text.length > 4096) return null;
-    const value = JSON.parse(text) as unknown;
-    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function handleCloudWakeRequest(request: Request, env: CloudWakeEnv, now = Date.now()): Promise<Response> {
+export async function handleCloudWakeRequest(
+  request: Request,
+  env: CloudWakeEnv,
+  now = Date.now(),
+  parsedBody?: Record<string, unknown> | null,
+): Promise<Response> {
   if (request.method !== "PUT" && request.method !== "DELETE") return json({ error: "method_not_allowed" }, 405);
   const caller = await authenticate(request, env);
   if (!caller.ok) return json({ error: "unauthorized" }, 401);
-  const body = await readBody(request);
+  // The route reads the body once so the ownership check and this handler
+  // share it; a cloned request would tee the stream and can wait on cancel.
+  const body = parsedBody !== undefined ? parsedBody : await readBoundedJson(request, 4096);
   const instanceId = typeof body?.instanceId === "string" ? body.instanceId.trim() : "";
   if (!INSTANCE_ID.test(instanceId)) return json({ error: "bad_request" }, 400);
 

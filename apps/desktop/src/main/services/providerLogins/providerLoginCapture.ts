@@ -22,7 +22,16 @@ import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { PROVIDER_LOGINS_CLOUD_SETTING, cloudChoiceKey, readCloudSetting } from "../../../shared/providerLoginsCloudSetting";
 import { isRecord } from "../shared/utils";
 import type { ProviderLoginLocalState, ProviderLoginProvider } from "../../../shared/types/providerLogins";
-import { GH_BUNDLE_ID, GH_READ_PART, GH_TOKEN_PART, PROVIDER_LOGIN_CARRY, type CarryBundle, type CarryRow, type ParsedLogin } from "./providerLoginCarry";
+import {
+  GH_BUNDLE_ID,
+  GH_READ_PART,
+  GH_TOKEN_PART,
+  PROVIDER_LOGIN_CARRY,
+  type CarryBundle,
+  type CarryFileSpec,
+  type CarryRow,
+  type ParsedLogin,
+} from "./providerLoginCarry";
 import { ghReadEnv, isClassicGitHubToken, readGhHostsGithubCom, runGhAuthToken, type GhTokenRead } from "./providerLoginGhCli";
 import { notifyProviderLoginPass, notifyProviderLoginsChanged } from "./providerLoginHooks";
 import {
@@ -90,7 +99,13 @@ export function createCapture(s: SyncShared) {
   let rerun: { providers: Set<ProviderLoginProvider> | null } | null = null;
 
   /** A file's mark; "unreadable" when the stat itself failed for another reason than "not there" (a lock, a permission). */
-  async function statFile(abs: string, rel: string): Promise<FileMark | "unreadable"> {
+  async function statFile(spec: CarryFileSpec): Promise<FileMark | "unreadable"> {
+    const { abs, rel } = spec;
+    if (spec.store) {
+      // A login in a database: the store's own mark, never a stat of the whole file.
+      const mark = spec.store.mark(abs);
+      return mark === "unreadable" ? "unreadable" : mark ? { rel, ...mark } : { rel, missing: true };
+    }
     try {
       const stat = await fs.promises.stat(abs);
       if (!stat.isFile()) return { rel, missing: true };
@@ -103,7 +118,7 @@ export function createCapture(s: SyncShared) {
 
   /** Every file's mark, or "unreadable" when one stat failed: never counted as a missing file (signed out). */
   async function statBundle(bundle: CarryBundle): Promise<FileMark[] | "unreadable"> {
-    const marks = await Promise.all(bundle.files.map((spec) => statFile(spec.abs, spec.rel)));
+    const marks = await Promise.all(bundle.files.map((spec) => statFile(spec)));
     return marks.some((mark) => mark === "unreadable") ? "unreadable" : (marks as FileMark[]);
   }
 
@@ -118,6 +133,14 @@ export function createCapture(s: SyncShared) {
     const contents = new Map<string, Buffer>();
     for (const [index, spec] of bundle.files.entries()) {
       if ("missing" in marks[index]!) continue;
+      if (spec.store) {
+        const bytes = spec.store.read(spec.abs);
+        // Gone under the read: not stable yet.
+        if (bytes === null) return null;
+        if (bytes === "unreadable") return "unreadable";
+        contents.set(spec.rel, bytes);
+        continue;
+      }
       try {
         contents.set(spec.rel, await fs.promises.readFile(spec.abs));
       } catch (error) {

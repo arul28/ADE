@@ -30,6 +30,35 @@ import {
 import { lowerCaseHeaders, queryRecord } from "./webhookRequest";
 import { WEBHOOK_MAX_BODY_BYTES } from "../../../shared/automationWebhooks";
 
+/** GitHub's own webhook payload limit; the hosted relay enforces the same 25 MB. */
+const MAX_GITHUB_WEBHOOK_BODY_BYTES = 25 * 1024 * 1024;
+
+/** Read a webhook body up to `limit`, then stop buffering but keep draining the request. */
+function collectBoundedBody(
+  request: http.IncomingMessage,
+  limit: number,
+): Promise<{ body: Buffer; tooLarge: boolean }> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let tooLarge = false;
+    request.on("data", (chunk: Buffer | string) => {
+      if (tooLarge) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buffer.length;
+      // A chunked request has no length to trust, so the cap is on arriving bytes.
+      if (size > limit) {
+        tooLarge = true;
+        chunks.length = 0;
+        return;
+      }
+      chunks.push(buffer);
+    });
+    request.on("end", () => resolve({ body: tooLarge ? Buffer.alloc(0) : Buffer.concat(chunks), tooLarge }));
+    request.on("error", reject);
+  });
+}
+
 export type AutomationIngressCursorStore = {
   get(source: AutomationIngressSource): string | null;
   set(args: { source: AutomationIngressSource; cursor: string | null }): void;
@@ -593,30 +622,16 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       response.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: "not_found" }));
       return;
     }
-    const chunks: Buffer[] = [];
-    let size = 0;
-    let tooLarge = false;
-    request.on("data", (chunk: Buffer | string) => {
-      if (tooLarge) return;
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      size += buffer.length;
-      // Stop buffering past the cap; a chunked request with no length is bounded too.
-      if (size > WEBHOOK_MAX_BODY_BYTES) {
-        tooLarge = true;
-        chunks.length = 0;
-        return;
-      }
-      chunks.push(buffer);
-    });
-    request.on("end", async () => {
+    void (async () => {
       try {
+        const { body, tooLarge } = await collectBoundedBody(request, WEBHOOK_MAX_BODY_BYTES);
         const result = await service.receive({
           hookId: route.hookId,
           token: route.token,
           method,
           headers: lowerCaseHeaders(request.headers),
           query: queryRecord(url.searchParams),
-          rawBody: tooLarge ? Buffer.alloc(0) : Buffer.concat(chunks),
+          rawBody: body,
           tooLarge,
           via: "local",
         });
@@ -629,7 +644,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         args.logger.warn("automations.custom_webhook_failed", { error: error instanceof Error ? error.message : String(error) });
         response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: "internal_error" }));
       }
-    });
+    })();
   };
 
   const updateGithubRelayStatus = (patch: Partial<AutomationIngressStatus["githubRelay"]>) => {
@@ -809,46 +824,62 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       response.writeHead(404).end("not found");
       return;
     }
-    const automationId = match?.[1] ? decodeURIComponent(match[1]) : null;
-    const chunks: Buffer[] = [];
-    request.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-    request.on("end", async () => {
-      const body = Buffer.concat(chunks);
+    let automationId: string | null = null;
+    if (match?.[1]) {
       try {
-        const payload = JSON.parse(body.toString("utf8")) as Record<string, unknown>;
-        const record = isGithubWebhook
-          ? await (async () => {
-              verifyGithubWebhookSignature(body, normalizeHeader(request.headers, "x-hub-signature-256"));
-              return await dispatchGithubWebhook(
-                normalizeHeader(request.headers, "x-github-event"),
-                normalizeHeader(request.headers, "x-github-delivery"),
-                payload,
-              );
-            })()
-          : await (async () => {
-              if (!automationId) throw new Error("Automation id is required.");
-              payload.signatureHeader = request.headers["x-ade-signature"] ?? "";
-              return await dispatchLocalWebhook(automationId, payload, body);
-            })();
-        noteRelayActivity();
-        updateLocalWebhookStatus({
-          healthy: true,
-          status: "listening",
-          lastDeliveryAt: record?.receivedAt ?? new Date().toISOString(),
-          lastError: null,
-        });
-        response.writeHead(202, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, eventId: record?.id ?? null }));
-      } catch (error) {
+        automationId = decodeURIComponent(match[1]);
+      } catch {
+        response.writeHead(404).end("not found");
+        return;
+      }
+    }
+    const bodyLimit = isGithubWebhook ? MAX_GITHUB_WEBHOOK_BODY_BYTES : WEBHOOK_MAX_BODY_BYTES;
+    void collectBoundedBody(request, bodyLimit)
+      .then(async ({ body, tooLarge }) => {
+        if (tooLarge) {
+          response.writeHead(413, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: "payload too large" }));
+          return;
+        }
+        try {
+          const payload = JSON.parse(body.toString("utf8")) as Record<string, unknown>;
+          const record = isGithubWebhook
+            ? await (async () => {
+                verifyGithubWebhookSignature(body, normalizeHeader(request.headers, "x-hub-signature-256"));
+                return await dispatchGithubWebhook(
+                  normalizeHeader(request.headers, "x-github-event"),
+                  normalizeHeader(request.headers, "x-github-delivery"),
+                  payload,
+                );
+              })()
+            : await (async () => {
+                if (!automationId) throw new Error("Automation id is required.");
+                payload.signatureHeader = request.headers["x-ade-signature"] ?? "";
+                return await dispatchLocalWebhook(automationId, payload, body);
+              })();
+          noteRelayActivity();
+          updateLocalWebhookStatus({
+            healthy: true,
+            status: "listening",
+            lastDeliveryAt: record?.receivedAt ?? new Date().toISOString(),
+            lastError: null,
+          });
+          response.writeHead(202, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, eventId: record?.id ?? null }));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          args.logger.warn("automations.local_webhook_failed", { automationId, path: url.pathname, error: message });
+          updateLocalWebhookStatus({
+            healthy: false,
+            status: "error",
+            lastError: message,
+          });
+          response.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: message }));
+        }
+      })
+      .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         args.logger.warn("automations.local_webhook_failed", { automationId, path: url.pathname, error: message });
-        updateLocalWebhookStatus({
-          healthy: false,
-          status: "error",
-          lastError: message,
-        });
-        response.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: message }));
-      }
-    });
+        response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: "internal_error" }));
+      });
   };
 
   const regularPollIntervalMs = Math.max(

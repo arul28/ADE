@@ -37,6 +37,8 @@ export async function installBrainProviderLoginSync(args: {
     { codexConfigHome, grokConfigHome },
     { createCloudComputerCheck },
     { createHeadlessAccountVaultBridge },
+    { OPENCODE_RENEW_AHEAD_MS, createOpenCodeCarryWriter, renewOpenCodeLogin },
+    { setOpenCodeCredentialWriter },
   ] = await Promise.all([
     import("../../../../desktop/src/main/services/providerLogins/providerLoginSync"),
     import("../../../../desktop/src/main/services/adeCloud/cloudAccess"),
@@ -46,6 +48,8 @@ export async function installBrainProviderLoginSync(args: {
     import("../../../../desktop/src/main/services/shared/providerConfigHomes"),
     import("../../../../desktop/src/main/services/providerLogins/providerLoginCloudComputers"),
     import("./accountRuntimeLifecycle"),
+    import("../../../../desktop/src/main/services/opencode/openCodeCarryWriter"),
+    import("../../../../desktop/src/main/services/providerLogins/providerLoginApply"),
   ]);
   // The name the machine directory and the Usage page show ("Mac Studio"), not
   // the network hostname. A sign-in keeps the label it was captured under, so
@@ -111,6 +115,8 @@ export async function installBrainProviderLoginSync(args: {
     },
     logger: args.logger,
   });
+  // OpenCode's sign-in is a row of ADE's OpenCode store: apply writes it through OpenCode's own server.
+  if (!args.staticOff) setOpenCodeCredentialWriter(createOpenCodeCarryWriter(args.logger));
   installProviderLoginSync(createProviderLoginSync({
     adeDir: args.adeDir,
     staticOff: args.staticOff,
@@ -132,10 +138,12 @@ export async function installBrainProviderLoginSync(args: {
     // Renewal ahead on the owner computer (step 3a), and on a cloud computer
     // that took the renewal over (step 3b): the proxy's renew call,
     // under the machine lock its own keeper takes. The base login of each
-    // provider is the one capture reads (`CODEX_HOME`, `GROK_HOME`).
+    // provider is the one capture reads (`CODEX_HOME`, `GROK_HOME`, ADE's
+    // OpenCode store). OpenCode renews through ADE's own OpenCode server.
     renewer: {
-      aheadMs: { codex: BORROW_RENEW_AHEAD_MS.codex, grok: BORROW_RENEW_AHEAD_MS.grok },
+      aheadMs: { codex: BORROW_RENEW_AHEAD_MS.codex, grok: BORROW_RENEW_AHEAD_MS.grok, opencode: OPENCODE_RENEW_AHEAD_MS },
       renew: async (provider) => {
+        if (provider === "opencode") return await withMachineRenewLock(renewLockDir, () => renewOpenCodeLogin(args.logger));
         if (provider !== "codex" && provider !== "grok") return false;
         const configHome = provider === "codex" ? codexConfigHome({ env: process.env }) : grokConfigHome({ env: process.env });
         return await withMachineRenewLock(

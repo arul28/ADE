@@ -44,15 +44,15 @@ class FakeD1Statement {
     return { results: this.db.all<T>(this.sql, this.values) };
   }
 
-  async run(): Promise<{ success: boolean }> {
-    this.db.run(this.sql, this.values);
-    return { success: true };
+  async run(): Promise<{ success: boolean; meta?: { changes: number } }> {
+    return this.db.run(this.sql, this.values);
   }
 }
 
 class FakeCursorD1Database {
   secrets: StoredCursorSecret[] = [];
   events: StoredCursorEvent[] = [];
+  dailyCounts = new Map<string, Map<string, number>>();
   nextEventSeq = 1;
 
   prepare(sql: string): FakeD1Statement {
@@ -123,7 +123,39 @@ class FakeCursorD1Database {
       } as T));
   }
 
-  run(sql: string, values: unknown[]): void {
+  run(sql: string, values: unknown[]): { success: boolean; meta?: { changes: number } } {
+    if (sql.includes("insert into relay_daily_counts")) {
+      const scope = String(values[0]);
+      const day = String(values[1]);
+      const limit = Number(values[2]);
+      const byDay = this.dailyCounts.get(scope) ?? new Map<string, number>();
+      const count = byDay.get(day) ?? 0;
+      if (count >= limit) return { success: true, meta: { changes: 0 } };
+      byDay.set(day, count + 1);
+      this.dailyCounts.set(scope, byDay);
+      return { success: true, meta: { changes: 1 } };
+    }
+    if (sql.includes("delete from relay_daily_counts")) {
+      const cutoff = String(values[0]);
+      for (const [scope, byDay] of this.dailyCounts) {
+        for (const day of [...byDay.keys()]) if (day < cutoff) byDay.delete(day);
+        if (byDay.size === 0) this.dailyCounts.delete(scope);
+      }
+      return { success: true };
+    }
+    if (sql.includes("delete from cursor_events") && sql.includes("event_id not in")) {
+      const secretId = String(values[0]);
+      const limit = Number(values[values.length - 1]);
+      const kept = new Set(
+        this.events
+          .filter((entry) => entry.secret_id === secretId)
+          .sort((left, right) => right.received_at.localeCompare(left.received_at) || right.event_seq - left.event_seq)
+          .slice(0, limit)
+          .map((entry) => entry.event_id),
+      );
+      this.events = this.events.filter((entry) => entry.secret_id !== secretId || kept.has(entry.event_id));
+      return { success: true };
+    }
     if (sql.includes("update cursor_webhook_secrets set last_polled_at")) {
       const row = this.secrets.find((entry) => entry.id === String(values[1]));
       if (row) row.last_polled_at = String(values[0]);
@@ -170,6 +202,7 @@ class FakeCursorD1Database {
         if (event.secret_id === secretId && event.account_id == null) event.account_id = accountId;
       }
     }
+    return { success: true };
   }
 }
 
@@ -351,11 +384,48 @@ describe("Cursor Cloud webhook relay", () => {
   it("rejects an oversized payload before storing it", async () => {
     const env = makeEnv();
     const response = await handleRequest(
-      await cursorWebhookRequest(cursorPayload(), { contentLength: String(1024 * 1024 + 1) }),
+      await cursorWebhookRequest(cursorPayload(), { contentLength: String(64 * 1024 + 1) }),
       env,
     );
     expect(response.status).toBe(413);
     expect(env.DB.events).toHaveLength(0);
+  });
+
+  it("caps anonymous registrations per address without spending the shared allowance", async () => {
+    const env = makeEnv();
+    const ip = "203.0.113.7";
+    const registerFrom = (secret: string) => handleRequest(new Request("https://relay.test/cursor/register", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${secret}`,
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+      },
+      body: JSON.stringify({ secret }),
+    }), env);
+    for (let index = 0; index < 20; index += 1) {
+      const secret = `cursor-cloud-webhook-secret-${index}-padding-32chars`;
+      expect((await registerFrom(secret)).status, `registration ${index}`).toBe(200);
+    }
+    expect((await registerFrom("cursor-cloud-webhook-secret-over-limit-32chars")).status).toBe(429);
+    // The rejected address spent no shared slot.
+    const global = env.DB.dailyCounts.get("cursor-register");
+    expect([...(global?.values() ?? [])]).toEqual([20]);
+  });
+
+  it("keeps the newest 500 events for one secret", async () => {
+    const env = makeEnv();
+    await connectClient(env);
+    for (let index = 0; index < 501; index += 1) {
+      const response = await handleRequest(
+        await cursorWebhookRequest(cursorPayload(), { delivery: `delivery-${index}` }),
+        env,
+      );
+      expect(response.status, `event ${index}`).toBe(200);
+    }
+    expect(env.DB.events).toHaveLength(500);
+    expect(env.DB.events.some((event) => event.event_id === "delivery-0")).toBe(false);
+    expect(env.DB.events.some((event) => event.event_id === "delivery-500")).toBe(true);
   });
 
   it("accepts env-configured secrets without prior registration", async () => {

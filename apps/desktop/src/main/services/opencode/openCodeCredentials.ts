@@ -138,8 +138,9 @@ export function readOpenCodeCredentials(dbPath: string = resolveAdeOpenCodeDbPat
 /**
  * The secret a launch needs to call an OpenCode-connected provider directly.
  *
- * The one place ADE reads a token out of OpenCode's store, and it stays in the
- * main process: the value goes into a child process's environment (or ADE's
+ * One of two places ADE reads a token out of OpenCode's store (the other is
+ * the carry's `readOpenCodeCarryCredential`), and it stays in the main
+ * process: the value goes into a child process's environment (or ADE's
  * private proxy config) and nowhere else — never IPC, sync, logs, or a preset.
  * `expiresAt` is only set for OAuth logins; a saved key never expires.
  */
@@ -191,6 +192,88 @@ export function readOpenCodeLaunchSecret(
       orgId: textOrNull(row.orgId),
       methodType: row.type === "key" || row.type === "oauth" || row.type === "external" ? row.type : null,
     };
+  });
+}
+
+/**
+ * The opencode.ai sign-in (`integration_id = 'opencode'`) the carry copies to
+ * ADE Cloud and the person's other computers (`providerLoginCarry.ts`). The
+ * second place ADE reads a token out of OpenCode's store; it stays in the
+ * brain and goes only into the account vault, encrypted.
+ *
+ * The same first-row rule as a launch: active first, newest first. Only an
+ * OAuth login or a key: an external login holds no secret to carry.
+ */
+export type OpenCodeCarryCredential = {
+  id: string;
+  label: string;
+  value: Record<string, unknown>;
+};
+
+const CARRY_INTEGRATION = "opencode";
+
+/** A row's `value` column as an object; "unreadable" when it is not one. */
+function credentialValueOf(raw: unknown): Record<string, unknown> | "unreadable" {
+  try {
+    const value = typeof raw === "string" ? JSON.parse(raw) as unknown : null;
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : "unreadable";
+  } catch {
+    return "unreadable";
+  }
+}
+
+export function readOpenCodeCarryCredential(
+  dbPath: string,
+): OpenCodeCarryCredential | null | "unreadable" {
+  if (!fs.existsSync(dbPath)) return null;
+  return readOpenCodeDb<OpenCodeCarryCredential | null | "unreadable">(dbPath, "unreadable", (db) => {
+    const row = db.prepare(`
+      SELECT id AS id, label AS label, value AS value
+        FROM credential
+       WHERE integration_id = ?
+       ORDER BY (active = 1) DESC, time_updated DESC
+       LIMIT 1
+    `).get(CARRY_INTEGRATION) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const id = textOrNull(row.id);
+    const value = credentialValueOf(row.value);
+    if (!id || value === "unreadable") return "unreadable";
+    return { id, label: textOrNull(row.label) ?? "default", value };
+  });
+}
+
+/**
+ * What changes when the opencode.ai sign-in changes, with no secret: the row
+ * in use, its last write, and how many such rows there are. Null when there
+ * is no store or no such row; "unreadable" when the store cannot be read now
+ * (a lock, a damaged file).
+ */
+export function readOpenCodeCarryMark(
+  dbPath: string,
+): { id: string; updatedAt: number; rows: number } | null | "unreadable" {
+  if (!fs.existsSync(dbPath)) return null;
+  return readOpenCodeDb<{ id: string; updatedAt: number; rows: number } | null | "unreadable">(dbPath, "unreadable", (db) => {
+    const row = db.prepare(`
+      SELECT id AS id, time_updated AS updatedAt,
+             (SELECT COUNT(*) FROM credential WHERE integration_id = ?) AS rows
+        FROM credential
+       WHERE integration_id = ?
+       ORDER BY (active = 1) DESC, time_updated DESC
+       LIMIT 1
+    `).get(CARRY_INTEGRATION, CARRY_INTEGRATION) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const id = textOrNull(row.id);
+    if (!id) return "unreadable";
+    return { id, updatedAt: Number(row.updatedAt ?? 0) || 0, rows: Number(row.rows ?? 0) || 0 };
+  });
+}
+
+/** The stored value of one credential row, or null when it is gone. For apply's "is it still the one ADE wrote". */
+export function readOpenCodeCredentialValue(dbPath: string, id: string): Record<string, unknown> | null | "unreadable" {
+  if (!fs.existsSync(dbPath)) return null;
+  return readOpenCodeDb<Record<string, unknown> | null | "unreadable">(dbPath, "unreadable", (db) => {
+    const row = db.prepare("SELECT value AS value FROM credential WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    return row ? credentialValueOf(row.value) : null;
   });
 }
 
