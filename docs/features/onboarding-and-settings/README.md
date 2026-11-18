@@ -924,6 +924,11 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
     · refresh" control (`modelsDevLastFetchedAt`, `refreshModelsDev`):
     - **Subscriptions**: one card per OpenCode provider with an `oauth` method
       (`OAuthConnectModal`), plus **Kimi for Coding** (`KimiKeyDialog`).
+      The opencode.ai sign-in (OpenCode Go and Zen) is copied to ADE Cloud
+      and to the person's other computers with no OpenCode sign-in, without
+      its refresh token; this computer keeps renewing it. Other OpenCode
+      sign-ins stay here, and an Anthropic one is never copied. See
+      [OpenCode's sign-in](../ade-cloud/README.md#sign-ins-in-the-account-vault).
     - **API Provider Keys**: Anthropic, OpenAI, Google AI, Mistral, DeepSeek,
       xAI, Groq, Together AI, OpenRouter, Moonshot AI, saved with
       `alsoOpenCode: true` (`setOpencodeProviderKey`).
