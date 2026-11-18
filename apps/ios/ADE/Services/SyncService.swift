@@ -23230,7 +23230,10 @@ final class SyncService: ObservableObject {
     let remoteHostSiteId = brain?["siteId"] as? String
     let incomingHostIdentity = syncNormalizedCommandScopeValue(remoteHostIdentity)
       ?? syncNormalizedCommandScopeValue(expectedHostIdentity)
-    if let identity = syncNonEmpty(remoteHostIdentity) {
+    // The version belongs to this hello, not to the saved profile: a host that
+    // stops advertising one (or omits its device id and keeps only the profile's
+    // identity) must not keep the previous connection's version in the trace.
+    if let identity = syncNonEmpty(remoteHostIdentity) ?? syncNonEmpty(expectedHostIdentity) {
       let machineKey = HiddenMachineStore.fleetKey(deviceId: identity)
       let version = syncNonEmpty(brain?["appVersion"] as? String)
       if hostAppVersionByMachineKey[machineKey] != version {
