@@ -243,7 +243,7 @@ export type AccountRow = {
   past_due_earned_milli: number | null;
   /** Refused the free plan: its computer already gave another account free hours (`freePlan.ts`). Free hours are 0 while set. */
   free_refused_at: number | null;
-  /** The ADE Cloud iPhone (migration 0040, `phones.ts`): extra minutes and the minutes warnings. Absent before the migration. */
+  /** The ADE Cloud iPhone (migration 0046, `phones.ts`): extra minutes and the minutes warnings. Absent before the migration. */
   phone_extra_enabled?: number;
   phone_extra_limit_cents?: number | null;
   phone_extra_reported_minutes?: number;
