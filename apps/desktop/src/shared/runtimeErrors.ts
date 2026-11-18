@@ -40,7 +40,8 @@ export function isRemoteRuntimeConnectionError(error: unknown): boolean {
  * or ADE stopped waiting. The action may still have run there.
  */
 export function isRemoteOutcomeUnknownError(error: unknown): boolean {
-  return /before ADE could confirm the action result/i.test(errorMessage(error))
+  // The sync link's own wait (web client, CLI peer) ran out with no answer.
+  return /before ADE could confirm the action result|Timed out waiting for remote command result/i.test(errorMessage(error))
     || isRemoteRuntimeConnectionError(error)
     || isRuntimeTransportTimeoutError(error);
 }
