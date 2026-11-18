@@ -11330,6 +11330,8 @@ final class SyncService: ObservableObject {
     machineFleet?.forgetConnectionChoices(keeping: Set(loadSavedProfilesRaw().keys))
     cloudMachineFleetKeys = []
     UserDefaults.standard.removeObject(forKey: Self.cloudMachineFleetKeysDefaultsKey)
+    // After the clear: its didSet records the keys it removed.
+    UserDefaults.standard.removeObject(forKey: Self.seenCloudFleetKeysDefaultsKey)
     // Per-project view state, archive marks, pinned lanes and the plan seen.
     for key in ["ade.work.viewStateByScope.v1", "ade.work.newSessionModeByProject.v1"] {
       shared.removeObject(forKey: key)

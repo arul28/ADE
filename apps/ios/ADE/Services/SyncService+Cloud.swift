@@ -755,7 +755,7 @@ extension SyncService {
   /// deleted computer, or one before this build). Only grows (capped): the
   /// live set drops a deleted computer, and this is how the phone still knows
   /// the focused machine was one.
-  private static let seenCloudFleetKeysDefaultsKey = "ade.cloudFleetKeysSeen.v1"
+  static let seenCloudFleetKeysDefaultsKey = "ade.cloudFleetKeysSeen.v1"
 
   func rememberSeenCloudFleetKeys(_ keys: Set<String>) {
     guard !keys.isEmpty else { return }
@@ -763,7 +763,14 @@ extension SyncService {
     let fresh = keys.subtracting(seen).sorted()
     guard !fresh.isEmpty else { return }
     seen.append(contentsOf: fresh)
-    UserDefaults.standard.set(Array(seen.suffix(200)), forKey: Self.seenCloudFleetKeysDefaultsKey)
+    // Bounded, but never past the focused machine: it is the one the
+    // deleted-computer check needs.
+    if seen.count > 500 {
+      let focused = focusedMachineKey.flatMap { seen.contains($0) ? $0 : nil }
+      seen = Array(seen.suffix(500))
+      if let focused, !seen.contains(focused) { seen.append(focused) }
+    }
+    UserDefaults.standard.set(seen, forKey: Self.seenCloudFleetKeysDefaultsKey)
   }
 
   @MainActor private enum DeletedFocusedCloudComputer { static var left: Set<String> = [] }

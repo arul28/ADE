@@ -482,7 +482,8 @@ extension LanesTabView {
     let chips = laneMachineChips
     let remoteSections = visibleRemoteMachineLanes
     let accountHasNoLanes = syncService.isAccountProjectScope
-      && remoteLanes.machines.allSatisfy { $0.snapshots.isEmpty }
+      // A failed read did not show there are none: its machine row says so.
+      && remoteLanes.machines.allSatisfy { $0.snapshots.isEmpty && $0.error == nil }
     if accountHasNoLanes, !remoteLanes.hasRead {
       // The first read of the cloud lanes is still out: nothing to say yet.
       EmptyView()
