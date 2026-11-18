@@ -724,12 +724,31 @@ final class AccountProjectStore: ObservableObject {
       liveProjects = next.liveProjects
       removedProjects = next.removedProjects
       mergedTargets = next.mergedTargets
+      readMachinesForUnknownCopies()
     }
     if nextDisplay != display { display = nextDisplay }
     if nextSuccess != lastSuccessAt { lastSuccessAt = nextSuccess }
     let phaseChanged = phase != nextPhase
     if phaseChanged { phase = nextPhase }
     if rowsChanged || phaseChanged { revision &+= 1 }
+  }
+
+  /// Account machine keys a copy named before the account's machine list had them.
+  private var machineKeysReadFor: Set<String> = []
+
+  /// A copy on a computer the account's machine list does not have yet (a lane
+  /// just started on ADE Cloud from another computer): read the list once for
+  /// it, so the phone can pair and show that computer.
+  private func readMachinesForUnknownCopies() {
+    let account = AccountService.shared
+    guard account.machinesState == .loaded else { return }
+    let known = Set(account.machines.map { $0.machineKey.lowercased() })
+    let unknown = Set(liveProjects.flatMap(\.copies).map { $0.machineKey.lowercased() })
+      .subtracting(known)
+      .subtracting(machineKeysReadFor)
+    guard !unknown.isEmpty else { return }
+    machineKeysReadFor.formUnion(unknown)
+    Task { await account.loadMachines() }
   }
 
   // MARK: Cache file

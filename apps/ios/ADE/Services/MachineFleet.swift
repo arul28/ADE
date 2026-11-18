@@ -107,6 +107,14 @@ final class MachineFleet: ObservableObject {
 
   /// The account server's ADE Cloud answer changed: list it.
   func cloudServerChanged() {
+    // A live link to a computer the account says is asleep or stopped may be
+    // a dead one (`MachineConnection.probeLink`).
+    if let syncService {
+      for (key, connection) in connections where cloudMachineKeys.contains(key) {
+        guard syncService.cloudServerInstance(fleetKey: key)?.isResting == true else { continue }
+        connection.probeLink(trigger: "computer_resting")
+      }
+    }
     schedulePublish()
   }
 
@@ -876,10 +884,7 @@ final class MachineFleet: ObservableObject {
           machines: AccountService.shared.machines
         ) ?? "Machine",
         state: state,
-        // A cloud computer paired but never live here: its saved copies.
-        projects: isCloud && connection.rosterProjects.isEmpty
-          ? (syncService?.cloudSavedRosterProjects(fleetKey: key) ?? [])
-          : connection.rosterProjectsIncludingOlderChats,
+        projects: cloudMachineProjects(key: key, connection: connection, isCloud: isCloud, isLive: state == .live),
         rosterRevision: connection.rosterRevision,
         lastUpdateAt: connection.lastUpdateAt,
         isPinned: pinned.contains(key),
@@ -970,6 +975,24 @@ final class MachineFleet: ObservableObject {
       syncService?.focusedMachineMayAnswer()
     }
     machinesCameOnline(machineKeys: back)
+  }
+
+  /// A machine's projects. A cloud computer paired but never live here lists
+  /// its saved copies. So does one the account says is asleep or stopped
+  /// while its link is down: its last live roster ended as the computer went
+  /// down (a turn cut by a sleep reads Done there, Stopped in its saved copy).
+  private func cloudMachineProjects(
+    key: String,
+    connection: MachineConnection,
+    isCloud: Bool,
+    isLive: Bool
+  ) -> [RemoteRosterProject] {
+    let live = connection.rosterProjectsIncludingOlderChats
+    guard isCloud, let syncService else { return live }
+    if connection.rosterProjects.isEmpty { return syncService.cloudSavedRosterProjects(fleetKey: key) }
+    guard !isLive, syncService.cloudServerInstance(fleetKey: key)?.isResting == true else { return live }
+    let saved = syncService.cloudSavedRosterProjects(fleetKey: key)
+    return saved.isEmpty ? live : saved
   }
 
   private func publishRestingCloudMachines(skip: Set<String>) {

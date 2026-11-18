@@ -84,7 +84,7 @@ enum CrashReporting {
         // A build below its minimum is no longer supported: nobody fixes
         // what it reports (`ClientUpdateGate.swift`).
         if PhoneUpdateGateFlag.isBlocked { return nil }
-        if isIdleRunLoopAppHang(event) || isNoiseHang(event) { return nil }
+        if isIdleRunLoopAppHang(event) || isNoiseHang(event) || isAccessibilityLoadAppHang(event) { return nil }
         groupAppHang(event)
         guard ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event)) else { return nil }
         let scrubbed = ADECrashScrubber.scrub(event)
@@ -252,6 +252,21 @@ enum CrashReporting {
       ?? event.threads?.first(where: { $0.current?.boolValue == true })?.stacktrace
     guard let frames = stacktrace?.frames else { return false }
     return ADEAppHangStack.isIdleRunLoop(frames.map {
+      ADEAppHangStack.Frame(package: $0.package, inApp: $0.inApp?.boolValue == true)
+    })
+  }
+
+  /// A non-fatal app hang inside iOS loading its accessibility settings bundle
+  /// (an accessibility setting changed; Apple's review devices do it on
+  /// launch), with no ADE code in the run loop: the system's work, not ours
+  /// (ADE-IOS-25). A watchdog kill is always kept.
+  private static func isAccessibilityLoadAppHang(_ event: Sentry.Event) -> Bool {
+    guard event.level != .fatal, let exception = event.exceptions?.last,
+          let type = exception.type, type.contains("App Hang"), !type.hasPrefix("Fatal") else { return false }
+    let stacktrace = exception.stacktrace
+      ?? event.threads?.first(where: { $0.current?.boolValue == true })?.stacktrace
+    guard let frames = stacktrace?.frames else { return false }
+    return ADEAppHangStack.isAccessibilityLoad(frames.map {
       ADEAppHangStack.Frame(package: $0.package, inApp: $0.inApp?.boolValue == true)
     })
   }
@@ -452,6 +467,18 @@ enum ADEAppHangStack {
   }
 
   private static let idleRunLoopLibraries: Set<String> = ["CoreFoundation", "libsystem_kernel.dylib"]
+
+  /// True when the run loop is busy in iOS's accessibility settings loader
+  /// (`libAccessibility` / `AccessibilitySettingsLoader`) and no ADE code runs
+  /// inside the run loop.
+  static func isAccessibilityLoad(_ frames: [Frame]) -> Bool {
+    guard let runLoopEntry = frames.firstIndex(where: { library($0) == "GraphicsServices" }) else { return false }
+    let insideRunLoop = frames[frames.index(after: runLoopEntry)...]
+    guard !insideRunLoop.contains(where: \.inApp) else { return false }
+    return insideRunLoop.contains { accessibilityLoaderLibraries.contains(library($0)) }
+  }
+
+  private static let accessibilityLoaderLibraries: Set<String> = ["libAccessibility.dylib", "AccessibilitySettingsLoader"]
 
   private static func library(_ frame: Frame) -> String {
     guard let package = frame.package else { return "" }

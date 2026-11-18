@@ -57,8 +57,10 @@ extension ChatThreadEngine {
       return
     }
     sessionDeleted = false
+    var generationChanged = false
     if let incoming = input.historyGeneration {
       if let generation, generation != incoming {
+        generationChanged = true
         clearLog()
         pendingHistoryReset = true
         // The store drops its rows itself when it sees a new generation.
@@ -75,6 +77,18 @@ extension ChatThreadEngine {
     var outcomes: [InsertOutcome] = []
     var appended: [AgentChatEventEnvelope] = []
     var persisted: [ChatLogStoredEvent] = []
+
+    // An empty full snapshot of the same history is a host that could not fit
+    // or read its tail (one event over the size cap), not a chat with no
+    // history: keep the rows already shown instead of blanking the thread.
+    if !input.resumed, !generationChanged,
+       input.events.isEmpty, input.pinnedEvents.isEmpty,
+       !(sequenced.isEmpty && unsequenced.isEmpty) {
+      hostSnapshotReceived = true
+      noteLogChange(outcomes: outcomes, appended: appended)
+      pendingUrgent = true
+      return
+    }
 
     if input.resumed {
       for event in input.events {

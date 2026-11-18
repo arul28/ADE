@@ -365,6 +365,8 @@ func cloudLaneState(fleetKey: String?, sync: SyncService, store: AccountCloudSto
   let instance = sync.cloudServerInstance(fleetKey: fleetKey)
   if instance?.isComingUp == true { return .waking }
   if let refusal = store.doingRefusal { return .refused(refusal) }
+  // Up with no link from this phone (a send through the account woke it): not asleep.
+  if instance?.isAwake == true { return .awake }
   return .asleep
 }
 

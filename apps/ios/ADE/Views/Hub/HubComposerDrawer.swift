@@ -553,7 +553,7 @@ struct HubInlineComposer: View {
       sectionLabel("Lane")
       ScrollView {
         LazyVStack(spacing: 2) {
-          autoCreateLaneRow
+          if !pickedMachineIsCloud { autoCreateLaneRow }
           ForEach(lanesForPickedProject) { lane in
             laneRow(lane)
           }
@@ -612,7 +612,7 @@ struct HubInlineComposer: View {
       for rosterProject in machine.projects {
         add(HubComposerCopy(
           machineKey: machine.machineKey,
-          machineName: machine.name,
+          machineName: syncService.cloudLaneComputerName(fleetKey: machine.machineKey) ?? machine.name,
           accountMachineKey: accountKey,
           project: rosterProject.asRemoteMachineProjectSummary
         ))
@@ -1382,12 +1382,21 @@ struct HubInlineComposer: View {
 
   // MARK: Destination resolution
 
+  /// An ADE Cloud lane computer exists for its one lane: its main checkout is
+  /// left out and no new lane is made there.
+  private var pickedMachineIsCloud: Bool {
+    syncService.isCloudFleetKey(pickedMachineKey ?? syncService.focusedMachineKey)
+  }
+
   private func lanes(forProjectId id: String) -> [RemoteRosterLane] {
+    let lanes: [RemoteRosterLane]
     if pickedMachineKey != nil {
-      return pickedRemoteMachine?.projects.first { $0.projectId == id }?.lanes ?? []
+      lanes = pickedRemoteMachine?.projects.first { $0.projectId == id }?.lanes ?? []
+    } else {
+      guard !id.isEmpty, let project = syncService.projects.first(where: { $0.id == id }) else { return [] }
+      lanes = syncService.rosterProject(for: project)?.lanes ?? []
     }
-    guard !id.isEmpty, let project = syncService.projects.first(where: { $0.id == id }) else { return [] }
-    return syncService.rosterProject(for: project)?.lanes ?? []
+    return pickedMachineIsCloud ? lanes.filter { ($0.laneType ?? "") != "primary" } : lanes
   }
 
   /// Primary lane for a project (or its first lane); falls back to the
@@ -1400,7 +1409,7 @@ struct HubInlineComposer: View {
     if let first = lanes.first {
       return first.id
     }
-    return workAutoCreateLaneSentinelId
+    return pickedMachineIsCloud ? "" : workAutoCreateLaneSentinelId
   }
 
   /// Reconciles the (possibly persisted) destination against the live project +
@@ -1451,7 +1460,7 @@ struct HubInlineComposer: View {
       selectedLaneId = defaultLaneId(forProjectId: resolvedProjectId)
       return
     }
-    if !isAutoCreateLane {
+    if !isAutoCreateLane || pickedMachineIsCloud {
       let lanes = lanesForPickedProject
       if selectedLaneId.isEmpty || !lanes.contains(where: { $0.id == selectedLaneId }) {
         selectedLaneId = defaultLaneId(forProjectId: pickedProjectId)

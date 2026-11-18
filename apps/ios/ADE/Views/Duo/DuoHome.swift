@@ -152,12 +152,17 @@ func duoHomeMachines(syncService: SyncService, fleet: MachineFleet) -> [DuoHomeM
     let working = machine.projects.reduce(0) { partial, project in
       partial + project.chats.filter(\.countsTowardRunning).count
     }
+    // ADE Cloud computers read "ADE Cloud · <lane>" (as `ade` lists them),
+    // so two of them are told apart, and "Asleep" while the account says so
+    // instead of the link's Offline or Paused.
+    let asleep = machine.state != .live
+      && syncService.cloudServerInstance(fleetKey: machine.machineKey)?.isResting == true
     rows.append(
       DuoHomeMachine(
         id: machine.machineKey,
-        name: machine.name,
-        statusWord: duoMachineFleetStateWord(machine.state),
-        tone: duoMachineFleetStateTone(machine.state),
+        name: syncService.cloudLaneComputerName(fleetKey: machine.machineKey) ?? machine.name,
+        statusWord: asleep ? "Asleep" : duoMachineFleetStateWord(machine.state),
+        tone: asleep ? .neutral : duoMachineFleetStateTone(machine.state),
         projectCount: machine.projects.count,
         workingCount: working,
         isLive: machine.state == .live

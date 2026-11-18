@@ -4279,6 +4279,8 @@ final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected {
     didSet {
       guard connectionState != oldValue else { return }
+      // A deleted ADE Cloud computer's link just dropped: leave it.
+      if oldValue == .connected { leaveDeletedFocusedCloudComputer() }
       if connectionState == .connected {
         helloSentWithProvisionalDeviceId = deviceIdIsProvisional
         // The focused computer answered: a failed wake of it is over.
@@ -25107,8 +25109,38 @@ final class SyncService: ObservableObject {
       syncChatLog.notice(
         "request_timeout_resolved_without_reconnect requestId=\(requestId, privacy: .public) disconnectOnTimeout=\(policy.disconnectOnTimeout, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public)"
       )
+      // An ADE Cloud computer that slept or was deleted leaves the relay
+      // holding its link half-open: nothing closes the socket and every
+      // request times out. Probe the link, and read the account server for
+      // the computer's state.
+      if isCloudFleetKey(focusedMachineKey) {
+        verifyTransportAliveAfterSilence(policy.error, trigger: "cloud_request_timeout")
+        refreshCloudServerIfStale()
+      }
       resolve(requestId: requestId, result: .failure(policy.error))
     }
+  }
+
+  /// How long a liveness ping may go unanswered on this network.
+  var transportProbeTimeoutNanoseconds: UInt64 {
+    syncTransportProbeTimeoutNanoseconds(
+      isExpensive: lastNetworkPathSnapshot?.isExpensive == true,
+      isConstrained: lastNetworkPathSnapshot?.isConstrained == true
+    )
+  }
+
+  /// The focused machine is an ADE Cloud computer the account says is asleep
+  /// or stopped while its link reads connected: a sleep can leave the
+  /// relay's half of the pair open, so no close comes. Probe the link; a
+  /// computer that is awake answers and nothing changes.
+  func probeFocusedLinkIfCloudComputerRests() {
+    guard connectionState == .connected, let focusedKey = focusedMachineKey else { return }
+    let rests = cloudMachineFleetKeys.contains(focusedKey) && cloudServerInstance(fleetKey: focusedKey)?.isResting == true
+    guard rests || focusedIsDeletedCloudComputer else { return }
+    verifyTransportAliveAfterSilence(
+      syncTransportSilenceRecoveryError(),
+      trigger: rests ? "cloud_computer_resting" : "cloud_computer_deleted"
+    )
   }
 
   /// Shared liveness check for request timeouts and heartbeat silence. Inbound
@@ -29942,6 +29974,50 @@ extension SyncService {
     HiddenMachineStore.shared.hide(identity: hiddenIdentity)
   }
 
+  /// The account and cloud state `forgetDeletedCloudComputerPairings` last
+  /// ran on: each run reads the saved pairings, so it runs once per state.
+  @MainActor private enum DeletedCloudPairings { static var lastInputs: String? }
+
+  /// Drops this phone's pairing with each ADE Cloud computer the account has
+  /// deleted. Kept, it listed in Machines as a paused or connecting "ADE
+  /// Cloud" that never answers. A pairing is a deleted cloud computer when
+  /// this phone knew it as one (it left the cloud set, or its host or relay
+  /// key is a cloud computer's) and neither the account's machines nor its
+  /// ADE Cloud computers list it now. The focused one is left to
+  /// `leaveDeletedFocusedCloudComputer`.
+  func forgetDeletedCloudComputerPairings() {
+    let account = AccountService.shared
+    guard account.machinesState == .loaded, cloudServerReadFinished else { return }
+    let liveCloudKeys = Set(cloudServerInstances.compactMap { $0.machineKey?.lowercased() })
+    let inputs = [
+      account.machines.map(\.machineKey).sorted().joined(separator: ","),
+      cloudMachineFleetKeys.sorted().joined(separator: ","),
+      liveCloudKeys.sorted().joined(separator: ","),
+      focusedMachineKey ?? "",
+    ].joined(separator: "|")
+    guard inputs != DeletedCloudPairings.lastInputs else { return }
+    DeletedCloudPairings.lastInputs = inputs
+    let seen = Set(UserDefaults.standard.stringArray(forKey: Self.seenCloudFleetKeysDefaultsKey) ?? [])
+    let accountKeys = Set(account.machines.map { $0.machineKey.lowercased() })
+    for entry in fleetMachineProfiles() {
+      let key = entry.machineKey
+      guard key != focusedMachineKey, !cloudMachineFleetKeys.contains(key),
+            account.machine(forFleetKey: key) == nil
+      else { continue }
+      let profile = entry.profile
+      let relayKeys = ([profile.lastSuccessfulAddress] + profile.savedAddressCandidates + (profile.savedRelayCandidates ?? []))
+        .compactMap { $0.flatMap(syncRelayMachineKey(from:))?.split(separator: "/").last.map { $0.lowercased() } }
+      // Still on the account under its relay key: not deleted.
+      guard relayKeys.allSatisfy({ !accountKeys.contains($0) && !liveCloudKeys.contains($0) }) else { continue }
+      let knownCloud = seen.contains(key)
+        || CloudLaneComputerLabels.label(machineKey: relayKeys.first, hostName: profile.hostName) != nil
+      guard knownCloud else { continue }
+      cloudServerLog.notice("cloud_server deleted_computer_pairing=forgotten")
+      machineFleet?.stopKeepingLive(machineKey: key)
+      if let host = discoveredHost(fromSavedProfile: profile) { removeSavedHost(host) }
+    }
+  }
+
   /// Pairs an account machine this phone never paired, next to the machines
   /// already connected. Pairing attaches the phone to it, so it becomes the
   /// primary machine; the previous primary stays connected as a fleet machine
@@ -30422,7 +30498,9 @@ extension SyncService {
       focusedNotLiveSince = now
     }
     let isCloud = focusedMachineKey.map { cloudMachineFleetKeys.contains($0) } ?? false
-    let lists = fleetMachineListsWork(
+    // A deleted ADE Cloud computer is not an offline one: its cached work
+    // must not show for the reconnect window after a cold start.
+    let lists = !focusedIsDeletedCloudComputer && fleetMachineListsWork(
       isLive: isLive,
       isCloud: isCloud,
       isWanted: !autoReconnectPausedByUser,
@@ -30669,6 +30747,7 @@ extension SyncService {
     }
     cloudMachineFleetKeys = Set(keys)
     leaveDeletedFocusedCloudComputer()
+    forgetDeletedCloudComputerPairings()
   }
 }
 

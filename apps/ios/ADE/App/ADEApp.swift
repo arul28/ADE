@@ -132,7 +132,13 @@ struct ADEApp: App {
           machineFleet.setAppActive(UIApplication.shared.applicationState == .active)
           await syncService.handleForegroundTransition()
         }
-        .onChange(of: scenePhase) { _, newPhase in
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+          // A launch in the background (a silent push) never reports a move to
+          // .background: stamp leaving it, so a socket iOS suspended meanwhile
+          // reads as suspended, not as a live drop.
+          if oldPhase == .background, newPhase != .background {
+            SyncLiveDropReport.noteAppBackgrounded()
+          }
           if newPhase == .background {
             didEnterBackground = true
             // Stamp the suspension so the next foreground can tell a glance at

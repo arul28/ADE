@@ -142,7 +142,7 @@ struct HubComposerStartOnChips: View {
               HStack(spacing: 5) {
                 Image(systemName: machineSymbol(machineKey: copy.machineKey, name: copy.machineName))
                   .font(.system(size: 10.5))
-                Text(copy.machineName)
+                Text(label(copy))
                   .font(.system(size: 12.5, weight: selected ? .semibold : .regular))
                   .lineLimit(1)
               }
@@ -155,7 +155,7 @@ struct HubComposerStartOnChips: View {
               )
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Start on \(copy.machineName)")
+            .accessibilityLabel("Start on \(label(copy))")
             .accessibilityAddTraits(selected ? .isSelected : [])
           }
         }
@@ -164,5 +164,25 @@ struct HubComposerStartOnChips: View {
     .padding(.leading, 39)
     .padding(.trailing, 8)
     .padding(.bottom, 6)
+  }
+
+  /// The computer's name; with the folder too when that computer holds two
+  /// folders of the project (or two computers share a name).
+  private func label(_ copy: HubComposerCopy) -> String {
+    let others = copies.filter { $0.id != copy.id && $0.machineName == copy.machineName }
+    guard !others.isEmpty, let parts = Self.pathParts(copy) else { return copy.machineName }
+    // The shortest path ending none of the others share ("ADE", else "Projects/ADE").
+    let otherParts = others.compactMap(Self.pathParts)
+    var count = 1
+    while count < parts.count,
+          otherParts.contains(where: { Array($0.suffix(count)) == Array(parts.suffix(count)) }) {
+      count += 1
+    }
+    return "\(copy.machineName) · \(parts.suffix(count).joined(separator: "/"))"
+  }
+
+  private static func pathParts(_ copy: HubComposerCopy) -> [String]? {
+    let parts = (copy.project.rootPath ?? "").split(whereSeparator: { $0 == "/" || $0 == "\\" }).map(String.init)
+    return parts.isEmpty ? nil : parts
   }
 }

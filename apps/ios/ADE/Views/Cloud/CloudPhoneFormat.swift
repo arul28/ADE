@@ -582,6 +582,15 @@ enum CloudLaneComputerLabels {
     return nil
   }
 
+  /// The lane an ADE Cloud computer was made for, by its machine key; nil
+  /// for any other machine or a computer with no lane.
+  static func laneName(machineKey: String?, defaults: UserDefaults = .standard) -> String? {
+    guard let id = machineKey?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !id.isEmpty,
+          let lanes = defaults.dictionary(forKey: defaultsKey) as? [String: String]
+    else { return nil }
+    return nonEmptyTrimmed(lanes[id])
+  }
+
   /// `name`, or "ADE Cloud" when the machine is an ADE Cloud computer.
   static func present(_ name: String, machineKey: String?, hostName: String? = nil) -> String {
     label(machineKey: machineKey, hostName: hostName) ?? name
