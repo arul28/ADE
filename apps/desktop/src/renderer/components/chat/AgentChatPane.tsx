@@ -6559,6 +6559,23 @@ export function AgentChatPane({
       }
     }
   }, [cloudQueue.messages, renderedSessionId, selectedEvents, selectedSessionId]);
+  // A failed message whose words reached this chat later (the person sent
+  // them again) is no longer missing: its row goes, as a Dismiss would. Only
+  // a user message after the failed one was queued counts.
+  const dismissFailedQueued = cloudQueue.dismiss;
+  useEffect(() => {
+    if (cloudQueue.failed.length === 0 || renderedSessionId !== selectedSessionId) return;
+    for (const message of cloudQueue.failed) {
+      const text = message.text.trim();
+      if (!text) continue;
+      const arrived = selectedEvents.some(({ event, timestamp }) => (
+        event.type === "user_message"
+        && Date.parse(timestamp) > message.createdAt
+        && (event.text.trim() === text || event.displayText?.trim() === text)
+      ));
+      if (arrived) dismissFailedQueued(message.messageId);
+    }
+  }, [cloudQueue.failed, dismissFailedQueued, renderedSessionId, selectedEvents, selectedSessionId]);
   // A chat that arrived from another machine carries one durable marker.
   const crossMachineArrival = useCrossMachineArrival(renderedSessionId, selectedEvents);
   const compactFirst = useCompactFirst(selectedEvents, renderedSessionId, selectedSession?.promptCache, selectedSession?.provider, selectedSession?.model, selectedSession?.compactFirstIdleMs);

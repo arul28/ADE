@@ -18,6 +18,7 @@ import type {
 } from "../../shared/types/chat";
 import { SAVED_CHAT_STOPPED_STATUS, savedChatsMachineKey, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import { REMOTE_TARGET_NOT_FOUND_MESSAGE } from "../../shared/types/remoteRuntime";
+import { isRemoteMachineAwayError } from "../../shared/runtimeErrors";
 import type { LaneSummary } from "../../shared/types/lanes";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import type { TerminalSessionSummary } from "../../shared/types/sessions";
@@ -445,7 +446,23 @@ export function withSavedChatReads(
           await wakeOnRefusal(pin, args.sessionId, (callPin) => api.updateSession({ sessionId: args.sessionId, ...picks }, callPin))
             .catch(picksNotApplied);
         }
-        return wakeOnRefusal(pin, args.sessionId, (callPin) => api.send(args, callPin));
+        try {
+          return await wakeOnRefusal(pin, args.sessionId, (callPin) => api.send(args, callPin));
+        } catch (error) {
+          // An ADE Cloud computer that went to sleep a moment ago still reads
+          // connected until its link goes stale (about 90 s), so the send left
+          // on a dead link. The account's queue takes it and wakes the
+          // computer. Safe if the first copy did arrive: the queue sends the
+          // same id, and the computer answers a repeated id without sending
+          // again.
+          const resting = isRemoteMachineAwayError(error) && args.clientSendId && reach?.queueSend
+            && pin?.kind === "remote" && isCloudConnectionTarget(pin.targetId)
+            ? savedChatLocation(pin, args.sessionId, () => false)
+            : null;
+          if (!resting || resting.computerGone || !reach?.queueSend) throw error;
+          if (await reach.queueSend(resting, args) === "sent") return;
+          throw error;
+        }
       }
       // The account's queue keeps the message and wakes the computer; the
       // send never waits for the computer to come up.
