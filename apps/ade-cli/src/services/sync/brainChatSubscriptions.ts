@@ -293,8 +293,11 @@ export function createBrainChatSubscriptions(args: {
         // The phone gets no answer and shows "Couldn't load the transcript".
         args.logger.warn("sync_brain.chat_subscribe_unanswered", {
           sessionId,
-          reason: scope ? "personal_scope_unavailable" : "no_chat_scope",
+          reason: scope === "personal" ? "personal_scope_unavailable" : "no_chat_scope",
           peerDeviceId: peer.metadata?.deviceId ?? null,
+          peerAppVersion: peer.metadata?.appVersion ?? null,
+          peerAppBuild: peer.metadata?.appBuild ?? null,
+          peerBundleId: peer.metadata?.bundleIdentifier ?? null,
         });
         return;
       }
