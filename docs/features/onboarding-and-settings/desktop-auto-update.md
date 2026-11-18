@@ -100,9 +100,37 @@ write. It uses `cmd start` because, from Electron, a `detached`
 powershell.exe exits without running and an attached one dies with ADE. The
 small, topmost "Updating ADE to vX" window follows the old app quitting, the
 installer running, and the steps in `install-steps.log`. It closes when the new
-ADE has a window on screen. If the installer ends and no new ADE appears, it
-says so and offers Open ADE. Its log is read into `ade-update.jsonl` as
+ADE has a window on screen. If the installer ends and no new ADE appears, or
+the installer is still running after 10 minutes, it says so on the window and
+then acts without waiting for a click, because a remote update (from another
+machine or the phone) has nobody at the PC: it stops a still-running installer
+together with its child processes, then opens ADE. Whichever version is
+installed comes up and puts its background service back, so the machine
+returns to the relay. The heartbeat says `failed` first, so that ADE does not
+defer to the window (below). An install the person quit into only gets the
+stuck installer stopped. Its log is read into `ade-update.jsonl` as
 `autoUpdate.install_progress_report` 30 s into the next launch.
+
+No installer dialog may wait for an answer during a silent update: a
+`MessageBox` without `/SD` is shown even under `/S`. electron-builder's own
+"uninstall failed" box (`handleUninstallResult`, after the old uninstaller has
+failed five times) has none, so `installer.nsh` replaces it through the
+`customUnInstallCheck` and `customUnInstallCheckCurrentUser` hooks. The old
+uninstaller fails when it cannot rename a file out of the install folder, which
+a process outside that folder causes by holding a file open (a dev brain from a
+checkout with the installed `resources\app.asar` open did it on 2026-11-18,
+and the PC sat on the hidden box for two hours with no ADE and no service). The
+hook answers the box, reopens the old ADE when the run is a silent update, and
+exits with code 2, leaving the old install in place for a later retry. Before
+that reopen it closes this install's live update window through the window's
+own cancel file (killing it after 5 s), because the running window is the
+installed release's script: while it beats a non-failed heartbeat, the old ADE
+would take the launch as a hand-launch mid-install and exit. Stable and Beta
+keep their windows side by side in `%LOCALAPPDATA%\ADE`, so only a window whose
+`appExe` is this install's exe counts. A window for an install on
+quit is left alone and ADE stays closed, the same rule the window follows,
+unless the person opened ADE during the install (`launch-requested.json` is
+beside the window): then it is closed and ADE reopened.
 
 The window also writes a heartbeat. A copy of the old ADE opened by hand during
 the install (the person sees nothing happening and clicks the shortcut) reads
@@ -127,7 +155,8 @@ reinstalls, restarts and verifies the service itself (`runUpdateTransaction`). E
 from `quitAndInstall` (`autoInstallOnAppQuit` is off), which records the
 pending install that makes that launch run the transaction. The trade: if the
 new ADE does not open at all, the brain stays down, and the machine is
-unreachable from the phone, until ADE is next opened. `install-path.cmd` broadcasts
+unreachable from the phone, until ADE is next opened. The update window's
+recovery above is what opens it when nobody is there. `install-path.cmd` broadcasts
 `WM_SETTINGCHANGE` only when PATH actually changed, and detached. Its 5 s
 per-window timeout stacked to 82 s inside the installer. `customCheckAppRunning`
 replaces electron-builder's app-running check with one PowerShell pass instead
