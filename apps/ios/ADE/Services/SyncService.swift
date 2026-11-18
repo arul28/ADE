@@ -23230,7 +23230,10 @@ final class SyncService: ObservableObject {
     let remoteHostSiteId = brain?["siteId"] as? String
     let incomingHostIdentity = syncNormalizedCommandScopeValue(remoteHostIdentity)
       ?? syncNormalizedCommandScopeValue(expectedHostIdentity)
-    if let identity = syncNonEmpty(remoteHostIdentity) {
+    // The version belongs to this hello, not to the saved profile: a host that
+    // stops advertising one (or omits its device id and keeps only the profile's
+    // identity) must not keep the previous connection's version in the trace.
+    if let identity = syncNonEmpty(remoteHostIdentity) ?? syncNonEmpty(expectedHostIdentity) {
       let machineKey = HiddenMachineStore.fleetKey(deviceId: identity)
       let version = syncNonEmpty(brain?["appVersion"] as? String)
       if hostAppVersionByMachineKey[machineKey] != version {
@@ -29552,6 +29555,7 @@ extension SyncService {
     var fields = (focusedChatStreamTraces[trimmed] ?? ChatStreamTrace()).fields
     fields["path"] = "focused"
     fields["connState"] = connectionState.rawValue
+    fields["hostAppVersion"] = focusedSocketMachineKey.flatMap { hostAppVersionByMachineKey[$0] } ?? "nil"
     fields["canSendLive"] = String(canSendLiveRequests())
     fields["hostChatStreaming"] = String(supportsChatStreaming)
     fields["hostChatLogV2"] = String(supportsChatLogV2)

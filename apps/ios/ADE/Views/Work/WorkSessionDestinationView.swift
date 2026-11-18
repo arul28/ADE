@@ -3403,9 +3403,10 @@ func workChatEmptyThreadAnomaly(
 }
 
 extension WorkSessionDestinationView {
-  /// While the chat is open, look every 10 s for the empty-thread state and
-  /// report it to Sentry once per appearance, with the stream trace that says
-  /// where the history went. Reading a frame costs nothing; the report is rare.
+  /// While the chat is open, look every 10 s for the empty-thread state or an
+  /// unanswered transcript request, and report it to Sentry once per
+  /// appearance with the stream trace that says where the history went.
+  /// Reading a frame costs nothing; the report is rare.
   @MainActor
   func runEmptyThreadProbe() async {
     let openedAt = Date()
@@ -3415,6 +3416,21 @@ extension WorkSessionDestinationView {
       let shown = threadModel.frame
       let latest = await threadModel.engine.currentFrame
       guard !Task.isCancelled, let reference = latest ?? shown else { continue }
+      // The link is up but the machine never answered the transcript request:
+      // the pane shows "Couldn't load the transcript". Nothing else reports it.
+      if isLiveAndReachable, !reference.sessionDeleted, case .failed(let message) = reference.loadState {
+        reportChatStreamAnomaly(
+          domain: "ADE.ChatTranscriptUnanswered",
+          area: "chat.transcript_unanswered",
+          kind: "transcript_unanswered",
+          description: "Chat transcript request went unanswered on a live link",
+          shown: shown,
+          latest: latest,
+          openedAt: openedAt,
+          extra: ["loadFailure": String(message.prefix(160))]
+        )
+        return
+      }
       guard let kind = workChatEmptyThreadAnomaly(
         shownTimelineCount: shown?.presentation.timelineCount ?? 0,
         isStreamingTurn: shown?.isStreamingTurn ?? reference.isStreamingTurn,
@@ -3423,16 +3439,34 @@ extension WorkSessionDestinationView {
         diagnostics: reference.ingestDiagnostics,
         isLiveAndReachable: isLiveAndReachable
       ) else { continue }
-      reportEmptyThread(kind: kind, shown: shown, latest: latest, openedAt: openedAt)
+      reportChatStreamAnomaly(
+        domain: "ADE.ChatEmptyThread",
+        area: "chat.empty_thread.\(kind)",
+        kind: kind,
+        description: "Working chat shows no messages (\(kind))",
+        shown: shown,
+        latest: latest,
+        openedAt: openedAt
+      )
       return
     }
   }
 
   @MainActor
-  private func reportEmptyThread(kind: String, shown: ChatThreadFrame?, latest: ChatThreadFrame?, openedAt: Date) {
+  private func reportChatStreamAnomaly(
+    domain: String,
+    area: String,
+    kind: String,
+    description: String,
+    shown: ChatThreadFrame?,
+    latest: ChatThreadFrame?,
+    openedAt: Date,
+    extra: [String: String] = [:]
+  ) {
     let ingest = (latest ?? shown)?.ingestDiagnostics ?? ChatThreadIngestDiagnostics()
     var context = syncService.chatStreamDiagnostics(sessionId: sessionId)
-    context["area"] = "chat.empty_thread.\(kind)"
+    context.merge(extra) { _, new in new }
+    context["area"] = area
     context["kind"] = kind
     context["sessionId"] = sessionId
     context["machineKey"] = threadKey?.machineKey ?? "nil"
@@ -3469,9 +3503,9 @@ extension WorkSessionDestinationView {
     context["engineAwaitingBoundaryPage"] = String(ingest.awaitingBoundaryPage)
     CrashReporting.capture(
       NSError(
-        domain: "ADE.ChatEmptyThread",
+        domain: domain,
         code: 1,
-        userInfo: [NSLocalizedDescriptionKey: "Working chat shows no messages (\(kind))"]
+        userInfo: [NSLocalizedDescriptionKey: description]
       ),
       context: context
     )
