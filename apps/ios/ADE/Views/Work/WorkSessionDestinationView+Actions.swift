@@ -193,8 +193,9 @@ extension WorkSessionDestinationView {
             cloudFiles: cloudFiles
           )
         } catch is CloudChatFilesNeedLiveLink {
-          // The computer runs an older ADE the account can't queue files for.
-          // It was just woken: upload the files over its live link and send.
+          // A sleeping ADE Cloud chat with files: the account can't hand them
+          // to its computer yet, so the computer was just woken. Upload the
+          // files over its live link and send.
           let liveRefs = try await workChatSaveInputAttachments(
             inputAttachments,
             syncService: syncService,
