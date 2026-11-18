@@ -1555,15 +1555,15 @@ itself, tip cards, surveys, situational suggestions) shares one budget
 nothing in a new account's first three days. A suggestion is never held back
 by it, but spends it.
 
-The "Invite friends" sidebar nudge goes through it too
-(`renderer/onboarding/unaskedNudge.ts`): a new showing waits until onboarding
-ended on an earlier launch and the budget has room, and spends it; a banner
-already up stays up, except while onboarding still has this launch. "Star ADE
-on GitHub" keeps its own schedule outside the budget. Both mount only while
-the sidebar shows, so a hidden sidebar never counts a showing. The
-"Import your chats" pill under the new-chat composer is not a nudge (it is the
-composer's own import entry, dismissible per project), but it waits while the
-tour runs, since the tour's cards point at the same composer.
+The sidebar nudges ("Invite friends, get free cloud hours" and "Star ADE on
+GitHub") stay outside it: each already has its own message-count schedule with
+snoozes and a final dismissal (`lib/nudgePill.ts`). One shows at a time, and
+"Invite friends" goes first (it shows only to someone who has used ADE Cloud,
+and it pays them hours); the star pill takes the place once the invite is
+dismissed or done. Both wait while the tour runs (`onboarding/useTourOpen.ts`)
+and mount only while the sidebar shows. The "Import your chats" pill under the
+new-chat composer also waits while the tour runs, since the tour's cards point
+at the same composer.
 
 Onboarding lives on the account as one setting, `onboarding.progress`
 (`shared/onboardingProgressRecord.ts`, `ACCOUNT_SCOPE_ALL`): started, skipped,

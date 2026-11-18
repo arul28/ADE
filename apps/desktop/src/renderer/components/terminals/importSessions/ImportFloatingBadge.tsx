@@ -4,7 +4,7 @@ import { cn } from "../../ui/cn";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../../../shared/types/externalSessions";
 import { ToolLogo } from "../ToolLogos";
 import { PROVIDER_TOOL_TYPE } from "./contract";
-import { useTourOpen } from "../../../onboarding/unaskedNudge";
+import { useTourOpen } from "../../../onboarding/useTourOpen";
 
 const STORAGE_PREFIX = "ade.importChatsBadge.dismissed:";
 
