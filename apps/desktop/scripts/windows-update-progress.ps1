@@ -310,15 +310,21 @@ function Invoke-UnattendedRecovery {
   $state.recoveryDone = $true
   foreach ($installer in @(Get-ProcessesAtPath $InstallerPath)) {
     # /T: the old uninstaller it runs is where such a dialog usually sits.
-    # taskkill reports through its exit code, never by throwing, and a nonzero
-    # code can also mean the process had already exited, so whether the
-    # installer is gone is read back from the process itself.
-    & taskkill.exe /PID ([string]$installer.Id) /T /F 2>&1 | Out-Null
-    $killExit = $LASTEXITCODE
-    if (-not $installer.WaitForExit(5000)) {
-      Write-ProgressLog "installer_stop_failed" "pid=$($installer.Id) exit=$killExit"
-    } else {
-      Write-ProgressLog "installer_stopped" "pid=$($installer.Id) exit=$killExit"
+    # taskkill reports through its exit code, and a nonzero code can also mean
+    # the process had already exited, so whether the installer is gone is read
+    # back from the process itself. Its stderr is not redirected: under
+    # ErrorActionPreference Stop, Windows PowerShell 5.1 turns redirected
+    # native stderr into a thrown error. Nothing here may stop the reopen below.
+    try {
+      & taskkill.exe /PID ([string]$installer.Id) /T /F | Out-Null
+      $killExit = $LASTEXITCODE
+      if ($installer.WaitForExit(5000)) {
+        Write-ProgressLog "installer_stopped" "pid=$($installer.Id) exit=$killExit"
+      } else {
+        Write-ProgressLog "installer_stop_failed" "pid=$($installer.Id) exit=$killExit"
+      }
+    } catch {
+      Write-ProgressLog "installer_stop_failed" "pid=$($installer.Id) $($_.Exception.Message)"
     }
   }
   # ADE opens even when the installer survived: an ADE that comes up is the
