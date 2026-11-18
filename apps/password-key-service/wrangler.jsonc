@@ -1,5 +1,5 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
+  "$schema": "../../node_modules/wrangler/config-schema.json",
   // The Passwords key service: the one place that can wrap or unwrap an
   // account's Passwords vault key. Kept apart from ade-push-relay, which
   // stores the sealed items and the wrapped key, so a dump of that Worker's
