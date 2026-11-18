@@ -33,7 +33,8 @@ const REDACTED = "[REDACTED]";
 /** Field names that hold a credential, the same list `redactSecrets` treats as a JSON key. */
 const SENSITIVE_KEY = /^(?:api[_-]?key|secret|token|password|authorization)$/i;
 
-type Entry = { offset: number; seq: number; dirty: boolean; laneId: string | null };
+/** `rowStale`: the chat's title, status or lane name changed after its last part; the next upload sends the row even with no new text. */
+type Entry = { offset: number; seq: number; dirty: boolean; laneId: string | null; rowStale?: boolean };
 type StateFile = {
   v: 1;
   machineKey: string | null;
@@ -73,6 +74,8 @@ export type CloudChatUploader = {
    * that is not `interrupted` removes the "stopped for rest" mark.
    */
   noteTurnEnded(sessionId: string, turnStatus?: string): void;
+  /** The chat's name changed (a title set after its turn ended): its saved copy gets the new row. */
+  noteRowChanged(sessionId: string): void;
   /** A chat was deleted: its copy goes too. */
   noteChatDeleted(sessionId: string): void;
   /** A lane was deleted: every copy of its chats goes too. */
@@ -398,17 +401,9 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       if (!reader) return sent;
       const entry = state.chats[sessionId] ?? { offset: 0, seq: 0, dirty: true, laneId: null };
       state.chats[sessionId] = entry;
-      if (reader.size === entry.offset) {
-        entry.dirty = false;
-        persist();
-        return sent;
-      }
+      if (reader.size === entry.offset) return await sendStaleRow(sessionId, entry, base, machineKey, headers) || sent;
       const delta = readDelta(reader, entry.offset, deps.redactSecrets);
-      if (delta.kind === "none") {
-        entry.dirty = false;
-        persist();
-        return sent;
-      }
+      if (delta.kind === "none") return await sendStaleRow(sessionId, entry, base, machineKey, headers) || sent;
       if (delta.kind === "rewritten") {
         // The file got shorter than what was sent (a rewrite): the copy starts over.
         await deleteAndRestart(sessionId, base, machineKey, headers, entry);
@@ -419,7 +414,7 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
         entry.dirty = delta.more;
         persist();
         if (delta.more) continue;
-        return sent;
+        return await sendStaleRow(sessionId, entry, base, machineKey, headers) || sent;
       }
       const row = await deps.readChatRow(sessionId).catch((error: unknown) => {
         log?.warn("cloud.chat_upload_row_failed", { sessionId, error: error instanceof Error ? error.name : "unknown" });
@@ -459,10 +454,54 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       entry.offset = delta.nextOffset;
       entry.dirty = delta.more;
       entry.laneId = row.laneId;
+      // The row went with this part.
+      entry.rowStale = false;
       persist();
       sent = true;
       if (mode === "turn" || !delta.more) return sent;
     }
+  }
+
+  /**
+   * No new text, but the row changed (a title set after the turn ended): an
+   * empty part carries the row, so the saved copy shows the chat's name while
+   * its computer sleeps. Only for a copy that exists (`seq > 0`); a first part
+   * carries its row anyway. True when it was sent.
+   */
+  async function sendStaleRow(sessionId: string, entry: Entry, base: string, machineKey: string, headers: Record<string, string>): Promise<boolean> {
+    if (!entry.rowStale || entry.seq < 1) {
+      entry.dirty = false;
+      persist();
+      return false;
+    }
+    const row = await deps.readChatRow(sessionId).catch(() => null);
+    if (!row) {
+      entry.dirty = false;
+      persist();
+      return false;
+    }
+    const seq = entry.seq + 1;
+    try {
+      const response = await fetcher(cloudSavedChatPartUrl(base, machineKey, sessionId, seq), {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ instanceId, text: "", row }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+      if (!response.ok) throw new Error(`status_${response.status}`);
+    } catch (error) {
+      // Stays stale and dirty: the next turn or the flush before a sleep tries again.
+      log?.warn("cloud.chat_row_upload_failed", { sessionId, seq, error: error instanceof Error ? error.message : "unknown" });
+      entry.dirty = true;
+      persist();
+      return false;
+    }
+    entry.seq = seq;
+    entry.rowStale = false;
+    entry.dirty = false;
+    entry.laneId = row.laneId;
+    persist();
+    return true;
   }
 
   async function deleteAndRestart(sessionId: string, base: string, machineKey: string, headers: Record<string, string>, entry: Entry): Promise<void> {
@@ -508,6 +547,15 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       const entry = state.chats[sessionId] ?? { offset: 0, seq: 0, dirty: true, laneId: null };
       entry.dirty = true;
       state.chats[sessionId] = entry;
+      persist();
+      void schedule(sessionId);
+    },
+    noteRowChanged(sessionId) {
+      // Only a chat with a saved copy: a first upload carries its row anyway.
+      const entry = state.chats[sessionId];
+      if (disposed || !sessionId || !entry || entry.seq < 1) return;
+      entry.rowStale = true;
+      entry.dirty = true;
       persist();
       void schedule(sessionId);
     },
