@@ -13,6 +13,9 @@ import {
   starPillShowing,
 } from "../../../lib/starPill";
 import { captureStarPromptAnalytics } from "../../../lib/starPillActivity";
+import { isInvitePillVisible, useInvitePillPrefs } from "../../../lib/invitePill";
+import { useCloudAccount } from "../../../state/cloudAccountStore";
+import { useTourOpen } from "../../../onboarding/useTourOpen";
 import type { GitHubRepoStarState, OpenProjectBinding } from "../../../../shared/types";
 
 /** How long "Thanks!" stays up before it fades. */
@@ -35,11 +38,14 @@ async function readStarState(pin: OpenProjectBinding | null): Promise<GitHubRepo
 /**
  * The desktop "Star ADE on GitHub" pill above the sidebar footer. The parent
  * mounts it only on the Work tab of the desktop app; the rules for when it
- * shows live in `lib/starPill.ts`.
+ * shows live in `lib/starPill.ts`. One nudge at a time: it waits while the
+ * "Invite friends" pill is up, and both wait while the tour runs.
  */
 export function StarRepoPill() {
   const prefs = useRootAppStore((s) => s.starPill);
-  const visible = isStarPillVisible(prefs);
+  const inviteUp = isInvitePillVisible(useInvitePillPrefs(), useCloudAccount());
+  const tourOpen = useTourOpen();
+  const visible = !tourOpen && !inviteUp && isStarPillVisible(prefs);
   const showing = starPillShowing(prefs);
   const reducedMotion = usePrefersReducedMotion();
   const [thanks, setThanks] = useState<ThanksPhase>("none");

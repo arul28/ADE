@@ -1,8 +1,6 @@
 import { useCallback, useEffect } from "react";
 import { Gift } from "@phosphor-icons/react";
 import { Banner } from "../../ui/notice";
-import { useRootAppStore } from "../../../state/appStore";
-import { isStarPillVisible } from "../../../lib/starPill";
 import {
   INVITE_PILL_SCHEDULE,
   INVITE_PILL_SNOOZE_MESSAGES,
@@ -13,20 +11,22 @@ import {
 } from "../../../lib/invitePill";
 import { navigateToAppTarget } from "../../../lib/openExternal";
 import { useCloudAccount } from "../../../state/cloudAccountStore";
+import { useTourOpen } from "../../../onboarding/useTourOpen";
 
 /**
  * "Invite friends, get free cloud hours": the desktop pill in the star pill's
  * place. It shows only to an account ADE Cloud lets in that has used it, and
- * never while the star pill is up (one nudge at a time). The rules are in
+ * never while the tour runs. When both are due it goes first (it pays the
+ * person hours); the star pill waits until it is dismissed. The rules are in
  * `lib/invitePill.ts`; a click opens the invite card in Settings › ADE Cloud.
  */
 export function InviteFriendsPill() {
   const account = useCloudAccount();
   const prefs = useInvitePillPrefs();
-  const starUp = isStarPillVisible(useRootAppStore((s) => s.starPill));
-  const visible = !starUp && isInvitePillVisible(prefs, account);
   const showing = INVITE_PILL_SCHEDULE.showing(prefs);
   const shownDue = INVITE_PILL_SCHEDULE.shownDue(prefs);
+  const tourOpen = useTourOpen();
+  const visible = !tourOpen && isInvitePillVisible(prefs, account);
 
   // Once per showing, not per mount.
   useEffect(() => {
