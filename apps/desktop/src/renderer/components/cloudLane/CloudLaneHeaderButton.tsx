@@ -10,7 +10,7 @@ import { callCloudMachineAction, confirmCloudSleep } from "../remoteTargets/useC
 import { refreshCloudMachines } from "../remoteTargets/useCloudMachines";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { CloudTierChangeDialog } from "./CloudTierChangeDialog";
-import { cloudLaneLifeAvailable } from "./cloudLaneActions";
+import { cloudLaneChangesAvailable } from "./cloudLaneActions";
 import { deleteCloudLaneWithCheck } from "./deleteCloudLane";
 
 /**
@@ -33,7 +33,7 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
   const [sizing, setSizing] = useState(false);
   const computer = laneId ? computers.find((entry) => entry.laneId === laneId) ?? null : null;
   if (!computer) return null;
-  const life = cloudLaneLifeAvailable();
+  const life = cloudLaneChangesAvailable();
   const name = computer.laneName || "this lane";
   const idle = account?.dueForDeletion?.find((entry) => entry.instanceId === computer.instanceId) ?? null;
   const actions: MachineAction[] = [];

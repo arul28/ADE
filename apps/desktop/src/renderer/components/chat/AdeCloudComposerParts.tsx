@@ -8,7 +8,7 @@ import type { OpenProjectBinding } from "../../../shared/types/core";
 import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { CloudTierChangeDialog } from "../cloudLane/CloudTierChangeDialog";
-import { cloudLaneLifeAvailable } from "../cloudLane/cloudLaneActions";
+import { cloudLaneChangesAvailable, cloudLaneLifeAvailable } from "../cloudLane/cloudLaneActions";
 import { cloudLaneWithoutComputerForBinding, useCloudLanesWithoutComputer } from "../cloudLane/cloudLaneStores";
 import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import { cn } from "../ui/cn";
@@ -305,7 +305,7 @@ export function AdeCloudMachineChip({
 }) {
   const [sizing, setSizing] = useState(false);
   // A person changes the lane's size here; the change is account level (no pin), by the computer's id.
-  const canResize = !lane.noComputer && Boolean(lane.instanceId) && cloudLaneLifeAvailable();
+  const canResize = !lane.noComputer && Boolean(lane.instanceId) && cloudLaneChangesAvailable();
   // The same chip as every other machine: plain text and its icon, no box.
   const chipClass = cn(
     "inline-flex h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md px-1",
