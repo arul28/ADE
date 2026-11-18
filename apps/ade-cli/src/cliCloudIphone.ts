@@ -144,7 +144,7 @@ function installAppCall(args: Args, app: string): Call {
 function swipeCall(args: Args, verb: string): Call {
   const direction = (args.words[0] ?? "").toLowerCase();
   if (!DIRECTIONS.has(direction)) throw new CliUsageError(`ade apple ${verb} <up|down|left|right> [--label "<on this element>"] on the ADE Cloud iPhone.`);
-  const on = flag(args, "--label") ? ` ${quoted(flag(args, "--label")!)}` : flag(args, "--id") ? ` #${flag(args, "--id")}` : "";
+  const on = flag(args, "--label") || flag(args, "--id") ? ` ${target(args, verb)}` : "";
   return act([`${verb} ${direction}${on}`], verb);
 }
 

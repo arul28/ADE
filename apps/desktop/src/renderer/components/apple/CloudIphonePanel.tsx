@@ -60,6 +60,20 @@ const END_REASONS: Readonly<Record<string, string>> = {
   no_capacity: "No cloud iPhone was free.",
 };
 
+/**
+ * How often the pane reads the phone: again, slowly, when it hasn't been read
+ * or the last read failed; often while it starts; slowly while it is off;
+ * while it runs only where nothing else says it ended (`readWhileLive`).
+ */
+function readCadence(status: CloudPhoneStatusView | null, failed: boolean, readWhileLive: boolean): number | null {
+  if (!status || failed) return IDLE_READ_MS;
+  if (status.access !== "on") return null;
+  const state = status.phone?.state ?? null;
+  if (state === "starting") return STARTING_READ_MS;
+  if (state === "ready") return readWhileLive ? LIVE_READ_MS : null;
+  return IDLE_READ_MS;
+}
+
 function useCloudPhoneStatus(pin: OpenProjectBinding | null, hidden: boolean, readWhileLive: boolean) {
   const [status, setStatus] = useState<CloudPhoneStatusView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -85,15 +99,7 @@ function useCloudPhoneStatus(pin: OpenProjectBinding | null, hidden: boolean, re
   }, []);
   const pinKey = pin?.key ?? null;
   useEffect(() => { void refresh(); }, [pinKey, refresh]);
-  const phoneState = status?.phone?.state ?? null;
-  // Not read yet or the last read failed: again, slowly. Then by the phone's
-  // state: often while it starts, slowly while it is off, and while it runs
-  // only where nothing else says it ended (`readWhileLive`).
-  const cadence = !status || error ? IDLE_READ_MS
-    : status.access !== "on" ? null
-      : phoneState === "starting" ? STARTING_READ_MS
-        : phoneState === "ready" ? (readWhileLive ? LIVE_READ_MS : null)
-          : IDLE_READ_MS;
+  const cadence = readCadence(status, error != null, readWhileLive);
   useEffect(() => {
     if (hidden || cadence == null) return undefined;
     const timer = window.setInterval(() => { void refresh(); }, cadence);
@@ -159,9 +165,13 @@ function useCloudPhoneControl(pin: OpenProjectBinding | null, hidden: boolean, o
   const { link, error: linkError } = useCloudPhoneLink(pin, ready ? phone.id : null, hidden);
   const device = cloudPhoneDeviceOf(phone?.device);
   const [error, setError] = useState<unknown>(null);
+  // A dismissed read failure stays hidden until a different one comes (the reads go on retrying).
+  const [dismissedRead, setDismissedRead] = useState<string | null>(null);
   const [busy, setBusy] = useState<"start" | "stop" | null>(null);
   const pinRef = useRef(pin);
   pinRef.current = pin;
+  const readFailure = statusError ?? linkError;
+  const shownReadFailure = readFailure && readFailure !== dismissedRead ? readFailure : null;
 
   const run = async (what: "start" | "stop", nextDevice?: CloudPhoneDevice) => {
     const api = window.ade.cloudPhone;
@@ -186,8 +196,13 @@ function useCloudPhoneControl(pin: OpenProjectBinding | null, hidden: boolean, o
     phone,
     ready,
     link,
-    /** What the strip shows first: a failed Start/Stop or capture, else a failed read. */
-    failure: error ?? (statusError ? new Error(statusError) : null) ?? (linkError ? new Error(linkError) : null),
+    /** What the strip shows first: a failed Start/Stop or capture, else a failed read not dismissed. */
+    failure: error ?? (shownReadFailure ? new Error(shownReadFailure) : null),
+    /** Dismisses what the strip shows. */
+    dismiss: () => {
+      setError(null);
+      setDismissedRead(readFailure);
+    },
     pinRef,
     device,
     model: CLOUD_PHONE_MODELS[device],
@@ -195,7 +210,6 @@ function useCloudPhoneControl(pin: OpenProjectBinding | null, hidden: boolean, o
     minutes,
     minutesLine: minutes ? `${minutes.left} of ${minutes.included} min left` : null,
     off: !phone || phone.state === "ended",
-    error,
     setError,
     busy,
     run,
@@ -205,9 +219,9 @@ function useCloudPhoneControl(pin: OpenProjectBinding | null, hidden: boolean, o
 type CloudPhoneControl = ReturnType<typeof useCloudPhoneControl>;
 
 /** The one line on top, as the local pane has: a failure, else a fact about the device. */
-function CloudPhoneStrip({ control, failure }: { control: CloudPhoneControl; failure: unknown }) {
-  const { status, phone, minutes, off, busy, run, setError } = control;
-  if (failure) return <AppleDeviceStatusStrip error={failure} onDismiss={() => setError(null)} />;
+function CloudPhoneStrip({ control, failure = control.failure }: { control: CloudPhoneControl; failure?: unknown }) {
+  const { status, phone, minutes, off, busy, run, dismiss } = control;
+  if (failure) return <AppleDeviceStatusStrip error={failure} onDismiss={dismiss} />;
   if (status?.access === "on" && off) {
     const why = phone?.endReason ? ` ${END_REASONS[phone.endReason] ?? `It ended (${phone.endReason}).`}` : "";
     // Start stays even with the plan's minutes used up: extra minutes may
@@ -533,7 +547,6 @@ function CloudIphoneFlat({ pin, hidden: hiddenProp = false }: CloudIphonePanelPr
     return () => observer.disconnect();
   }, [live]);
 
-  const failure = control.failure;
 
   let viewport = cloudPhoneIdleViewport(control, live);
   if (!viewport && link) {
@@ -569,7 +582,7 @@ function CloudIphoneFlat({ pin, hidden: hiddenProp = false }: CloudIphonePanelPr
       data-apple-device-state={live ? "live" : off ? "off" : "starting"}
       className="relative flex h-full min-h-0 min-w-0 flex-col bg-surface"
     >
-      <CloudPhoneStrip control={control} failure={failure} />
+      <CloudPhoneStrip control={control} />
       <div className="relative flex min-h-0 min-w-0 flex-1">
         <div className="ade-tool-picker-static relative flex min-h-0 min-w-0 flex-1 flex-col">
           {viewport}

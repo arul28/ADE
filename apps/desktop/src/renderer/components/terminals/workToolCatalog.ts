@@ -1,5 +1,5 @@
 import type { ChatDeviceSources, DeviceKind } from "../../../shared/types/deviceSources";
-import { deviceKindRunsOnPlatform } from "../../../shared/types/deviceSources";
+import { deviceKindRunsOnCloud, deviceKindRunsOnPlatform } from "../../../shared/types/deviceSources";
 import { sameMachineKey } from "../../../shared/machineAddress";
 import { compareTextInsensitive } from "../../../shared/formatting";
 import { remoteMachineHostPlatform } from "../../../shared/machineIdentity";
@@ -92,7 +92,7 @@ export function visibleCatalogCards(hasSideChat: boolean): CatalogCardId[] {
 
 /** Whether a machine can run a device kind. ADE Cloud's iPhone is only ever the ios one. */
 export function machineRunsKind(kind: DeviceKind, machine: ToolMachine): boolean {
-  return machine.isCloudIphone ? kind === "ios" : deviceKindRunsOnPlatform(kind, machine.platform);
+  return machine.isCloudIphone ? deviceKindRunsOnCloud(kind) : deviceKindRunsOnPlatform(kind, machine.platform);
 }
 
 /** The machines a device kind can run on, the chat's own first; offline ones only when chosen. */

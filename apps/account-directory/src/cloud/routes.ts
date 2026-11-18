@@ -1397,7 +1397,7 @@ const EXTRA_DISK_LIMIT_MAX_USD = 1000;
 function readMonthlyLimitUsd(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= EXTRA_DISK_LIMIT_MAX_USD ? value : null;
 }
-const LIMIT_SENTENCE = `Pick a monthly limit from $1 to ${EXTRA_DISK_LIMIT_MAX_USD}`;
+const LIMIT_SENTENCE = `Pick a monthly limit from $1 to $${EXTRA_DISK_LIMIT_MAX_USD}`;
 
 /**
  * Where Stripe sends the person back: this server's own page, or the hosted

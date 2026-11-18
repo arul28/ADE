@@ -243,8 +243,11 @@ export type AccountRow = {
   past_due_earned_milli: number | null;
   /** Refused the free plan: its computer already gave another account free hours (`freePlan.ts`). Free hours are 0 while set. */
   free_refused_at: number | null;
-  /** The ADE Cloud iPhone (migration 0046, `phones.ts`): extra minutes and the minutes warnings. Absent before the migration. */
-  /** 1 on; 0 off; 2 was on until the plan ended (or its payment failed): used for no new minute, still billed for its period (`phoneBilling.ts`). */
+  /**
+   * The ADE Cloud iPhone (migration 0046, `phones.ts`): extra minutes and the
+   * minutes warnings. Absent before the migration. `phone_extra_enabled` is
+   * one of `PHONE_EXTRA` (on, off, or was on until the plan ended).
+   */
   phone_extra_enabled?: number;
   phone_extra_limit_cents?: number | null;
   phone_extra_reported_minutes?: number;
@@ -745,12 +748,16 @@ export function groupByUser<T extends { user_id: string }>(rows: T[]): Map<strin
 /* ---- Accounts ---- */
 
 /**
- * Extra iPhone minutes when the paid plan ends or its payment fails: on (1)
- * becomes "was on" (2), so no new minute uses them and the ended period is
- * still billed for them (`phoneBilling.ts` turns them off after). The SQL says the same.
+ * Extra iPhone minutes' switch (`phone_extra_enabled`). `wasOn`: on until the
+ * paid plan ended or its payment failed; no new minute uses them, and the
+ * ended period is still billed for them (`phoneBilling.ts` turns them off after).
  */
-export const phoneExtraEnded = (account: Pick<AccountRow, "phone_extra_enabled">): number => (account.phone_extra_enabled === 1 ? 2 : account.phone_extra_enabled ?? 0);
-const PHONE_EXTRA_ENDED_SQL = "case when phone_extra_enabled = 1 then 2 else phone_extra_enabled end";
+export const PHONE_EXTRA = { off: 0, on: 1, wasOn: 2 } as const;
+
+/** The switch when the paid plan ends or its payment fails: on becomes "was on". The SQL says the same. */
+export const phoneExtraEnded = (account: Pick<AccountRow, "phone_extra_enabled">): number =>
+  (account.phone_extra_enabled === PHONE_EXTRA.on ? PHONE_EXTRA.wasOn : account.phone_extra_enabled ?? PHONE_EXTRA.off);
+const PHONE_EXTRA_ENDED_SQL = `case when phone_extra_enabled = ${PHONE_EXTRA.on} then ${PHONE_EXTRA.wasOn} else phone_extra_enabled end`;
 
 /** {@link accountRules} is `paid`, as SQL on a `cloud_accounts` row. The two must say the same. */
 export const PAID_RULES_SQL = "(plan = 'paid' and coalesce(stripe_status, '') <> 'past_due')";

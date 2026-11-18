@@ -155,7 +155,8 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
   sent to the chat's machine: minutes left, Start and Stop, why it ended, and
   the live phone in a sandboxed web view of NoMac's player (only
   `https://nomac.app` may load), with Screenshot. Status is read every 3 s
-  while starting, every 20 s while off, never while live.
+  while starting, every 20 s while off, every 30 s while live (so a phone that
+  stopped by itself shows Start again).
   (`apps/ios/ADE/Services/SyncService+CloudPhone.swift`,
   `apps/ios/ADE/Views/Cloud/CloudPhoneSheet.swift`)
 - **Every provider.** Agents reach the phone only through `ade apple`, so all 13
@@ -178,7 +179,8 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
    `launch` packs this checkout, uploads it, unpacks only what changed into the
    account's workspace, and builds it there with Xcode 27.2. A small app's first
    build takes about 11 s; the next, about 4 s.
-4. `screenshot` downloads a full-size PNG to `--out` (or a temp file) and files
+4. `screenshot` downloads a full-size PNG to `--out` (inside the project or the
+   temp folder; any other path is refused) or a temp file, and files
    it in the proof drawer with the caption "ADE Cloud iPhone screenshot";
    `--no-proof` skips that. The tool's own link to the file lasts 7 days, as a
    recording's MP4 does.
@@ -205,7 +207,8 @@ action on this machine's brain:
 - `type "text" [--submit]`, `key return|escape|delete|tab|space` (no
   shortcuts), `swipe`/`scroll up|down|left|right [--label/--id]`,
   `button home`, and `wait-for-element --label/--id --timeout-ms` (up to 30 s).
-- `screenshot [--out]` files a PNG to the proof drawer (`--no-proof` skips it);
+- `screenshot [--out]` files a PNG to the proof drawer (`--no-proof` skips it;
+  `--out` must be inside the project or the temp folder);
   `record start|stop` answers an MP4 link valid 7 days.
 - `launch [--path sub] [--scheme] [--configuration] [--env] [--clean]` packs
   this checkout and builds it there; `launch --no-build --bundle-id B [-- …]`,
@@ -271,7 +274,8 @@ one sentence. The screen reads as text: one element per line,
   account; without it the link itself is the permission (2 hours, that phone
   only).
 
-**Migration.** Apply `0045_cloud_phone_beta.sql` before the Worker that reads it
+**Migration.** Apply `0045_cloud_phone_beta.sql` and `0046_cloud_phone_usage.sql`
+before the Worker that reads them
 deploys (the production deploy script does):
 
 ```bash

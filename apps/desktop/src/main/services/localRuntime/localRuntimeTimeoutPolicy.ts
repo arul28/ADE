@@ -400,7 +400,7 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // minutes later with no error to explain it.
   ["ios_simulator.launch", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
   // The ADE Cloud iPhone: a build uploads the project and builds it there; a
-  // start may wait in NoMac's line for a free phone (up to 5 minutes).
+  // start may wait for a free phone (`CLOUD_PHONE_CALL_TIMEOUT_MS`, `CLOUD_PHONE_BUILD_TIMEOUT_MS`).
   ["cloud_phone.launch", CLOUD_PHONE_BUILD_TIMEOUT_MS],
   ["cloud_phone.installApp", CLOUD_PHONE_BUILD_TIMEOUT_MS],
   ["cloud_phone.runTests", CLOUD_PHONE_BUILD_TIMEOUT_MS],

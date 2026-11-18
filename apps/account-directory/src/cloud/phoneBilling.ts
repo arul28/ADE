@@ -23,11 +23,11 @@ import {
   enforcePhoneAllowance,
   includedPhoneMinutes,
   periodPhones,
-  phoneMinutesUsed,
   phoneUsageOf,
+  settledPhoneMinutes,
 } from "./phones";
 import { CLOUD_PLANS } from "./plans";
-import { accountRules, boughtPlanIdOf, loadAccount, logCloud, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
+import { PHONE_EXTRA, accountRules, boughtPlanIdOf, loadAccount, logCloud, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
 
 /**
  * Makes sure the subscription bills extra iPhone minutes. Read again after a
@@ -99,13 +99,15 @@ export async function setExtraPhoneMinutes(
     }
   }
   // What was used under the settings before this change, kept owed after it (`keepOwedUnderOldSettings`).
-  const before = { enabled: account.phone_extra_enabled === 1 && accountRules(account) === "paid", limitCents: account.phone_extra_limit_cents ?? null };
+  // "Was on" counts: a payment that failed and came back leaves the period's earlier minutes owed.
+  const wasEnabled = account.phone_extra_enabled === PHONE_EXTRA.on || account.phone_extra_enabled === PHONE_EXTRA.wasOn;
+  const before = { enabled: wasEnabled && accountRules(account) === "paid", limitCents: account.phone_extra_limit_cents ?? null };
   if (choice.enabled) {
     if (accountRules(account) !== "paid") throw new CloudBillingError("needs_paid_plan", "Extra iPhone minutes need a paid plan.", 403);
     await ensurePhoneMinutesItem(env, account, now);
     // What was sent and owed in this period stays: turning it on again bills no minute twice and drops none owed.
     await env.DB.prepare(`
-      update cloud_accounts set phone_extra_enabled = 1, phone_extra_limit_cents = ?,
+      update cloud_accounts set phone_extra_enabled = ${PHONE_EXTRA.on}, phone_extra_limit_cents = ?,
         phone_extra_period_start = coalesce(phone_extra_period_start, ?),
         phone_extra_included = ?, updated_at = ?
       where user_id = ?
@@ -113,7 +115,7 @@ export async function setExtraPhoneMinutes(
     logCloud("cloud.extra_phone_on", { userId, limitCents: choice.monthlyLimitCents });
   } else {
     await env.DB.prepare(`
-      update cloud_accounts set phone_extra_enabled = 0, phone_extra_period_start = coalesce(phone_extra_period_start, ?), updated_at = ?
+      update cloud_accounts set phone_extra_enabled = ${PHONE_EXTRA.off}, phone_extra_period_start = coalesce(phone_extra_period_start, ?), updated_at = ?
       where user_id = ?
     `).bind(account.period_start, now, userId).run();
     logCloud("cloud.extra_phone_off", { userId });
@@ -138,7 +140,7 @@ async function keepOwedUnderOldSettings(env: CloudEnv, userId: string, before: {
   if (account.phone_extra_period_start !== account.period_start) return;
   const rows = await periodPhones(env, userId, account.period_start);
   const owed = billableExtraMinutes({
-    used: phoneMinutesUsed(rows, now, true),
+    used: settledPhoneMinutes(rows),
     included: includedPhoneMinutes(account),
     enabled: before.enabled,
     limitCents: before.limitCents,
@@ -184,10 +186,10 @@ async function settleEndedPeriod(env: CloudEnv, account: AccountRow, now: number
   if (eventName && account.stripe_customer_id && account.stripe_subscription_id) {
     const included = Math.max(account.phone_extra_included ?? 0, CLOUD_PLANS[boughtPlanIdOf(account)].phoneMinutes);
     const billable = billableExtraMinutes({
-      used: phoneMinutesUsed(rows, now, true),
+      used: settledPhoneMinutes(rows),
       included,
       // On, or on until the plan ended (2): either way the old period used them.
-      enabled: account.phone_extra_enabled === 1 || account.phone_extra_enabled === 2,
+      enabled: account.phone_extra_enabled === PHONE_EXTRA.on || account.phone_extra_enabled === PHONE_EXTRA.wasOn,
       limitCents: account.phone_extra_limit_cents ?? null,
       owed: account.phone_extra_owed_minutes ?? 0,
     });
@@ -201,7 +203,7 @@ async function settleEndedPeriod(env: CloudEnv, account: AccountRow, now: number
   `).bind(
     account.period_start,
     includedPhoneMinutes(account),
-    accountRules(account) === "paid" && account.phone_extra_enabled === 1 ? 1 : 0,
+    accountRules(account) === "paid" && account.phone_extra_enabled === PHONE_EXTRA.on ? PHONE_EXTRA.on : PHONE_EXTRA.off,
     now,
     account.user_id,
     tracked,
@@ -222,7 +224,7 @@ export async function reportExtraPhoneMinutes(env: CloudEnv, now = Date.now()): 
   if (!eventName || !env.STRIPE_SECRET_KEY?.trim()) return;
   const rows = await env.DB.prepare(`
     select * from cloud_accounts
-    where (phone_extra_enabled = 1 or phone_extra_owed_minutes > 0 or phone_extra_period_start < period_start)
+    where (phone_extra_enabled = ${PHONE_EXTRA.on} or phone_extra_owed_minutes > 0 or phone_extra_period_start < period_start)
       and coalesce(stripe_status, '') <> 'past_due'
   `).all<AccountRow>();
   for (const account of rows.results ?? []) {
@@ -233,6 +235,11 @@ export async function reportExtraPhoneMinutes(env: CloudEnv, now = Date.now()): 
         continue;
       }
       if (accountRules(account) !== "paid" || !account.stripe_customer_id || !account.stripe_subscription_id) continue;
+      if (account.phone_extra_period_start != null && account.phone_extra_period_start > account.period_start) {
+        // Tracking ahead of the period (a period that came back): no report and no reset, so nothing sent repeats.
+        reportCloudFailure("cloud.phone_meter_period_ahead", { userId: account.user_id });
+        continue;
+      }
       const samePeriod = account.phone_extra_period_start === account.period_start;
       const reported = samePeriod ? account.phone_extra_reported_minutes ?? 0 : 0;
       const billable = await billableThisPeriod(env, account, now);
@@ -255,9 +262,6 @@ export async function reportExtraPhoneMinutes(env: CloudEnv, now = Date.now()): 
           account.phone_extra_period_start ?? null,
           account.phone_extra_reported_minutes ?? 0,
         ).run();
-      } else if (account.phone_extra_period_start != null && account.phone_extra_period_start > account.period_start) {
-        // Tracking ahead of the period (a period that came back): never reset what was sent, so no report repeats.
-        reportCloudFailure("cloud.phone_meter_period_ahead", { userId: account.user_id });
       } else if (account.phone_extra_included !== included || !samePeriod) {
         // The plan's minutes this period, kept fresh (an upgrade raises them) for the bill after it ends.
         await env.DB.prepare(`

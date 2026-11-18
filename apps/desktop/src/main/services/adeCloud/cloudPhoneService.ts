@@ -71,7 +71,8 @@ export type CloudPhoneToolAnswer = {
 };
 
 
-type Held = { phoneId: string; token: string; expiresAt: number; apiBase: string; device: string; minutes: CloudPhoneMinutes; checkedAt: number };
+/** The phone this brain drives, and the account it was started for (a phone and its token belong to one account). */
+type Held = { phoneId: string; token: string; expiresAt: number; apiBase: string; device: string; minutes: CloudPhoneMinutes; checkedAt: number; account: string | null };
 
 const READY_WAIT_MS = 6 * 60_000;
 const CALL_POLL_MS = 1_000;
@@ -270,14 +271,8 @@ function answerOf(body: Record<string, unknown> | null): CloudPhoneToolAnswer {
 export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
   const fetcher = deps.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
   let held: Held | null = null;
-  /**
-   * The account `held` was started for. A phone and its token belong to one
-   * account: after a sign-out or a switch to another account it is dropped,
-   * never driven. The client is made fresh per call, so its account names it.
-   */
-  let heldFor: string | null = null;
-  /** One start at a time: a second caller waits for the same phone. */
-  let starting: Promise<Held> | null = null;
+  /** One start at a time: a second caller of the same account waits for the same phone. */
+  let starting: { account: string | null; phone: Promise<Held> } | null = null;
 
   const accountOf = (client: CloudProvider | null): string | null => client?.account ?? null;
 
@@ -287,14 +282,20 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     return client;
   }
 
-  /** Drops the held phone when the signed-in account is no longer the one it was started for. */
-  async function dropOtherAccountsPhone(): Promise<void> {
-    if (held && accountOf(await deps.provider()) !== heldFor) held = null;
+  /**
+   * The account signed in now. After a sign-out or a switch to another account
+   * the held phone is dropped, never driven. The client is made fresh per call,
+   * so its account names it.
+   */
+  async function currentAccount(): Promise<string | null> {
+    const account = accountOf(await deps.provider());
+    if (held && held.account !== account) held = null;
+    return account;
   }
 
   function hold(start: CloudPhoneStart, client: CloudProvider): Held {
-    heldFor = accountOf(client);
     held = {
+      account: accountOf(client),
       phoneId: start.phone.id,
       token: start.token.token,
       expiresAt: start.token.expiresAt,
@@ -361,7 +362,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
 
   /** The account's ready phone, started when there is none. */
   async function ensure(device?: CloudPhoneDevice): Promise<Held> {
-    await dropOtherAccountsPhone();
+    const account = await currentAccount();
     if (held && held.expiresAt - Date.now() > TOKEN_REFRESH_MARGIN_MS && (!device || held.device === device)) {
       if (Date.now() - held.checkedAt < READY_TRUST_MS) return held;
       // A held phone may have stopped on its own (idle, its time limit): read it.
@@ -372,16 +373,24 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       }
       held = null;
     }
-    starting ??= (async () => {
-      const client = await provider();
-      const start = await client.phoneStart!({ ...(device ? { device } : {}) });
-      const phone = hold(start, client);
-      deps.logger?.info?.("cloud_phone.held", { phoneId: phone.phoneId, reused: start.reused, minutesLeft: start.minutes.left });
-      await waitUntilReady(phone);
-      phone.checkedAt = Date.now();
-      return phone;
-    })().finally(() => { starting = null; });
-    return starting;
+    // A start already running for another account is not this caller's phone: wait for it to end, then start our own.
+    while (starting && starting.account !== account) await starting.phone.catch(() => undefined);
+    if (!starting) {
+      const run = (async () => {
+        const client = await provider();
+        const start = await client.phoneStart!({ ...(device ? { device } : {}) });
+        const phone = hold(start, client);
+        deps.logger?.info?.("cloud_phone.held", { phoneId: phone.phoneId, reused: start.reused, minutesLeft: start.minutes.left });
+        await waitUntilReady(phone);
+        phone.checkedAt = Date.now();
+        return phone;
+      })().finally(() => { if (starting?.phone === run) starting = null; });
+      starting = { account, phone: run };
+    }
+    const phone = await starting.phone;
+    // Signed out or switched while it started: never hand this phone to another account.
+    if (phone.account !== (await currentAccount())) throw new CloudPhoneError("The ADE account changed while the cloud iPhone started. Try again.", "no_account");
+    return phone;
   }
 
   /** Runs one of the phone's tools to its end: a call past 45 s is read back, a build past 40 s is followed as a job. */

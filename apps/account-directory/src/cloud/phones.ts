@@ -50,7 +50,7 @@ import {
 } from "./contract";
 import { sendCloudEmail } from "./email";
 import { fail, json, readJson } from "./http";
-import { accountRules, loadAccount, logCloud, planIdOf, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
+import { PHONE_EXTRA, accountRules, loadAccount, logCloud, planIdOf, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
 
 const NOMAC_ORIGIN = "https://nomac.app";
 const NOMAC_SIMULATOR_BASE = `${NOMAC_ORIGIN}/api/v1/simulator`;
@@ -246,7 +246,7 @@ async function updatePhone(env: Pick<CloudEnv, "DB">, session: NomacSession, now
   return { userId: known.user_id, wasEnded: known.state === "ended" };
 }
 
-/** The phones an account started in `[since, before)`. Billing counts only their settled minutes (`phoneMinutesUsed` with `settledOnly`). */
+/** The phones an account started in `[since, before)`. Billing counts only their settled minutes (`settledPhoneMinutes`). */
 export async function periodPhones(env: Pick<CloudEnv, "DB">, userId: string, since: number, before = Number.MAX_SAFE_INTEGER): Promise<PhoneRow[]> {
   const rows = await env.DB.prepare("select * from cloud_phones where user_id = ? and created_at >= ? and created_at < ? order by created_at desc")
     .bind(userId, since, before).all<PhoneRow>();
@@ -258,7 +258,7 @@ export async function periodPhones(env: Pick<CloudEnv, "DB">, userId: string, si
  * its time so far (whole minutes, up; never past one phone's longest, so a row
  * stuck as live can't grow without end).
  */
-export function phoneMinutesUsed(rows: readonly PhoneRow[], now: number, settledOnly: boolean): number {
+function phoneMinutesUsed(rows: readonly PhoneRow[], now: number, settledOnly: boolean): number {
   let minutes = 0;
   for (const row of rows) {
     const billed = Math.ceil(row.billed_seconds / 60);
@@ -292,6 +292,9 @@ export async function stopAccountPhones(env: CloudEnv, userId: string, now: numb
   const live = await env.DB.prepare("select phone_id from cloud_phones where user_id = ? and state = 'live'").bind(userId).all<{ phone_id: string }>();
   for (const { phone_id: phoneId } of live.results ?? []) await stopPhone(env, userId, phoneId, now, why);
 }
+
+/** NoMac's billed minutes of the phones, never an estimate: what billing counts. */
+export const settledPhoneMinutes = (rows: readonly PhoneRow[]): number => phoneMinutesUsed(rows, 0, true);
 
 /* ---- Who may use it, and how much ---- */
 
@@ -363,7 +366,7 @@ export function phoneUsageOf(env: CloudEnv, account: AccountRow, rows: readonly 
   const included = includedPhoneMinutes(account);
   const used = phoneMinutesUsed(rows, now, settledOnly);
   const available = extraPhoneOffered(env) && accountRules(account) === "paid";
-  const enabled = available && account.phone_extra_enabled === 1;
+  const enabled = available && account.phone_extra_enabled === PHONE_EXTRA.on;
   const limitCents = account.phone_extra_limit_cents ?? null;
   const billableMinutes = billableExtraMinutes({ used, included, enabled, limitCents, owed: inPeriod(account, account.phone_extra_owed_minutes) });
   const leftMinutes = enabled ? Math.max(0, extraLimitMinutes(limitCents) - Math.max(0, used - included)) : 0;
@@ -425,7 +428,7 @@ type PhoneContext = {
   live: { session: NomacSession; stopNotice: unknown; createdAt: number } | null;
   /** The account's newest phone, live or not: a new start's idempotency key names it. */
   lastPhoneId: string | null;
-  /** The live row's phone even when NoMac couldn't be read now: a stop still reaches it. */
+  /** The live row's phone when NoMac couldn't be read now: a stop still reaches it. */
   liveRowId: string | null;
 };
 
@@ -442,8 +445,10 @@ async function phoneContext(env: CloudEnv, userId: string, now: number): Promise
   // The live phone may be from an earlier period (it ran across the turn).
   const liveRow = rows.find((row) => row.state === "live")
     ?? await env.DB.prepare("select * from cloud_phones where user_id = ? and state = 'live' order by created_at desc limit 1").bind(userId).first<PhoneRow>();
+  let unreadLiveRowId: string | null = null;
   if (liveRow) {
     const read = await readSession(env, liveRow.phone_id);
+    if (!read) unreadLiveRowId = liveRow.phone_id;
     if (read) {
       await savePhone(env, userId, read.session, now);
       if (LIVE_STATES.has(read.session.state)) live = { ...read, createdAt: liveRow.created_at };
@@ -451,12 +456,15 @@ async function phoneContext(env: CloudEnv, userId: string, now: number): Promise
     }
   }
   const newest = await env.DB.prepare("select phone_id from cloud_phones where user_id = ? order by created_at desc limit 1").bind(userId).first<{ phone_id: string }>();
-  return { account, label, usage: phoneUsageOf(env, account, rows, now), live, lastPhoneId: newest?.phone_id ?? null, liveRowId: liveRow?.phone_id ?? null };
+  return { account, label, usage: phoneUsageOf(env, account, rows, now), live, lastPhoneId: newest?.phone_id ?? null, liveRowId: unreadLiveRowId };
 }
 
+/** A live phone from an earlier period ran under that period's terms. */
+const startedBeforePeriod = (context: PhoneContext): boolean => context.live != null && context.live.createdAt < context.account.period_start;
+
 /** Why the account's live phone must stop now, or null while it may run on. */
-async function stopReasonOf(env: CloudEnv, userId: string, context: PhoneContext & { live: NonNullable<PhoneContext["live"]> }): Promise<string | null> {
-  if (context.live.createdAt < context.account.period_start) return "period_changed";
+async function stopReasonOf(env: CloudEnv, userId: string, context: PhoneContext): Promise<string | null> {
+  if (startedBeforePeriod(context)) return "period_changed";
   if ((await phoneAccess(env, userId)) !== "on") return "access_removed";
   if (await isCloudBlocked(env, userId)) return "account_blocked";
   if (allowedMinutes(context.usage) <= 0) return "minutes_used";
@@ -477,7 +485,7 @@ export async function enforcePhoneAllowance(env: CloudEnv, userId: string, now: 
   const context = await phoneContext(env, userId, now);
   if (context instanceof Response || !context.live) return "none";
   const live = context.live;
-  const why = await stopReasonOf(env, userId, { ...context, live });
+  const why = await stopReasonOf(env, userId, context);
   if (why) return (await stopPhone(env, userId, live.session.id, now, why)) ? "stopped" : "stop_failed";
   await env.DB.prepare("update cloud_phones set stop_at = ?, updated_at = ? where phone_id = ? and state = 'live'")
     .bind(now + allowedMinutes(context.usage) * 60_000, now, live.session.id).run();
@@ -606,7 +614,7 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
     const device = readDevice(body.device);
     if (device === null) return fail("bad_request", `device is one of ${CLOUD_PHONE_DEVICES.join(", ")}.`, 400);
     // A phone from an earlier period ran under that period's terms: it ends, and a new one starts on this period's.
-    if (context.live && context.live.createdAt < context.account.period_start) {
+    if (context.live && startedBeforePeriod(context)) {
       await stopPhone(env, userId, context.live.session.id, now, "period_changed");
       context.live = null;
     }
@@ -863,7 +871,6 @@ export async function runPhoneChecks(env: CloudEnv, now: number): Promise<void> 
   await env.DB.prepare("delete from cloud_nomac_deliveries where received_at < ?").bind(now - DELIVERY_KEEP_MS).run();
 }
 
-
 /* ---- The owner's beta list ---- */
 
 export const OWNER_PHONE_BETA_PATH = "/cloud/owner/phone-beta";
@@ -941,7 +948,9 @@ export async function deleteAccountPhone(env: Pick<CloudEnv, "DB" | "NOMAC_API_K
   if (listed.status !== 200) throw new Error(`phone_list_${errorOf(listed).code}`);
   const sessions = Array.isArray(listed.body?.sessions) ? (listed.body.sessions as unknown[]).map(sessionOf) : [];
   for (const session of sessions) {
-    if (session && LIVE_STATES.has(session.state)) await nomac(env, "DELETE", `/api/v1/simulator/sessions/${encodeURIComponent(session.id)}`);
+    if (!session || !LIVE_STATES.has(session.state)) continue;
+    const stopped = await nomac(env, "DELETE", `/api/v1/simulator/sessions/${encodeURIComponent(session.id)}`);
+    if (stopped.status >= 400 && stopped.status !== 404) throw new Error(`phone_stop_${errorOf(stopped).code}`);
   }
   // The label goes whether or not a phone is listed: its saved states, replays and workspace outlive the phones.
   const answer = await nomac(env, "DELETE", `/api/v1/simulator/labels/${encodeURIComponent(label)}`);
