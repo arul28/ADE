@@ -11,6 +11,7 @@ import {
   resolveMachineAdeLayout,
   type MachineAdeLayout,
 } from "./machineLayout";
+import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
 import { codedError } from "../../../../desktop/src/shared/codedError";
 import { markExpected } from "../../../../desktop/src/shared/expectedError";
 import { isFsAccessRefusal } from "../../../../desktop/src/shared/fsAccessRefusal";
@@ -618,6 +619,23 @@ export class ProjectRegistry {
   /** The current id of a project that was moved, given an id it had before. */
   resolveMovedProjectId(projectId: ProjectId): ProjectId | null {
     return this.readAliases()[projectId] ?? null;
+  }
+
+  /**
+   * The one registered project whose origin is the repository `ref` names
+   * (`github.com/owner/repo`, the account's key for a project). A window that
+   * knows a project only from the account, such as a saved ADE Cloud chat,
+   * sends that key before it learns this machine's own id. Null when no
+   * project or more than one project matches: never a guess between two
+   * checkouts of one repository.
+   */
+  resolveRepositoryProjectId(ref: ProjectId): ProjectId | null {
+    const repoKey = accountRepoScopeKey(ref);
+    if (!repoKey) return null;
+    const records = this.list();
+    if (records.some((record) => record.projectId === ref)) return null;
+    const matches = records.filter((record) => accountRepoScopeKey(record.gitOriginUrl) === repoKey);
+    return matches.length === 1 ? matches[0]!.projectId : null;
   }
 
   /**
