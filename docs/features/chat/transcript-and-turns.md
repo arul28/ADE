@@ -1145,6 +1145,11 @@ The Claude SDK runtime tracks each invocation by `toolUseID`:
   uses `estimateTranscriptRowHeight` (per kind and text length), computed once
   per key and again only when the column width moves a 64px step.
 - A top and a bottom spacer size the window from that map.
+- While the list follows the bottom, the rows sit at the end of the virtual
+  box (`END_ALIGNED_VIRTUAL_BOX_STYLE`). Rows that just mounted keep their
+  estimated height in the box until they measure; at the end, that slack sits
+  above them, out of view, and never shows as an empty pane under the last
+  message.
 - `MeasuredEventRow` reports heights through a `ResizeObserver`;
   `reconcileMeasuredScrollTop` adjusts `scrollTop` when a row above (or
   across) the viewport top changes height.
