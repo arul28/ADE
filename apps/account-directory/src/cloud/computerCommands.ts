@@ -383,6 +383,16 @@ export function keepAwakeOf(stdout: string): "idle" | "busy" | "setup" | "unknow
   }
 }
 
+/** When the computer last wrote `KEEP_AWAKE_STATE_COMMAND`'s file (its `updatedAt`), 0 when it can't be read. */
+export function keepAwakeWrittenAt(stdout: string): number {
+  try {
+    const updatedAt = (JSON.parse(stdout.trim()) as { updatedAt?: unknown }).updatedAt;
+    return typeof updatedAt === "number" && Number.isFinite(updatedAt) ? updatedAt : 0;
+  } catch {
+    return 0;
+  }
+}
+
 /* ---- A computer's lanes, pushed to GitHub ---- */
 
 /**

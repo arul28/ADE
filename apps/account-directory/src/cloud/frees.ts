@@ -1,4 +1,4 @@
-import { KEEP_AWAKE_STATE_COMMAND, keepAwakeOf, pushWorkCommand, readPushWorkTally, type PushWorkLane } from "./computerCommands";
+import { KEEP_AWAKE_STATE_COMMAND, keepAwakeOf, keepAwakeWrittenAt, pushWorkCommand, readPushWorkTally, type PushWorkLane } from "./computerCommands";
 import type { CloudFreeRecord, CloudFreeState } from "./contract";
 import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, fail, json, readJson } from "./http";
 import { JOB_RECORD_TTL_MS, nudgeJob, readJob, registerJobKind, runJob, type CloudJobDeps, type JobContext, type JobRow, type StepResult } from "./jobs";
@@ -30,6 +30,14 @@ export const FREE_JOB_KIND = "free";
 const WAKE_WAIT_MAX_MS = 10 * 60_000;
 const WAKE_POLL_MS = 10_000;
 const KEEP_AWAKE_EXEC_MS = 30_000;
+/**
+ * The computer writes its busy file at its once-a-minute check, so one read
+ * right after a turn or a command ended can still say busy. A busy file
+ * written before the free started is read again until the next check wrote
+ * it, at most this long; then it is taken as it is.
+ */
+const KEEP_AWAKE_FRESH_MAX_MS = 75_000;
+const KEEP_AWAKE_FRESH_POLL_MS = 5_000;
 /** As the desktop's (`PUSH_ALL_WORK_TIMEOUT_MS`): a frozen push can't hold the computer awake for long. */
 const PUSH_EXEC_MS = 3 * 60_000;
 const CHECK_EXEC_MS = 2 * 60_000;
@@ -43,6 +51,8 @@ type FreeFacts = {
   laneName?: string | null;
   branchRef?: string | null;
   wakeAskedAt?: number;
+  /** When the check first found a busy file older than the free, for `KEEP_AWAKE_FRESH_MAX_MS`. */
+  freshWaitFrom?: number;
   /** Set once the lane is marked kept: an undo takes the mark back. */
   laneMarked?: boolean;
   laneKept?: boolean;
@@ -131,6 +141,16 @@ async function check(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepR
   // A running agent could write again after its lane was pushed; a setup still running hasn't made the lane yet.
   const read = await tryExec(ctx, computer.instance_id, KEEP_AWAKE_STATE_COMMAND, KEEP_AWAKE_EXEC_MS);
   const work = read ? keepAwakeOf(read.stdout) : "unknown";
+  if ((work === "busy" || work === "setup") && read && keepAwakeWrittenAt(read.stdout) < job.created_at) {
+    const from = factsOf(job).freshWaitFrom ?? ctx.now;
+    if (ctx.now - from < KEEP_AWAKE_FRESH_MAX_MS) {
+      return {
+        kind: "wait",
+        delayMs: KEEP_AWAKE_FRESH_POLL_MS,
+        patch: { message: "Checking whether the agent is still working…", facts_json: withFacts(job, { freshWaitFrom: from }) },
+      };
+    }
+  }
   if (work === "setup") return { kind: "fail", error: "This lane is still being set up. Finish signing in, or cancel the setup, then free the computer." };
   if (work === "busy") return { kind: "fail", error: "The agent is still working. Stop it or wait, then free the computer." };
   if (work === "unknown") return { kind: "fail", error: "ADE couldn't tell whether the agent is still working, so the computer stays. Try again in a moment." };
