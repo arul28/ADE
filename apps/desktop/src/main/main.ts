@@ -78,7 +78,7 @@ import {
   isAdeDeeplinkArg,
   registerAdeProtocolHandler,
 } from "./services/deeplinks/protocolHandler";
-import { buildDeeplink } from "../shared/deeplinks";
+import { buildDeeplink, isAccountProjectId } from "../shared/deeplinks";
 import {
   createDesktopAlertPresenter,
   readDesktopAlertEvent,
@@ -10540,9 +10540,14 @@ app.whenReady().then(async () => {
   const keptCloudLaneNavigation = async (incoming: AppNavigationRequest): Promise<AppNavigationRequest | null> => {
     if (incoming.target.kind !== "lane" || !ipcBridge) return null;
     const ownership = appNavigationOwnership(incoming.target);
-    if (!ownership) return null;
-    const machineKey = ownership.accountMachineKey.trim();
-    if (machineKey === ipcBridge.getLocalMachineIdentity().machineKey || ipcBridge.connectedMachineKeys().includes(machineKey)) return null;
+    if (ownership) {
+      const machineKey = ownership.accountMachineKey.trim();
+      if (machineKey === ipcBridge.getLocalMachineIdentity().machineKey || ipcBridge.connectedMachineKeys().includes(machineKey)) return null;
+    } else if (!isAccountProjectId(incoming.target.accountProjectId ?? null)) {
+      // A link with no machine and no account project stays local; the
+      // renderer checks the kept list when the lane isn't there.
+      return null;
+    }
     const kept = await Promise.race([
       ipcBridge.cloudLaneKeptWithoutComputer(incoming.target.laneId),
       new Promise<false>((resolve) => setTimeout(() => resolve(false), 4_000)),

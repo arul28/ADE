@@ -392,6 +392,20 @@ export function WebClientRoot({
     onStage: (message: string) => void,
   ): Promise<OwnedLinkResult | null> => {
     let target = linkTarget;
+    const linkOwnership = ownershipOfTarget(linkTarget);
+    const laneMachineGone = linkOwnership
+      ? !findOwnerMachine(currentMachines(), linkOwnership.accountMachineKey)
+      : accountProjectIdOfTarget(linkTarget) != null;
+    if (linkTarget.kind === "lane" && laneMachineGone) {
+      // An ADE Cloud lane whose computer is gone: the account keeps it, with
+      // New computer and Delete, on Settings › ADE Cloud, never "a computer
+      // that isn't in your ADE account". This runs before the account-project
+      // step, which would open the repository or another copy instead.
+      const { cloudKeptLaneSettingsPath, isCloudLaneKeptWithoutComputer } = await import("../../components/cloudLane/cloudLaneActions");
+      if (await isCloudLaneKeptWithoutComputer(linkTarget.laneId)) {
+        return { ok: true, path: cloudKeptLaneSettingsPath(linkTarget.laneId), targetId: "", projectId: "" };
+      }
+    }
     if (accountProjectIdOfTarget(target)) {
       // The link names an account project (L33): the account list picks a
       // copy on a computer that is online, follows a merge, or says the
@@ -416,15 +430,6 @@ export function WebClientRoot({
     }
     const ownership = ownershipOfTarget(target);
     if (!ownership) return null;
-    if (target.kind === "lane" && !findOwnerMachine(currentMachines(), ownership.accountMachineKey)) {
-      // An ADE Cloud lane whose computer is gone: the account keeps it, with
-      // New computer and Delete, on Settings › ADE Cloud, never "a computer
-      // that isn't in your ADE account".
-      const { cloudKeptLaneSettingsPath, isCloudLaneKeptWithoutComputer } = await import("../../components/cloudLane/cloudLaneActions");
-      if (await isCloudLaneKeptWithoutComputer(target.laneId)) {
-        return { ok: true, path: cloudKeptLaneSettingsPath(target.laneId), targetId: "", projectId: "" };
-      }
-    }
     // The binding the link opened; the existence checks ask that machine.
     let openedBinding: OpenProjectBinding | null = null;
     return await resolveOwnedLink(target, ownership, {
