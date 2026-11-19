@@ -1402,7 +1402,17 @@ describe("createAgentChatService", () => {
       expect(history.events).toHaveLength(1);
     });
 
-    it("drops an oversized newest event when a strict mobile byte budget is requested", async () => {
+    // A sync snapshot (phone, web) asks for a byte budget. An empty window for
+    // a chat with history blanked the phone's thread (ADE.ChatEmptyThread).
+    it.each([
+      { label: "plain", options: {}, expected: [2] },
+      // The kept row then pulls the window back to the turn's user message.
+      {
+        label: "turn-aligned",
+        options: { turnBoundaryAligned: true, separatePinnedEvents: true },
+        expected: [1, 2],
+      },
+    ])("keeps the oversized newest event under a requested byte budget ($label)", async ({ options, expected }) => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -1410,21 +1420,25 @@ describe("createAgentChatService", () => {
         model: "gpt-5.4",
       });
 
+      const older: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T09:59:00.000Z",
+        event: { type: "user_message", text: "Summarize the diff" },
+        sequence: 1,
+      };
       const giant: AgentChatEventEnvelope = {
         sessionId: session.id,
         timestamp: "2026-04-23T10:00:00.000Z",
         event: { type: "text", text: "giant-".concat("y".repeat(16_000)) },
-        sequence: 1,
+        sequence: 2,
       };
       const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
       fs.writeFileSync(transcriptFile, "ignored\n", "utf8");
-      vi.mocked(parseAgentChatTranscript).mockReturnValue([giant]);
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([older, giant]);
 
-      const history = await service.getChatEventHistory(session.id, { maxBytes: 8_192 });
+      const history = await service.getChatEventHistory(session.id, { maxBytes: 8_192, ...options });
 
-      expect(history.events).toHaveLength(0);
-      expect(history.windowTruncated).toBe(true);
-      expect(history.truncated).toBe(true);
+      expect(history.events.map((entry) => entry.sequence)).toEqual(expected);
     });
 
     it("marks window truncation when the service response cap removes events", async () => {

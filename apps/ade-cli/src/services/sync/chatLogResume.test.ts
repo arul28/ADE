@@ -135,4 +135,13 @@ describe("readTurnAlignedTranscriptTail", () => {
     expect(tail.tailStartOffset).toBe(Buffer.byteLength(lines[0]!));
     expect(tail.truncated).toBe(true);
   });
+
+  it("keeps a newest row larger than the budget instead of answering with an empty window", async () => {
+    const lines = [text(1, 200), text(2, 200), text(3, 1_500)];
+    fs.writeFileSync(file, lines.join(""));
+    const tail = await readTurnAlignedTranscriptTail({ transcriptPath: file, sessionId: SESSION, maxBytes: 1_024 });
+    expect(tail.events.map((event) => event.sequence)).toEqual([3]);
+    expect(tail.tailStartOffset).toBe(Buffer.byteLength(lines[0]! + lines[1]!));
+    expect(tail.truncated).toBe(true);
+  });
 });

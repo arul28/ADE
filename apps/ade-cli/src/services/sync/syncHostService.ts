@@ -9390,6 +9390,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         let transcriptSize: number;
         let tailStartOffset = 0;
         let hasOlderHistory = false;
+        // The chat service's own answer that this host has no such chat (its
+        // row went with a deleted chat or lane). Desktop and web read it from
+        // the same history call; the snapshot must carry it too, or the phone
+        // shows a working chat with no messages instead of "deleted".
+        let sessionFound = true;
         if (foreignTranscriptPath) {
           const foreignSnapshot = await readFileBackedChatSnapshot({
             transcriptPath: foreignTranscriptPath,
@@ -9417,6 +9422,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               })
             : null;
           events = history?.events ?? [];
+          sessionFound = history?.sessionFound !== false;
           pinnedEvents = chatLogV2Requested ? history?.pinnedEvents ?? [] : [];
           transcriptSize = await readTranscriptLogicalSize(transcriptPath);
           truncated = history?.truncated ?? (transcriptSize > maxBytes);
@@ -9452,6 +9458,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           ...chatLogFields,
           ...(sequenceGap ? { gap: true } : {}),
           ...(chatLogV2Requested && pinnedEvents.length > 0 ? { pinnedEvents } : {}),
+          ...(sessionFound ? {} : { sessionFound: false }),
           ...(await resolveLiveStatusFields()),
         };
         sendRequired(peer, "chat_subscribe", snapshot, envelope.requestId);

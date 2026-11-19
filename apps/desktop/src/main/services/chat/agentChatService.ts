@@ -14033,24 +14033,20 @@ export function createAgentChatService(args: {
   };
 
   // Keep the newest items whose cumulative serialized size fits the budget.
-  // Desktop history keeps the newest item even when it alone exceeds the
-  // budget so a local pane can still show the latest event; mobile callers can
-  // request a hard cap to avoid sending an oversized snapshot over sync.
+  // The newest item is kept even when it alone exceeds the budget: a window
+  // that drops it is empty, and an empty snapshot of a chat with history
+  // blanked the phone's thread (Sentry ADE.ChatEmptyThread "empty_snapshot").
   const keepNewestWithinCharBudget = <T>(
     items: T[],
     maxChars: number,
     sizeOf: (item: T) => number,
-    options?: { keepOversizeNewest?: boolean },
   ): T[] => {
-    const keepOversizeNewest = options?.keepOversizeNewest ?? true;
     let total = 0;
     let start = items.length;
     while (start > 0) {
       const next = total + sizeOf(items[start - 1]!);
       if (next > maxChars) {
-        if (start === items.length && keepOversizeNewest) {
-          start -= 1;
-        }
+        if (start === items.length) start -= 1;
         break;
       }
       total = next;
@@ -14089,9 +14085,8 @@ export function createAgentChatService(args: {
   const trimEnvelopesToByteBudget = (
     envelopes: AgentChatEventEnvelope[],
     maxChars: number,
-    options?: { keepOversizeNewest?: boolean },
   ): AgentChatEventEnvelope[] =>
-    keepNewestWithinCharBudget(envelopes, maxChars, estimateEnvelopeChars, options);
+    keepNewestWithinCharBudget(envelopes, maxChars, estimateEnvelopeChars);
 
   /**
    * The single policy for what bounds the in-memory event ring: an event-count
@@ -17885,9 +17880,7 @@ export function createAgentChatService(args: {
       : parentVisibleMerged;
     let budgeted = requestedMaxBytes == null
       ? trimEnvelopesToByteBudget(countWindowed, responseMaxChars)
-      : keepNewestWithinCharBudget(countWindowed, responseMaxChars, estimateEnvelopeBytes, {
-        keepOversizeNewest: false,
-      });
+      : keepNewestWithinCharBudget(countWindowed, responseMaxChars, estimateEnvelopeBytes);
     if (args.turnBoundaryAligned && budgeted.length > 0 && budgeted.length < parentVisibleLength) {
       // `budgeted` is a suffix of `parentVisibleMerged`; extend it back to the
       // turn that its first event belongs to, within one more budget.
