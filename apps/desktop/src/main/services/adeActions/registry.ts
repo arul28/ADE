@@ -4590,10 +4590,11 @@ const cloudPhoneLastReport = new Map<string, number>();
 function reportCloudPhoneFailure(action: string, error: unknown): void {
   const raw = error && typeof error === "object" ? (error as { code?: unknown }).code : null;
   const code = typeof raw === "string" && raw ? raw : "none";
-  if (CLOUD_PHONE_EXPECTED_CODES.has(code)) return;
-  // Reported here (or held back by the interval below): the RPC server's own
-  // report of the same throw is skipped either way.
+  // Handled here, whether reported, held back by the interval below, or an
+  // expected refusal that is never reported: the RPC server's own report of
+  // the same throw is skipped in every case.
   markReportedToSentry(error);
+  if (CLOUD_PHONE_EXPECTED_CODES.has(code)) return;
   const key = `${action}:${code}`;
   const now = Date.now();
   if (now - (cloudPhoneLastReport.get(key) ?? 0) < CLOUD_PHONE_REPORT_INTERVAL_MS) return;
