@@ -71,17 +71,18 @@ function roundComplete(configDir: string, kind: "skills" | "plugins"): boolean {
 
 
 /**
- * For a Claude chat about to start its process: waits while the download runs,
- * at most `CHAT_WAIT_MAX_MS`, so the chat lists the complete skills.
+ * For a Claude chat about to start its process: while the download runs, a
+ * promise that settles when it ends (at most `CHAT_WAIT_MAX_MS`), so the chat
+ * lists the complete skills. Null when no download runs, so a chat start
+ * awaits nothing and keeps its timing.
  */
-export async function waitForClaudeAccountSkillSync(): Promise<void> {
-  if (!inFlight) return;
+export function waitForClaudeAccountSkillSync(): Promise<void> | null {
+  if (!inFlight) return null;
   let timer: NodeJS.Timeout | undefined;
-  await Promise.race([
+  return Promise.race([
     inFlight,
     new Promise<void>((resolve) => { timer = setTimeout(resolve, CHAT_WAIT_MAX_MS); }),
-  ]);
-  clearTimeout(timer);
+  ]).finally(() => clearTimeout(timer));
 }
 
 export function ensureClaudeAccountSkillsSynced(args: { logger: Logger; env?: NodeJS.ProcessEnv }): void {

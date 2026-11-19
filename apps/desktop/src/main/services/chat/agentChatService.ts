@@ -50111,8 +50111,9 @@ export function createAgentChatService(args: {
       warm: startsWarm,
     });
 
-    if (!runtime.warmQuery) {
-      await waitForClaudeAccountSkillSync();
+    const accountSkillSync = runtime.warmQuery ? null : waitForClaudeAccountSkillSync();
+    if (accountSkillSync) {
+      await accountSkillSync;
       assertCurrentStart();
     }
     // Repair a corrupted thinking history before resuming directly (the warm
@@ -50557,7 +50558,8 @@ export function createAgentChatService(args: {
         claudeSdkLoad.catch(() => {});
         const claudeDownload = chatPinnedToolDownload(null, "claude-code", "Claude Code");
         if (claudeDownload) await claudeDownload;
-        await waitForClaudeAccountSkillSync();
+        const accountSkillSync = waitForClaudeAccountSkillSync();
+        if (accountSkillSync) await accountSkillSync;
         await chatUserMcp.prepareClaude({
       ...chatMcpTarget(managed),
       // The query's own strict decision: it ignores ~/.claude.json, so there is nothing to prepare.
