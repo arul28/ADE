@@ -69,8 +69,9 @@ struct CloudDashboardScreen: View {
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
       if let onClose {
-        ToolbarItem(placement: .topBarLeading) {
-          Button { onClose() } label: { Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)) }
+        // As every Settings page's close: the trailing side, which the Duo's edge bar carries.
+        ToolbarItem(placement: .topBarTrailing) {
+          Button(role: .close) { onClose() }
             .accessibilityLabel("Close ADE Cloud")
         }
       }
@@ -734,11 +735,18 @@ struct CloudSizesCard: View {
         .frame(width: 28, height: 28)
         .background(CloudBrandColor.violet.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
       VStack(alignment: .leading, spacing: 3) {
-        HStack(spacing: 6) {
-          Text(tier.label)
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-          if tier.full { ADEKitTag(text: "Full computer") }
+        // The name never breaks; the tag goes under it when it doesn't fit beside it.
+        let name = Text(tier.label)
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1).fixedSize()
+        if tier.full {
+          ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) { name; ADEKitTag(text: "Full computer").fixedSize() }
+            VStack(alignment: .leading, spacing: 4) { name; ADEKitTag(text: "Full computer").fixedSize() }
+          }
+        } else {
+          name
         }
         Text(facts(tier))
           .font(.system(size: 12.5))

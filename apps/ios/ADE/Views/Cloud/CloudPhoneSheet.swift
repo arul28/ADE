@@ -28,8 +28,9 @@ struct CloudIphoneSheet: View {
         .navigationTitle("ADE Cloud iPhone")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-          ToolbarItem(placement: .cancellationAction) {
-            Button("Done") { dismiss() }
+          ToolbarItem(placement: .topBarTrailing) {
+            Button(role: .close) { dismiss() }
+              .accessibilityLabel("Close")
           }
         }
     }

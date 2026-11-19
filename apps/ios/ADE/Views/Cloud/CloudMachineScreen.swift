@@ -339,20 +339,28 @@ struct CloudMachineSizeCard: View {
           .frame(width: 28, height: 28)
           .background(CloudBrandColor.violet.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         VStack(alignment: .leading, spacing: 2) {
-          HStack(spacing: 6) {
-            Text(tier.label).font(.system(size: 14.5, weight: .semibold)).foregroundStyle(ADEColor.textPrimary)
+          // The name never breaks; its tags go under it when they don't fit beside it.
+          let name = Text(tier.label).font(.system(size: 14.5, weight: .semibold)).foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1).fixedSize()
+          let tags = HStack(spacing: 6) {
             if tier.full { ADEKitTag(text: "Full computer") }
             if isCurrent { ADEKitTag(text: "Current", tone: .ok) }
+          }.fixedSize()
+          ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) { name; tags }
+            VStack(alignment: .leading, spacing: 4) { name; tags }
           }
           Text("\(tier.cpu) CPU · \(cloudGbText(tier.memoryGb)) GB memory")
             .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
         Spacer(minLength: 8)
         Text(cloudHoursRate(tier.rate))
           .font(.system(size: 13, weight: .semibold))
           .monospacedDigit()
           .foregroundStyle(CloudBrandColor.mark)
+          .fixedSize()
       }
       .padding(.horizontal, ADEKit.inset)
       .padding(.vertical, 10)
