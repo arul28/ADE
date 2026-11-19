@@ -48,7 +48,7 @@ import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { CliLaunchChips } from "./CliLaunchChips";
 import { WorkStartSurface } from "./WorkStartSurface";
 import { useRemoteConnectionMark } from "../../state/projectMachines";
-import { hasPendingComposerDock, onSendHandoffSettle } from "../chat/launch/chatLaunchDock";
+import { hasPendingComposerDock, onSendHandoffSettle, startedWithSendHandoff } from "../chat/launch/chatLaunchDock";
 import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
 import { SceneFrost } from "../../scene/SceneFrost";
 import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
@@ -1191,9 +1191,9 @@ function WorkAreaModeLayer({ dock, children }: { dock: boolean; children: React.
     else layer.setAttribute("inert", "");
   }, [isPresent]);
   // A reply that answers before the dissolve ends shows at once, not blurred.
-  useEffect(() => onSendHandoffSettle(() => {
+  useEffect(() => onSendHandoffSettle((tookOverAtMs) => {
     for (const animation of ref.current?.getAnimations() ?? []) {
-      if (animation.playState === "running") animation.finish();
+      if (animation.playState === "running" && startedWithSendHandoff(animation, tookOverAtMs)) animation.finish();
     }
   }), []);
   return (

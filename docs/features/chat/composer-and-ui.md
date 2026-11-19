@@ -444,7 +444,9 @@ played them), or within 1 s after that chat took over from its draft,
 dissolve (`onSendHandoffSettle`) in the same frame, so a quick reply is never
 drawn under a fade or a blur. The 1 s covers a dissolve that outlives the
 draft copy, and one that plays with no copy (the copy skips under resource
-pressure). That first text also flushes in the next frame, not at the next
+pressure). Only animations that started within 250 ms of the take-over end
+(`startedWithSendHandoff`), so a later transition (a grid, another chat) plays
+in full. That first text also flushes in the next frame, not at the next
 work beat. A reply that comes after the animations end changes nothing.
 
 **Skips.** The flight is skipped when the bubble does not mount in 500 ms.
