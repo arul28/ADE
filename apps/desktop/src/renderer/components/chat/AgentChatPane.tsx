@@ -19427,7 +19427,8 @@ export function AgentChatPane({
       const defaultsPin = chatApiPin(draftExecutionBindingRef.current, isBoundScopePaneRef.current);
       // A machine that can't answer (asleep, refused, ADE Cloud as a tab)
       // leaves the account's row to seed the draft.
-      const machine: Promise<AgentChatLaunchDefaults | null> = defaultsPin
+      // ADE Cloud as a tab has no computer to ask: it would only refuse.
+      const machine: Promise<AgentChatLaunchDefaults | null> = defaultsPin && !isAdeCloudBinding(defaultsPin)
         ? (agentChatApiRef.current.launchDefaults?.(defaultsPin) ?? Promise.resolve(null)).catch((error: unknown) => {
           captureError(error, { level: "warning", handled: true, fingerprint: ["chat-launch-defaults", "machine-read"] });
           return null;

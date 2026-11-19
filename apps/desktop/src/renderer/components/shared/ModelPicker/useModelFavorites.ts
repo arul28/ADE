@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
+import { isAdeCloudBinding } from "../../../../shared/adeCloud/binding";
 import { captureError } from "../../../../shared/sentry/capture";
 
 // Favorites belong to this client (`localStorage`), not to a machine: the
@@ -103,8 +104,9 @@ const useFavoritesStore = create<FavoritesState>((set, get) => ({
     // The one-time import reads the old list from the tab's copy.
     const pin = useAppStore.getState().projectBinding;
     const getFavorites = getImportApi();
-    // No tab open or no bridge yet: stay unhydrated so a later mount imports.
-    if (!pin || !getFavorites) return;
+    // No tab open, a tab on ADE Cloud (no computer holds the old list), or no
+    // bridge yet: stay unhydrated so a later mount imports.
+    if (!pin || isAdeCloudBinding(pin) || !getFavorites) return;
     importInFlight = (async () => {
       try {
         const result = await getFavorites(pin);

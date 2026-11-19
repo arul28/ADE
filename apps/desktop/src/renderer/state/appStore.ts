@@ -3771,12 +3771,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   refreshProviderMode: async () => {
     const projectRoot = selectActiveProjectRoot(get());
-    // The provider mode of the copy the tab shows.
+    // The provider mode of the copy the tab shows. A tab on ADE Cloud has no
+    // computer to ask: its machine reads would only be refused.
     const pin = get().projectBinding ?? null;
+    if (isAdeCloudBinding(pin)) return;
     const [snapshot, aiStatus] = await Promise.all([
       // With no project open there is no project config to read: the mode
-      // then follows the configured providers alone.
-      projectRoot && pin ? getProjectConfigCached({ projectRoot, pin }) : Promise.resolve(null),
+      // then follows the configured providers alone. A copy that can't
+      // answer reads as no config, like the AI status beside it.
+      projectRoot && pin ? getProjectConfigCached({ projectRoot, pin }).catch(() => null) : Promise.resolve(null),
       getAiStatusCached({ projectRoot }).catch(() => null),
     ]);
     const configMode = snapshot?.effective.providerMode ?? "guest";
@@ -3791,9 +3794,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // saved in a project's database before shortcuts moved here.
     set({ keybindings: readKeybindingsSnapshot() });
     const projectRoot = selectActiveProjectRoot(get());
-    // The old overrides live in the database of the copy the tab shows.
+    // The old overrides live in the database of the copy the tab shows (none on ADE Cloud).
     const pin = get().projectBinding ?? null;
-    if (pin) await migrateProjectKeybindingsOnce(() => getKeybindingsCoalesced({ projectRoot, pin }));
+    if (pin && !isAdeCloudBinding(pin)) await migrateProjectKeybindingsOnce(() => getKeybindingsCoalesced({ projectRoot, pin }));
     set({ keybindings: readKeybindingsSnapshot() });
   },
 
