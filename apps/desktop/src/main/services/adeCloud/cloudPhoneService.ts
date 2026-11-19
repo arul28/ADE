@@ -538,10 +538,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       if (read?.state === "ready" && held === phone && phone.account === (await currentAccount())) {
         phone.checkedAt = Date.now();
         // Its first readiness read failed: the start is told now.
-        if (liveRun?.phoneId === phone.phoneId && liveRun.startLine) {
-          liveRun.lastActivityAt = Date.now();
-          announceStart(liveRun);
-        }
+        // (A read is not use: NoMac's idle clock runs on, so lastActivityAt stays.)
+        if (liveRun?.phoneId === phone.phoneId && liveRun.startLine) announceStart(liveRun);
         return phone;
       }
       if (held === phone) held = null;
