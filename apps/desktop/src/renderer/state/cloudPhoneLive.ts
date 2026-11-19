@@ -86,10 +86,11 @@ export function cloudPhoneIdleStopAt(value: CloudPhoneLive): number | null {
   return value.readAt > stopAt + IDLE_STOP_GRACE_MS ? null : stopAt;
 }
 
-/** "1:05" / "12 min": a short time span for the strip and the top bar. */
+/** "1:05" (precise, a countdown) / "12 min" / "under 1 min": a short time span for the strip and the top bar. */
 export function formatPhoneSpan(ms: number, precise: boolean): string {
   const seconds = Math.max(0, Math.round(ms / 1_000));
-  if (precise || seconds < 60) return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  if (precise) return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  if (seconds < 60) return "under 1 min";
   const minutes = Math.floor(seconds / 60);
   return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 }
