@@ -85044,10 +85044,20 @@ ${schedule.prompt}`
     approveToolUseAsAgent,
     isUserOnlyPendingInput,
     listPendingInputs: (listArgs: { sessionId: string }) => {
-      const cli = agentCliActions.target(listArgs?.sessionId, "read the pending inputs of");
+      // Every ADE client names the chat; only a hand-written call
+      // (`ade actions run chat.listPendingInputs`, an MCP `run_ade_action`)
+      // can leave it out, and that caller gets the answer.
+      const sessionId = typeof listArgs?.sessionId === "string" ? listArgs.sessionId.trim() : "";
+      if (!sessionId) {
+        throw new AdeExpectedError(
+          "Expected 'sessionId' to be a non-empty string: name the chat whose questions to list (`ade chat pending <sessionId>`).",
+          "user",
+        );
+      }
+      const cli = agentCliActions.target(sessionId, "read the pending inputs of");
       return cli
         ? { requests: [...cliCardInputs.list(cli.id), ...agentCliActions.listPendingInputs(cli).requests] }
-        : listPendingInputs(listArgs);
+        : listPendingInputs({ sessionId });
     },
     respondToInput: async (respondArgs: AgentChatRespondToInputArgs) => {
       const cli = agentCliActions.target(respondArgs?.sessionId, "answer");

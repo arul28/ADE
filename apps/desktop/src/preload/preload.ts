@@ -2788,10 +2788,19 @@ function callCloudPhone<T>(action: string, args: Record<string, unknown>, pin: O
  * The account's provider sign-ins (P5): the pinned machine, else the tab's
  * bound runtime, else this computer's brain with no project
  * (`providerLogins.call`), so Settings works in a window with no project.
+ * A tab bound to ADE Cloud has no computer of its own to ask, and ADE Cloud
+ * as a machine refuses every call; the account's sign-ins read the same from
+ * every computer, so an unpinned call there goes to this computer's brain.
  */
-function callProviderLogins<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
-  return callPinnedOrBoundRuntimeActionOr<T>(pin, "provider_logins", action, { args: { ...args } }, () =>
-    ipcRenderer.invoke(IPC.providerLoginsCall, { action, args: { ...args } }));
+async function callProviderLogins<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
+  const thisComputer = () => ipcRenderer.invoke(IPC.providerLoginsCall, { action, args: { ...args } }) as Promise<T>;
+  if (unpinnedProviderLoginsGoHere(pin)) return await thisComputer();
+  return await callPinnedOrBoundRuntimeActionOr<T>(pin, "provider_logins", action, { args: { ...args } }, thisComputer);
+}
+
+/** An unpinned `provider_logins` call on a tab bound to ADE Cloud: this computer answers it (`callProviderLogins`). */
+function unpinnedProviderLoginsGoHere(pin: OpenProjectBinding | null | undefined): boolean {
+  return !pin && isAdeCloudBinding(currentProjectBinding);
 }
 
 /**
@@ -12508,7 +12517,7 @@ const adeBridge = {
      * keyring and its prompt belong to that computer.
      */
     allowKeychain: async (args: { provider: "antigravity"; slot?: "personal" | "business" | null }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> => {
-      if (pin?.kind === "remote" || (!pin && await getRemoteProjectBinding())) {
+      if (pin?.kind === "remote" || (!pin && !unpinnedProviderLoginsGoHere(pin) && await getRemoteProjectBinding())) {
         throw new Error(thisDesktopOnlyRefusal("provider_logins", "allowKeychain") ?? "Run this on that computer.");
       }
       return await ipcRenderer.invoke(IPC.providerLoginsCall, { action: "allowKeychain", args: { ...args } }) as ProviderLoginSyncStatus;
@@ -12522,7 +12531,7 @@ const adeBridge = {
      */
     allowGitHubCli: async (args: { on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> => {
       if (args.on !== false) {
-        if (pin?.kind === "remote" || (!pin && await getRemoteProjectBinding())) {
+        if (pin?.kind === "remote" || (!pin && !unpinnedProviderLoginsGoHere(pin) && await getRemoteProjectBinding())) {
           throw new Error(thisDesktopOnlyRefusalFor("provider_logins", "allowGitHubCli", args) ?? "Turn this on at that computer.");
         }
         return await ipcRenderer.invoke(IPC.providerLoginsCall, { action: "allowGitHubCli", args: { on: true } }) as ProviderLoginSyncStatus;
