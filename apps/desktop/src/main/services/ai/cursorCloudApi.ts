@@ -16,6 +16,7 @@
  */
 
 import { assertCursorSdkSupportedOnThisPlatform } from "./cursorSdkLoader";
+import { markExpected } from "../../../shared/expectedError";
 
 const cursorApiBaseUrl = (): string =>
   process.env.CURSOR_BACKEND_URL?.trim() || "https://api.cursor.com";
@@ -77,7 +78,8 @@ async function cursorApiGet<T>(path: string, apiKey: string, query?: Record<stri
       "network",
     );
     (error as { cause?: unknown }).cause = cause;
-    return error;
+    // Cursor's API being slow or unreachable is the network, not an ADE fault.
+    return markExpected(error, "network");
   };
   let response: Response;
   let text: string;

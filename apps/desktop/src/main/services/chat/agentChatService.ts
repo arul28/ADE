@@ -19540,7 +19540,7 @@ export function createAgentChatService(args: {
     })();
   };
 
-  const maybeAutoTitleSession = async (
+  const autoTitleSessionOnce = async (
     managed: ManagedChatSession,
     args: {
       /**
@@ -19741,6 +19741,26 @@ export function createAgentChatService(args: {
       });
     } finally {
       managed.autoTitleInFlight = false;
+    }
+  };
+
+  /**
+   * A title is best effort and runs in the background (every caller is a
+   * `void`), so it never rejects: a failure, such as the project database
+   * closing while a title model answers, is logged and the chat keeps its title.
+   */
+  const maybeAutoTitleSession = async (
+    managed: ManagedChatSession,
+    args: Parameters<typeof autoTitleSessionOnce>[1],
+  ): Promise<void> => {
+    try {
+      await autoTitleSessionOnce(managed, args);
+    } catch (error) {
+      logger.warn("agent_chat.auto_title_failed", {
+        sessionId: managed.session.id,
+        mode: args.mode,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 

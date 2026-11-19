@@ -7,6 +7,7 @@ import type {
 } from "../../../shared/types";
 import { CODEX_RECOVERY_ACTION_BY_TURN_ACTION } from "../../../shared/types";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import type { Logger } from "../logging/logger";
 import { nowIso } from "../shared/utils";
 import { createChatQuietWatchdog, formatQuietMinutes, type ChatQuietWatchdog, type QuietInfo } from "./chatQuietWatchdog";
@@ -295,7 +296,8 @@ export function createQuietTurnHandler<TManaged extends QuietTurnSession>(deps: 
     if (!normalizedTurnId) throw new Error("Turn recovery requires a turn id.");
     const name = providerDisplayLabel(managed.session.provider, "The agent");
     if (!deps.turnRunning(managed) || watchdog.get(sessionId)?.turnId !== normalizedTurnId) {
-      throw new Error(`This ${name} turn is no longer running.`);
+      // The turn ended between the prompt and the click: a normal race, not a fault.
+      throw new AdeExpectedError(`This ${name} turn is no longer running.`, "user");
     }
     if (action !== "wait" && action !== "restart_resume") {
       throw new Error(`${name} turns offer Restart or Keep waiting.`);
