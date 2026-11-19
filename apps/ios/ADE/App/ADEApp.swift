@@ -28,6 +28,9 @@ struct ADEApp: App {
   /// Pending sign-in of another computer awaiting approval on this phone.
   /// Driven by `.adeDeviceSignInRequested` notifications from `DeepLinkRouter`.
   @State private var deviceSignInRequest: DeviceSignInRequest?
+  /// A lane link to a lane ADE Cloud kept without a computer.
+  /// Driven by `.adeKeptLaneRequested` notifications from `DeepLinkRouter`.
+  @State private var keptLaneTarget: KeptLaneLinkTarget?
 
   @MainActor
   init() {
@@ -220,6 +223,15 @@ struct ADEApp: App {
             sendToMacTarget = nil
           }
           .environmentObject(syncService)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .adeKeptLaneRequested)) { note in
+          guard let laneId = note.userInfo?["laneId"] as? String else { return }
+          keptLaneTarget = KeptLaneLinkTarget(laneId: laneId)
+        }
+        .sheet(item: $keptLaneTarget) { target in
+          KeptLaneLinkSheet(laneId: target.laneId) {
+            keptLaneTarget = nil
+          }
         }
         .onReceive(NotificationCenter.default.publisher(for: .adeDeviceSignInRequested)) { note in
           guard let raw = note.userInfo?["url"] as? String, let url = URL(string: raw) else { return }

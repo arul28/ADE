@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QUESTION_DECLINED_MODEL_MESSAGE } from "../../desktop/src/shared/pendingInputAnswers";
 import {
   createAdeRpcRequestHandler,
+  createCtoActionCaller,
   _resetGlobalAskUserRateLimit,
   resolveComputerUseOwners,
 } from "./adeRpcServer";
@@ -9302,6 +9303,37 @@ describe("ADE Cloud actions over the brain", () => {
         const updated = fetchStub.mock.calls.some(([url]) => String(url).endsWith("/inst0000/update"));
         expect(updated).toBe(reachesServer);
         if (!enabled) expect(fetchStub.mock.calls.every(([url]) => String(url).endsWith("/cloud/access"))).toBe(true);
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // The CTO thread speaks for the person on spends and deletes, but a computer
+  // that is no new lane's is never its call: it is an agent there, with nobody to ask here.
+  it("the CTO thread makes no computer as the person", async () => {
+    const { runtime } = createRuntime();
+    (runtime as any).accountAuthService = { getStatus: () => ({ signedIn: true, userId: "user-cto-make" }), getAccessToken: vi.fn(async () => "account-token") };
+    const create = vi.fn(async () => ({ instanceId: "inst_new" }));
+    (runtime as any).getCloudDesktop = () => ({ create, copy: create, move: create });
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+      if (path === "/cloud/access") return reply({ enabled: true });
+      if (path === "/cloud/account") return reply(account);
+      if (path === "/cloud/instances" && (init?.method ?? "GET") === "GET") return reply({ data: [box] });
+      return new Response("{}", { status: 404 });
+    }));
+    try {
+      // A brain's role ceiling is the CTO's (the desktop's own brain).
+      await withEnv({ ADE_ACCOUNT_DIRECTORY_URL: "https://directory.test", ADE_DEFAULT_ROLE: "cto" }, async () => {
+        // The CTO's generic action tool on its home machine (`runMachineAction`).
+        const callAsCto = await createCtoActionCaller({ runtime, serverVersion: "test" });
+
+        const response = await callAsCto("run_ade_action", { domain: "cloud", action: "create", args: { kind: "vm", shape: "4x8" } });
+
+        expect(JSON.stringify(response)).toMatch(/Agents don't make ADE Cloud computers/);
+        expect(create).not.toHaveBeenCalled();
       });
     } finally {
       vi.unstubAllGlobals();

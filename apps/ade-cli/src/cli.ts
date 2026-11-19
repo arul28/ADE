@@ -5155,6 +5155,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade cloud invite --text                     Your invite link: friends joined, rewards left, hours earned
                                                     (enter a friend's invite in Settings › Account)
     $ ade cloud create --kind vm --shape large --name "android vm"
+                                                    A computer with no lane. An agent never makes one alone: it asks
+                                                    you on a card in its chat, and with nobody to ask the answer is no.
+                                                    Agents start a lane with the size it needs (--machine cloud --size).
     $ ade cloud sleep <machine>                   Sleep now (uses no hours)
     $ ade cloud wake <machine>                    Wake (the server refuses it at 0 hours)
     $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts
@@ -5169,8 +5172,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     chat after the restart. Use it instead of asking the person to grow it.
     $ ade cloud update <machine>                  Move to its channel's image now and restart; files stay
                                                     (each computer also updates itself when idle or asleep)
-    $ ade cloud copy <machine> --name "lane box"  A new computer with the same files (a warm copy)
-    $ ade cloud move <machine> --to vm|box        Change kind, keeping every repo, lane and chat
+    $ ade cloud copy <machine> --name "lane box"  A new computer with the same files (a warm copy; an agent's asks you)
+    $ ade cloud move <machine> --to vm|box        Change kind, keeping every repo, lane and chat (an agent's asks you)
     $ ade cloud delete <machine>                  Gone for good, files and all
     $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may do (--per-day N, --max-shape large, --unattended on|off,
                                                     --extra-disk <dollars a month>|none|limit: paid extra disk they may grow into;
@@ -22027,7 +22030,7 @@ function formatCloudList(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const machines = isRecord(raw) && Array.isArray(raw.machines) ? raw.machines.filter(isRecord) : [];
   const lines: string[] = [];
-  if (!machines.length) lines.push("No ADE Cloud computers. ade cloud create makes one.");
+  if (!machines.length) lines.push("No ADE Cloud computers. A new lane on ADE Cloud makes one: ade chat create --machine cloud, or ade lanes create --machine cloud.");
   for (const box of machines) {
     const sleep = isRecord(box.sleep) && box.sleep.state !== "auto" ? "sleep pending" : "";
     const rate = typeof box.hoursRate === "number" ? `${box.hoursRate}× hours` : "—";

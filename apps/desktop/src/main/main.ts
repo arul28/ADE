@@ -10531,11 +10531,32 @@ app.whenReady().then(async () => {
     }
   };
 
+  /**
+   * A lane link that names a computer this desktop isn't connected to, for a
+   * lane the account keeps without a computer (an ADE Cloud lane that was
+   * freed): Settings › ADE Cloud with its row open (New computer, Delete),
+   * never the gone computer. Null for every other link, which goes on as it came.
+   */
+  const keptCloudLaneNavigation = async (incoming: AppNavigationRequest): Promise<AppNavigationRequest | null> => {
+    if (incoming.target.kind !== "lane" || !ipcBridge) return null;
+    const ownership = appNavigationOwnership(incoming.target);
+    if (!ownership) return null;
+    const machineKey = ownership.accountMachineKey.trim();
+    if (machineKey === ipcBridge.getLocalMachineIdentity().machineKey || ipcBridge.connectedMachineKeys().includes(machineKey)) return null;
+    const kept = await Promise.race([
+      ipcBridge.cloudLaneKeptWithoutComputer(incoming.target.laneId),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 4_000)),
+    ]);
+    return kept
+      ? { ...incoming, target: { kind: "settings", tab: "ade-cloud", anchor: "cloud-lanes", cloudLaneId: incoming.target.laneId } }
+      : null;
+  };
+
   dispatchAppNavigationRequest = (incoming) => {
     void (async () => {
       // A link that names an account project goes to a reachable copy of it,
       // or opens its tab with no machine (L33). Old links pass unchanged.
-      const request = await resolveAccountProjectNavigation(incoming, {
+      const request = await keptCloudLaneNavigation(incoming) ?? await resolveAccountProjectNavigation(incoming, {
         readAccountList: async () => ipcBridge?.readAccountProjectList() ?? { state: "not_loaded", projects: [] },
         getLocalMachineKey: () => ipcBridge?.getLocalMachineIdentity().machineKey ?? "",
         connectedMachineKeys: () => ipcBridge?.connectedMachineKeys() ?? [],

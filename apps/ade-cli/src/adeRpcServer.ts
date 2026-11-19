@@ -4243,6 +4243,9 @@ const CLOUD_APPROVED_ACTIONS = new Set([
   "lane_launch_status",
 ]);
 
+/** The `cloud` actions that add a computer that is not a new lane's: an agent's always waits on the person. */
+const CLOUD_COMPUTER_MAKE_ACTIONS: ReadonlySet<string> = new Set(["create", "copy", "move"]);
+
 /**
  * The move actions that name a source chat (`sourceSessionId`). A chat-bound
  * agent may aim them at its own chat or descendants; a start for another chat
@@ -7113,8 +7116,11 @@ async function runTool(args: {
       // is asked in its own chat. Never taken from the arguments. A chatless
       // `ade --role cto` is not a person: an agent's shell can claim that role
       // (the same rule as answering a card, above).
+      // A computer that is not a new lane's (make, copy, move) is never the
+      // CTO's call: it is an agent there, and the person answers its card.
+      const makesComputer = domain === "cloud" && CLOUD_COMPUTER_MAKE_ACTIONS.has(action);
       const callerIsPerson = mayUseUserOnlyActions(session)
-        || (callerIsCto && !isTrustedChatlessAdeCliCaller(session) && await callerIsTrustedCto(runtime, session));
+        || (!makesComputer && callerIsCto && !isTrustedChatlessAdeCliCaller(session) && await callerIsTrustedCto(runtime, session));
       // An outside app on an ADE MCP connection with write access (the runner
       // gives it the operator role) has no chat: it is an unattended agent,
       // held to the agent limits. Read only runs as `agent` and stays a

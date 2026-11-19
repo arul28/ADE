@@ -759,6 +759,11 @@ export type AppNavigationTarget =
        * (`ade://invite/<CODE>`). The page gets it as `?invite=<CODE>`.
        */
       inviteCode?: string | null;
+      /**
+       * An ADE Cloud lane kept without a computer, for Settings › ADE Cloud to
+       * open its row (New computer, Delete). The page gets it as `?lane=<id>`.
+       */
+      cloudLaneId?: string | null;
     }
   | {
       /** A page from `shared/openPlaces.ts`. Only a chat chip click sends it. */

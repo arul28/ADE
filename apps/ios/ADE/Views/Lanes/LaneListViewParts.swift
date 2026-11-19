@@ -958,6 +958,14 @@ extension LanesTabView {
     }
 
     guard let resolvedSnapshot = snapshot else {
+      // An ADE Cloud lane whose computer is gone (a PR's or a chat's "Go to
+      // lane"): its kept page, with New computer and Delete.
+      let accountLaneId = workParseRemoteLaneId(request.laneId)?.laneId ?? request.laneId
+      if AccountCloudStore.shared.lanesWithoutComputer.contains(where: { $0.laneId == accountLaneId }) {
+        syncService.requestedLaneNavigation = nil
+        openLane(request.laneId)
+        return
+      }
       errorMessage = request.projectName.map { "That lane isn't in \($0) any more." }
         ?? "The requested lane is not cached on this phone yet. Refresh Lanes and try again."
       syncService.requestedLaneNavigation = nil

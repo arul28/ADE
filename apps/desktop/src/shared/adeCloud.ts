@@ -311,8 +311,8 @@ export function cloudAndroidNeedsVmCost(boxShape: CloudShape | null, kind: Cloud
  */
 export function cloudAndroidNeedsVmMessage(boxShape: CloudShape | null): string {
   return `${cloudAndroidNeedsVmCost(boxShape)} `
-    + "ADE can make it and continue this chat there, with its history and changes. "
-    + "This computer stays, and you can delete it from the new chat.";
+    + "ADE can start a new lane on this lane's pushed branch with a full computer (Large or X-Large) and continue the task there. "
+    + "This computer stays, and you can delete it later.";
 }
 
 /** ADE Cloud's state, as Settings and the machine picker read it. */

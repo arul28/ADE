@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 // The ADE Cloud lanes ADE kept without a computer (`GET /cloud/lanes/without-computer`):
@@ -357,5 +358,42 @@ struct CloudKeptLaneRow: View {
       sessionId: chat.chatId,
       laneId: workRemoteLaneId(machineKey: fleetKey, laneId: lane.laneId)
     )
+  }
+}
+
+/// A lane link (`ade link`, a push, the share sheet) to a lane ADE Cloud kept
+/// without a computer. `DeepLinkRouter` finds it in the account's kept lanes.
+struct KeptLaneLinkTarget: Identifiable, Equatable {
+  let laneId: String
+  var id: String { laneId }
+}
+
+/// The kept lane's own page (New computer, Delete) over whatever is on screen,
+/// with no project or computer open: all of it is the account's. It closes
+/// when the lane leaves the kept list after it showed (deleted, or its new
+/// computer is up), or when one of its saved chats opens in Work.
+struct KeptLaneLinkSheet: View {
+  let laneId: String
+  let onClose: () -> Void
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  @State private var shown = false
+
+  private var kept: Bool { cloudStore.lanesWithoutComputer.contains { $0.laneId == laneId } }
+
+  var body: some View {
+    NavigationStack {
+      UnavailableLaneDestination(laneId: laneId)
+        .toolbar {
+          ToolbarItem(placement: .cancellationAction) {
+            Button("Done", action: onClose)
+          }
+        }
+    }
+    .onChange(of: kept, initial: true) { _, isKept in
+      if isKept { shown = true } else if shown { onClose() }
+    }
+    // The first value is what was pending before the page opened.
+    .onReceive(syncPublishes.service.$requestedWorkSessionNavigation.dropFirst().compactMap { $0 }) { _ in onClose() }
   }
 }

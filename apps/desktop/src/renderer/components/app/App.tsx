@@ -246,6 +246,7 @@ import {
   parseDeeplink,
 } from "../../../shared/deeplinks";
 import { showToast } from "./toast/toastStore";
+import { cloudKeptLaneSettingsPath, isCloudLaneKeptWithoutComputer } from "../cloudLane/cloudLaneActions";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { CloudViewsShownContext, useCrossMachineLaneSync } from "../../state/crossMachineLanes";
 import { useTabCopyPin } from "../../state/repositoryScope";
@@ -1605,6 +1606,9 @@ function AppNavigationBridge() {
       // `ade://invite/<CODE>`: Settings › Account reads `invite` and fills its code box.
       const inviteCode = target.inviteCode?.trim();
       if (inviteCode) params.set("invite", inviteCode);
+      // A kept ADE Cloud lane: Settings › ADE Cloud opens its row.
+      const cloudLaneId = target.cloudLaneId?.trim();
+      if (cloudLaneId) params.set("lane", cloudLaneId);
       const search = params.toString();
       // As the Settings button does: leave the new-tab page (it holds Home in
       // front), and with no project open, show Settings on its own. Without
@@ -1662,6 +1666,17 @@ function AppNavigationBridge() {
       if (laneMachineId) {
         // Lanes selects a lane on another machine from `?laneId&machineId`.
         navigate(openLaneOnMachinePath(target.laneId, laneMachineId, target.sessionId));
+        return true;
+      }
+      if (!lane && !options.forceLocal && !options.suppressUnresolved && await isCloudLaneKeptWithoutComputer(target.laneId)) {
+        // An ADE Cloud lane whose computer is gone: the account keeps it,
+        // with New computer and Delete, never "a lane from another computer".
+        // As a settings link does: leave the new-tab page, and with no
+        // project open, show Settings on its own.
+        const shell = useAppStore.getState();
+        shell.cancelNewTab();
+        if (!shell.project?.rootPath) shell.setStandaloneSettingsOpen(true);
+        navigate(cloudKeptLaneSettingsPath(target.laneId));
         return true;
       }
       if (!lane && !options.forceLocal) {

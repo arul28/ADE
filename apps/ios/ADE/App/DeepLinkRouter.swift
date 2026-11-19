@@ -397,12 +397,64 @@ final class DeepLinkRouter {
     return ADEDeepLinkURLParsing.ownership(from: ADEDeepLinkURLParsing.adeQueryValues(from: components))
   }
 
-  /// A lane link that names its machine and project opens that lane there.
-  /// One that names neither keeps the old "Send to your computer" card.
+  /// A lane link to an ADE Cloud lane whose computer is gone (freed, or
+  /// removed by the idle cleanup) opens the lane as the account keeps it, with
+  /// New computer and Delete: never "Lane shared with you", and never a
+  /// computer that left the account. The kept list is read fresh first, since
+  /// a lane freed a moment ago is not in the last read. Any other lane link
+  /// goes on to `routeLaneOnItsMachine`.
   private func routeLane(
     laneId: String,
     ownership: ADEDeeplinkOwnershipParse,
     accountProject: ADEDeeplinkAccountProjectParse = .none,
+    url: URL
+  ) {
+    switch (ownership, accountProject) {
+    case (.malformed, _), (_, .malformed):
+      return landOnBrokenLink()
+    default:
+      break
+    }
+    routedCount += 1
+    ownedLinkTask?.cancel()
+    ownedLinkTask = Task { @MainActor [weak self] in
+      guard let self else { return }
+      if await self.openKeptLane(laneId) { return }
+      // A later link took over while the kept lanes were read.
+      guard !Task.isCancelled else { return }
+      self.routeLaneOnItsMachine(laneId: laneId, ownership: ownership, accountProject: accountProject, url: url)
+    }
+  }
+
+  /// Opens the lane's kept page when the account keeps it without a computer.
+  /// False (the link goes on) when it doesn't, when the phone isn't signed in,
+  /// or when the account has no ADE Cloud. A failed read keeps the last list.
+  private func openKeptLane(_ laneId: String) async -> Bool {
+    guard let sync = SyncService.shared else { return false }
+    let account = AccountService.shared
+    // The account is still starting (a cold launch from the link): wait for it,
+    // as an owned link does. Signed out: the link's own route says so.
+    if account.phase == .loading {
+      guard await waitUntilSignedIn(account) else { return false }
+    }
+    guard account.phase == .signedIn else { return false }
+    let store = AccountCloudStore.shared
+    if store.access?.enabled == false { return false }
+    await store.refreshLanesWithoutComputer(using: sync, force: true)
+    guard !Task.isCancelled else { return true }
+    // The account keeps the lane under its own id, never a `fleet|machine|lane` row id.
+    let accountLaneId = workParseRemoteLaneId(laneId)?.laneId ?? laneId
+    guard store.lanesWithoutComputer.contains(where: { $0.laneId == accountLaneId }) else { return false }
+    NotificationCenter.default.post(name: .adeKeptLaneRequested, object: nil, userInfo: ["laneId": accountLaneId])
+    return true
+  }
+
+  /// A lane link that names its machine and project opens that lane there.
+  /// One that names neither keeps the old "Send to your computer" card.
+  private func routeLaneOnItsMachine(
+    laneId: String,
+    ownership: ADEDeeplinkOwnershipParse,
+    accountProject: ADEDeeplinkAccountProjectParse,
     url: URL
   ) {
     let openLane: @MainActor (MobileProjectSummary) -> Void = { project in
@@ -1069,6 +1121,9 @@ extension Notification.Name {
   /// branch / linear-issue) that the mobile client can't open directly.
   /// `userInfo["url"]` carries the original `ade://...` URL string.
   static let adeSendToMacRequested = Notification.Name("ade.sendToMacRequested")
+  /// Posted by `DeepLinkRouter` for a lane link to a lane ADE Cloud kept
+  /// without a computer. `userInfo["laneId"]` is the account's lane id.
+  static let adeKeptLaneRequested = Notification.Name("ade.keptLaneRequested")
   /// Posted when the phone opens the sign-in link of another computer.
   /// `userInfo["url"]` is the link; `DeviceSignInRequest(url:)` reads its code.
   static let adeDeviceSignInRequested = Notification.Name("ade.deviceSignInRequested")
