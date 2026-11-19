@@ -2464,6 +2464,11 @@ export type SyncChatSubscribeSnapshotPayload = {
    * not part of the contiguous `events` range.
    */
   pinnedEvents?: AgentChatEventEnvelope[];
+  /**
+   * `false` when the host's chat service has no such chat (deleted, or its
+   * lane was). Clients show the chat as deleted. Absent means found.
+   */
+  sessionFound?: boolean;
 };
 
 export type SyncChatUnsubscribePayload = {

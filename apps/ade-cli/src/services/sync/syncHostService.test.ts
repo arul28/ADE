@@ -9904,6 +9904,78 @@ describe("initial hydration priority", () => {
     }
   });
 
+  it("tells a subscriber when the chat service has no such chat", async () => {
+    // A chat deleted with its lane used to answer with a plain empty snapshot,
+    // and the phone showed a working chat with no messages (ADE.ChatEmptyThread).
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const base = createHostArgs(projectRoot, []);
+    const getChatEventHistory = vi.fn(async (sessionId: string) => ({
+      sessionId,
+      events: [],
+      truncated: false,
+      transcriptTruncated: false,
+      windowTruncated: false,
+      sessionFound: sessionId === "live-chat",
+    }));
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pollIntervalMs: 100,
+      db: {
+        sync: {
+          getSiteId: () => "site-deleted-chat",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      sessionService: {
+        list: () => [],
+        get: (sessionId: string) => sessionId === "live-chat"
+          ? { id: sessionId, transcriptPath: path.join(projectRoot, "transcripts", "live-chat.chat.jsonl"), status: "running" }
+          : null,
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory,
+        getSessionSummary: vi.fn(async () => null),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-deleted-chat");
+      for (const sessionId of ["deleted-chat", "live-chat"]) {
+        peer.ws.send(encodeSyncEnvelope({
+          type: "chat_subscribe",
+          requestId: `${sessionId}-subscribe`,
+          projectId: "project-1",
+          // A warm phone resumes by sequence; the host has no log for a
+          // deleted chat, so it answers with a gap snapshot.
+          payload: { sessionId, chatLogV2: true, sinceSequence: 1_011, generation: 1 },
+        }));
+      }
+      const deleted = await waitForEnvelope(peer.envelopes, "chat_subscribe", "deleted-chat-subscribe");
+      const live = await waitForEnvelope(peer.envelopes, "chat_subscribe", "live-chat-subscribe");
+
+      expect(deleted.payload).toMatchObject({ sessionId: "deleted-chat", events: [], gap: true, sessionFound: false });
+      expect(live.payload).toMatchObject({ sessionId: "live-chat", events: [] });
+      expect(live.payload).not.toHaveProperty("sessionFound");
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it("hydrates the selected browser chat without replaying historical CRDT rows", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const transcriptPath = path.join(projectRoot, "transcripts", "selected-chat.chat.jsonl");

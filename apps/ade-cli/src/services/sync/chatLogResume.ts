@@ -243,6 +243,9 @@ export async function readTurnAlignedTranscriptTail(args: {
   const cutFloor = size - maxBytes;
   let naturalStart = parentEvents.length;
   while (naturalStart > 0 && parentOffsets[naturalStart - 1]! >= cutFloor) naturalStart -= 1;
+  // A newest row larger than the budget starts before the cut. Keep it: an
+  // empty window blanks a chat that has history.
+  if (naturalStart === parentEvents.length && naturalStart > 0) naturalStart -= 1;
   const start = turnAlignedSnapshotStart(
     parentEvents,
     naturalStart,

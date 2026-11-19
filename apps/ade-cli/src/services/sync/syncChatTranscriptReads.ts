@@ -192,6 +192,28 @@ export async function readFileBackedChatSnapshot(args: {
     signal,
     "Sync operation aborted.",
   );
+  if (tail.events.length === 0 && tail.tailStartOffset > 0) {
+    // The newest row is larger than the budget, so the byte tail held no
+    // complete row. Send that row (the pager finds its start) rather than an
+    // empty snapshot, which blanks a chat that has history.
+    const page = await readTranscriptHistoryPage({
+      transcriptPath,
+      sessionId,
+      beforeOffset: tail.transcriptSize,
+      maxBytes,
+      ...(signal ? { signal } : {}),
+    });
+    if (page.envelopes.length > 0) {
+      return {
+        events: page.envelopes,
+        pinnedEvents: [],
+        transcriptSize: tail.transcriptSize,
+        truncated: page.startOffset > 0,
+        tailStartOffset: page.startOffset,
+        hasOlderHistory: page.startOffset > 0,
+      };
+    }
+  }
   return { ...tail, pinnedEvents: [], hasOlderHistory: tail.tailStartOffset > 0 };
 }
 
