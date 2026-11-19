@@ -845,7 +845,11 @@ and effort for a new chat's first prompt.
     as they are. A foreground CLI carries the mark into `launchPtySession`
     (`WorkPtyLaunchArgs.newDraftMarkAtSend`, also on the brain-owned new-lane
     path through the local launch record), which focuses the terminal only
-    while the mark holds. Background
+    while the mark holds. The open in the Work tab also puts the chat in the
+    URL (`?sessionId=`), which the Work page applies only once the chat is in
+    its list; `noteLaunchUrlOpen` keeps the project's count at the open, and
+    the page drops that URL without opening the chat when a new draft was
+    asked for since (`takeLaunchUrlOpenAllowed`). Background
     jobs show a strip with Open. Failed jobs offer Restore (also on the
     matching error banner). Stale active jobs can be hidden; terminal rows are
     pruned.

@@ -187,7 +187,12 @@ import {
   resetProjectOriginMemory,
 } from "../lanes/laneMachines";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
-import { markNewDraftRequests, noteNewDraftRequested } from "../../lib/draftLaunchJobs";
+import {
+  LAUNCH_URL_OPEN_PARAM,
+  markNewDraftRequests,
+  noteLaunchUrlOpen,
+  noteNewDraftRequested,
+} from "../../lib/draftLaunchJobs";
 import {
   resetCrossMachineLaneSyncForTest,
   seedCrossMachineOptimisticSession,
@@ -2660,6 +2665,60 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(workState.openItemIds).toContain("session-1");
     expect(workState.activeItemId).toBe("session-1");
     expect(workState.selectedItemId).toBe("session-1");
+  });
+
+  it.each([
+    { name: "a launch's URL after a new draft keeps the draft", marked: true, newDraft: true, opens: false },
+    { name: "a launch's URL with no new draft opens its chat", marked: true, newDraft: false, opens: true },
+    { name: "a plain URL to that chat still opens it", marked: false, newDraft: true, opens: true },
+  ])("opens a launch's URL session only while no new draft was asked for since: $name", async ({ marked, newDraft, opens }) => {
+    // A launch writes the URL at its open; the list (and so the URL's apply)
+    // comes later, and a new draft asked for in between keeps the screen.
+    const session = makeSession(`session-url-${marked}-${newDraft}`, "lane-1");
+    listSessionsCachedMock.mockResolvedValue([session]);
+    noteLaunchUrlOpen(session.id, "/fake/project");
+    if (newDraft) noteNewDraftRequested("/fake/project");
+    useSearchParamsMock.mockReturnValue([
+      new URLSearchParams(`laneId=lane-1&sessionId=${session.id}${marked ? `&${LAUNCH_URL_OPEN_PARAM}=1` : ""}`),
+      vi.fn(),
+    ]);
+    const workState = {
+      openItemIds: [] as string[],
+      activeItemId: null as string | null,
+      selectedItemId: null as string | null,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      lanes: [{ id: "lane-1", name: "Lane 1" }],
+      workViewByProject: { "/fake/project": workState },
+    };
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+    });
+
+    renderHook(() => useWorkSessions());
+
+    // The URL is stripped once the session is listed, opened or not.
+    await waitFor(() => {
+      expect(navigateSpy).toHaveBeenCalledWith("/work", { replace: true });
+    });
+    if (opens) {
+      await waitFor(() => {
+        expect(focusSessionSpy).toHaveBeenCalledWith(session.id);
+      });
+      expect(workState.selectedItemId).toBe(session.id);
+    } else {
+      expect(focusSessionSpy).not.toHaveBeenCalledWith(session.id);
+      expect(workState.selectedItemId).toBeNull();
+      expect(workState.openItemIds).not.toContain(session.id);
+    }
   });
 
   it("opens a foreign URL session from the union without selecting its lane locally", async () => {

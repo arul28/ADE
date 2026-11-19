@@ -610,8 +610,10 @@ import { sessionFromSummary } from "./boundAgentChatApi";
 import {
   isDraftLaunchJobStale,
   isDraftLaunchJobTerminal,
+  LAUNCH_URL_OPEN_PARAM,
   launchMayOpenItsSession,
   markNewDraftRequests,
+  noteLaunchUrlOpen,
   type NewDraftRequestMark,
   pruneDraftLaunchJobs,
   withDraftLaunchTimeout,
@@ -13717,7 +13719,8 @@ export function AgentChatPane({
       return;
     }
     if (embeddedWorkLayout) {
-      navigate(`/work?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}`);
+      noteLaunchUrlOpen(launch.sessionId, workDraftProjectStateKey);
+      navigate(`/work?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}&${LAUNCH_URL_OPEN_PARAM}=1`);
       return;
     }
     navigate(`/lanes?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}&focus=single`);
@@ -13729,6 +13732,7 @@ export function AgentChatPane({
     setLaneWorkViewState,
     setWorkViewState,
     suppressDraftLaunchNavigation,
+    workDraftProjectStateKey,
   ]);
 
   // Robust foreground auto-open: a foreground send (Enter) opens the chat
