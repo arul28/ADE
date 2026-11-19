@@ -304,9 +304,11 @@ extension WorkRootListScreen {
     // A computer made since the last look (from the web, another phone or a
     // New computer) lists its chats once the account's machines and ADE Cloud
     // computers are read again.
-    async let cloud: Void = syncService.readCloudForLaunchedChat()
+    async let cloud = syncService.readCloudForPull()
     await reload(refreshRemote: true)
-    await cloud
+    if !(await cloud), errorMessage == nil {
+      errorMessage = "ADE couldn't read your machines and ADE Cloud computers, so a new one may be missing. Pull again to retry."
+    }
     if errorMessage == nil {
       withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
         refreshFeedbackToken += 1

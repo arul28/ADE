@@ -4945,6 +4945,8 @@ final class SyncService: ObservableObject {
   /// One read of the account server's computers ended this run (answered or not):
   /// until then a machine can't be told apart from an ADE Cloud computer.
   var cloudServerReadFinished = false
+  /// The last read of the account server's computers got no answer.
+  var cloudServerLastReadFailed = false
   /// ADE Cloud computers the phone asked to wake for an open that still
   /// waits for them. The opened chat says "Waking <name>…" meanwhile.
   @Published private(set) var wakingCloudMachineKeys: Set<String> = []
