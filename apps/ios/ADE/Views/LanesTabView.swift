@@ -107,6 +107,8 @@ struct LanesTabView: View, Equatable {
   @State var pullRequests: [PullRequestListItem] = []
   @State var laneListPresentation = LaneListPresentation.empty
   @State var errorMessage: String?
+  /// The last pull couldn't read the account's machines or ADE Cloud computers.
+  @State var cloudReadFailed = false
   @State var searchText = ""
   @State var quickFilter: LaneQuickFilter = .active
   @State var lanePath = NavigationPath()

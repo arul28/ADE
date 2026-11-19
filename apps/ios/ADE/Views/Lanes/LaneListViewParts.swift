@@ -625,6 +625,11 @@ extension LanesTabView {
       ADEFlatInlineNotice(message: hydrationNotice.title, retry: { Task { await reload(refreshRemote: true) } })
         .adeFlatRow(separator: .hidden)
     }
+    // With no computer connected too: this read goes to the account server.
+    if cloudReadFailed {
+      ADEFlatInlineNotice(message: "ADE couldn't read your machines and ADE Cloud computers, so a new one may be missing.", tint: ADEColor.danger, retry: { Task { await refreshFromPullGesture() } })
+        .adeFlatRow(separator: .hidden)
+    }
     if let errorMessage, laneStatus.phase == .ready, hostReachable {
       ADEFlatInlineNotice(message: errorMessage, tint: ADEColor.danger, retry: { Task { await reload(refreshRemote: true) } })
         .adeFlatRow(separator: .hidden)
@@ -973,13 +978,17 @@ extension LanesTabView {
 
   @MainActor
   func refreshFromPullGesture() async {
-    // The other machines are read now, not on their 30-second beat.
-    async let remote: Void = remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+    async let focused: Void = reload(refreshRemote: true)
     // The ADE Cloud lanes kept without a computer, from the account.
     async let kept: Void = AccountCloudStore.shared.refreshLanesWithoutComputer(using: syncService, force: true)
-    await reload(refreshRemote: true)
-    await remote
+    // A computer made since the last look lists once the account's machines
+    // and ADE Cloud computers are read again; then the other machines are
+    // read now, not on their 30-second beat.
+    let cloudRead = await syncService.readCloudForPull()
+    await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+    await focused
     await kept
+    if cloudReadFailed == cloudRead { cloudReadFailed = !cloudRead }
     if errorMessage == nil {
       withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
         refreshFeedbackToken += 1

@@ -654,6 +654,7 @@ extension SyncService {
     cloudServerReadTask = nil
     cloudServerReadAt = nil
     cloudServerReadFinished = false
+    cloudServerLastReadFailed = false
     cloudServerInstances = []
     cloudSavedChats = []
     // The last account's chat launches from this phone go too.
@@ -726,6 +727,7 @@ extension SyncService {
     await accountState
     // An account switch while it read: the answer is the old account's.
     guard !Task.isCancelled, AccountService.shared.isPairingCommitAuthorized(owner) else { return }
+    cloudServerLastReadFailed = instances == nil
     if instances != nil, !cloudServerReadFinished {
       // Views that tell own computers from cloud ones read again now. A
       // failed read leaves it unset: an unknown computer is not yet the
@@ -949,6 +951,23 @@ extension SyncService {
     async let machines: Void = AccountService.shared.loadMachines()
     await cloudServerReadTask?.value
     await machines
+  }
+
+  /// A pull on Lanes or Work: the account's machines and ADE Cloud computers
+  /// read again, so a computer made since the last look (from the web,
+  /// another phone, New computer) lists in the same pull. A read already out
+  /// may have started before it existed, so it ends and a new one runs. The
+  /// fleet publishes on the main queue after the reads; this returns once
+  /// those publishes ran. False when either read got no answer.
+  func readCloudForPull() async -> Bool {
+    async let machines: Void = AccountService.shared.loadMachines()
+    await refreshCloudServerInstances()
+    await machines
+    for _ in 0..<2 {
+      await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in DispatchQueue.main.async { done.resume() } }
+    }
+    if case .unreachable = AccountService.shared.machinesState { return false }
+    return !cloudServerLastReadFailed
   }
 
   /// The fleet key of a saved chat's computer that left the account: no

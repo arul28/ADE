@@ -446,6 +446,8 @@ struct WorkRootListScreen: View, Equatable {
   @State var snoozeRegroupTask: Task<Void, Never>?
   @State var snoozeEpoch = 0
   @State var errorMessage: String?
+  /// The last pull couldn't read the account's machines or ADE Cloud computers.
+  @State var cloudReadFailed = false
   // Scoped per project+host through `WorkViewStateStore` rather than held in
   // flat global `@AppStorage`, so switching projects or machines restores that
   // scope's view instead of carrying the previous one over.
@@ -1912,6 +1914,21 @@ struct WorkRootListScreen: View, Equatable {
                 await openLaunchedCloudChat(chatId)
               }
             }
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+          }
+
+          // With no computer connected too: this read goes to the account server.
+          if cloudReadFailed {
+            ADENoticeCard(
+              title: "ADE Cloud",
+              message: "ADE couldn't read your machines and ADE Cloud computers, so a new one may be missing.",
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Retry",
+              action: { Task { await refreshFromPullGesture() } }
+            )
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)

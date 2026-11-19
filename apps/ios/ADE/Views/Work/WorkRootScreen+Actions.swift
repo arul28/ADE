@@ -301,7 +301,13 @@ extension WorkRootListScreen {
 
   @MainActor
   func refreshFromPullGesture() async {
+    // A computer made since the last look (from the web, another phone or a
+    // New computer) lists its chats once the account's machines and ADE Cloud
+    // computers are read again.
+    async let cloud = syncService.readCloudForPull()
     await reload(refreshRemote: true)
+    let cloudRead = await cloud
+    if cloudReadFailed == cloudRead { cloudReadFailed = !cloudRead }
     if errorMessage == nil {
       withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
         refreshFeedbackToken += 1
