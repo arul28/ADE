@@ -322,6 +322,7 @@ import { buildProviderLoginsDomainService } from "../providerLogins/providerLogi
 import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
 import { ADE_CLOUD_HOME_UNAVAILABLE } from "../../../shared/automationCloud";
 import { CloudPhoneError, createCloudPhoneService, type CloudPhoneService } from "../adeCloud/cloudPhoneService";
+import { cloudPhoneCallerChat } from "../adeCloud/cloudPhoneRun";
 import { captureError, markReportedToSentry } from "../../../shared/sentry/capture";
 import { CLOUD_ACCESS_REFUSED } from "../adeCloud/cloudProvider";
 import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudServerFor, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
@@ -4559,11 +4560,10 @@ let cloudPhoneServiceSingleton: CloudPhoneService | null = null;
 const cloudPhoneChatRuntimes = new Map<string, AccountDomainRuntime>();
 const CLOUD_PHONE_CHAT_RUNTIMES_LIMIT = 20;
 function rememberCloudPhoneChat(args: unknown, runtime: AccountDomainRuntime): void {
-  const approval = args && typeof args === "object" ? (args as { approval?: unknown }).approval : null;
-  const id = approval && typeof approval === "object" ? (approval as { chatSessionId?: unknown }).chatSessionId : null;
-  if (typeof id !== "string" || !id.trim()) return;
-  cloudPhoneChatRuntimes.delete(id.trim());
-  cloudPhoneChatRuntimes.set(id.trim(), runtime);
+  const id = cloudPhoneCallerChat(args);
+  if (!id) return;
+  cloudPhoneChatRuntimes.delete(id);
+  cloudPhoneChatRuntimes.set(id, runtime);
   if (cloudPhoneChatRuntimes.size > CLOUD_PHONE_CHAT_RUNTIMES_LIMIT) cloudPhoneChatRuntimes.delete(cloudPhoneChatRuntimes.keys().next().value as string);
 }
 function cloudPhoneServiceFor(runtime: AccountDomainRuntime): CloudPhoneService {
@@ -4575,12 +4575,8 @@ function cloudPhoneServiceFor(runtime: AccountDomainRuntime): CloudPhoneService 
     logger: runtime.logger,
     // Any provider's chat shows it; a terminal session (a CLI agent) is not a chat and is skipped.
     notifyChat: (chatSessionId, message) => {
-      const owner = cloudPhoneChatRuntimes.get(chatSessionId) ?? runtime;
-      try {
-        owner.agentChatService?.recordSystemNotice({ sessionId: chatSessionId, message });
-      } catch (error) {
-        owner.logger.warn("cloud_phone.chat_notice_failed", { error: error instanceof Error ? error.message : String(error) });
-      }
+      // The service catches and logs a failed notice.
+      (cloudPhoneChatRuntimes.get(chatSessionId) ?? runtime).agentChatService?.recordSystemNotice({ sessionId: chatSessionId, message });
     },
   });
   return cloudPhoneServiceSingleton;

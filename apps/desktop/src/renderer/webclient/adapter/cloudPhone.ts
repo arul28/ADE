@@ -41,7 +41,7 @@ export function createWebCloudPhoneNamespace(infra: Pick<AdapterInfra, "client" 
     view: (args, pin) => write<CloudPhoneView>("view", { ...(args ?? {}) }, pin),
     start: (args, pin) => write<unknown>("start", { ...(args ?? {}) }, pin),
     stop: (pin) => write<{ stopped: boolean }>("stop", {}, pin),
-    keepAlive: (pin) => write<{ ok: boolean; lastActivityAt?: number | null }>("keepAlive", {}, pin),
+    keepAlive: (pin) => write<{ ok: boolean }>("keepAlive", {}, pin),
     screenshot: (args, pin) => write<{ artifactId: string | null }>("screenshot", { ...args }, pin),
     // Recording needs the desktop's offscreen view, which a browser has no
     // main process to paint. Say so rather than leaving a calling pane stuck.

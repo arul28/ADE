@@ -42,7 +42,12 @@ const read = (): CloudPhoneLive => live;
 export function publishCloudPhoneStatus(status: CloudPhoneStatusView, readAt = Date.now()) {
   if (readAt < live.readAt) return;
   const samePhone = live.status?.phone?.id != null && live.status.phone.id === status.phone?.id;
-  emit({ status, readAt, inputAt: samePhone ? live.inputAt : null });
+  // Only the brain that drives the phone knows its last call; a read through
+  // another (the top bar's tab machine) answers null and never erases it.
+  const lastActivityAt = samePhone
+    ? Math.max(live.status?.lastActivityAt ?? 0, status.lastActivityAt ?? 0) || null
+    : status.lastActivityAt ?? null;
+  emit({ status: { ...status, lastActivityAt }, readAt, inputAt: samePhone ? live.inputAt : null });
 }
 
 /** The person touched the live phone in this window. Throttled: input arrives per pointer move. */
@@ -61,16 +66,23 @@ export function cloudPhoneIsUp(value: CloudPhoneLive): boolean {
   return state === "ready" || state === "starting";
 }
 
+/** NoMac's idle stop lands within this of its due time. */
+const IDLE_STOP_GRACE_MS = 30_000;
+
 /**
  * When the phone stops by itself with nothing more done, as this window knows
- * it: idle from the later of the brain's last call and this pane's input,
- * capped at the phone's time limit. Null while it starts or nothing is known.
+ * it: idle from the later of the brain's last call, this pane's input, and the
+ * phone becoming ready. Null while it starts or nothing is known, and when a
+ * read well after that time still found it on: something this window doesn't
+ * see (an agent through another machine's brain) is using it.
  */
 export function cloudPhoneIdleStopAt(value: CloudPhoneLive): number | null {
   const phone = value.status?.phone;
   if (!phone || phone.state !== "ready") return null;
   const last = Math.max(value.status?.lastActivityAt ?? 0, value.inputAt ?? 0, phone.readyAt ?? 0);
-  return last > 0 ? last + CLOUD_PHONE_IDLE_SECONDS * 1_000 : null;
+  if (last <= 0) return null;
+  const stopAt = last + CLOUD_PHONE_IDLE_SECONDS * 1_000;
+  return value.readAt > stopAt + IDLE_STOP_GRACE_MS ? null : stopAt;
 }
 
 /** "1:05" / "12 min": a short time span for the strip and the top bar. */
@@ -90,6 +102,36 @@ export function cloudPhoneMinutesLeft(value: CloudPhoneLive, now: number): numbe
   if (!minutes) return null;
   const running = value.status?.phone?.state === "ready" ? Math.floor((now - value.readAt) / 60_000) : 0;
   return Math.max(0, minutes.left - Math.max(0, running));
+}
+
+/** The idle countdown counts in seconds, with Keep on, in its last stretch. */
+export const CLOUD_PHONE_IDLE_WARN_MS = 90_000;
+
+/**
+ * The idle countdown as the strip and the top bar show it: when the phone
+ * stops with nothing done, whether that is within the last stretch, and a
+ * clock that ticks every second in that stretch while `fastWhenWarn`.
+ */
+export function useCloudPhoneIdleCountdown(value: CloudPhoneLive, active: boolean, fastWhenWarn: boolean) {
+  const stopAt = cloudPhoneIdleStopAt(value);
+  const warnNow = stopAt != null && stopAt - Date.now() <= CLOUD_PHONE_IDLE_WARN_MS;
+  const now = usePhoneClock(active, fastWhenWarn && warnNow);
+  return { now, stopAt, warn: stopAt != null && stopAt - now <= CLOUD_PHONE_IDLE_WARN_MS };
+}
+
+/** What a Keep on answer means for the person: null when it worked. */
+export async function keepCloudPhoneOn(pin: OpenProjectBinding | null): Promise<string | null> {
+  const answer = await window.ade.cloudPhone.keepAlive(pin);
+  await readCloudPhoneStatus(pin).catch(() => null);
+  return answer.ok ? null : "The phone already stopped.";
+}
+
+/** Reads the account's phone through `pin`'s machine and publishes it. Throws what the read throws. */
+export async function readCloudPhoneStatus(pin: OpenProjectBinding | null): Promise<CloudPhoneStatusView> {
+  const startedAt = Date.now();
+  const status = await window.ade.cloudPhone.status(pin);
+  publishCloudPhoneStatus(status, startedAt);
+  return status;
 }
 
 /**

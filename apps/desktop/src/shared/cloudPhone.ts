@@ -45,6 +45,7 @@ export const CLOUD_PHONE_USER_ONLY_ACTIONS = ["view", "keepAlive"] as const;
 
 /** A phone with no tool call or person's input for this long stops (NoMac counts watching as idle). */
 export const CLOUD_PHONE_IDLE_SECONDS = 300;
+export const CLOUD_PHONE_IDLE_MINUTES = CLOUD_PHONE_IDLE_SECONDS / 60;
 /** The longest one phone runs; a new one starts after (its workspace stays). */
 export const CLOUD_PHONE_MAX_MINUTES = 120;
 

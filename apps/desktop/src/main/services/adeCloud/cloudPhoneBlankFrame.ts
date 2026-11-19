@@ -16,6 +16,8 @@ const DARK = 16;
 const BLANK_SHARE = 0.995;
 /** Every 4th pixel of every 4th row is sampled; every row is still unfiltered (each depends on the one above). */
 const SAMPLE = 4;
+/** A phone screenshot is a few thousand pixels a side; anything larger isn't read. */
+const MAX_SIDE = 10_000;
 
 function paeth(a: number, b: number, c: number): number {
   const p = a + b - c;
@@ -38,12 +40,14 @@ export function pngLooksBlank(bytes: Buffer): boolean {
     const type = bytes.toString("latin1", offset + 4, offset + 8);
     const body = bytes.subarray(offset + 8, offset + 8 + length);
     if (type === "IHDR") {
+      if (body.length < 13) return false;
       width = body.readUInt32BE(0);
       height = body.readUInt32BE(4);
       const bitDepth = body[8];
       const colorType = body[9];
       const interlace = body[12];
       if (bitDepth !== 8 || interlace !== 0 || (colorType !== 2 && colorType !== 6)) return false;
+      if (width > MAX_SIDE || height > MAX_SIDE) return false;
       channels = colorType === 6 ? 4 : 3;
     } else if (type === "IDAT") {
       data.push(body);
@@ -53,13 +57,14 @@ export function pngLooksBlank(bytes: Buffer): boolean {
     offset += 12 + length;
   }
   if (!width || !height || !channels || !data.length) return false;
+  const stride = width * channels;
   let raw: Buffer;
   try {
-    raw = zlib.inflateSync(Buffer.concat(data));
+    // Never more than the picture's own rows: a compressed bomb throws here.
+    raw = zlib.inflateSync(Buffer.concat(data), { maxOutputLength: height * (stride + 1) });
   } catch {
     return false;
   }
-  const stride = width * channels;
   if (raw.length < height * (stride + 1)) return false;
   let previous = Buffer.alloc(stride);
   let current = Buffer.alloc(stride);
@@ -70,19 +75,20 @@ export function pngLooksBlank(bytes: Buffer): boolean {
   for (let y = 0; y < height; y += 1) {
     const start = y * (stride + 1);
     const filter = raw[start];
+    if (filter! > 4) return false;
     for (let x = 0; x < stride; x += 1) {
       const value = raw[start + 1 + x]!;
       const left = x >= channels ? current[x - channels]! : 0;
       const up = previous[x]!;
       const upLeft = x >= channels ? previous[x - channels]! : 0;
-      current[x] = filter === 0 ? value
-        : filter === 1 ? value + left
-          : filter === 2 ? value + up
-            : filter === 3 ? value + ((left + up) >> 1)
-              : filter === 4 ? value + paeth(left, up, upLeft)
-                : value;
+      switch (filter) {
+        case 1: current[x] = value + left; break;
+        case 2: current[x] = value + up; break;
+        case 3: current[x] = value + ((left + up) >> 1); break;
+        case 4: current[x] = value + paeth(left, up, upLeft); break;
+        default: current[x] = value;
+      }
     }
-    if (filter! > 4) return false;
     if (y % SAMPLE === 0) {
       for (let x = 0; x < width; x += SAMPLE) {
         const at = x * channels;

@@ -1,26 +1,25 @@
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { DeviceMobile } from "@phosphor-icons/react";
-import { CLOUD_PHONE_MODELS, CLOUD_PHONE_MAX_MINUTES, cloudPhoneDeviceOf } from "../../../shared/cloudPhone";
+import type { OpenProjectBinding } from "../../../shared/types";
+import { isAdeCloudBinding } from "../../../shared/adeCloud/binding";
+import { CLOUD_PHONE_IDLE_MINUTES, CLOUD_PHONE_MODELS, CLOUD_PHONE_MAX_MINUTES, cloudPhoneDeviceOf } from "../../../shared/cloudPhone";
 import { ipcErrorMessage } from "../../lib/format";
 import { navigateToAppTarget } from "../../lib/openExternal";
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import {
-  cloudPhoneIdleStopAt,
   cloudPhoneIsUp,
   cloudPhoneMinutesLeft,
   formatPhoneSpan,
-  publishCloudPhoneStatus,
+  keepCloudPhoneOn,
+  readCloudPhoneStatus,
   useCloudPhoneBackgroundReads,
+  useCloudPhoneIdleCountdown,
   useCloudPhoneLive,
-  usePhoneClock,
 } from "../../state/cloudPhoneLive";
 import { useTabCopyPin } from "../../state/repositoryScope";
-import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
-import { MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
-
-/** The idle countdown counts in seconds, and Keep on shows, in its last stretch. */
-const IDLE_WARN_MS = 90_000;
+import { HeaderSheet } from "./HeaderSheet";
 
 /**
  * The ADE Cloud iPhone in the top bar, only while one runs or starts: a phone
@@ -31,21 +30,31 @@ const IDLE_WARN_MS = 90_000;
  *
  * The phone is read through the tab's machine: it is the account's, so any
  * brain answers the same. Reads are `useCloudPhoneBackgroundReads`'s, shared
- * with the tools pane.
+ * with the tools pane. A tab bound to ADE Cloud has no brain of its own to
+ * ask (ADE Cloud as a machine refuses calls): there the icon follows only
+ * what a tools pane reads.
  */
 export function CloudIphoneTopBarButton({ enabled }: { enabled: boolean }) {
   const pin = useTabCopyPin();
   const reads = enabled && typeof window !== "undefined" && typeof window.ade?.cloudPhone?.status === "function";
-  useCloudPhoneBackgroundReads(pin, reads);
+  useCloudPhoneBackgroundReads(pin, reads && !isAdeCloudBinding(pin));
   const live = useCloudPhoneLive();
   const up = cloudPhoneIsUp(live);
-  const [open, setOpen] = useState(false);
-  const anchorRef = useRef<HTMLButtonElement | null>(null);
-  const stopAt = cloudPhoneIdleStopAt(live);
-  const warnNow = stopAt != null && stopAt - Date.now() <= IDLE_WARN_MS;
-  // Minutes on the button need a slow tick; the open popover's countdown a fast one near its end.
-  const now = usePhoneClock(up, open && warnNow);
-  const warn = stopAt != null && stopAt - now <= IDLE_WARN_MS;
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const open = pos != null;
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Minutes on the button need a slow tick; the open sheet's countdown a fast one near its end.
+  const { now, stopAt, warn } = useCloudPhoneIdleCountdown(live, up, open);
+  const close = useCallback(() => setPos(null), []);
+  const toggle = () => {
+    const el = buttonRef.current;
+    if (open || !el) return close();
+    // Hangs under the button, in the viewport frame the sheet is written in.
+    const frame = fixedFrameOf(null);
+    const rect = fixedRect(frame, el.getBoundingClientRect());
+    setPos({ top: rect.bottom + 6, right: Math.max(8, fixedViewport(frame).width - rect.right) });
+  };
   if (!reads || !up) return null;
   const starting = live.status?.phone?.state === "starting";
   const left = cloudPhoneMinutesLeft(live, now);
@@ -55,7 +64,7 @@ export function CloudIphoneTopBarButton({ enabled }: { enabled: boolean }) {
   return (
     <>
       <button
-        ref={anchorRef}
+        ref={buttonRef}
         type="button"
         aria-label="ADE Cloud iPhone"
         aria-haspopup="dialog"
@@ -68,7 +77,7 @@ export function CloudIphoneTopBarButton({ enabled }: { enabled: boolean }) {
           open && "text-accent",
         )}
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-        onClick={() => setOpen((current) => !current)}
+        onClick={toggle}
       >
         <DeviceMobile size={13} weight="regular" />
         <span
@@ -79,19 +88,18 @@ export function CloudIphoneTopBarButton({ enabled }: { enabled: boolean }) {
           )}
         />
       </button>
-      <AnchoredMenu
+      <HeaderSheet
         open={open}
-        anchorRef={anchorRef}
-        onClose={() => setOpen(false)}
-        placement="bottom-end"
-        offset={6}
-        remeasureKey={`${starting}:${warn}`}
-        role="dialog"
-        aria-label="ADE Cloud iPhone"
-        className={cn(MENU_SURFACE_CLASS, "w-[280px] p-3")}
+        panelRef={panelRef}
+        icon={<DeviceMobile size={15} weight="regular" className="shrink-0 text-fg/80" />}
+        title="ADE Cloud iPhone"
+        ariaLabelledBy="cloud-iphone-sheet-title"
+        width="w-[300px]"
+        panelStyle={pos ? { top: pos.top, right: pos.right, left: "auto" } : undefined}
+        onClose={close}
       >
-        <CloudIphoneDetails now={now} warn={warn} stopAt={stopAt} pin={pin} onDone={() => setOpen(false)} />
-      </AnchoredMenu>
+        <CloudIphoneDetails now={now} warn={warn} stopAt={stopAt} pin={pin} onDone={close} />
+      </HeaderSheet>
     </>
   );
 }
@@ -106,7 +114,7 @@ function CloudIphoneDetails({
   now: number;
   warn: boolean;
   stopAt: number | null;
-  pin: ReturnType<typeof useTabCopyPin>;
+  pin: OpenProjectBinding | null;
   onDone: () => void;
 }) {
   const live = useCloudPhoneLive();
@@ -118,52 +126,43 @@ function CloudIphoneDetails({
   const model = CLOUD_PHONE_MODELS[cloudPhoneDeviceOf(phone.device)];
   const starting = phone.state === "starting";
   const left = cloudPhoneMinutesLeft(live, now);
-  const canKeep = typeof window.ade?.cloudPhone?.keepAlive === "function";
+  const stopping = stopAt != null && stopAt - now <= 0;
 
-  const reread = async () => {
-    const startedAt = Date.now();
-    const next = await window.ade.cloudPhone.status(pin).catch(() => null);
-    if (next) publishCloudPhoneStatus(next, startedAt);
-  };
   const act = (what: "stop" | "keep") => {
     if (busy) return;
     setBusy(what);
     setError(null);
-    const call = what === "stop" ? window.ade.cloudPhone.stop(pin) : window.ade.cloudPhone.keepAlive?.(pin);
-    void Promise.resolve(call)
-      .then(() => reread())
-      .then(() => { if (what === "stop") onDone(); })
-      .catch((caught: unknown) => setError(caught instanceof Error ? ipcErrorMessage(caught) : String(caught)))
+    const call = what === "stop"
+      ? window.ade.cloudPhone.stop(pin).then(() => readCloudPhoneStatus(pin)).then(() => { onDone(); return null; })
+      : keepCloudPhoneOn(pin);
+    void call
+      .then(setError, (caught: unknown) => setError(caught instanceof Error ? ipcErrorMessage(caught) : String(caught)))
       .finally(() => setBusy(null));
   };
 
-  const rows: Array<[string, string]> = [
-    ["Device", `${model.label} · iOS 27`],
-    ["State", starting ? (phone.queueUntil ? "Waiting for a free phone" : "Starting") : "On"],
+  const rows: Array<{ label: string; value: string; warn?: boolean }> = [
+    { label: "Device", value: `${model.label} · iOS 27` },
+    { label: "State", value: starting ? (phone.queueUntil ? "Waiting for a free phone" : "Starting") : "On" },
   ];
-  if (!starting && phone.readyAt) rows.push(["On for", `${formatPhoneSpan(now - phone.readyAt, false)} of ${CLOUD_PHONE_MAX_MINUTES / 60} h at most`]);
-  if (left != null && minutes) rows.push(["Plan minutes", `${left} of ${minutes.included} left`]);
+  if (!starting && phone.readyAt) rows.push({ label: "On for", value: `${formatPhoneSpan(now - phone.readyAt, false)} of ${CLOUD_PHONE_MAX_MINUTES / 60} h at most` });
+  if (left != null && minutes) rows.push({ label: "Plan minutes", value: `${left} of ${minutes.included} left` });
   if (!starting && stopAt != null) {
-    rows.push(["Idle stop", stopAt - now > 0 ? `in ${formatPhoneSpan(stopAt - now, warn)} with no input` : "now"]);
+    rows.push({ label: "Idle stop", value: stopping ? "now" : `in ${formatPhoneSpan(stopAt - now, warn)} with no input`, warn });
   }
 
   return (
-    <div className="flex flex-col gap-2.5" data-testid="cloud-iphone-details">
-      <div className="flex items-center gap-2">
-        <DeviceMobile size={15} weight="regular" className="shrink-0 text-fg/80" />
-        <span className="font-sans text-[12.5px] font-semibold text-fg">ADE Cloud iPhone</span>
-      </div>
+    <div className="flex flex-col gap-2.5 p-4 pt-3" data-testid="cloud-iphone-details">
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-sans text-[11.5px]">
-        {rows.map(([label, value]) => (
-          <div key={label} className="contents">
-            <dt className="text-muted-fg">{label}</dt>
-            <dd className={cn("min-w-0 text-fg/90 tabular-nums", label === "Idle stop" && warn && "text-warning")}>{value}</dd>
+        {rows.map((row) => (
+          <div key={row.label} className="contents">
+            <dt className="text-muted-fg">{row.label}</dt>
+            <dd className={cn("min-w-0 text-fg/90 tabular-nums", row.warn && "text-warning")}>{row.value}</dd>
           </div>
         ))}
       </dl>
       {phone.stopNotice ? <p className="font-sans text-[11px] text-warning">{phone.stopNotice}</p> : null}
       <p className="font-sans text-[11px] leading-snug text-muted-fg">
-        One phone for the account: every chat that uses ios@cloud drives this one. It stops after 5 minutes with no command or input.
+        One phone for the account: every chat that uses ios@cloud drives this one. It stops after {CLOUD_PHONE_IDLE_MINUTES} minutes with no command or input.
       </p>
       {error ? <p className="font-sans text-[11px] text-error">{error}</p> : null}
       <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -178,7 +177,7 @@ function CloudIphoneDetails({
         >
           Minutes
         </Button>
-        {canKeep && !starting ? (
+        {!starting && !stopping ? (
           <Button variant="outline" size="sm" casing="sentence" disabled={busy != null} onClick={() => act("keep")}>
             {busy === "keep" ? "Keeping on…" : "Keep on"}
           </Button>

@@ -57,7 +57,8 @@ export const ADE_CLOUD_IPHONE_NEEDS_UPDATE = "The ADE on this machine is too old
  * account lacks access.
  */
 export function isCloudPhoneMissingAnswer(reason: string): boolean {
-  return /Domain ['"]cloud_phone['"] is unavailable|Action ['"]cloud_phone\.[^'"]+['"] is not (?:callable|exposed)/i.test(reason);
+  // The last is ADE Web's answer for a host without the cloudPhone commands.
+  return /Domain ['"]cloud_phone['"] is unavailable|Action ['"]cloud_phone\.[^'"]+['"] is not (?:callable|exposed)|Update ADE on that computer to see the ADE Cloud iPhone/i.test(reason);
 }
 
 export function isDeviceKind(value: unknown): value is DeviceKind {

@@ -137,10 +137,16 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
   recordings, builds and tests. `getStatus` carries `lastActivityAt`, this
   brain's last tool call to the live phone, so the pane can show the idle stop
   coming (`CLOUD_PHONE_IDLE_SECONDS`); `keepAlive` is one cheap call that resets
-  NoMac's idle clock and never starts a phone. When an agent chat's call starts
-  a new phone, that chat gets one quiet notice, and one more when the phone
-  stops (a stop, or found ended on a later read: idle, its 2-hour limit, the
-  period's minutes).
+  NoMac's idle clock and never starts a phone: a brain without the phone's
+  token asks the server with `attach` (`POST /cloud/phone {attach: true}`),
+  which answers 409 `phone_not_running` instead of starting one (a server from
+  before `attach` that starts one anyway gets it stopped at once). When an
+  agent chat's call starts a new phone, that chat gets one quiet notice, and
+  one more when the phone stops (a stop, or found ended on a later read: idle,
+  its 2-hour limit, the period's minutes). The end is noticed only when
+  something reads this brain (a pane, the top bar, the next phone call), so a
+  phone a terminal agent started may tell its end late. The notice and run
+  bookkeeping live in `cloudPhoneRun.ts`.
 - **CLI.** `cliCloudIphone.ts` turns each `ade apple` verb into one
   `cloud_phone` action on this machine's brain. `cliDevices.ts` adds the
   `ios@cloud` row and the `ade devices use ios@cloud` choice.
@@ -172,7 +178,12 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
   hidden. The idle countdown runs from the later of the brain's last call
   (`lastActivityAt` on the status) and the person's last input in this
   window's pane; another machine's agent may also be using the phone, so it is
-  the earliest it can stop, and the pane reads again before it says so.
+  the earliest it can stop, and the pane reads again before it says so. A read
+  through a brain that didn't drive the phone answers no `lastActivityAt` and
+  never erases a known one; a read well past the stop time that still finds
+  the phone on means something else uses it, so the countdown hides. Past the
+  stop time Keep on is not offered. A tab bound to ADE Cloud has no brain to
+  read through, so its top bar shows only what a tools pane reads.
 - **Older machines.** A brain from before 1.2.131 has no `cloud_phone`
   domain. The pane's "Runs on" row and the pick-a-Mac screen, `ade devices`
   and `ade devices use ios@cloud` say to update ADE on that machine

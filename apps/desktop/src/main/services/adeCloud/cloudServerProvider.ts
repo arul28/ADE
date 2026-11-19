@@ -548,7 +548,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     },
 
     async phoneStart(input): Promise<CloudPhoneStart> {
-      return await request("POST", CLOUD_PATHS.phone, { body: input.device ? { device: input.device } : {} }) as CloudPhoneStart;
+      return await request("POST", CLOUD_PATHS.phone, { body: { ...(input.device ? { device: input.device } : {}), ...(input.attach ? { attach: true } : {}) } }) as CloudPhoneStart;
     },
 
     async phoneView(input): Promise<CloudPhoneView> {

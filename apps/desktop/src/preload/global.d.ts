@@ -4418,7 +4418,7 @@ declare global {
         start: (args?: { device?: string }, pin?: OpenProjectBinding | null) => Promise<unknown>;
         stop: (pin?: OpenProjectBinding | null) => Promise<{ stopped: boolean }>;
         /** One cheap call to the live phone so the idle stop waits; never starts one (`ok: false` with none live). */
-        keepAlive: (pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; lastActivityAt?: number | null }>;
+        keepAlive: (pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
         screenshot: (args: { chatSessionId?: string | null; laneId?: string | null }, pin?: OpenProjectBinding | null) => Promise<{ artifactId: string | null }>;
         record: (args: { action: "start" | "stop"; chatSessionId?: string | null; laneId?: string | null }, pin?: OpenProjectBinding | null) => Promise<{ failed: boolean; text: string; artifactId: string | null }>;
       };

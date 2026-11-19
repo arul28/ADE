@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode, useCallback } from "react"
 import type { OpenProjectBinding } from "../../../shared/types";
 import {
   CLOUD_PHONE_DEVICES,
+  CLOUD_PHONE_IDLE_MINUTES,
   CLOUD_PHONE_MODELS,
   cloudPhoneDeviceOf,
   type CloudPhoneDevice,
@@ -25,13 +26,13 @@ import { AppleDeviceNoticeStrip, AppleDeviceStatusStrip } from "./AppleDeviceSta
 import { readAppleViewMode, writeAppleViewMode, type AppleViewMode } from "./appleDeviceState";
 import { useCloudPhoneFrames } from "./useCloudPhoneFrames";
 import {
-  cloudPhoneIdleStopAt,
   cloudPhoneMinutesLeft,
   formatPhoneSpan,
   noteCloudPhoneInput,
-  publishCloudPhoneStatus,
+  keepCloudPhoneOn,
+  readCloudPhoneStatus,
   useCloudPhoneLive,
-  usePhoneClock,
+  useCloudPhoneIdleCountdown,
 } from "../../state/cloudPhoneLive";
 
 /*
@@ -57,13 +58,11 @@ const IDLE_READ_MS = 20_000;
 const STARTING_READ_MS = 3_000;
 /** While the phone runs: its end, and the brain's last call for the idle countdown. */
 const LIVE_READ_MS = 30_000;
-/** The idle countdown counts in seconds, with Keep on, in its last stretch. */
-const IDLE_WARN_MS = 90_000;
 /** A view link that could not be fetched is asked for again after this. */
 const LINK_RETRY_MS = 10_000;
 
 const END_REASONS: Readonly<Record<string, string>> = {
-  idle: "It stopped after 5 minutes with nothing to do.",
+  idle: `It stopped after ${CLOUD_PHONE_IDLE_MINUTES} minutes with nothing to do.`,
   time_limit: "It reached its time limit.",
   spend_cap: "It used the minutes this period had left.",
   stopped: "It was stopped.",
@@ -100,11 +99,9 @@ function useCloudPhoneStatus(pin: OpenProjectBinding | null, hidden: boolean) {
       return;
     }
     const mine = ++seq.current;
-    const startedAt = Date.now();
     try {
-      const next = await api.status(pinRef.current);
+      await readCloudPhoneStatus(pinRef.current);
       if (mine !== seq.current) return;
-      publishCloudPhoneStatus(next, startedAt);
       setError(null);
     } catch (caught) {
       if (mine !== seq.current) return;
@@ -267,13 +264,8 @@ function CloudPhoneStrip({ control, failure = control.failure }: { control: Clou
 function CloudPhoneRunningStrip({ control }: { control: CloudPhoneControl }) {
   const live = useCloudPhoneLive();
   const { phone, model, busy, run, refresh, pinRef } = control;
-  const stopAt = cloudPhoneIdleStopAt(live);
-  const [, setRendered] = useState(0);
-  const warnNow = stopAt != null && stopAt - Date.now() <= IDLE_WARN_MS;
-  const now = usePhoneClock(true, warnNow);
-  const warn = stopAt != null && stopAt - now <= IDLE_WARN_MS;
+  const { now, stopAt, warn } = useCloudPhoneIdleCountdown(live, true, true);
   const [keeping, setKeeping] = useState(false);
-  const canKeep = typeof window.ade?.cloudPhone?.keepAlive === "function";
   // Entering the last stretch, and at the stop itself: read again, since an
   // agent's calls (on any machine) keep the phone on without this pane knowing.
   const warnedFor = useRef<number | null>(null);
@@ -281,16 +273,17 @@ function CloudPhoneRunningStrip({ control }: { control: CloudPhoneControl }) {
     if (!warn || stopAt == null || warnedFor.current === stopAt) return undefined;
     warnedFor.current = stopAt;
     void refresh();
-    const timer = window.setTimeout(() => { void refresh(); setRendered((n) => n + 1); }, Math.max(1_000, stopAt - Date.now() + 2_000));
+    const timer = window.setTimeout(() => { void refresh(); }, Math.max(1_000, stopAt - Date.now() + 2_000));
     return () => window.clearTimeout(timer);
   }, [warn, stopAt, refresh]);
 
+  const [keepError, setKeepError] = useState<string | null>(null);
   const keepOn = () => {
     if (keeping) return;
     setKeeping(true);
-    void window.ade.cloudPhone.keepAlive?.(pinRef.current)
-      .then(() => refresh())
-      .catch(() => undefined)
+    setKeepError(null);
+    void keepCloudPhoneOn(pinRef.current)
+      .then(setKeepError, (caught: unknown) => setKeepError(`Couldn't keep it on: ${caught instanceof Error ? ipcErrorMessage(caught) : String(caught)}`))
       .finally(() => setKeeping(false));
   };
 
@@ -299,16 +292,25 @@ function CloudPhoneRunningStrip({ control }: { control: CloudPhoneControl }) {
   const onFor = phone?.readyAt ? ` · on ${formatPhoneSpan(now - phone.readyAt, false)}` : "";
   if (warn && stopAt != null) {
     const remaining = stopAt - now;
+    // Past the stop time Keep on can't help: the phone is ending.
+    if (remaining <= 0) {
+      return (
+        <AppleDeviceNoticeStrip
+          sentence={`Stopping: nothing used it for ${CLOUD_PHONE_IDLE_MINUTES} minutes.`}
+          actionLabel={busy === "stop" ? "Stopping" : "Stop"}
+          busy={busy === "stop"}
+          onAction={() => void run("stop")}
+        />
+      );
+    }
     return (
       <AppleDeviceNoticeStrip
-        sentence={remaining > 0
-          ? `Stops in ${formatPhoneSpan(remaining, true)} with no command or input${minutesPart}.`
-          : "Stopping: nothing used it for 5 minutes."}
-        actionLabel={canKeep ? (keeping ? "Keeping on" : "Keep on") : (busy === "stop" ? "Stopping" : "Stop")}
-        busy={canKeep ? keeping : busy === "stop"}
-        onAction={canKeep ? keepOn : () => void run("stop")}
-        secondaryActionLabel={canKeep ? "Stop" : undefined}
-        onSecondaryAction={canKeep ? () => void run("stop") : undefined}
+        sentence={keepError ?? `Stops in ${formatPhoneSpan(remaining, true)} with no command or input${minutesPart}.`}
+        actionLabel={keeping ? "Keeping on" : "Keep on"}
+        busy={keeping}
+        onAction={keepOn}
+        secondaryActionLabel={busy === "stop" ? "Stopping" : "Stop"}
+        onSecondaryAction={() => void run("stop")}
       />
     );
   }
@@ -606,7 +608,6 @@ function cloudPhoneEmbedUrl(url: string): string {
 function CloudIphoneFlat({ pin, hidden: hiddenProp = false }: CloudIphonePanelProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const offScreen = usePaneOffScreen(rootRef, { parked: true });
-  // The iframe sends no news when the phone ends, so the status is read while it runs.
   const control = useCloudPhoneControl(pin, hiddenProp || offScreen);
   const { ready, link, model, off } = control;
   const live = ready && Boolean(link);

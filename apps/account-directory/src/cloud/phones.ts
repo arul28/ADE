@@ -649,12 +649,15 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
     const device = readDevice(body.device);
     if (device === null) return fail("bad_request", `device is one of ${CLOUD_PHONE_DEVICES.join(", ")}.`, 400);
     // A phone from an earlier period ran under that period's terms: it ends, and a new one starts on this period's.
-    if (context.live && startedBeforePeriod(context)) {
+    // Not for `attach` (Keep on): the allowance check ends that phone on its own schedule.
+    if (context.live && startedBeforePeriod(context) && body.attach !== true) {
       await stopPhone(env, userId, context.live.session.id, now, "period_changed");
       context.live = null;
     }
     let session = context.live?.session ?? null;
     let reused = Boolean(session);
+    // `attach`: a token for the live phone only (a brain keeping it on); never a start.
+    if (!session && body.attach === true) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running.", 409);
     if (session && device && session.device && session.device !== device) {
       return fail("phone_running", `Your ADE Cloud iPhone is already running as ${session.device}. Stop it first to start a ${device}.`, 409);
     }
