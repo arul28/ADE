@@ -475,6 +475,7 @@ export function WorkSidebar({
     context: toolContext,
     statuses: laneStatuses,
     machines: toolMachines.machines,
+    macsUnknown: toolMachines.cloudIphoneLinkLost,
     sources: catalogState.sources,
     deviceMachines: chosenRemote,
     activity: toolActivity,

@@ -50,6 +50,7 @@ import { machineReachHeadline, machineRouteItems } from "../account/machineRoute
 import { routesAvailable } from "../account/useMachineRoutes";
 import { rgbCss, useProfilePalette } from "../account/useProfilePalette";
 import { useActiveRepositoryReader } from "../../state/repositoryScope";
+import { useOptionalWebWorkspace } from "../../webclient/workspace/WebWorkspaceContext";
 import "../remoteTargets/connections.css";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 
@@ -219,13 +220,28 @@ export function ConnectionsPanel(props: ConnectionsPanelProps) {
 /** Longer than the shared cache's 15 s, so each tick is a real directory read. */
 const ACCOUNT_MACHINES_REFRESH_MS = 20_000;
 
-/** The account machines, read when the panel opens, every 20 s while it is open, and on request. */
-function usePanelAccountMachines(enabled: boolean) {
-  const [accountMachines, setAccountMachines] = useState<AdeAccountMachinesResult | null>(null);
+/**
+ * The account machines, read when the panel opens, every 20 s while it is open, and on request.
+ *
+ * `known` is a list this window already holds (ADE Web's account, which the
+ * home page lists from): the panel opens on it and follows it, so it never
+ * says "no computers" while its own read is on the way.
+ */
+function usePanelAccountMachines(enabled: boolean, known: AdeAccountMachinesResult | null = null) {
+  const [accountMachines, setAccountMachines] = useState<AdeAccountMachinesResult | null>(known);
+  const knownRef = useRef(known);
+  knownRef.current = known;
+  useEffect(() => {
+    if (known) setAccountMachines(known);
+  }, [known]);
   const loadAccountMachines = useCallback(async (options?: { force?: boolean }) => {
     // Shared cache: the popover unmounts on close, so a per-open fetch would
     // start cold every time and one slow call would render an empty list.
-    setAccountMachines(await fetchAccountMachines(options));
+    const result = await fetchAccountMachines(options);
+    // A read that failed says nothing about the account; the list this window
+    // holds stays. Signed out is the one answer that replaces it.
+    const kept = result.state !== "ok" && result.state !== "signed_out" ? knownRef.current : null;
+    setAccountMachines(kept ?? result);
   }, []);
   const reloadAccountMachines = useCallback(() => {
     invalidateAccountMachines();
@@ -359,7 +375,15 @@ function HostedConnectionsPanel({
 }: ConnectionsPanelProps) {
   const { status: accountStatus } = useAccountStatus();
   const githubStatus = usePanelGitHubStatus();
-  const { accountMachines, reloadAccountMachines } = usePanelAccountMachines(true);
+  // The account list this tab already read (the home page lists from it, and
+  // every directory read updates it): the panel opens on it instead of empty.
+  const workspaceAccount = useOptionalWebWorkspace()?.account ?? null;
+  const workspaceMachines = workspaceAccount?.state === "signed_in" ? workspaceAccount.machines : null;
+  const knownMachines = useMemo<AdeAccountMachinesResult | null>(
+    () => (workspaceMachines ? { state: "ok", machines: workspaceMachines, message: null } : null),
+    [workspaceMachines],
+  );
+  const { accountMachines, reloadAccountMachines } = usePanelAccountMachines(true, knownMachines);
   useFocusAccountMachineRow(machineId, accountMachines != null);
   const { goToAccount, goToCloudSettings } = usePanelNavigation(onClose);
   const sessionLimit = useWebSessionLimitReached();

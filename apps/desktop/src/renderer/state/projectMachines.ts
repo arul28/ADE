@@ -15,8 +15,10 @@
  * `useCrossMachineLaneSync` (ref-counted), and the snapshot is a push feed.
  */
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { LaneSummary, OpenProjectBinding, RemoteRuntimeConnectionSnapshot } from "../../shared/types";
+import { isRemoteMachineAwayError } from "../../shared/runtimeErrors";
+import { isProjectHostTransportDrop } from "../../shared/syncHostRecoveryUi";
 import { isPersonFixConnectionFailure, type RemoteRuntimeConnectionStatus } from "../../shared/types/remoteRuntime";
 import { FAR_RTT_ON_MS } from "../../shared/slowLinkMode";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
@@ -95,6 +97,44 @@ function publishSharedSnapshot(loaded: boolean): void {
   for (const listener of sharedSnapshotListeners) listener();
 }
 
+// ── A machine's link coming back ────────────────────────────────────────────
+
+/**
+ * Per target: whether its link is ready now, and how many times it has become
+ * ready. A target not seen yet counts as not ready at epoch 0, so its first
+ * ready snapshot is a "came back" too: a read sent before the feed listed the
+ * machine (right after a connect) still reads again.
+ */
+const linkReadiness = new Map<string, { ready: boolean; epoch: number }>();
+
+/**
+ * Ready to answer: connected, and not a dropped link ADE Web still shows as
+ * connected while it comes back (`reconnectHold` marks those with
+ * `reconnectingSinceMs`).
+ */
+function linkReady(connection: RemoteRuntimeConnectionStatus): boolean {
+  return connectionOnline(connection) && connection.reconnectingSinceMs == null;
+}
+
+function noteLinkReadiness(snapshot: RemoteRuntimeConnectionSnapshot): void {
+  for (const connection of snapshot.connections) {
+    const targetId = connection.target.id;
+    const ready = linkReady(connection);
+    const previous = linkReadiness.get(targetId);
+    if (previous?.ready === ready) continue;
+    linkReadiness.set(targetId, { ready, epoch: (previous?.epoch ?? 0) + (ready ? 1 : 0) });
+  }
+}
+
+function linkEpoch(targetId: string | null): number {
+  return targetId ? linkReadiness.get(targetId)?.epoch ?? 0 : 0;
+}
+
+/** The read lost its way to the machine (the link dropped, or was not up yet), not an answer from it. */
+function isLinkLostReadError(error: unknown): boolean {
+  return isRemoteMachineAwayError(error) || isProjectHostTransportDrop(error);
+}
+
 function startSharedSnapshot(): () => void {
   const bridge = typeof window === "undefined" ? undefined : window.ade?.remoteRuntime;
   if (typeof bridge?.getConnectionSnapshot !== "function") {
@@ -107,7 +147,10 @@ function startSharedSnapshot(): () => void {
   let stopped = false;
   const apply = (next: RemoteRuntimeConnectionSnapshot | null | undefined) => {
     if (stopped) return;
-    if (next && !(sharedSnapshot && sharedSnapshot.updatedAt > next.updatedAt)) sharedSnapshot = next;
+    if (next && !(sharedSnapshot && sharedSnapshot.updatedAt > next.updatedAt)) {
+      sharedSnapshot = next;
+      noteLinkReadiness(next);
+    }
     publishSharedSnapshot(true);
   };
   void bridge.getConnectionSnapshot().then(apply, () => apply(null));
@@ -164,6 +207,56 @@ export function useRemoteTargetState(targetId: string | null): "online" | "offli
     () => (targetId ? remoteTargetState(sharedSnapshot, targetId) : "unknown"),
     () => "unknown",
   );
+}
+
+export type ReadRetryOnReconnect = {
+  /** Changes once after a read lost its link, when that machine's link is ready again. Put it in the read's effect deps. */
+  retryKey: number;
+  /**
+   * Call as a read goes out; call what it returns with the read's error. It
+   * answers whether the read will run again (the link was lost, not refused).
+   */
+  begin: () => (error: unknown) => boolean;
+};
+
+/**
+ * Runs a read again once the link it lost is back. A read sent to another
+ * machine just as its link drops (or before it is ready, right after a
+ * connect) fails with "Connection lost — outcome unknown"; nothing in the
+ * read's own keys changes, so without this it stays failed until a reload.
+ *
+ * Reads only: the caller re-runs its own effect, so a write never goes out
+ * twice. `pin` is the machine the read went to (the same pin it was sent
+ * with, or the tab's binding for a null pin); a pin on this computer has no
+ * link to lose and never retries. Keyed on the pin's target, not the object.
+ */
+export function useReadRetryOnReconnect(pin: OpenProjectBinding | null | undefined): ReadRetryOnReconnect {
+  const targetId = pin?.kind === "remote" ? pin.targetId : null;
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  const epoch = useSyncExternalStore(subscribe, () => linkEpoch(targetId), () => 0);
+  // The link epoch a lost read went out at; the read runs again once the link has come back since.
+  const [lostAt, setLostAt] = useState<{ targetId: string; epoch: number } | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
+  const targetRef = useRef(targetId);
+  targetRef.current = targetId;
+  useEffect(() => {
+    if (!lostAt || lostAt.targetId !== targetId || epoch <= lostAt.epoch) return;
+    setLostAt(null);
+    setRetryKey((key) => key + 1);
+  }, [epoch, lostAt, targetId]);
+  const begin = useCallback(() => {
+    const sentTo = targetRef.current;
+    const sentAt = linkEpoch(sentTo);
+    return (error: unknown) => {
+      if (!sentTo || sentTo !== targetRef.current || !isLinkLostReadError(error)) return false;
+      setLostAt((current) => (current?.targetId === sentTo && current.epoch <= sentAt ? current : { targetId: sentTo, epoch: sentAt }));
+      return true;
+    };
+  }, []);
+  return useMemo(() => ({ retryKey, begin }), [begin, retryKey]);
 }
 
 /**
