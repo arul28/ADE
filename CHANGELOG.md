@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.132] - 2026-11-19
+
+### Desktop and web
+
+- ADE Cloud iPhone: minutes, idle stop and Keep on in the pane and top bar; chat start/stop notices; older machines say to update; faster agent path (#2426).
+- ADE Cloud: server-side move, free and copy with no machine of your own; kept lanes open their own page; agents never make a computer alone (#2400, #2401, #2404, #2405, #2407, #2413, #2424).
+- Brain no longer freezes on many lanes; CLI messages no longer stuck; new chats keep the screen; remote Windows update can't hang (#2421, #2423, #2425, #2394).
+- Sentry and ADE Web fixes (#2402, #2412, #2414, #2415, #2417, #2418, #2419).
+
+### iOS
+
+- Pull to list cloud computers made elsewhere; kept cloud lanes; main-thread fixes (#2407, #2410, #2422).
+
 ## [1.2.131] - 2026-11-18
 
 ### Desktop and web
@@ -2886,7 +2899,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.130...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.132...HEAD
+[1.2.132]: https://github.com/arul28/ADE/compare/v1.2.131...v1.2.132
 [1.2.131]: https://github.com/arul28/ADE/compare/v1.2.130...v1.2.131
 [1.2.130]: https://github.com/arul28/ADE/compare/v1.2.129...v1.2.130
 [1.2.129]: https://github.com/arul28/ADE/compare/v1.2.128...v1.2.129
