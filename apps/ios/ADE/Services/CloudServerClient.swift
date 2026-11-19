@@ -274,6 +274,8 @@ struct CloudLaneWithoutComputer: Decodable, Equatable, Identifiable {
   let memoryGb: Double?
   /// The old computer's machine key: the lane's saved chats are filed under it.
   let formerMachineKey: String?
+  /// The old computer's instance id: a launch that made it is over.
+  let formerInstanceId: String?
   /// When the computer went (ms).
   let since: Double?
 
@@ -284,7 +286,7 @@ struct CloudLaneWithoutComputer: Decodable, Equatable, Identifiable {
     return ref.hasPrefix("origin/") ? String(ref.dropFirst("origin/".count)) : ref
   }
 
-  private enum CodingKeys: String, CodingKey { case laneId, laneName, projectOrigin, branchRef, reason, type, cpu, memoryGb, formerMachineKey, since }
+  private enum CodingKeys: String, CodingKey { case laneId, laneName, projectOrigin, branchRef, reason, type, cpu, memoryGb, formerMachineKey, formerInstanceId, since }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -297,6 +299,7 @@ struct CloudLaneWithoutComputer: Decodable, Equatable, Identifiable {
     cpu = c.lenient(Int.self, forKey: .cpu)
     memoryGb = c.lenient(Double.self, forKey: .memoryGb)
     formerMachineKey = c.lenient(String.self, forKey: .formerMachineKey)
+    formerInstanceId = c.lenient(String.self, forKey: .formerInstanceId)
     since = c.lenient(Double.self, forKey: .since)
   }
 }

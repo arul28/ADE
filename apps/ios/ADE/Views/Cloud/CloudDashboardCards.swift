@@ -405,6 +405,7 @@ struct CloudLanesCard: View {
     CloudKeptLanesBlock(
       origin: nil,
       refreshToken: store.refreshes,
+      onComputerUp: { await store.load() },
       insets: EdgeInsets(top: store.machines.isEmpty ? 0 : 8, leading: ADEKit.inset, bottom: ADEKit.inset, trailing: ADEKit.inset),
       opensChats: false
     )

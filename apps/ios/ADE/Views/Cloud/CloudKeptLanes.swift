@@ -56,6 +56,8 @@ struct CloudKeptLanesBlock: View {
   let origin: String?
   /// Bumped by the host's pull to refresh: the list reads again.
   var refreshToken = 0
+  /// A new computer for one of these lanes is up: the host reads its own list again.
+  var onComputerUp: (() async -> Void)? = nil
   /// Around the block when it shows; nothing when it's empty.
   var insets = EdgeInsets()
   /// Rows open their saved chats in Work. Off in a sheet that would cover Work.
@@ -91,9 +93,16 @@ struct CloudKeptLanesBlock: View {
           .padding(insets)
       }
     }
-    .task { await cloudStore.refreshLanesWithoutComputer(using: syncService) }
+    .task {
+      await cloudStore.refreshLanesWithoutComputer(using: syncService)
+      // A New computer started on another device shows its card here too.
+      await launches.refreshActive(using: syncService)
+    }
     .onChange(of: refreshToken) { _, _ in
-      Task { await cloudStore.refreshLanesWithoutComputer(using: syncService, force: true) }
+      Task {
+        await cloudStore.refreshLanesWithoutComputer(using: syncService, force: true)
+        await launches.refreshActive(using: syncService, force: true)
+      }
     }
     .onChange(of: laneLaunchStates) { old, new in
       let wasUp = Set(old.filter { $0.hasSuffix(":running") || $0.hasSuffix(":done") })
@@ -102,6 +111,7 @@ struct CloudKeptLanesBlock: View {
       Task { @MainActor in
         await syncService.readCloudForLaunchedChat()
         await cloudStore.refreshLanesWithoutComputer(using: syncService, force: true)
+        await onComputerUp?()
       }
     }
   }
@@ -136,7 +146,7 @@ struct CloudKeptLanesBlock: View {
           VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(rows.enumerated()), id: \.element.laneId) { index, lane in
               if index > 0 { Divider().opacity(0.5).padding(.vertical, 10) }
-              CloudKeptLaneRow(lane: lane, launch: launches.laneLaunch(laneId: lane.laneId), opensChats: opensChats)
+              CloudKeptLaneRow(lane: lane, launch: launches.laneLaunch(for: lane), opensChats: opensChats)
             }
           }
         }
@@ -212,7 +222,7 @@ struct CloudKeptLaneRow: View {
           .frame(width: 36, height: 30)
           .contentShape(Rectangle())
         }
-        .disabled(deleting || starting)
+        .disabled(deleting || starting || launchHoldsIt)
         .accessibilityLabel("More for \(lane.laneName)")
       }
       Text(cloudKeptLaneSentence(lane))

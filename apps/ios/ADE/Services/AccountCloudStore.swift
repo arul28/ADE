@@ -147,20 +147,35 @@ final class AccountCloudStore: ObservableObject {
     lanesReadAt = Date()
     let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else { return }
-    guard let next = await readLanesWithoutComputer(client), generation == accountGeneration else { return }
+    guard let next = await readLanesWithoutComputer(client) else {
+      // A failed read doesn't count: the next look reads again.
+      if generation == accountGeneration { lanesReadAt = nil }
+      return
+    }
+    guard generation == accountGeneration else { return }
     if next != lanesWithoutComputer { lanesWithoutComputer = next }
   }
 
-  /// Delete for a lane kept without a computer, as the desktop's
-  /// (`CloudLanesWithoutComputerBlock.deleteRow`): its saved chats first, on
-  /// every computer they were filed under, then the lane's record and its
-  /// saved work. Its branch stays on GitHub. A failure keeps the lane listed,
-  /// so Delete can run again. Nil when it worked, else the sentence to show.
+  /// Delete for a lane kept without a computer: the lane's record and its
+  /// saved work first, then its saved chats on every computer they were filed
+  /// under. The server refuses the first while a computer holds the lane
+  /// (another device started it again), so chats a new computer carries on
+  /// are never erased. Its branch stays on GitHub. Nil when it worked, else
+  /// the sentence to show.
   func forgetLaneWithoutComputer(_ lane: CloudLaneWithoutComputer, using sync: SyncService) async -> String? {
     let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else { return "Sign in to ADE, then try again." }
     var machineKeys = Set(sync.cloudSavedChats.filter { $0.laneId == lane.laneId }.map { $0.machineKey.lowercased() })
     if let former = lane.formerMachineKey.flatMap({ nonEmptyTrimmed($0) }) { machineKeys.insert(former.lowercased()) }
+    do {
+      try await client.forgetLaneWithoutComputer(laneId: lane.laneId)
+    } catch CloudServerClient.Failure.noAccess {
+      // Already gone (another device deleted it): its chats go below.
+    } catch {
+      accountCloudLog.notice("cloud_store forget_lane failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      return cloudServerFailureMessage(error)
+    }
+    if generation == accountGeneration { lanesWithoutComputer.removeAll { $0.laneId == lane.laneId } }
     do {
       for machineKey in machineKeys.sorted() {
         do {
@@ -169,15 +184,11 @@ final class AccountCloudStore: ObservableObject {
           // Nothing saved under that computer.
         }
       }
-      try await client.forgetLaneWithoutComputer(laneId: lane.laneId)
-    } catch CloudServerClient.Failure.noAccess {
-      // Already gone (another device deleted it): the list drops it below.
     } catch {
-      accountCloudLog.notice("cloud_store forget_lane failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
-      return cloudServerFailureMessage(error)
+      accountCloudLog.notice("cloud_store forget_lane chats failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      return "The lane is gone, but its saved chats weren't deleted. Delete them in Work."
     }
     guard generation == accountGeneration else { return nil }
-    lanesWithoutComputer.removeAll { $0.laneId == lane.laneId }
     accountCloudLog.notice("cloud_store forget_lane=done")
     return nil
   }

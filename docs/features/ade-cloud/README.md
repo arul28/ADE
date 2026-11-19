@@ -1135,8 +1135,16 @@ Each call is account level: it names a computer of the account, never a pin.
   the server kept without a computer (with "New computer" on the same branch)
   and lanes whose computer was deleted with their chats kept. Each row gives
   the server's reason in one line. Delete in the row's ⋯ menu removes the kept
-  record and every chat of that lane id. A gold dot marks a row not seen yet
+  record first (the server refuses it while a computer holds the lane again),
+  then every chat of that lane id. A gold dot marks a row not seen yet
   (`ade.cloudLanesWithoutComputer.seen.v1`).
+  - On the iPhone (`CloudKeptLanes.swift`) the same block sits at the top of
+    the project's Lanes list and under the computers on the ADE Cloud page.
+    New computer starts a lane launch on the kept branch; its steps show in
+    the row, and a launch started on another device shows its card too.
+    Delete asks first, removes the kept record, then the lane's saved chats.
+    Everything goes through the account server, so it works with no machine
+    of the person's own.
 - **Keep the lane on a fresh computer.** ADE pushes the work first; a push that
   can't save everything keeps the computer, and freeing is refused while the
   agent works ("Stop it or wait, then free the computer"). Then the server
