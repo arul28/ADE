@@ -1110,7 +1110,7 @@ describe("ptyService", () => {
     // person's text must wait. A CLI whose prompt ADE cannot read takes text at
     // once: waiting for a prompt ADE never sees would hold it for good.
     it("holds typed text while a CLI shows a menu, and types at once into a CLI whose prompt it cannot read", async () => {
-      const { service, loadPty, mockPty } = createHarness({
+      const { service, loadPty, mockPty, sessionService } = createHarness({
         runtimeSocketPath: "/tmp/ade-test-runtime.sock",
         getAdeCliAgentEnv: (env) => ({ ...env, ADE_CLI_PATH: path.resolve("/opt/ade/bin/ade") }),
       });
@@ -1178,6 +1178,26 @@ describe("ptyService", () => {
       await service.sendToSession({ sessionId: "session-qwen", text: "first line\nsecond line" });
       const written = (mockPty.write as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0])).join("");
       expect(written, "one paste, then Enter").toContain("\x1b[200~first line\nsecond line\x1b[201~");
+
+      // A Devin terminal has no resume metadata, so ADE cannot name its provider; it takes text all the same.
+      await service.create({
+        sessionId: "session-devin",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Devin CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "devin",
+        command: "devin",
+        args: [],
+        startupCommand: "devin",
+      });
+      expect(sessionService.get("session-devin")?.resumeMetadata?.provider ?? null, "setup: no provider").toBeNull();
+      expect(service.canTakeTypedMessage("session-devin"), "Devin's prompt cannot be read").toBe(true);
+      (mockPty.write as ReturnType<typeof vi.fn>).mockClear();
+      await service.sendToSession({ sessionId: "session-devin", text: "fix the test" });
+      const typedToDevin = (mockPty.write as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0])).join("");
+      expect(typedToDevin).toContain("fix the test");
     });
 
     it("keeps a Claude CLI's background agents as background work until each reports its stop", async () => {

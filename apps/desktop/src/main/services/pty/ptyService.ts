@@ -6468,7 +6468,7 @@ export function createPtyService({
   const writeAgentCliInput = async (
     write: (data: string) => boolean,
     inputText: string,
-    provider: TerminalResumeProvider,
+    provider: TerminalResumeProvider | null,
   ): Promise<boolean> => {
     // Codex binds Ctrl-U to "kill to beginning of line"; move to end first so
     // saved single-line drafts are cleared even when the cursor starts at col 0.
@@ -6488,7 +6488,7 @@ export function createPtyService({
    * submit part of it and the tab could complete a word. The CLIs ADE reads
    * keep their own handling.
    */
-  const agentCliTextNeedsPaste = (provider: TerminalResumeProvider, inputText: string): boolean =>
+  const agentCliTextNeedsPaste = (provider: TerminalResumeProvider | null, inputText: string): boolean =>
     !agentCliReadsFreePrompt(provider) && /[\r\n\t]/.test(inputText);
 
   /**
@@ -9110,7 +9110,8 @@ export function createPtyService({
       const writeSubmittedText = async (
         targetSessionId: string,
         inputText: string,
-        provider: TerminalResumeProvider,
+        /** Null for a running CLI that ADE cannot name (a Devin launch without resume metadata). */
+        provider: TerminalResumeProvider | null,
         options: { waitForReady?: boolean } = {},
       ): Promise<boolean> => {
         const previous = submitInputFlights.get(targetSessionId) ?? Promise.resolve(true);
@@ -9118,7 +9119,7 @@ export function createPtyService({
         const flight = previous
           .catch(() => true)
           .then(async () => {
-            if (options.waitForReady) {
+            if (options.waitForReady && provider) {
               const ready = await waitForAgentCliInputReady(targetSessionId, provider);
               if (!ready) return false;
             }
@@ -9150,8 +9151,9 @@ export function createPtyService({
       const live = liveEntryBySessionId(sessionId);
       if (live) {
         const [ptyId, entry] = live;
+        // A running CLI takes typed text without a provider ADE can name: only
+        // a resume needs one.
         const provider = session?.resumeMetadata?.provider ?? providerFromTool(session?.toolType ?? entry.toolTypeHint);
-        if (!provider) throw ptySendPreDeliveryError(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
         const written = await writeSubmittedText(sessionId, text, provider, {
           waitForReady: provider === "cursor",
         });
