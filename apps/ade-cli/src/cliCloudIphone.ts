@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { CLOUD_PHONE_BUILD_TIMEOUT_MS, CLOUD_PHONE_CALL_TIMEOUT_MS } from "../../desktop/src/shared/cloudPhone";
+import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
+import { CLOUD_PHONE_BUILD_TIMEOUT_MS, CLOUD_PHONE_CALL_TIMEOUT_MS, CLOUD_PHONE_IDLE_SECONDS, CLOUD_PHONE_MAX_MINUTES } from "../../desktop/src/shared/cloudPhone";
 import {
   CLI_COMMAND_ALIASES,
   CliToolError,
@@ -303,7 +304,8 @@ function textOf(action: string, value: unknown): string {
   if (action === "start") {
     const phone = isRecord(value.phone) ? value.phone : null;
     const minutes = isRecord(value.minutes) ? ` · ${value.minutes.left} of ${value.minutes.included} min left` : "";
-    return `ADE Cloud iPhone ${asString(phone?.state) ?? "ready"} (${asString(phone?.device) ?? "iphone"})${minutes}\n`;
+    return `ADE Cloud iPhone ${asString(phone?.state) ?? "ready"} (${asString(phone?.device) ?? "iphone"})${minutes}\n`
+      + `It stops by itself after ${CLOUD_PHONE_IDLE_SECONDS / 60} minutes with no command or input, and after ${CLOUD_PHONE_MAX_MINUTES / 60} hours at most; the next command starts a new one.\n`;
   }
   if (action === "stop") return value.stopped ? "Stopped the ADE Cloud iPhone.\n" : "The ADE Cloud iPhone was not running.\n";
   const text = asString(value.text) ?? "";
@@ -349,7 +351,9 @@ export async function runCloudIphoneCommand(parsed: ParsedCli, command: string[]
   };
   const value = unwrapActionEnvelope(await executePlan(plan, { ...options, timeoutMs: Math.max(options.timeoutMs, call.timeoutMs) }));
   // The brain files screenshots and recordings to the proof drawer itself, owned by this chat and lane.
-  const filed = isRecord(value) && typeof value.artifactId === "string" ? `Filed in the proof drawer (${value.artifactId}).` : null;
+  const filed = isRecord(value) && typeof value.artifactId === "string"
+    ? `Filed in the proof drawer (${value.artifactId}).\ncite: ${proofCitationMarkdown(value.artifactId, call.action === "record" ? "ADE Cloud iPhone recording" : "ADE Cloud iPhone screenshot")}`
+    : null;
   const failed = isRecord(value) && value.failed === true;
   if (!options.text) return { output: formatOutput(value, options, undefined), exitCode: failed ? 1 : 0 };
   return { output: `${textOf(call.action, value)}${filed ? `${filed}\n` : ""}`, exitCode: failed ? 1 : 0 };

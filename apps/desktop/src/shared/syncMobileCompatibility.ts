@@ -255,6 +255,7 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "cloudPhone.view",
   "cloudPhone.start",
   "cloudPhone.stop",
+  "cloudPhone.keepAlive",
   "cloudPhone.screenshot",
   "ai.cursorCloudResolveLane",
   "ai.cursorCloudPullIntoLane",

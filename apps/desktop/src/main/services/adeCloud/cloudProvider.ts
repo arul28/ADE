@@ -234,7 +234,8 @@ export type CloudProvider = {
   /** The ADE Cloud iPhone (`/cloud/phone`): who may use it, the plan's minutes, the live phone. */
   phoneState?(): Promise<CloudPhoneState>;
   /** Starts the account's phone, or answers its live one, with a token for that phone only. */
-  phoneStart?(input: { device?: CloudPhoneDevice }): Promise<CloudPhoneStart>;
+  /** `attach`: only the live phone's token; never starts one (`phone_not_running`). */
+  phoneStart?(input: { device?: CloudPhoneDevice; attach?: boolean }): Promise<CloudPhoneStart>;
   /** A link that shows the live phone to this account alone. */
   phoneView?(input: { control: boolean }): Promise<CloudPhoneView>;
   phoneStop?(): Promise<{ stopped: boolean }>;

@@ -38004,6 +38004,10 @@ function formatIosSimStatus(value: unknown): string {
       ]),
       "Tools\n(none)",
     ),
+    // No simulator here (Windows, Linux): name the one that runs anywhere.
+    ...(status.supported === false
+      ? ["", "No simulator on this machine. The ADE Cloud iPhone runs from any machine: ade devices use ios@cloud (or one command with --machine cloud). ade devices --kind ios --text shows its minutes left."]
+      : []),
   ].join("\n");
 }
 

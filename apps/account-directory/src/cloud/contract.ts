@@ -220,8 +220,9 @@ export const CLOUD_PATHS = {
   accountLanes: "/account/lanes",
   /**
    * The ADE Cloud iPhone (`phones.ts`): `GET` its `CloudPhoneState`; `POST`
-   * `{ device? }` starts the account's phone or answers its live one
-   * (`CloudPhoneStart`, a fresh token each time); `DELETE` stops it. `/view` (`POST`)
+   * `{ device?, attach? }` starts the account's phone or answers its live one
+   * (`CloudPhoneStart`, a fresh token each time; with `attach` it never starts
+   * one and answers 409 `phone_not_running`); `DELETE` stops it. `/view` (`POST`)
    * hands out a view link for the live phone.
    */
   phone: "/cloud/phone",

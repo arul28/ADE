@@ -155,7 +155,9 @@ front. Use `relaunch` or `terminate` for an app that is already there.
 
 `ios@cloud` is the account's iPhone at NoMac, not a simulator on any machine,
 so Windows and Linux use it too. `ade devices` lists it only when the account
-has it; otherwise `use ios@cloud` says why (not on this account yet). It spends
+has it; otherwise `use ios@cloud` says why: not on this account yet, or this
+machine's ADE is too old for it (then the person updates ADE; don't look for
+another cause). It spends
 iPhone minutes; a Mac of the person's (`ios@<Mac>`) spends none, so prefer one
 that is listed.
 
@@ -185,6 +187,23 @@ For one command, `ade apple … --machine cloud`. What differs:
   when you are done. Only the person changes the plan or extra minutes, in
   Settings › ADE Cloud. A full-auto chat or an automation uses it only when the
   person lets agents spend (the agent limits, as for hours).
+
+Working fast on it (measured: `snapshot` about 1 s, a step 2–3 s, a fresh
+phone 8–13 s, an app's first launch 6–10 s):
+
+- Read with `snapshot` (text, about 1 s), not `screenshot`. Take a screenshot
+  only for proof or for what text can't show.
+- Batch: one `act` takes many steps (`act 'tap "Sign In"' 'fill #email a@b.c'
+  'tap "Continue"' 'wait "Welcome" 10'`) and answers with what changed, so
+  you rarely need a `snapshot` after it.
+- A step right after a page or screen change can say the content "can't be
+  read" while it still loads. Run `snapshot` once more before falling back
+  to a screenshot; web pages in Safari read as text once loaded.
+- It stops after 5 minutes with no command or input. Don't pause between
+  steps to plan for long; if it stopped, the next command starts a fresh one
+  (its apps and their data are gone; the uploaded project stays).
+- `screenshot` prints a `cite:` line for your answer; `--out` takes a path in
+  the project or the temp folder.
 
 ## Use this lane's own device
 

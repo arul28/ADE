@@ -322,6 +322,7 @@ import { buildProviderLoginsDomainService } from "../providerLogins/providerLogi
 import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
 import { ADE_CLOUD_HOME_UNAVAILABLE } from "../../../shared/automationCloud";
 import { CloudPhoneError, createCloudPhoneService, type CloudPhoneService } from "../adeCloud/cloudPhoneService";
+import { cloudPhoneCallerChat } from "../adeCloud/cloudPhoneRun";
 import { captureError, markReportedToSentry } from "../../../shared/sentry/capture";
 import { CLOUD_ACCESS_REFUSED } from "../adeCloud/cloudProvider";
 import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudServerFor, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
@@ -4551,6 +4552,20 @@ function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnT
  * runtime of a brain is the same account and NoMac keeps one phone per account.
  */
 let cloudPhoneServiceSingleton: CloudPhoneService | null = null;
+/**
+ * The project runtime each recent phone-calling chat belongs to: the phone is
+ * the brain's, but each project has its own chats, so its start and stop
+ * notices go through the chat's own project.
+ */
+const cloudPhoneChatRuntimes = new Map<string, AccountDomainRuntime>();
+const CLOUD_PHONE_CHAT_RUNTIMES_LIMIT = 20;
+function rememberCloudPhoneChat(args: unknown, runtime: AccountDomainRuntime): void {
+  const id = cloudPhoneCallerChat(args);
+  if (!id) return;
+  cloudPhoneChatRuntimes.delete(id);
+  cloudPhoneChatRuntimes.set(id, runtime);
+  if (cloudPhoneChatRuntimes.size > CLOUD_PHONE_CHAT_RUNTIMES_LIMIT) cloudPhoneChatRuntimes.delete(cloudPhoneChatRuntimes.keys().next().value as string);
+}
 function cloudPhoneServiceFor(runtime: AccountDomainRuntime): CloudPhoneService {
   if (cloudPhoneServiceSingleton) return cloudPhoneServiceSingleton;
   const credentials = cloudAccessDeps(runtime);
@@ -4558,6 +4573,11 @@ function cloudPhoneServiceFor(runtime: AccountDomainRuntime): CloudPhoneService 
     provider: () => getCloudProvider(credentials),
     whyNoProvider: () => cloudNoProviderSentence(credentials),
     logger: runtime.logger,
+    // Any provider's chat shows it; a terminal session (a CLI agent) is not a chat and is skipped.
+    notifyChat: (chatSessionId, message) => {
+      // The service catches and logs a failed notice.
+      (cloudPhoneChatRuntimes.get(chatSessionId) ?? runtime).agentChatService?.recordSystemNotice({ sessionId: chatSessionId, message });
+    },
   });
   return cloudPhoneServiceSingleton;
 }
@@ -4636,6 +4656,7 @@ function cloudPhoneCallsFor(runtime: AdeRuntime): CloudPhoneService {
   const guard = cloudPhoneAgentGuard(runtime);
   const guarded = <A, R>(run: (args: A) => Promise<R>) => async (args: A): Promise<R> => {
     await guard(args);
+    rememberCloudPhoneChat(args, runtime);
     return await run(args);
   };
   return {

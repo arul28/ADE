@@ -274,7 +274,10 @@ export function WorkToolPickMachineState({
   viewOnly,
   onChoose,
   onAdeCloud = false,
+  note = null,
 }: {
+  /** One quiet line under the choices, e.g. why the ADE Cloud iPhone isn't one of them. */
+  note?: string | null;
   kind: DeviceKind;
   /** The chat runs on ADE Cloud: Android comes there later; Apple simulators stream from a Mac. */
   onAdeCloud?: boolean;
@@ -318,6 +321,7 @@ export function WorkToolPickMachineState({
           ))}
         </div>
       ) : null}
+      {note ? <p className="max-w-[320px] font-sans text-[11.5px] text-muted-fg/80" data-testid="work-tool-pick-machine-note">{note}</p> : null}
     </StartFrame>
   );
 }

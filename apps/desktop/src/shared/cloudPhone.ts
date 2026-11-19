@@ -36,8 +36,18 @@ export const CLOUD_PHONE_SPEND_ACTIONS = [
 /** What an agent may call on a cloud iPhone; `getStatus().capabilities` reports it. */
 export const CLOUD_PHONE_AGENT_ACTIONS = ["getStatus", "stop", ...CLOUD_PHONE_SPEND_ACTIONS] as const;
 
-/** A view link drives the phone from a window: the person's, never an agent's. */
-export const CLOUD_PHONE_USER_ONLY_ACTIONS = ["view"] as const;
+/**
+ * A view link drives the phone from a window, and `keepAlive` is the pane's
+ * "still here" (one cheap call that resets NoMac's idle clock, never a start):
+ * the person's, never an agent's.
+ */
+export const CLOUD_PHONE_USER_ONLY_ACTIONS = ["view", "keepAlive"] as const;
+
+/** A phone with no tool call or person's input for this long stops (NoMac counts watching as idle). */
+export const CLOUD_PHONE_IDLE_SECONDS = 300;
+export const CLOUD_PHONE_IDLE_MINUTES = CLOUD_PHONE_IDLE_SECONDS / 60;
+/** The longest one phone runs; a new one starts after (its workspace stays). */
+export const CLOUD_PHONE_MAX_MINUTES = 120;
 
 /** Each model: its screen in points (input and `look` coordinates), its simulator name, its label. */
 export const CLOUD_PHONE_MODELS: Readonly<Record<CloudPhoneDevice, { points: { width: number; height: number }; deviceTypeName: string; label: string }>> = {
@@ -68,4 +78,10 @@ export type CloudPhoneStatusView = CloudPhoneState & {
   supported: boolean;
   /** One line for a person or agent when it can't be used. */
   reason: string | null;
+  /**
+   * When this brain last sent the live phone a tool call (ms), which resets
+   * NoMac's idle clock; null when it sent none to this phone (another
+   * machine's brain may have). The idle stop is due `CLOUD_PHONE_IDLE_SECONDS` after.
+   */
+  lastActivityAt?: number | null;
 };

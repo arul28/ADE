@@ -43,10 +43,11 @@ import {
 } from "./workTools";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolPickMachineState, WorkToolStartState } from "./workToolStartState";
+import { cloudIphoneUpdateLine } from "./WorkToolPanelBar";
 import type { DeviceKind } from "../../../shared/types/deviceSources";
 import type { RemoteWorkCopyUse } from "../../../shared/chatRemoteWork";
 import { machineRunsKind, workCopyUseOn } from "./workToolCatalog";
-import type { ToolMachine } from "./useToolMachines";
+import type { ToolMachine, ToolMachines } from "./useToolMachines";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
 import { isWebCodecsAvailable } from "../device/h264StreamPlayer";
 import { macDesktopWebApi } from "../chat/macDesktopWebStream";
@@ -170,6 +171,8 @@ export type WorkToolPanelProps = {
     viewOnly: boolean;
     /** The chat's device choice (`ade devices use`); null with no chat to keep one. */
     choose: ((kind: DeviceKind, machine: ToolMachine) => void) | null;
+    /** The account's ADE Cloud iPhone as the chat's brain reads it (`useToolMachines`). */
+    cloudIphone: ToolMachines["cloudIphone"];
   };
   onResumeEndedSession: () => void;
   onToolChange: (tool: WorkSidebarTab | null) => void;
@@ -263,6 +266,7 @@ function PickMachine({ kind, deviceChoice }: WorkToolPanelProps & { kind: Device
       read={deviceChoice.read}
       viewOnly={deviceChoice.viewOnly}
       onChoose={choose ? (machine) => choose(kind, machine) : null}
+      note={kind === "ios" && deviceChoice.cloudIphone === "update" ? cloudIphoneUpdateLine(deviceChoice.machines) : null}
     />
   );
 }

@@ -5,6 +5,7 @@ import { desktopProductName } from "../../desktop/src/shared/desktopSeat";
 import { remoteMachineHostPlatform } from "../../desktop/src/shared/machineIdentity";
 import { SESSION_ACTIVITY_SESSION_ID_ENV } from "../../desktop/src/shared/sessionActivity";
 import {
+  ADE_CLOUD_IPHONE_NEEDS_UPDATE,
   ADE_CLOUD_IPHONE_UNAVAILABLE,
   DEVICE_KINDS,
   DEVICE_KIND_COMMAND,
@@ -12,6 +13,7 @@ import {
   deviceIdMachineSource,
   deviceKindRunsOnPlatform,
   devicesSubcommand,
+  isCloudPhoneMissingAnswer,
   formatDeviceId,
   isDeviceKind,
   normalizeChatDeviceSources,
@@ -629,9 +631,9 @@ async function useDevice(options: GlobalOptions, typed: string): Promise<{ value
     const id = formatDeviceId(parsed.id);
     if (kind !== "ios") throw new CliToolError(`ADE Cloud has no ${DEVICE_KIND_NOUN[kind]}; ${id} is not a device.`, { id });
     const status = await readCloudIphoneStatus(single);
-    if (!status.ok || status.access !== "on") {
-      throw new CliToolError(status.ok ? status.reason ?? ADE_CLOUD_IPHONE_UNAVAILABLE : `${ADE_CLOUD_IPHONE_UNAVAILABLE} (${firstSentence(status.error)})`, { id });
-    }
+    if (!status.ok && isCloudPhoneMissingAnswer(status.error)) throw new CliToolError(ADE_CLOUD_IPHONE_NEEDS_UPDATE, { id });
+    if (!status.ok) throw new CliToolError(`The ADE Cloud iPhone couldn't be read (${firstSentence(status.error)}).`, { id });
+    if (status.access !== "on") throw new CliToolError(status.reason ?? ADE_CLOUD_IPHONE_UNAVAILABLE, { id });
     const sources = await chatDeviceAction(single, "setDeviceSource", { kind, source: { kind: "cloud" } });
     const minutes = status.minutes ? ` ${status.minutes.left} of your plan's ${status.minutes.included} minutes are left this period.` : "";
     return {
@@ -754,8 +756,11 @@ async function cloudIphoneRows(options: GlobalOptions, only: DeviceKind | null):
   if (only && only !== "ios") return { rows: [], note: null };
   const status = await readCloudIphoneStatus(options);
   if (!status.ok) {
-    // A brain older than the cloud iPhone has none to read: nothing to say.
-    return { rows: [], note: isOlderBrainAnswer(status.error) ? null : `ios@cloud: the ADE Cloud iPhone couldn't be read (${firstSentence(status.error)}).` };
+    // A brain older than the cloud iPhone has none to read: say so, an update fixes it.
+    const note = isCloudPhoneMissingAnswer(status.error) || isOlderBrainAnswer(status.error)
+      ? `ios@cloud: ${ADE_CLOUD_IPHONE_NEEDS_UPDATE}`
+      : `ios@cloud: the ADE Cloud iPhone couldn't be read (${firstSentence(status.error)}).`;
+    return { rows: [], note };
   }
   if (status.access !== "on") return { rows: [], note: null };
   const minutes = status.minutes ? ` · ${status.minutes.left} of ${status.minutes.included} min left` : "";

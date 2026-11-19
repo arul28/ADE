@@ -3369,6 +3369,7 @@ export type SyncRemoteCommandAction =
   | "cloudPhone.view"
   | "cloudPhone.start"
   | "cloudPhone.stop"
+  | "cloudPhone.keepAlive"
   | "cloudPhone.screenshot"
   | "ai.getCursorCloudFleet"
   | "ai.cursorCloudResolveLane"

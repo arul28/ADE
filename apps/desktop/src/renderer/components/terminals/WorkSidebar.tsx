@@ -470,7 +470,8 @@ export function WorkSidebar({
     read: toolMachines.read,
     viewOnly: catalogState.viewOnly,
     choose: catalogState.canChoose ? catalogState.chooseDeviceMachine : null,
-  }), [catalogState.canChoose, catalogState.chooseDeviceMachine, catalogState.viewOnly, toolMachines.machines, toolMachines.read]);
+    cloudIphone: toolMachines.cloudIphone,
+  }), [catalogState.canChoose, catalogState.chooseDeviceMachine, catalogState.viewOnly, toolMachines.cloudIphone, toolMachines.machines, toolMachines.read]);
   const tiles = useWorkToolCatalog({
     context: toolContext,
     statuses: laneStatuses,

@@ -10,6 +10,7 @@ import { useReadRetryOnReconnect, useRemoteConnectionSnapshot } from "../../stat
 import { useAppStore } from "../../state/appStore";
 import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
+import { isCloudPhoneMissingAnswer } from "../../../shared/types/deviceSources";
 
 /**
  * One machine on the person's ADE account, as the tools pane's "runs on" rails
@@ -49,10 +50,12 @@ export type ToolMachines = {
   read: "pending" | "ok" | "failed";
   /**
    * The ADE Cloud iPhone on this account, as the chat's brain reads it: `on`
-   * (in the beta; its chip is in `machines`), `soon` (everyone else), or null
-   * before the read or when the brain can't say.
+   * (in the beta; its chip is in `machines`), `soon` (everyone else),
+   * `update` (the chat's machine runs an ADE from before the cloud iPhone, so
+   * it can't drive one until it updates), or null before the read or when the
+   * brain can't say.
    */
-  cloudIphone: "on" | "soon" | "off" | null;
+  cloudIphone: "on" | "soon" | "off" | "update" | null;
   /**
    * The ADE Cloud iPhone's read lost its link and runs again when the link is
    * back. Until then nobody knows whether a Mac can run the iPhone, so no tile
@@ -150,10 +153,12 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
     void api.status(pinRef.current).then(
       (status) => { if (!cancelled) setCloudIphoneRead({ pinKey, access: status.access, linkLost: false }); },
       (error: unknown) => {
-        // An older brain (no `cloud_phone`) or signed out: the row keeps "soon".
+        // An older brain answers that it has no `cloud_phone` domain: the
+        // panes say to update that machine. Anything else (signed out) shows nothing.
         console.warn("[tools-pane] could not read the ADE Cloud iPhone", error);
         const linkLost = failed(error);
-        if (!cancelled) setCloudIphoneRead({ pinKey, access: null, linkLost });
+        const access = isCloudPhoneMissingAnswer(error instanceof Error ? error.message : String(error ?? "")) ? "update" : null;
+        if (!cancelled) setCloudIphoneRead({ pinKey, access, linkLost });
       },
     );
     return () => { cancelled = true; };

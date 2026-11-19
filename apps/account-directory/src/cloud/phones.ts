@@ -49,6 +49,7 @@ import {
   type CloudPhoneView,
 } from "./contract";
 import { readBoundedBody } from "../sinkUtils";
+import { CLOUD_PHONE_IDLE_SECONDS, CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
 import { sendCloudEmail } from "./email";
 import { fail, json, readJson } from "./http";
 import { PHONE_EXTRA, accountRules, loadAccount, logCloud, planIdOf, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
@@ -58,10 +59,6 @@ const NOMAC_SIMULATOR_BASE = `${NOMAC_ORIGIN}/api/v1/simulator`;
 const REQUEST_TIMEOUT_MS = 20_000;
 /** NoMac's price for a phone: $0.90 an hour, billed per whole minute. The spend cap is counted in it. */
 const NOMAC_MICROS_PER_MINUTE = 15_000;
-/** A phone with no tool call or person's input for this long stops (NoMac counts watching as idle). */
-const PHONE_IDLE_SECONDS = 300;
-/** The longest one phone runs; a new one starts after (its workspace stays). */
-const PHONE_MAX_MINUTES = 120;
 /** The token a brain drives the phone with. */
 const TOKEN_MINUTES = 120;
 /** A view link's life; the visitor signature inside it lives far shorter (NoMac's own ceiling is 15 min). */
@@ -291,7 +288,7 @@ function phoneMinutesUsed(rows: readonly PhoneRow[], now: number, settledOnly: b
   for (const row of rows) {
     const billed = Math.ceil(row.billed_seconds / 60);
     const running = row.state === "live" && row.ready_at != null && !settledOnly
-      ? Math.min(PHONE_MAX_MINUTES, Math.ceil(Math.max(0, now - row.ready_at) / 60_000))
+      ? Math.min(CLOUD_PHONE_MAX_MINUTES, Math.ceil(Math.max(0, now - row.ready_at) / 60_000))
       : 0;
     minutes += Math.max(billed, running);
   }
@@ -406,7 +403,7 @@ export function phoneUsageOf(env: CloudEnv, account: AccountRow, rows: readonly 
     used,
     left: Math.max(0, included - used),
     state,
-    extra: { available, enabled, limitCents, billableMinutes, leftMinutes: Number.isFinite(leftMinutes) ? leftMinutes : PHONE_MAX_MINUTES },
+    extra: { available, enabled, limitCents, billableMinutes, leftMinutes: Number.isFinite(leftMinutes) ? leftMinutes : CLOUD_PHONE_MAX_MINUTES },
   };
 }
 
@@ -652,12 +649,15 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
     const device = readDevice(body.device);
     if (device === null) return fail("bad_request", `device is one of ${CLOUD_PHONE_DEVICES.join(", ")}.`, 400);
     // A phone from an earlier period ran under that period's terms: it ends, and a new one starts on this period's.
-    if (context.live && startedBeforePeriod(context)) {
+    // Not for `attach` (Keep on): the allowance check ends that phone on its own schedule.
+    if (context.live && startedBeforePeriod(context) && body.attach !== true) {
       await stopPhone(env, userId, context.live.session.id, now, "period_changed");
       context.live = null;
     }
     let session = context.live?.session ?? null;
     let reused = Boolean(session);
+    // `attach`: a token for the live phone only (a brain keeping it on); never a start.
+    if (!session && body.attach === true) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running.", 409);
     if (session && device && session.device && session.device !== device) {
       return fail("phone_running", `Your ADE Cloud iPhone is already running as ${session.device}. Stop it first to start a ${device}.`, 409);
     }
@@ -678,14 +678,14 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
         return fail(refusal.code, refusal.message, 402, { minutes: minutesOf(context.usage) });
       }
       // What this phone may use: the plan's minutes left, then extra minutes, and never more than one phone's longest.
-      const minutes = Math.min(PHONE_MAX_MINUTES, allowedMinutes(context.usage));
+      const minutes = Math.min(CLOUD_PHONE_MAX_MINUTES, allowedMinutes(context.usage));
       const answer = await nomac(env, "POST", "/api/v1/simulator/sessions", {
         label: context.label,
         reuse: true,
         ...(device ? { device } : {}),
         limits: {
           max_duration_seconds: minutes * 60,
-          idle_timeout_seconds: PHONE_IDLE_SECONDS,
+          idle_timeout_seconds: CLOUD_PHONE_IDLE_SECONDS,
           spend_cap_microunits: String(minutes * NOMAC_MICROS_PER_MINUTE),
         },
         // A retry of this start reaches the same phone; a start after that phone (a stop, then start) is a new one.
