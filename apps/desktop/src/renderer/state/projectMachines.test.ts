@@ -17,7 +17,10 @@ function connection(targetId: string, state: RemoteRuntimeConnectionStatus["stat
   return { target: { id: targetId, name: targetId, hostname: targetId }, state, ...extra } as RemoteRuntimeConnectionStatus;
 }
 
-/** The window's connection feed: the first read answers `initial`, `push` sends a later snapshot. */
+/**
+ * The window's connection feed. Its first read answers `initial` when the test
+ * calls `answer()`; `push` sends a later snapshot.
+ */
 function installFeed(initial: RemoteRuntimeConnectionStatus) {
   const listeners = new Set<(snapshot: RemoteRuntimeConnectionSnapshot) => void>();
   const snapshotOf = (entry: RemoteRuntimeConnectionStatus): RemoteRuntimeConnectionSnapshot => ({
@@ -25,9 +28,14 @@ function installFeed(initial: RemoteRuntimeConnectionStatus) {
     connectedCount: entry.state === "connected" ? 1 : 0,
     updatedAt: (clock += 1),
   });
+  let answerFirstRead: (() => void) | null = null;
+  const firstRead = new Promise<void>((resolve) => { answerFirstRead = resolve; });
   globalThis.window.ade = {
     remoteRuntime: {
-      getConnectionSnapshot: async () => snapshotOf(initial),
+      getConnectionSnapshot: async () => {
+        await firstRead;
+        return snapshotOf(initial);
+      },
       onConnectionSnapshotChanged: (listener: (snapshot: RemoteRuntimeConnectionSnapshot) => void) => {
         listeners.add(listener);
         return () => listeners.delete(listener);
@@ -35,7 +43,13 @@ function installFeed(initial: RemoteRuntimeConnectionStatus) {
     },
   } as unknown as typeof window.ade;
   return {
-    listening: () => listeners.size > 0,
+    answer: async () => {
+      await waitFor(() => expect(listeners.size).toBeGreaterThan(0));
+      await act(async () => {
+        answerFirstRead?.();
+        await firstRead;
+      });
+    },
     push: (entry: RemoteRuntimeConnectionStatus) => act(() => {
       const snapshot = snapshotOf(entry);
       for (const listener of listeners) listener(snapshot);
@@ -58,7 +72,7 @@ describe("useReadRetryOnReconnect", () => {
   it("reads again once, after the link the read lost is back", async () => {
     const feed = installFeed(connection("mac-1", "connected"));
     const { result } = renderHook(() => useReadRetryOnReconnect(remotePin("mac-1")));
-    await waitFor(() => expect(feed.listening()).toBe(true));
+    await feed.answer();
 
     let willRetry = false;
     act(() => { willRetry = result.current.begin()(LINK_LOST); });
@@ -76,10 +90,20 @@ describe("useReadRetryOnReconnect", () => {
     expect(result.current.retryKey).toBe(1);
   });
 
+  it("reads again when a read sent before the feed listed the machine lost its link", async () => {
+    const feed = installFeed(connection("mac-5", "connected"));
+    const { result } = renderHook(() => useReadRetryOnReconnect(remotePin("mac-5")));
+
+    act(() => { result.current.begin()(LINK_LOST); });
+    expect(result.current.retryKey).toBe(0);
+    await feed.answer();
+    expect(result.current.retryKey).toBe(1);
+  });
+
   it("waits out ADE Web's held reconnect, which still reads as connected", async () => {
     const feed = installFeed(connection("mac-2", "connected"));
     const { result } = renderHook(() => useReadRetryOnReconnect(remotePin("mac-2")));
-    await waitFor(() => expect(feed.listening()).toBe(true));
+    await feed.answer();
 
     act(() => { result.current.begin()(LINK_LOST); });
     feed.push(connection("mac-2", "connected", { reconnectingSinceMs: 1_000 }));
@@ -91,7 +115,7 @@ describe("useReadRetryOnReconnect", () => {
   it("reads again at once when the link came back before the failure landed", async () => {
     const feed = installFeed(connection("mac-3", "connected"));
     const { result } = renderHook(() => useReadRetryOnReconnect(remotePin("mac-3")));
-    await waitFor(() => expect(feed.listening()).toBe(true));
+    await feed.answer();
 
     const failed = result.current.begin();
     feed.push(connection("mac-3", "connecting"));
@@ -107,7 +131,7 @@ describe("useReadRetryOnReconnect", () => {
   ])("never reads again for %s", async (_label, pin, error) => {
     const feed = installFeed(connection("mac-4", "connected"));
     const { result } = renderHook(() => useReadRetryOnReconnect(pin));
-    if (pin?.kind === "remote") await waitFor(() => expect(feed.listening()).toBe(true));
+    if (pin?.kind === "remote") await feed.answer();
 
     let willRetry = true;
     act(() => { willRetry = result.current.begin()(error); });

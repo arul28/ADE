@@ -100,8 +100,10 @@ function publishSharedSnapshot(loaded: boolean): void {
 // ── A machine's link coming back ────────────────────────────────────────────
 
 /**
- * Per target: whether its link is ready now, and how many times it has come
- * back (not ready, then ready) since this window first saw it.
+ * Per target: whether its link is ready now, and how many times it has become
+ * ready. A target not seen yet counts as not ready at epoch 0, so its first
+ * ready snapshot is a "came back" too: a read sent before the feed listed the
+ * machine (right after a connect) still reads again.
  */
 const linkReadiness = new Map<string, { ready: boolean; epoch: number }>();
 
@@ -119,8 +121,8 @@ function noteLinkReadiness(snapshot: RemoteRuntimeConnectionSnapshot): void {
     const targetId = connection.target.id;
     const ready = linkReady(connection);
     const previous = linkReadiness.get(targetId);
-    if (!previous) linkReadiness.set(targetId, { ready, epoch: 0 });
-    else if (previous.ready !== ready) linkReadiness.set(targetId, { ready, epoch: previous.epoch + (ready ? 1 : 0) });
+    if (previous?.ready === ready) continue;
+    linkReadiness.set(targetId, { ready, epoch: (previous?.epoch ?? 0) + (ready ? 1 : 0) });
   }
 }
 

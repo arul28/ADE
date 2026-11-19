@@ -347,37 +347,25 @@ export function packLayout(cells: readonly HomeLayoutCell[], metrics: Pick<GridM
   if (!hidesWayIn(best.hidden)) return best;
   // Projects is the way into a project, so on a small page it is never the
   // card with no room. First it keeps its place without the cards stacked
-  // under it (they become cards of their own after it); then it goes first.
-  for (const variant of wayInFirstVariants(cells)) {
+  // under it (they wait in the hidden list, still stacked, so the editor's
+  // groups stay as saved); then it goes first.
+  const index = cells.findIndex((cell) => cell.host.type === WAY_IN_TYPE);
+  if (index < 0) return best;
+  const wayIn: HomeLayoutCell = { host: cells[index]!.host, stacked: [] };
+  const companions = cells[index]!.stacked.map((item): HomeLayoutCell => ({ host: item, stacked: [] }));
+  const rest = [...cells.slice(0, index), ...cells.slice(index + 1)];
+  for (const variant of [[...cells.slice(0, index), wayIn, ...cells.slice(index + 1)], [wayIn, ...rest]]) {
     const result = packBest(variant, metrics, shapeOf);
-    if (!hidesWayIn(result.hidden)) return result;
+    if (!hidesWayIn(result.hidden)) return { ...result, hidden: [...companions, ...result.hidden] };
   }
   return best;
 }
 
-/** The widget that opens a project. */
+/** The widget that opens a project. A Projects card the person stacked under another keeps that choice. */
 const WAY_IN_TYPE: HomeWidgetType = "projects";
 
 function hidesWayIn(hidden: readonly HomeLayoutCell[]): boolean {
-  return hidden.some((cell) => cell.host.type === WAY_IN_TYPE || cell.stacked.some((item) => item.type === WAY_IN_TYPE));
-}
-
-/**
- * The layout with Projects in a cell of its own, where it was, and then first.
- * Anything stacked with it stays in order as cards of their own.
- */
-function wayInFirstVariants(cells: readonly HomeLayoutCell[]): HomeLayoutCell[][] {
-  const index = cells.findIndex((cell) => cell.host.type === WAY_IN_TYPE || cell.stacked.some((item) => item.type === WAY_IN_TYPE));
-  if (index < 0) return [];
-  const own = [cells[index]!.host, ...cells[index]!.stacked];
-  const wayIn = own.find((item) => item.type === WAY_IN_TYPE)!;
-  const alone = own.map((item): HomeLayoutCell => ({ host: item, stacked: [] }));
-  const before = cells.slice(0, index);
-  const after = cells.slice(index + 1);
-  return [
-    [...before, ...alone, ...after],
-    [{ host: wayIn, stacked: [] }, ...before, ...alone.filter((cell) => cell.host !== wayIn), ...after],
-  ];
+  return hidden.some((cell) => cell.host.type === WAY_IN_TYPE);
 }
 
 function packBest(cells: readonly HomeLayoutCell[], metrics: Pick<GridMetrics, "columns" | "maxRows" | "height" | "width">, shapeOf: ShapeOf): PackResult {
