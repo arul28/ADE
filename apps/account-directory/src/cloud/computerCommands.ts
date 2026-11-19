@@ -417,6 +417,9 @@ export type PushWorkLane = {
   branchRef: string;
   primary: boolean;
   state: "pushed" | "clean" | "unpushed" | "failed" | "skipped" | string;
+  /** Uncommitted files / commits GitHub doesn't have, as read; null when the ADE didn't say. */
+  dirty: boolean | null;
+  ahead: number | null;
 };
 
 /** `push-work`'s or `work-state`'s answer; `lanes` is null from an ADE too old to list them. Null when unreadable. */
@@ -435,6 +438,8 @@ export function readPushWorkTally(stdout: string): { pushed: number; failed: num
           branchRef: typeof lane.branchRef === "string" ? lane.branchRef : "",
           primary: lane.primary === true,
           state: typeof lane.state === "string" ? lane.state : "unpushed",
+          dirty: typeof lane.dirty === "boolean" ? lane.dirty : null,
+          ahead: typeof lane.ahead === "number" ? lane.ahead : null,
         }];
       })
       : null;

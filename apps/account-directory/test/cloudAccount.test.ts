@@ -4304,9 +4304,15 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
     ["what is running can't be read", () => {
       shell.keepAwake = "";
     }, "ADE couldn't tell whether the agent is still working, so the computer stays. Try again in a moment."],
-    ["a lane couldn't be pushed", () => {
-      shell.push = JSON.stringify({ pushed: 0, failed: 1, skipped: 0, lanes: [lane("failed")] });
-    }, "ADE couldn't push all work on this computer (Fix login), so it stays. Open the lane to see why, then try again."],
+    ["a lane's work couldn't be pushed", () => {
+      shell.push = JSON.stringify({ pushed: 0, failed: 1, skipped: 0, lanes: [lane("failed", { dirty: true, ahead: 0 })] });
+    }, "ADE couldn't push the work in (Fix login) to GitHub, so the computer stays. Open it, push or discard that work, then try again."],
+    ["the main checkout couldn't be read in time (a cold git status on a big repository)", () => {
+      shell.push = JSON.stringify({ pushed: 0, failed: 1, skipped: 0, lanes: [
+        lane("clean", { dirty: false, ahead: 0 }),
+        lane("failed", { laneId: "main", laneName: "Primary", branchRef: "main", primary: true, dirty: false, ahead: 0 }),
+      ] });
+    }, "ADE couldn't read the work on this computer in time, so nothing was deleted. Try again in a minute."],
     ["work changed while it pushed", () => {
       shell.check = JSON.stringify({ pushed: 0, failed: 0, skipped: 0, lanes: [lane("unpushed")] });
     }, "Work changed on this computer while ADE pushed it (Fix login), so it stays. Try again."],

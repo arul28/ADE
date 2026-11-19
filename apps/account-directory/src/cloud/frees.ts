@@ -169,7 +169,14 @@ async function push(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepRe
   logCloud("cloud.free_pushed", { jobId: job.job_id, pushed: tally.pushed, failed: tally.failed, skipped: tally.skipped });
   const left = (tally.lanes ?? []).filter((lane) => lane.state === "unpushed" || lane.state === "failed");
   if (tally.failed > 0 || left.length > 0 || (!tally.lanes && tally.skipped > 0)) {
-    return { kind: "fail", error: `ADE couldn't push all work on this computer${laneNamesOf(left)}, so it stays. Open the lane to see why, then try again.` };
+    // A lane it couldn't read (nothing seen to push, the read itself failed)
+    // is not a lane to open and fix: say that, apart from work that didn't push.
+    // Unknown (an older ADE) counts as work.
+    const unpushed = left.filter((lane) => lane.state === "unpushed" || lane.dirty !== false || lane.ahead !== 0);
+    if (unpushed.length === 0) {
+      return { kind: "fail", error: "ADE couldn't read the work on this computer in time, so nothing was deleted. Try again in a minute." };
+    }
+    return { kind: "fail", error: `ADE couldn't push the work in${laneNamesOf(unpushed)} to GitHub, so the computer stays. Open it, push or discard that work, then try again.` };
   }
   const facts = factsOf(job);
   const own = tally.lanes?.find((lane) => lane.laneId === facts.laneId) ?? tally.lanes?.find((lane) => !lane.primary) ?? null;
