@@ -7602,6 +7602,8 @@ function formatLaneDefaultsText(value: unknown): string {
 }
 
 function formatLaneCreateResultText(value: unknown): string {
+  // `--machine cloud` already rendered its launch view (`formatChatLaunch`).
+  if (typeof value === "string") return value;
   const result = isRecord(value) ? value : {};
   const lane = isRecord(result.lane) ? result.lane : {};
   const laneName = asString(lane.name) ?? asString(lane.id) ?? "lane";
