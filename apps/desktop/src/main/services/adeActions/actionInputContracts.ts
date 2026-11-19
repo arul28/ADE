@@ -236,7 +236,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade cloud update \"android vm\"",
     },
     create: {
-      description: "Make an ADE Cloud computer, signed in to the account. With an ADE desktop attached its window approves the sign-in; otherwise the person approves from a link ADE posts in your chat (the command waits up to 10 minutes). Costs hours: asks the person in your chat first (a full-auto chat is answered by ADE within the agent limits). Refused before any card when the account is out of hours, uses all its computers or has a full disk (status's canStartLane sentence). Returns the machine {instanceId, machineKey, name, joined}; with background: true, returns {requestId} at once to read with make_status.",
+      description: "Make an ADE Cloud computer, signed in to the account. With an ADE desktop attached its window approves the sign-in; otherwise the person approves from a link ADE posts in your chat (the command waits up to 10 minutes). Costs hours. An agent never makes one alone: it asks the person on a card in its chat (a full-auto chat too), and with nobody to ask (an automation run, an ADE MCP app) the answer is no. Agents start a lane instead (lane_launch, ade chat create --machine cloud --size <size>). Refused before any card when the account is out of hours, uses all its computers or has a full disk (status's canStartLane sentence). Returns the machine {instanceId, machineKey, name, joined}; with background: true, returns {requestId} at once to read with make_status.",
       input: "object { kind?: \"box\" | \"vm\" (vm is a full computer: Android and Docker), shape?: \"small\" | \"medium\" | \"large\" | \"x-large\" or \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\", name?: string, background?: boolean }",
       example: "ade cloud create --kind vm --shape 4x8 --name \"android vm\"",
     },
@@ -306,12 +306,12 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade cloud resize \"android vm\" --shape 4x16",
     },
     copy: {
-      description: "Copy an ADE Cloud machine into a new one with the same files (repos, lanes, installed dependencies), signed in as a new machine: a fresh machine for a lane, from a warm one. A big disk takes minutes. Asks the person first.",
+      description: "Copy an ADE Cloud machine into a new one with the same files (repos, lanes, installed dependencies), signed in as a new machine: a fresh machine for a lane, from a warm one. A big disk takes minutes. Asks the person first; an agent with nobody to ask is refused (agents start lanes instead).",
       input: "object { machine: string, name?: string, shape?: string }",
       example: "ade cloud copy \"supabase-stack 9d77\" --name \"lane copy\"",
     },
     move: {
-      description: "Move an ADE Cloud machine to the other type (box to VM or back), keeping every repo, lane and chat: makes the new machine, copies the home folder, deletes the old one. Docker data and running processes don't move. Asks the person first. To move one chat and its lane to another computer, use ade chat move.",
+      description: "Move an ADE Cloud machine to the other type (box to VM or back), keeping every repo, lane and chat: makes the new machine, copies the home folder, deletes the old one. Docker data and running processes don't move. Asks the person first; an agent with nobody to ask is refused. To move one chat and its lane to another computer, use ade chat move.",
       input: "object { machine: string, to: \"box\" | \"vm\", shape?: string }",
       example: "ade cloud move \"my box\" --to vm",
     },

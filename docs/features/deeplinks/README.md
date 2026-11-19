@@ -301,7 +301,10 @@ Send-to-Mac:
   `event`/`offset` anchors ride `WorkSessionNavigationRequest` (carried, not
   yet scrolled to — no route-level scroll hook exists on iOS).
   Lane / repo-branch / full-PR / linear-issue / file / commit / artifact
-  shapes validate then post `.adeSendToMacRequested`.
+  shapes validate then post `.adeSendToMacRequested`. A lane link first reads
+  the account's ADE Cloud lanes without a computer; a kept lane posts
+  `.adeKeptLaneRequested` instead, and `ADEApp` shows the kept page (New
+  computer, Delete).
 - Universal Links: `apps/ios/ADE/ADE.entitlements` carries
   `applinks:ade-app.dev`; `ADEApp.swift` routes
   `NSUserActivityTypeBrowsingWeb` activities into the router; the AASA file is

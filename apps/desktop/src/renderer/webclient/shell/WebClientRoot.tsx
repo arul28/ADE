@@ -34,6 +34,7 @@ import {
   takeCloudLink,
 } from "./cloudPlanLink";
 import {
+  findOwnerMachine,
   isOwnedOrAccountLink,
   matchOwnedProject,
   navigateMountedApp,
@@ -391,6 +392,20 @@ export function WebClientRoot({
     onStage: (message: string) => void,
   ): Promise<OwnedLinkResult | null> => {
     let target = linkTarget;
+    const linkOwnership = ownershipOfTarget(linkTarget);
+    const laneMachineGone = linkOwnership
+      ? !findOwnerMachine(currentMachines(), linkOwnership.accountMachineKey)
+      : accountProjectIdOfTarget(linkTarget) != null;
+    if (linkTarget.kind === "lane" && laneMachineGone) {
+      // An ADE Cloud lane whose computer is gone: the account keeps it, with
+      // New computer and Delete, on Settings › ADE Cloud, never "a computer
+      // that isn't in your ADE account". This runs before the account-project
+      // step, which would open the repository or another copy instead.
+      const { cloudKeptLaneSettingsPath, isCloudLaneKeptWithoutComputer } = await import("../../components/cloudLane/cloudLaneActions");
+      if (await isCloudLaneKeptWithoutComputer(linkTarget.laneId)) {
+        return { ok: true, path: cloudKeptLaneSettingsPath(linkTarget.laneId), targetId: "", projectId: "" };
+      }
+    }
     if (accountProjectIdOfTarget(target)) {
       // The link names an account project (L33): the account list picks a
       // copy on a computer that is online, follows a merge, or says the
@@ -769,18 +784,23 @@ export function WebClientRoot({
       } else {
         const restoredTarget = pendingTargetRef.current ?? readPendingTarget();
         // A lane shared with this account needs no machine of its own.
-        const machineFreeTarget = restoredTarget?.kind === "lane-share" || (!restoredTarget && path === "/shared");
+        // So is Settings › ADE Cloud (a kept lane's page, reloaded).
+        const cloudSettingsVisit = !restoredTarget && path === "/settings"
+          && new URLSearchParams(window.location.search).get("tab") === "ade-cloud";
+        const machineFreeTarget = restoredTarget?.kind === "lane-share" || (!restoredTarget && path === "/shared") || cloudSettingsVisit;
         initialPath = restored || machineFreeTarget
           ? restoredTarget
             ? targetToWebPath(restoredTarget)
             : isAppRoute(path)
-              ? `${path}${window.location.search}`
+              ? `${path}${window.location.search}${cloudSettingsVisit ? window.location.hash : ""}`
               : WELCOME_PATH
           : WELCOME_PATH;
         if (restored || machineFreeTarget) clearPendingTarget();
       }
       window.history.replaceState(null, "", initialPath);
-      const AppRoot = await loadAppRoot(accountClient, { standaloneSettings: cloudLink != null && restored !== "project" });
+      // Settings › ADE Cloud (a plan link, or a lane kept without a computer) shows on its own with no project.
+      const settingsLanding = cloudLink != null || initialPath.startsWith("/settings?tab=ade-cloud");
+      const AppRoot = await loadAppRoot(accountClient, { standaloneSettings: settingsLanding && restored !== "project" });
       if (!disposed) setPhase({ kind: "ready", AppRoot });
       // The Sentry session starts with the workspace, not on the signed-out page.
       if (!disposed) void import("../sentry").then((module) => module.startWebClientSentrySession()).catch(() => undefined);
@@ -873,7 +893,17 @@ export function WebClientRoot({
       });
       if (!current() || !result) return;
       const landing = settleOwnedLink(result);
-      if (landing) navigateMountedApp(landing);
+      if (!landing) return;
+      if (landing.startsWith("/settings")) {
+        // As a settings link does in the app: leave the new-tab page, and
+        // with no project open, show Settings on its own (a kept lane's link).
+        const { useAppStore } = await import("../../state/appStore");
+        if (!current()) return;
+        const shell = useAppStore.getState();
+        shell.cancelNewTab();
+        if (!shell.project?.rootPath) shell.setStandaloneSettingsOpen(true);
+      }
+      navigateMountedApp(landing);
     })().catch((error) => {
       if (!current()) return;
       setOwnedLink({

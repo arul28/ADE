@@ -8,6 +8,8 @@ import { buildCloudAgentActions, type CloudAgentActionDeps, type CloudApproval }
  * decides; an unattended agent gets ADE's answer from the person's limits:
  * within them yes, past them (a bigger size, the day's count) no, deleting a
  * machine it didn't make no, and no while ADE can't read the account's hours.
+ * A computer that is no new lane's (a make, a copy, a move) is the person's
+ * alone: an agent asks on a card, and with nobody to ask the answer is no.
  */
 describe("ADE Cloud agent actions: approvals", () => {
   function setup(options: {
@@ -72,6 +74,14 @@ describe("ADE Cloud agent actions: approvals", () => {
           ran.push("create");
           return { instanceId: "inst_new" };
         },
+        copy: async () => {
+          ran.push("copy");
+          return { instanceId: "inst_new" };
+        },
+        move: async () => {
+          ran.push("move");
+          return { instanceId: "inst_new" };
+        },
       }),
       laneLaunch: () => ({
         status: async (launchId: string) => (options.launchPhase
@@ -128,11 +138,20 @@ describe("ADE Cloud agent actions: approvals", () => {
     // What the person lets unattended agents spend (balanced: 3 a day, up to 4x16).
     ["with unattended spending off, a full-auto chat's resize still goes to the person", agent, { level: "full-auto", unattendedSpend: false }, "resize", { machine: "lane box", shape: "4x8" }, null, 1],
     ["a size over the agents' limit, in a full-auto chat, goes to the person", agent, { level: "full-auto", answer: "yes" }, "resize", { machine: "lane box", shape: "4x32" }, "resize", 1],
-    ["a full-auto agent makes a machine within the day's limit", agent, { level: "full-auto", madeToday: 2 }, "create", { kind: "box", shape: "2x4" }, "create", 0],
-    ["at the day's limit a full-auto agent makes no machine", agent, { automation: true, madeToday: 3 }, "create", { kind: "box", shape: "2x4" }, null, 0],
+    // Agents start lanes and never make a computer alone: a make, a copy or a move asks the person on a card, a
+    // full-auto chat too, and with nobody to ask (an automation run, an ADE MCP app, no chat) the answer is no.
+    ["a full-auto chat asks the person on a card to make a computer, within the day's limit too", agent, { level: "full-auto", madeToday: 0 }, "create", { kind: "box", shape: "2x4" }, null, 1],
+    ["the person's yes on that card makes it", agent, { level: "full-auto", answer: "yes" }, "create", { kind: "vm", shape: "4x8" }, "create", 1],
+    ["an automation run makes no computer, within the limits too", agent, { automation: true, madeToday: 0 }, "create", { kind: "box", shape: "2x4" }, null, 0],
+    ["an app on ADE MCP makes no computer", { by: "agent", chatSessionId: null, viaAdeMcp: true }, {}, "create", { kind: "vm", shape: "4x8" }, null, 0],
+    ["a shell with no chat makes no computer", shell, {}, "create", { kind: "box", shape: "2x4" }, null, 0],
+    ["a full-auto chat asks the person on a card to copy a computer", agent, { level: "full-auto" }, "copy", { machine: "lane box" }, null, 1],
+    ["an automation run copies no computer", agent, { automation: true }, "copy", { machine: "lane box" }, null, 0],
+    ["a full-auto chat asks the person on a card to move even a computer its chat made", agent, { level: "full-auto", madeBy: "chat_1" }, "move", { machine: "lane box", to: "vm" }, null, 1],
+    ["an automation run moves no computer, even one its chat made", agent, { automation: true, madeBy: "chat_1" }, "move", { machine: "lane box", to: "vm" }, null, 0],
     ["an attended agent asks even past the limits", agent, { level: "ask", answer: "yes", madeToday: 9 }, "create", { kind: "vm", shape: "4x32" }, "create", 1],
+    ["the person makes a computer with no card", person, {}, "create", { kind: "vm", shape: "4x8" }, "create", 0],
     // A month ADE can't read counts as over the cap for whoever nobody watches; a person still decides.
-    ["with an unreadable month, a full-auto agent makes no machine", agent, { level: "full-auto", spendUnreadable: true }, "create", { kind: "box", shape: "2x4" }, null, 0],
     ["with an unreadable month, an automation run resizes nothing", agent, { automation: true, spendUnreadable: true }, "resize", { machine: "lane box", shape: "4x8" }, null, 0],
     ["with an unreadable month, an attended agent asks, and yes runs it", agent, { level: "ask", answer: "yes", spendUnreadable: true }, "create", { kind: "box", shape: "2x4" }, "create", 1],
     ["with an unreadable month, the person makes a machine", person, { spendUnreadable: true }, "create", { kind: "box", shape: "2x4" }, "create", 0],
@@ -212,17 +231,18 @@ describe("ADE Cloud agent actions: approvals", () => {
     }
   });
 
-  it("parallel makes by full-auto agents stay within the day's limit, counted on top of the account's", async () => {
+  it("parallel new lanes by full-auto agents stay within the day's limit, counted on top of the account's", async () => {
     // Two made today on another machine, a limit of three: one more, not three.
     const { actions, ran } = setup({ level: "full-auto", madeToday: 2 });
+    const launchIds = ["1b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a10", "2b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a10", "3b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a10"];
     const results = await Promise.allSettled(
-      [0, 1, 2].map(() => actions.create({ kind: "box", shape: "2x4", approval: agent })),
+      launchIds.map((launchId) => actions.lane_launch!({ ...laneLaunchArgs, launch: { ...laneLaunchArgs.launch, launchId }, approval: agent } as never)),
     );
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(2);
     for (const result of results) {
       if (result.status === "rejected") expect(result.reason).toMatchObject({ code: "cloud_declined" });
     }
-    expect(ran).toEqual(["create"]);
+    expect(ran).toEqual(["lane_launch"]);
   });
 });

@@ -115,7 +115,8 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
   const connectedMachine = useWebMachines().some((machine) => machine.status === "live");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [insideKey, setInsideKey] = useState<string | null>(null);
-  const { hash } = useLocation();
+  const { hash, search, key: navigationKey } = useLocation();
+  // A lane link to a lane kept without a computer (`?lane=<id>`): its row opens once it lists.
   const [freeing, setFreeing] = useState(() => anchorOfHash(hash) === ADE_CLOUD_FREE_SPACE_ANCHOR);
   useLayoutEffect(() => {
     const anchor = anchorOfHash(hash);
@@ -191,6 +192,31 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
     setSelectedKey(key);
     tableRef.current?.querySelector<HTMLElement>(`[data-key="${cssId(key)}"]`)?.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
   }, []);
+  const linkedLaneKey = useMemo(() => {
+    const laneId = new URLSearchParams(search).get("lane")?.trim();
+    return laneId ? `none:${laneId}` : null;
+  }, [search]);
+  const linkedLaneListed = linkedLaneKey != null && lanes.some((lane) => lane.key === linkedLaneKey);
+  // Once per navigation: a later list refresh keeps the person's own pick,
+  // and opening the same link again selects the row again.
+  const linkedLaneOpened = useRef<string | null>(null);
+  const linkedLaneRefreshed = useRef<string | null>(null);
+  useEffect(() => {
+    if (!linkedLaneKey) return;
+    const visit = `${navigationKey}|${linkedLaneKey}`;
+    if (linkedLaneOpened.current === visit) return;
+    if (!linkedLaneListed) {
+      // The lane may have lost its computer after the last read: read once more.
+      if (linkedLaneRefreshed.current !== visit) {
+        linkedLaneRefreshed.current = visit;
+        refreshCloudLanesWithoutComputer();
+      }
+      return;
+    }
+    linkedLaneOpened.current = visit;
+    setInsideKey(null);
+    selectFromCity(linkedLaneKey);
+  }, [linkedLaneKey, linkedLaneListed, navigationKey, selectFromCity]);
   const openInside = useCallback((key: string) => {
     const lane = lanes.find((entry) => entry.key === key);
     if (!lane?.instanceId) return;

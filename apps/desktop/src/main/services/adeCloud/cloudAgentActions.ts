@@ -26,6 +26,12 @@
  * person: an agent nobody watches never makes one. A person is never counted
  * against the daily limit.
  *
+ * An agent never makes a computer on its own: a make, a copy or a move asks
+ * the person on a card in the agent's chat, a full-auto chat too, and with
+ * nobody to ask (an automation run, an ADE MCP app, no chat) the answer is no
+ * (`CLOUD_AGENT_NO_COMPUTER_MESSAGE`). An agent starts a lane instead
+ * (`lane_launch`), which makes the lane's own computer within the agent limits.
+ *
  * A disk grow (`grow_disk`) on the computer the agent runs on is the one
  * spend an agent makes alone, unattended too: inside the plan's disk it only
  * restarts the computer, and ADE continues the chat after it. Paid extra disk
@@ -210,6 +216,15 @@ export class CloudDeclined extends AdeExpectedError {
   }
 }
 
+/**
+ * Why an agent's make, copy or move goes nowhere without the person: agents
+ * start lanes on ADE Cloud, each with its own computer, and never add a bare one.
+ */
+export const CLOUD_AGENT_NO_COMPUTER_MESSAGE =
+  "Agents don't make ADE Cloud computers. Start a lane on ADE Cloud with the size the work needs "
+  + "(ade chat create --machine cloud --size <size>, or ade lanes create --machine cloud --size <size>), "
+  + "or ask the person to make the computer in ADE (Settings › ADE Cloud).";
+
 function record(args: unknown): Record<string, unknown> {
   return args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
 }
@@ -362,6 +377,11 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       shape?: CloudShapeId | null;
       /** Changes a computer's size (resize): only the person decides it, never an agent nobody watches. */
       tierChange?: boolean;
+      /**
+       * Adds a computer that is not a new lane's (make, copy, move): an agent
+       * gets it only with the person's yes on its card, never unattended.
+       */
+      makesComputer?: boolean;
       /** Where the person can do it instead, when the caller has no chat to ask in. */
       personPlace?: string;
       /**
@@ -386,7 +406,13 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     const viaAdeMcp = approval.viaAdeMcp === true;
     // A rule's own run: nobody to ask, the agent limits answer.
     const automationRun = !viaAdeMcp && approval.automation === true;
+    const declineComputer = (where: string): never => {
+      if (chatSessionId && deps.approvals) deps.approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: agents start lanes on ADE Cloud, they don't make computers.`);
+      else logger.info?.("cloud.unattended_answer", { message: `"${card.title}" declined in ${where}: agents don't make computers` });
+      throw new CloudDeclined(`${card.title}: declined. ${CLOUD_AGENT_NO_COMPUTER_MESSAGE}`);
+    };
     if (!viaAdeMcp && !automationRun && (!chatSessionId || !deps.approvals)) {
+      if (card.makesComputer) declineComputer("a call with no chat");
       throw noChatToAsk();
     }
     const approvals = deps.approvals;
@@ -411,9 +437,13 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     // didn't make, a person-only setting): a full-auto chat still has the
     // person's chat, so it shows them the card, as a secret request does.
     // An ADE MCP app or an automation run has nobody to show it to.
-    const personDecides = card.action === "person_only" || card.tierChange === true || (card.action === "delete" && !card.madeByThisChat);
+    // A computer that is not a new lane's is the person's call too: a
+    // full-auto chat shows them the card, and nobody else may make one.
+    const personDecides = card.action === "person_only" || card.tierChange === true || card.makesComputer === true
+      || (card.action === "delete" && !card.madeByThisChat);
     if (viaAdeMcp || automation || (level === "full-auto" && !personDecides)) {
       const where = viaAdeMcp ? "this app connected through ADE MCP" : automation ? "this automation run" : "this full-auto chat";
+      if (card.makesComputer) declineComputer(where);
       if (card.action === "person_only") {
         notice(`ADE said no to "${card.title}" in ${where}: only you can decide it.`);
         throw new CloudDeclined(`${card.title}: declined. Only the person can decide it (Settings › Integrations › ADE Cloud).`);
@@ -629,6 +659,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         body: `A ${shape.label}${kind === "vm" ? " full computer" : " computer"} (${shape.cpu} CPU, ${shape.memoryGb} GB). It uses ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}, and none while it sleeps.`,
         confirm: "Make it",
         newMachine: true,
+        makesComputer: true,
         shape: shapeId,
       });
       try {
@@ -684,6 +715,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         body: `"${name}" gets the same files (repos, lanes, installed dependencies) and signs in as a new computer${rate ? `, and uses ${rate}` : ""}. A big disk takes a few minutes to copy.`,
         confirm: "Copy it",
         newMachine: true,
+        makesComputer: true,
         shape: shapeId ?? box.shapeId,
       });
       try {
@@ -703,7 +735,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       // A move deletes the machine it runs from: the chat asking for it, and
       // this brain, would stop halfway, with the new machine awake and using hours.
       if (box.instanceId === process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
-        throw new Error(`"${box.name ?? box.instanceId}" is the machine this runs on, so it can't move itself. Make the new machine (ade cloud create --kind ${to}), then hand this chat to it: ade chat handoff "$ADE_CHAT_SESSION_ID" --to <new machine> --fork --include-changes --clone --when-turn-ends --note "<the task>". This machine stays and sleeps when idle; offer to delete it from the new chat.`);
+        throw new Error(`"${box.name ?? box.instanceId}" is the machine this runs on, so it can't move itself. Push the lane's branch, then start a lane on ADE Cloud on it with the size the work needs (ade lanes create --machine cloud --size ${to === "vm" ? "large" : "small"} --existing-branch <branch> --name "<name>"), and start a chat there (ade chat create --machine <its computer> --lane <its lane id> --provider <p> --model <id> --prompt "<the task>"). This machine stays and sleeps when idle; offer to delete it from the new chat.`);
       }
       const shapeId = shapeArg(args);
       await hoursCheck();
@@ -716,6 +748,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         body: `ADE makes a new ${cloudKindLabel(to)}, copies every repo, lane and chat on "${name}" into it, then deletes "${name}". Running processes stop${box.type === "vm" ? ", and Docker images and volumes stay behind" : ""}.`,
         confirm: "Move it",
         newMachine: true,
+        makesComputer: true,
         shape: shapeId ?? box.shapeId,
         madeByThisChat: approval.by === "agent" && approval.chatSessionId != null
           && (await deps.machines.instanceMetadata(box.instanceId).catch((error: unknown) => {

@@ -128,6 +128,21 @@ export async function listCloudLanesWithoutComputer(): Promise<CloudLaneWithoutC
   return Array.isArray(lanes) ? lanes : [];
 }
 
+/**
+ * Whether the account keeps this lane without a computer (an ADE Cloud lane
+ * that was freed or removed by the idle cleanup), read fresh: a lane freed a
+ * moment ago is not in the last read. False when ADE can't tell.
+ */
+export async function isCloudLaneKeptWithoutComputer(laneId: string): Promise<boolean> {
+  const lanes = await listCloudLanesWithoutComputer().catch(() => []);
+  return lanes.some((lane) => lane.laneId === laneId);
+}
+
+/** Settings › ADE Cloud with a kept lane's row open (`CloudDashboard` reads `?lane=`). */
+export function cloudKeptLaneSettingsPath(laneId: string): string {
+  return `/settings?${new URLSearchParams({ tab: "ade-cloud", lane: laneId }).toString()}#cloud-lanes`;
+}
+
 export async function forgetCloudLaneWithoutComputer(laneId: string): Promise<void> {
   await call("forgetLaneWithoutComputer", { laneId });
 }

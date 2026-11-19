@@ -153,8 +153,9 @@ that stops (see Sleep and busy rules).
   [Web client deeplinks](../web-client/README.md#deeplinks)).
 - **New lane on ADE Cloud:** a chat launch with a `cloud` target makes one
   computer for one lane, then hands the launch to that computer's brain. There
-  is no form for a bare computer; `ade cloud create` and the phone can still
-  make one. See [ADE Cloud lanes](../chat/README.md#ade-cloud-lanes).
+  is no form for a bare computer; the phone and a person's `ade cloud create`
+  can still make one. An agent never makes one alone (see **Who may start
+  one**). See [ADE Cloud lanes](../chat/README.md#ade-cloud-lanes).
 - **The composer:** "Run on" lists one ADE Cloud row (the person's lanes as a
   small skyline). The lane list shows this project's ADE Cloud lanes from the
   computers' metadata with no wake. A size button picks the size (default
@@ -920,6 +921,17 @@ the phone (`cloud.read`) and a brain with no project can read it.
   `cloudLaneStartBlock`) run before the question. An account ADE couldn't
   read goes on to the server, but an unattended agent is refused for unknown
   hours.
+- **A computer with no lane (`create`, `copy`, `move`):** agents start lanes;
+  they never make a computer alone. These cards carry `makesComputer`, so
+  `approve()` asks the person on a card in the agent's chat, also in a
+  full-auto chat, and refuses when nobody can answer: an automation run, an
+  ADE MCP app, a chatless shell, and the CTO's generic action tool (the RPC
+  server stamps the CTO as an agent for these three actions,
+  `CLOUD_COMPUTER_MAKE_ACTIONS`). The refusal is
+  `CLOUD_AGENT_NO_COMPUTER_MESSAGE`: start a lane with the size the work
+  needs, or ask the person to make the computer in Settings › ADE Cloud. A
+  move adds a computer too, so it has the same rule. Lane launches keep the
+  agent limits.
 - **A person at a plain terminal or a chatless agent:** refused, with "Start
   it in the ADE app (pick ADE Cloud under Run on in a new chat), or ask for it
   in an ADE chat, where ADE can ask you." A chatless `ade` looks exactly like
@@ -1145,6 +1157,14 @@ Each call is account level: it names a computer of the account, never a pin.
     Delete asks first, removes the kept record, then the lane's saved chats.
     Everything goes through the account server, so it works with no machine
     of the person's own.
+  - **Lane links to a kept lane** open its kept page, not "Lane shared with
+    you" or "This link is from a computer that isn't in your ADE account".
+    The iPhone reads the kept list fresh (`openKeptLane` in
+    `DeepLinkRouter.swift`) and shows `KeptLaneLinkSheet`, which closes when
+    the lane leaves the list. The desktop (`keptCloudLaneNavigation` in
+    `main.ts`, and `App.tsx` for a link with no machine) and ADE Web
+    (`WebClientRoot.resolveOwnedTarget`) open Settings › ADE Cloud with that
+    row selected (`?tab=ade-cloud&lane=<id>#cloud-lanes`).
     A lane page left open while its computer goes (opened from any machine's
     row) turns into that kept row, with New computer and Delete; it reads
     the list a few times for about half a minute. When the read fails, the
@@ -1488,3 +1508,5 @@ awake bills hours, and the wake restarts the idle cleanup's clock.
 - User-facing text, CLI output and skills say ADE Cloud. "Powered by Agent 37"
   on the settings page is the only product mention.
 - What spends hours or deletes a computer asks the person first (`cloudAgentActions.ts`), in hours.
+- An agent never makes a computer alone. A new action that adds a computer
+  other than a lane launch sets `makesComputer` on its card.

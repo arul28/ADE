@@ -13196,7 +13196,7 @@ export function registerIpc({
   // the machine's own (desktop-main.jsonl), not a project's.
   // Delete lane, keep a lane on a fresh computer, and tier changes: account
   // level, in this process so a tier change goes on with the window closed.
-  registerCloudLaneLifeIpc({
+  const cloudLaneLife = registerCloudLaneLifeIpc({
     machines: cloudMachines,
     copyDeps: cloudCopyDeps,
     client: cloudClient,
@@ -14796,6 +14796,14 @@ export function registerIpc({
       return coerceAccountProjectListResult(
         await localRuntimeConnectionPool.callSync<unknown>("projects.accountList", {}, { timeoutMs: 10_000 }),
       );
+    },
+    /**
+     * Whether the account keeps this lane without a computer (an ADE Cloud
+     * lane that was freed): a server read, no wake. False when it can't tell.
+     */
+    async cloudLaneKeptWithoutComputer(laneId: string): Promise<boolean> {
+      const lanes = await cloudLaneLife.lanesWithoutComputer().catch(() => []);
+      return lanes.some((lane) => lane.laneId === laneId);
     },
     /** Account machine keys of the machines this desktop is connected to now. */
     connectedMachineKeys(): string[] {
