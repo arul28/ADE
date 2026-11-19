@@ -3353,7 +3353,8 @@ export function TopBar({
         <GlobalVoiceCaptureIndicator />
 
         {/* The ADE Cloud iPhone, only while one runs: minutes, idle stop, Stop. */}
-        <CloudIphoneTopBarButton enabled={workspaceProjectOpen} />
+        {/* Any open project, a remote one too: the phone is the account's. */}
+        <CloudIphoneTopBarButton enabled={projectHydrated === true && showWelcome !== true && isNewTabOpen !== true && Boolean(project?.rootPath || remoteBinding)} />
 
 
         <div className="hidden md:flex items-center gap-1.5">

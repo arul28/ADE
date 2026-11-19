@@ -21,6 +21,8 @@ export type CloudPhoneRun<P> = {
   lastActivityAt: number | null;
   /** When this brain took it: a status read sent before then can't have seen it. */
   heldAt: number;
+  /** The chat's start line, until told: kept past a failed readiness read, told once it reads ready. */
+  startLine: string | null;
   phone: P;
 };
 
@@ -68,8 +70,10 @@ export function cloudPhoneStartLine(start: CloudPhoneStart): string {
 }
 
 /** The chat's line for the run's end; `stopped` is a stop this brain asked for. */
-export function cloudPhoneEndLine(ended: { readyAt: number | null }, end: CloudPhoneRunEnd | "stopped", now = Date.now()): string {
-  const at = end === "stopped" ? now : end.at ?? now;
+export function cloudPhoneEndLine(ended: { readyAt: number | null; lastActivityAt: number | null }, end: CloudPhoneRunEnd | "stopped", now = Date.now()): string {
+  // No end time known: an idle stop came 5 minutes after the last call, not when this read noticed it.
+  const idleEnd = end !== "stopped" && end.why === "idle" && ended.lastActivityAt ? ended.lastActivityAt + CLOUD_PHONE_IDLE_MINUTES * 60_000 : null;
+  const at = end === "stopped" ? now : end.at ?? Math.min(now, idleEnd ?? now);
   const used = ended.readyAt ? ` Used ${Math.min(CLOUD_PHONE_MAX_MINUTES, Math.max(1, Math.ceil((at - ended.readyAt) / 60_000)))} min this run.` : "";
   return end === "stopped" ? `ADE Cloud iPhone stopped.${used}` : `ADE Cloud iPhone stopped: ${endSentence(end.why)}.${used}`;
 }

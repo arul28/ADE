@@ -409,8 +409,11 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     }
   }
 
-  function announceStart(started: CloudPhoneRun<Held>, start: CloudPhoneStart): void {
-    if (started.chatSessionId) announce(started.phoneId, "start", started.chatSessionId, cloudPhoneStartLine(start));
+  /** The phone reads ready: the chat whose call started it is told, once. */
+  function announceStart(started: CloudPhoneRun<Held>): void {
+    started.readyAt ??= Date.now();
+    if (started.chatSessionId && started.startLine) announce(started.phoneId, "start", started.chatSessionId, started.startLine);
+    started.startLine = null;
   }
 
   /** The run is over: tells the chat its start was told to, once. `stopped` is a stop this brain asked for. */
@@ -424,9 +427,10 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
    * The run's phone is no longer the account's live one: reads it with its own
    * token for why. Told only when it surely ended (it reads ended or gone, or
    * another phone replaced it); a phone the server couldn't read just now
-   * still runs.
+   * still runs. `known`: the server already reads it ended, with its reason;
+   * the session read adds when.
    */
-  async function settleEnd(ended: CloudPhoneRun<Held>, replaced: boolean): Promise<void> {
+  async function settleEnd(ended: CloudPhoneRun<Held>, replaced: boolean, known?: CloudPhoneRunEnd): Promise<void> {
     const answer = await nomac(ended.phone, "GET", "").catch((error: unknown) => {
       // Unread: the run stays open, and a later read settles it.
       deps.logger?.warn?.("cloud_phone.end_read_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -434,9 +438,13 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     });
     const session = answer?.body?.session as Record<string, unknown> | undefined;
     if (answer?.status === 200 && typeof session?.state === "string") {
-      if (!CLOUD_PHONE_LIVE_STATES.has(session.state)) announceEnd(ended, cloudPhoneEndOf(session));
+      if (known || !CLOUD_PHONE_LIVE_STATES.has(session.state)) {
+        const end = cloudPhoneEndOf(session);
+        announceEnd(ended, { why: end.why ?? known?.why ?? null, at: end.at });
+      }
       return;
     }
+    if (known) return announceEnd(ended, known);
     // Not 409: a phone busy with another call still runs.
     if (replaced || answer?.status === 401 || answer?.status === 404 || answer?.status === 410) announceEnd(ended, { why: null, at: null });
   }
@@ -459,7 +467,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     };
     if (liveRun?.phoneId === held.phoneId && liveRun.account === held.account) liveRun.phone = held;
     // A reused phone was started by someone else: nobody is told of it.
-    else liveRun = { phoneId: held.phoneId, account: held.account, chatSessionId: start.reused ? null : chatSessionId, readyAt: start.phone.readyAt, lastActivityAt: null, heldAt: Date.now(), phone: held };
+    else liveRun = { phoneId: held.phoneId, account: held.account, chatSessionId: start.reused ? null : chatSessionId, readyAt: start.phone.readyAt, lastActivityAt: null, heldAt: Date.now(), phone: held, startLine: start.reused ? null : cloudPhoneStartLine(start) };
     return held;
   }
 
@@ -529,6 +537,11 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       // stop, a new start or a sign-out during the read wins over its answer.
       if (read?.state === "ready" && held === phone && phone.account === (await currentAccount())) {
         phone.checkedAt = Date.now();
+        // Its first readiness read failed: the start is told now.
+        if (liveRun?.phoneId === phone.phoneId && liveRun.startLine) {
+          liveRun.lastActivityAt = Date.now();
+          announceStart(liveRun);
+        }
         return phone;
       }
       if (held === phone) held = null;
@@ -549,11 +562,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         await waitUntilReady(phone);
         phone.checkedAt = Date.now();
         if (liveRun?.phoneId === phone.phoneId) {
-          if (!start.reused) {
-            liveRun.readyAt ??= Date.now();
-            liveRun.lastActivityAt = Date.now();
-          }
-          announceStart(liveRun, start);
+          if (!start.reused) liveRun.lastActivityAt = Date.now();
+          announceStart(liveRun);
         }
         return phone;
       })().finally(() => { if (starting?.phone === starter) starting = null; });
@@ -700,7 +710,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       if (tracked && tracked.account !== accountOf(client)) liveRun = null;
       else if (tracked && askedAt > tracked.heldAt) {
         const live = state.phone?.id === tracked.phoneId ? state.phone : null;
-        if (live?.state === "ended") announceEnd(tracked, { why: live.endReason, at: null });
+        // Ended: its own session read names when (a late read must not count the wait as use).
+        if (live?.state === "ended") await settleEnd(tracked, true, { why: live.endReason, at: null });
         else if (live) tracked.readyAt ??= live.readyAt;
         // Not the account's live phone now: it ended, or the server couldn't read it just now.
         else await settleEnd(tracked, Boolean(state.phone));

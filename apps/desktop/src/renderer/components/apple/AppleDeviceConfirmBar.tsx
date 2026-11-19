@@ -11,7 +11,7 @@ export function AppleDeviceConfirmBar({ sentence, children }: { sentence: ReactN
       {/* The sentence keeps a real width and the answers stay together: a
           narrow pane puts them on the next line, never one word per line. */}
       <span className="min-w-0 flex-[1_1_16rem]">{sentence}</span>
-      <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">{children}</div>
+      <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center gap-2">{children}</div>
     </div>
   );
 }

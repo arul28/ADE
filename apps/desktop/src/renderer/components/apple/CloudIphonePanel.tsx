@@ -214,6 +214,8 @@ function useCloudPhoneControl(pin: OpenProjectBinding | null, hidden: boolean) {
       setDismissedRead(readFailure);
     },
     pinRef,
+    /** The pane is parked or off screen. */
+    hidden,
     device,
     model: CLOUD_PHONE_MODELS[device],
     family: device === "ipad" ? "ipad" as const : "iphone" as const,
@@ -263,19 +265,20 @@ function CloudPhoneStrip({ control, failure = control.failure }: { control: Clou
  */
 function CloudPhoneRunningStrip({ control }: { control: CloudPhoneControl }) {
   const live = useCloudPhoneLive();
-  const { phone, model, busy, run, refresh, pinRef } = control;
-  const { now, stopAt, warn } = useCloudPhoneIdleCountdown(live, true, true);
+  const { phone, model, busy, run, refresh, pinRef, hidden } = control;
+  // A parked pane neither ticks nor reads.
+  const { now, stopAt, warn } = useCloudPhoneIdleCountdown(live, !hidden, true);
   const [keeping, setKeeping] = useState(false);
   // Entering the last stretch, and at the stop itself: read again, since an
   // agent's calls (on any machine) keep the phone on without this pane knowing.
   const warnedFor = useRef<number | null>(null);
   useEffect(() => {
-    if (!warn || stopAt == null || warnedFor.current === stopAt) return undefined;
+    if (hidden || !warn || stopAt == null || warnedFor.current === stopAt) return undefined;
     warnedFor.current = stopAt;
     void refresh();
     const timer = window.setTimeout(() => { void refresh(); }, Math.max(1_000, stopAt - Date.now() + 2_000));
     return () => window.clearTimeout(timer);
-  }, [warn, stopAt, refresh]);
+  }, [hidden, warn, stopAt, refresh]);
 
   const [keepError, setKeepError] = useState<string | null>(null);
   const keepOn = () => {
