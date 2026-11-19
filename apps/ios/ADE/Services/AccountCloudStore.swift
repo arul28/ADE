@@ -61,6 +61,9 @@ final class AccountCloudStore: ObservableObject {
   @Published private(set) var access: Access?
   @Published private(set) var account: CloudPhoneAccount?
   @Published private(set) var lanesWithoutComputer: [CloudLaneWithoutComputer] = []
+  /// The last read of `lanesWithoutComputer` failed: an empty list then
+  /// means "unknown", never "none".
+  @Published private(set) var lanesWithoutComputerUnread = false
   /// Held messages by chat (`chatKey`), oldest first.
   @Published private(set) var queued: [String: [CloudChatQueuedMessage]] = [:]
   /// "Keep it" went through for these computers this run.
@@ -76,6 +79,10 @@ final class AccountCloudStore: ObservableObject {
 
   /// Bumped on an account change: an answer to the last account's read lands nowhere.
   private var accountGeneration = 0
+  /// The last read of the kept lanes (`refreshLanesWithoutComputer`, or the account read).
+  private var lanesReadAt: Date?
+  /// Bumped by each kept-lane read as it starts (and by an account change).
+  private var lanesReadSeq: UInt64 = 0
   /// Where the next older page of a saved chat starts (`nextBefore`), by thread key.
   private var transcriptCursors: [String: Int] = [:]
   /// Saved chats read this run, by thread key: one read per open.
@@ -95,12 +102,14 @@ final class AccountCloudStore: ObservableObject {
     let generation = accountGeneration
     async let accessRead = readAccess(client)
     async let accountRead = readAccount(client)
+    lanesReadSeq &+= 1
+    let lanesSeq = lanesReadSeq
     async let lanesRead = readLanesWithoutComputer(client)
     let (nextAccess, nextAccount, nextLanes) = await (accessRead, accountRead, lanesRead)
     guard generation == accountGeneration, AccountService.shared.isPairingCommitAuthorized(owner) else { return }
     if let nextAccess, nextAccess != access { access = nextAccess }
     if let nextAccount, nextAccount != account { account = nextAccount }
-    if let nextLanes, nextLanes != lanesWithoutComputer { lanesWithoutComputer = nextLanes }
+    applyLanesRead(nextLanes, seq: lanesSeq)
   }
 
   private func readAccess(_ client: CloudServerClient) async -> Access? {
@@ -127,11 +136,84 @@ final class AccountCloudStore: ObservableObject {
       return try await client.lanesWithoutComputer()
     } catch CloudServerClient.Failure.noAccess {
       // An older server, or no ADE Cloud: nothing to add, and nothing to drop.
-      return nil
+      return lanesWithoutComputer
     } catch {
       accountCloudLog.notice("cloud_store read=lanes_without_computer failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
       return nil
     }
+  }
+
+  /// Reads the lanes ADE kept without a computer now (a page that shows them
+  /// opens or is pulled, or a new computer for one of them is up), at most
+  /// every 15 s unless forced. A failed read keeps the last list.
+  func refreshLanesWithoutComputer(using sync: SyncService, force: Bool = false) async {
+    if !force, let at = lanesReadAt, Date().timeIntervalSince(at) < 15 { return }
+    lanesReadAt = Date()
+    let generation = accountGeneration
+    // An account change while the client was fetched: this read is not that account's.
+    guard let client = await sync.cloudServerClient(), generation == accountGeneration else { return }
+    lanesReadSeq &+= 1
+    let seq = lanesReadSeq
+    let next = await readLanesWithoutComputer(client)
+    guard generation == accountGeneration else { return }
+    applyLanesRead(next, seq: seq)
+  }
+
+  /// A read of the kept lanes, unless a later read already started: an
+  /// older answer never replaces a newer one. A failed read keeps the list,
+  /// marks it unread, and doesn't count toward the 15 s wait.
+  private func applyLanesRead(_ next: [CloudLaneWithoutComputer]?, seq: UInt64) {
+    guard seq == lanesReadSeq else { return }
+    guard let next else {
+      lanesReadAt = nil
+      if !lanesWithoutComputerUnread { lanesWithoutComputerUnread = true }
+      return
+    }
+    lanesReadAt = Date()
+    if lanesWithoutComputerUnread { lanesWithoutComputerUnread = false }
+    if next != lanesWithoutComputer { lanesWithoutComputer = next }
+  }
+
+  /// Delete for a lane kept without a computer: the lane's record and its
+  /// saved work first, then its saved chats on every computer they were filed
+  /// under. The server refuses the first while a computer holds the lane
+  /// (another device started it again), so chats a new computer carries on
+  /// are never erased. Its branch stays on GitHub. Nil when it worked, else
+  /// the sentence to show.
+  func forgetLaneWithoutComputer(_ lane: CloudLaneWithoutComputer, using sync: SyncService) async -> String? {
+    let generation = accountGeneration
+    guard let client = await sync.cloudServerClient() else { return "Sign in to ADE, then try again." }
+    var machineKeys = Set(sync.cloudSavedChats.filter { $0.laneId == lane.laneId }.map { $0.machineKey.lowercased() })
+    if let former = lane.formerMachineKey.flatMap({ nonEmptyTrimmed($0) }) { machineKeys.insert(former.lowercased()) }
+    do {
+      try await client.forgetLaneWithoutComputer(laneId: lane.laneId)
+    } catch CloudServerClient.Failure.noAccess {
+      // Already gone (another device deleted it): its chats go below.
+    } catch {
+      accountCloudLog.notice("cloud_store forget_lane failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      return cloudServerFailureMessage(error)
+    }
+    if generation == accountGeneration {
+      // A read that started before the delete must not bring the lane back.
+      lanesReadSeq &+= 1
+      lanesReadAt = nil
+      lanesWithoutComputer.removeAll { $0.laneId == lane.laneId }
+    }
+    do {
+      for machineKey in machineKeys.sorted() {
+        do {
+          try await client.deleteSavedChats(machineKey: machineKey, laneId: lane.laneId)
+        } catch CloudServerClient.Failure.noAccess {
+          // Nothing saved under that computer.
+        }
+      }
+    } catch {
+      accountCloudLog.notice("cloud_store forget_lane chats failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      return "The lane is gone, but its saved chats weren't deleted. Delete them in Work."
+    }
+    guard generation == accountGeneration else { return nil }
+    accountCloudLog.notice("cloud_store forget_lane=done")
+    return nil
   }
 
   /// Why ADE Cloud can't do anything for this account now (blocked, out of
@@ -408,6 +490,9 @@ final class AccountCloudStore: ObservableObject {
     access = nil
     account = nil
     lanesWithoutComputer = []
+    lanesWithoutComputerUnread = false
+    lanesReadSeq &+= 1
+    lanesReadAt = nil
     queued = [:]
     keptInstanceIds = []
     hiddenMessageIds = []

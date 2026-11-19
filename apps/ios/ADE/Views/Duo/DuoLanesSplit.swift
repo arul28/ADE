@@ -55,6 +55,13 @@ extension LanesTabView {
           openLanesTray
             .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
         }
+        // This project's ADE Cloud lanes ADE kept without a computer (and a
+        // new computer for one while it comes up). Not mounted when there are
+        // none: a List gives even an empty row its height.
+        if let origin = inputs.cloudProjectOrigin, inputs.keptCloudLaneCount + inputs.keptCloudLaneLaunchCount > 0 {
+          CloudKeptLanesBlock(origin: origin, refreshToken: refreshFeedbackToken, insets: EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+            .adeFlatRow(insets: EdgeInsets(), separator: .hidden)
+        }
       }
       laneListSections
       if quickFilter == .archived {

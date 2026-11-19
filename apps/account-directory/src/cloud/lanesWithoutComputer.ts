@@ -199,7 +199,7 @@ export async function listLanesWithoutComputer(env: CloudDb, userId: string): Pr
 }
 
 /** `GET /cloud/lanes/without-computer` and `DELETE /cloud/lanes/without-computer/:lane`. Needs no provider. */
-export async function routeLanesWithoutComputer(request: Request, path: string, env: CloudDb, userId: string, deleteBackups?: (laneId: string) => Promise<unknown>): Promise<Response> {
+export async function routeLanesWithoutComputer(request: Request, path: string, env: CloudDb, userId: string, deleteLaneData?: (laneId: string) => Promise<unknown>): Promise<Response> {
   const rest = path.slice(CLOUD_PATHS.lanesWithoutComputer.length).split("/").filter(Boolean);
   if (rest.length === 0) {
     return request.method === "GET" ? json({ lanes: await listLanesWithoutComputer(env, userId) }) : notFound();
@@ -215,8 +215,8 @@ export async function routeLanesWithoutComputer(request: Request, path: string, 
   const live = await env.DB.prepare("select 1 as n from cloud_computers where user_id = ? and lane_id = ? and deleted_at is null limit 1").bind(userId, laneId).first<{ n: number }>();
   if (live) return fail("lane_has_computer", "This lane has a computer on ADE Cloud. Delete the lane instead.", 409);
   const result = await env.DB.prepare("delete from cloud_lanes_without_computer where user_id = ? and lane_id = ?").bind(userId, laneId).run();
-  // The lane is gone, so its saved work goes with it (`laneBackups.ts`).
-  await deleteBackups?.(laneId);
+  // The lane is gone, so its saved work and its chats on every computer go with it.
+  await deleteLaneData?.(laneId);
   return json({ forgotten: (result.meta?.changes ?? 0) > 0 });
 }
 
