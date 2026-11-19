@@ -175,6 +175,36 @@ export function launchMayOpenItsSession(markAtSend: NewDraftRequestMark | undefi
     || markAtSend.count === (newDraftRequestsByProject.get(markAtSend.projectStateKey) ?? 0);
 }
 
+/**
+ * Sessions a launch opened through the Work URL (`?sessionId=`), with the
+ * project's mark at that open. The Work page applies that URL only once the
+ * session is in its list, which can come after the person asked for a new
+ * draft; the draft then keeps the screen.
+ */
+const urlOpenMarksBySessionId = new Map<string, NewDraftRequestMark>();
+const URL_OPEN_MARKS_MAX = 32;
+
+export function noteLaunchUrlOpen(sessionId: string, projectStateKey: string | null): void {
+  urlOpenMarksBySessionId.delete(sessionId);
+  urlOpenMarksBySessionId.set(sessionId, markNewDraftRequests(projectStateKey));
+  // A session that never reaches the list leaves its entry; keep the newest few.
+  for (const oldest of urlOpenMarksBySessionId.keys()) {
+    if (urlOpenMarksBySessionId.size <= URL_OPEN_MARKS_MAX) break;
+    urlOpenMarksBySessionId.delete(oldest);
+  }
+}
+
+/**
+ * For the Work URL's `?sessionId=`, when it applies: false when a launch put
+ * it there and a new draft was asked for since. Any other URL may open its
+ * session. Reading it ends the launch's entry.
+ */
+export function takeLaunchUrlOpenAllowed(sessionId: string): boolean {
+  const mark = urlOpenMarksBySessionId.get(sessionId);
+  urlOpenMarksBySessionId.delete(sessionId);
+  return launchMayOpenItsSession(mark);
+}
+
 export function isDraftLaunchJobTerminal(status: DraftLaunchJobStatus): boolean {
   return status === "ready" || status === "failed";
 }

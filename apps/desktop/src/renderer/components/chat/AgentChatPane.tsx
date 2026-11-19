@@ -612,6 +612,7 @@ import {
   isDraftLaunchJobTerminal,
   launchMayOpenItsSession,
   markNewDraftRequests,
+  noteLaunchUrlOpen,
   type NewDraftRequestMark,
   pruneDraftLaunchJobs,
   withDraftLaunchTimeout,
@@ -13717,6 +13718,7 @@ export function AgentChatPane({
       return;
     }
     if (embeddedWorkLayout) {
+      noteLaunchUrlOpen(launch.sessionId, workDraftProjectStateKey);
       navigate(`/work?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}`);
       return;
     }
@@ -13729,6 +13731,7 @@ export function AgentChatPane({
     setLaneWorkViewState,
     setWorkViewState,
     suppressDraftLaunchNavigation,
+    workDraftProjectStateKey,
   ]);
 
   // Robust foreground auto-open: a foreground send (Enter) opens the chat

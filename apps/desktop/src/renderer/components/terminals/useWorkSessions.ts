@@ -42,7 +42,7 @@ import {
 } from "../../lib/terminalAttention";
 import type { CanonicalStatusBucket } from "../../../shared/sessionCanonicalState";
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
-import { launchMayOpenItsSession, noteNewDraftRequested } from "../../lib/draftLaunchJobs";
+import { launchMayOpenItsSession, noteNewDraftRequested, takeLaunchUrlOpenAllowed } from "../../lib/draftLaunchJobs";
 import { boundMachineLanePrs, laneHasAnyPr, useLanePrsByLaneId } from "./useLanePrs";
 import { applyWorkLaneManualMove, type WorkLaneSortMode } from "./workLaneOrder";
 import { EMPTY_WORK_SEEN_AT, stampWorkSeenAt } from "./workLaneFocus";
@@ -2236,6 +2236,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     if (!session) return;
 
     appliedQuerySessionIdRef.current = applyKey;
+    // A launch's open that a new draft has overtaken (`noteLaunchUrlOpen`):
+    // the draft keeps the screen, and the chat stays a row in the list.
+    if (!takeLaunchUrlOpenAllowed(session.id)) {
+      stripUrlFilterParams();
+      return;
+    }
     // Deeplink anchors (?event=<seq> for chat, ?offset=<bytes> for terminal
     // scrollback) are handed off one-shot to the session's content surface.
     setPendingSessionAnchor(session.id, {
@@ -2262,7 +2268,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         selectedItemId: session.id,
       };
     });
-  }, [focusSession, isWorkRoute, searchParams, selectLaneForActiveTab, sessionsById, setProjectViewState]);
+  }, [focusSession, isWorkRoute, searchParams, selectLaneForActiveTab, sessionsById, setProjectViewState, stripUrlFilterParams]);
 
   useEffect(() => {
     const hostPin = tabCopyPinRef.current;
