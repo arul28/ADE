@@ -488,6 +488,7 @@ function createHarness(overrides: {
 
   const sessionStore = new Map<string, any>();
   const sessionService = {
+    requestAttention: vi.fn(() => true),
     agentShells: {
       start: vi.fn(),
       stop: vi.fn(),
@@ -1102,6 +1103,101 @@ describe("ptyService", () => {
 
       expect(service.reportCliTurnHookEvent({ sessionId: "session-hooked", provider: "claude", payload: started, token })).toBe(true);
       expect(service.getTrackedCliTurn("session-hooked")).toMatchObject({ phase: "working", source: "claude-hooks" });
+    });
+
+    // Typed text ends with Enter. In a menu the CLI reported, that Enter picks
+    // the selected option (Claude's "1. Yes" on a permission prompt), so the
+    // person's text must wait. A CLI whose prompt ADE cannot read takes text at
+    // once: waiting for a prompt ADE never sees would hold it for good.
+    it("holds typed text while a CLI shows a menu, and types at once into a CLI whose prompt it cannot read", async () => {
+      const { service, loadPty, mockPty, sessionService } = createHarness({
+        runtimeSocketPath: "/tmp/ade-test-runtime.sock",
+        getAdeCliAgentEnv: (env) => ({ ...env, ADE_CLI_PATH: path.resolve("/opt/ade/bin/ade") }),
+      });
+      await service.create({
+        sessionId: "session-menu",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        runtimeCliLaunch: { provider: "claude", permissionMode: "default" },
+      });
+      const spawn = (loadPty.mock.results[0]?.value as { spawn: ReturnType<typeof vi.fn> }).spawn;
+      const token = (spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env?.ADE_CLI_TURN_HOOK_TOKEN ?? "";
+      expect(token.length, "the hooked launch carries a token").toBeGreaterThan(0);
+      const hook = (payload: Record<string, string>) =>
+        service.reportCliTurnHookEvent({ sessionId: "session-menu", provider: "claude", payload, token });
+      const box = "╭────────────╮\n│ >          │\n╰────────────╯\n";
+      mockPty._emitter.emit("data", box);
+      const settledAt = Date.now() + 700;
+      const settled = vi.spyOn(Date, "now").mockImplementation(() => settledAt);
+      try {
+        expect(service.canTakeTypedMessage("session-menu"), "a free prompt").toBe(true);
+        hook({ hook_event_name: "UserPromptSubmit", prompt_id: "p-1" });
+        hook({ hook_event_name: "PermissionRequest", tool_name: "Bash" });
+        expect(service.getTrackedCliTurn("session-menu")?.phase).toBe("needs-input");
+        // The menu sits inside the same input box: the screen alone says "free".
+        mockPty._emitter.emit("data", box);
+      } finally {
+        settled.mockRestore();
+      }
+      const quietMenu = vi.spyOn(Date, "now").mockImplementation(() => settledAt + 700);
+      try {
+        expect(service.canTakeTypedMessage("session-menu"), "a permission menu on a quiet screen").toBe(false);
+        hook({ hook_event_name: "Stop" });
+        mockPty._emitter.emit("data", box);
+      } finally {
+        quietMenu.mockRestore();
+      }
+      const afterStop = vi.spyOn(Date, "now").mockImplementation(() => settledAt + 1_400);
+      try {
+        expect(service.canTakeTypedMessage("session-menu"), "the menu closed and the turn ended").toBe(true);
+      } finally {
+        afterStop.mockRestore();
+      }
+
+      await service.create({
+        sessionId: "session-qwen",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Qwen CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "qwen",
+        command: "qwen",
+        args: [],
+        startupCommand: "qwen",
+      });
+      mockPty._emitter.emit("data", "Qwen is thinking...\n");
+      expect(service.canAcceptScheduledTurn("session-qwen"), "a relaunch still needs a readable prompt").toBe(false);
+      expect(service.canTakeTypedMessage("session-qwen"), "Qwen's prompt cannot be read").toBe(true);
+      // Typed as keys, the line break could submit half of it.
+      (mockPty.write as ReturnType<typeof vi.fn>).mockClear();
+      await service.sendToSession({ sessionId: "session-qwen", text: "first line\nsecond line" });
+      const written = (mockPty.write as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0])).join("");
+      expect(written, "one paste, then Enter").toContain("\x1b[200~first line\nsecond line\x1b[201~");
+
+      // A Devin terminal has no resume metadata, so ADE cannot name its provider; it takes text all the same.
+      await service.create({
+        sessionId: "session-devin",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Devin CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "devin",
+        command: "devin",
+        args: [],
+        startupCommand: "devin",
+      });
+      expect(sessionService.get("session-devin")?.resumeMetadata?.provider ?? null, "setup: no provider").toBeNull();
+      expect(service.canTakeTypedMessage("session-devin"), "Devin's prompt cannot be read").toBe(true);
+      (mockPty.write as ReturnType<typeof vi.fn>).mockClear();
+      await service.sendToSession({ sessionId: "session-devin", text: "fix the test" });
+      const typedToDevin = (mockPty.write as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0])).join("");
+      expect(typedToDevin).toContain("fix the test");
     });
 
     it("keeps a Claude CLI's background agents as background work until each reports its stop", async () => {

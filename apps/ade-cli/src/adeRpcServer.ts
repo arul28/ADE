@@ -221,7 +221,7 @@ import {
   ANDROID_SDK_PERSON_ONLY_ACTIONS,
 } from "../../desktop/src/shared/types/androidEmulator";
 import { APP_CONTROL_CODE_SYNC_ACTIONS, APP_CONTROL_LANE_FREE_ACTIONS } from "../../desktop/src/shared/types/appControl";
-import { trackBrainLoopWatchdogCommand } from "./services/runtime/brainLoopWatchdog";
+import { trackBrainLoopWatchdogCommand, brainPingReply } from "./services/runtime/brainLoopWatchdog";
 import { passesPtyDataFilter, readPtyDataIds } from "./runtimeEventVolume";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
@@ -10256,7 +10256,8 @@ export function createAdeRpcRequestHandler(args: {
     }
 
     if (method === "ping") {
-      return { pong: true, at: nowIso() };
+      // A freeze here is not the network: the reply says so (`hostFrozenMs`).
+      return brainPingReply(nowIso());
     }
 
     if (method.startsWith("sync.")) {

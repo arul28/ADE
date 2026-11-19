@@ -4736,12 +4736,14 @@ export async function createAdeRuntime(args: {
     accountLanesRef.note = () => noteAccountLanesChanged(syncRuntimeOptions?.registryProjectId ?? projectId, async () => {
       const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
       const projectKey = normalizeGitRemoteIdentity(readGitOriginUrl(projectRoot)) || null;
+      // One read of the PR list for every lane: this runs on each PR refresh.
+      const prs = headlessLinearServices.prService?.getForLanes(lanes.map((lane) => lane.id));
       return lanes.map((lane) => ({
         laneId: lane.id,
         projectKey,
         name: lane.name.slice(0, 200),
         branch: lane.branchRef || null,
-        prNumber: headlessLinearServices.prService?.getForLane(lane.id)?.githubPrNumber ?? null,
+        prNumber: prs?.get(lane.id)?.githubPrNumber ?? null,
         isPrimary: lane.laneType === "primary",
       }));
     });

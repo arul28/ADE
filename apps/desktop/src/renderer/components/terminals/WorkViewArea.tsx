@@ -878,7 +878,6 @@ function CliSessionSurface({
           runtimePin={runtimePin}
           toolType={session.toolType}
           imagePasteMode="agent-cli"
-          localLineAllowed={!showInputBox}
           className="h-full w-full"
         />
         {showSidePane ? <CliActionsSidePane /> : null}

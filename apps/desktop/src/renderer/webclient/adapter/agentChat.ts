@@ -434,10 +434,9 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     // unless the caller asked the host to hold the text.
     typeIntoCli: async (args: AgentCliTypeArgs, pin?: RuntimePinArg): Promise<AgentCliTypeResult> => {
       guardPin("typeIntoCli", pin);
-      // The host's sync command types every text at a free prompt, so the web
-      // has no local line; a line sent as "free" would wait for the turn to end.
-      if (args.when === "now") throw new Error("ADE Web cannot type a line into a CLI at once.");
-      const result = await callRequiredMutation<{ outcome?: AgentCliTypeResult["outcome"] }>("chat.typeIntoCli", {
+      // Typing a line at once is the old desktop terminal's path; ADE Web never had it.
+      if (args.when === "now") throw new Error("ADE Web cannot type a line into a CLI at once. Send it from the CLI input box.");
+      const result = await callRequiredMutation<{ outcome?: AgentCliTypeResult["outcome"]; typedAtOnce?: boolean }>("chat.typeIntoCli", {
         sessionId: args.sessionId,
         text: args.text,
         holdUntilFree: args.holdUntilFree === true,
@@ -447,7 +446,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       if (outcome !== "delivered" && outcome !== "deferred" && outcome !== "held" && outcome !== "ended") {
         throw new Error("This ADE host cannot type into a CLI session yet. Update ADE on that computer.");
       }
-      return { outcome };
+      return { outcome, ...(outcome === "delivered" && result?.typedAtOnce === true ? { typedAtOnce: true as const } : {}) };
     },
     steer: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("steer", pin);

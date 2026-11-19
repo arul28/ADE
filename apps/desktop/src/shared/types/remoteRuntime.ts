@@ -517,9 +517,9 @@ export type RemoteRuntimeCapabilities = {
   /** `chat.sendMessage` recognizes a repeat of a `clientSendId`. Absent on an older brain. */
   clientSendDedupe?: boolean;
   /**
-   * `chat.typeIntoCli` takes `when: "now"` (the terminal's local line) and
-   * recognizes a repeat of a `clientMessageId` in both modes. Absent on an
-   * older brain, which keeps the local line off.
+   * `chat.typeIntoCli` takes `when: "now"` (typed at once; older desktops'
+   * terminal local line sent it) and recognizes a repeat of a
+   * `clientMessageId` in both modes. Absent on an older brain.
    */
   agentCliTypeNow?: boolean;
   /**
@@ -828,3 +828,14 @@ export function sanitizeUpdateRequestedBy(value: unknown): UpdateRequestedBy | n
   if (!machineName && !clientKind) return null;
   return { ...(machineName ? { machineName } : {}), ...(clientKind ? { clientKind } : {}) };
 }
+
+/**
+ * A brain's answer to `ping`. `hostFrozenMs`: the brain's own event loop was
+ * frozen for this long while the ping waited (`brainPingReply`), so the round
+ * trip measured the freeze, not the network. Absent on an older brain.
+ */
+export type RuntimePingReply = {
+  pong: true;
+  at: string;
+  hostFrozenMs?: number;
+};

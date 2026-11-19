@@ -562,14 +562,17 @@ describe("prService.getForLane", () => {
       if (text.includes("from github_pr_stacks")) {
         return stackRows;
       }
+      const prKey = (row: Record<string, unknown>) =>
+        `${String(row.repo_owner).toLowerCase()}/${String(row.repo_name).toLowerCase()}#${Number(row.github_pr_number)}`;
       if (text.includes("from github_pr_projections")) {
-        const mappedKeys = new Set(rows.map((row) => (
-          `${String(row.repo_owner).toLowerCase()}/${String(row.repo_name).toLowerCase()}#${Number(row.github_pr_number)}`
-        )));
-        return projectionRows.filter((row) =>
-          row.project_id === params[0]
-          && !mappedKeys.has(`${String(row.repo_owner).toLowerCase()}/${String(row.repo_name).toLowerCase()}#${Number(row.github_pr_number)}`)
-        );
+        return projectionRows
+          .filter((row) => row.project_id === params[0])
+          .map((row) => ({ ...row, mapped_key: prKey(row) }));
+      }
+      if (text.includes("from pull_requests") && text.includes("as key")) {
+        return rows
+          .filter((row) => row.project_id === params[0] && (row as Record<string, unknown>).detached_at == null)
+          .map((row) => ({ key: prKey(row) }));
       }
       if (text.includes("from pull_requests")) {
         if (text.includes("where lane_id = ?")) {
