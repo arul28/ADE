@@ -434,6 +434,8 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     // unless the caller asked the host to hold the text.
     typeIntoCli: async (args: AgentCliTypeArgs, pin?: RuntimePinArg): Promise<AgentCliTypeResult> => {
       guardPin("typeIntoCli", pin);
+      // Typing a line at once is the old desktop terminal's path; ADE Web never had it.
+      if (args.when === "now") throw new Error("ADE Web cannot type a line into a CLI at once. Send it from the CLI input box.");
       const result = await callRequiredMutation<{ outcome?: AgentCliTypeResult["outcome"]; typedAtOnce?: boolean }>("chat.typeIntoCli", {
         sessionId: args.sessionId,
         text: args.text,

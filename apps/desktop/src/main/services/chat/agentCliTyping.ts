@@ -65,6 +65,11 @@ export function createAgentCliTyping(deps: AgentCliTypingDeps) {
       isQueuedCliTextWaiter(waiter) && waiter.action.sessionId === sessionId);
   };
 
+  /** Texts that go before a new one: in the queue, or out of it and being typed now. */
+  const hasQueuedSends = async (sessionId: string): Promise<boolean> =>
+    deps.getChatWaits()?.hasCliTextsInFlight(sessionId) === true
+    || (await queuedSendWaits(sessionId)).length > 0;
+
   const armQueuedSend = async (args: { sessionId: string; text: string; metadata?: Record<string, unknown> | null }) => {
     const chatWaits = deps.getChatWaits();
     if (!chatWaits) throw new Error("Queued sends are not available yet; try again in a moment.");
@@ -113,9 +118,10 @@ export function createAgentCliTyping(deps: AgentCliTypingDeps) {
       : { outcome: "delivered", typedAtOnce: true };
     const deliver = async () =>
       await deps.deliverWakeToSession({ sessionId, text: typedText, kind: "auto" }) === "delivered";
-    // Queued texts go first: a later send must not jump the line. Arming
-    // checks the queue at once, so a CLI that is free now still takes them.
-    if ((await queuedSendWaits(sessionId)).length === 0) {
+    // Queued texts go first: a later send must not jump the line, also while
+    // it waits for the prompt to settle. Arming checks the queue at once, so
+    // a CLI that is free now still takes them.
+    if (!(await hasQueuedSends(sessionId))) {
       if (await deliver()) return delivered;
       const settleBy = Date.now() + SETTLE_WAIT_MS;
       while (Date.now() < settleBy && !deps.isDisposed() && !reportedMidTurn(sessionId)) {
@@ -124,6 +130,7 @@ export function createAgentCliTyping(deps: AgentCliTypingDeps) {
         });
         if (processEnded(sessionId)) return { outcome: "ended" };
         if (deps.agentCliTypingDeferred(sessionId)) continue;
+        if (await hasQueuedSends(sessionId)) break;
         if (await deliver()) return delivered;
       }
     }
@@ -192,5 +199,5 @@ export function createAgentCliTyping(deps: AgentCliTypingDeps) {
     }
   };
 
-  return { typeIntoAgentCliWhenFree, queuedSendWaits, armQueuedSend };
+  return { typeIntoAgentCliWhenFree, queuedSendWaits, hasQueuedSends, armQueuedSend };
 }

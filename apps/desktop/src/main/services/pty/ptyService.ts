@@ -9087,8 +9087,9 @@ export function createPtyService({
       if (!live) return false;
       const provider = session.resumeMetadata?.provider
         ?? providerFromTool(session.toolType ?? live[1].toolTypeHint);
-      if (provider == null) return false;
-      if (!agentCliReadsFreePrompt(provider)) return true;
+      // A CLI that ADE cannot name (a Devin launch without resume metadata)
+      // has no prompt that ADE can read either.
+      if (provider == null || !agentCliReadsFreePrompt(provider)) return true;
       return (agentCliInputReadiness(normalizedSessionId, provider)?.markerVisible ?? false)
         && agentCliMainTurnEndedAndSettled(live[1]);
     },

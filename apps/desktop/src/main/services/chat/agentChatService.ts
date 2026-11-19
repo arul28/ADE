@@ -51781,6 +51781,7 @@ export function createAgentChatService(args: {
   const {
     typeIntoAgentCliWhenFree,
     queuedSendWaits: queuedAgentCliSendWaits,
+    hasQueuedSends: hasQueuedAgentCliSends,
     armQueuedSend: armQueuedAgentCliSend,
   } = createAgentCliTyping({
     sessionService,
@@ -51804,7 +51805,7 @@ export function createAgentChatService(args: {
     agentCliOwnedByAnotherRuntime,
     deliverWakeToSession: (wakeArgs) => deliverWakeToSession(wakeArgs),
     armQueuedSend: ({ sessionId, text, metadata }) => armQueuedAgentCliSend({ sessionId, text, metadata }),
-    hasQueuedSends: async (sessionId) => (await queuedAgentCliSendWaits(sessionId)).length > 0,
+    hasQueuedSends: hasQueuedAgentCliSends,
     cancelQueuedSends: async (sessionId) => {
       if (!chatWaits) return 0;
       let cancelled = 0;

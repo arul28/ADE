@@ -155,6 +155,8 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
   let backstop: ReturnType<typeof setInterval> | null = null;
   let disposed = false;
   const turnEndTimers = new Set<ReturnType<typeof setTimeout>>();
+  /** Queued CLI texts taken out of the queue to be typed, not yet typed or put back, by CLI. */
+  const cliTextsInFlight = new Map<string, number>();
 
   const persist = (): void => {
     try {
@@ -362,8 +364,40 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
       waiters = waiters.filter((waiter) => !firingIds.has(waiter.id));
       persist();
       syncBackstop();
+      // Queued texts of this pass stay ahead of a new text until each is
+      // delivered or back in the queue (`hasCliTextsInFlight`).
+      const cliTextTo = (waiter: ChatWaiter): string | null =>
+        isQueuedCliTextWaiter(waiter) ? waiter.action.sessionId : null;
+      const releaseInFlight = (waiter: ChatWaiter): void => {
+        const cli = cliTextTo(waiter);
+        if (!cli) return;
+        const left = (cliTextsInFlight.get(cli) ?? 1) - 1;
+        if (left > 0) cliTextsInFlight.set(cli, left);
+        else cliTextsInFlight.delete(cli);
+      };
+      for (const { waiter } of firing) {
+        const cli = cliTextTo(waiter);
+        if (cli) cliTextsInFlight.set(cli, (cliTextsInFlight.get(cli) ?? 0) + 1);
+      }
+      /** CLIs that refused a queued text in this pass: their later texts wait too, in order. */
+      const heldCliTexts = new Set<string>();
+      const requeue = (waiter: ChatWaiter): void => {
+        if (waiters.some((candidate) => candidate.id === waiter.id)) return;
+        // In the order it was armed, so a held text stays ahead of a later one.
+        const at = waiters.findIndex((candidate) => candidate.createdAt > waiter.createdAt);
+        if (at < 0) waiters.push(waiter);
+        else waiters.splice(at, 0, waiter);
+        persist();
+        syncBackstop();
+        scheduleCheck();
+      };
       for (const { waiter, outcome } of firing) {
+        const cli = cliTextTo(waiter);
         try {
+          if (cli && heldCliTexts.has(cli)) {
+            requeue(waiter);
+            continue;
+          }
           await fire(waiter, outcome);
           logger.info("agent_chat.wait_fired", { waiterId: waiter.id, outcome, action: waiter.action.kind });
         } catch (error) {
@@ -375,19 +409,17 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
               }
               logger.info("agent_chat.wait_fire_deferred", { waiterId: waiter.id, outcome });
               if (outcome === "matched") waiter.matchedWhileDeferred = true;
+              if (cli) heldCliTexts.add(cli);
             }
-            if (!waiters.some((candidate) => candidate.id === waiter.id)) {
-              waiters.push(waiter);
-              persist();
-              syncBackstop();
-              scheduleCheck();
-            }
+            requeue(waiter);
             continue;
           }
           logger.warn("agent_chat.wait_fire_failed", {
             waiterId: waiter.id,
             error: error instanceof Error ? error.message : String(error),
           });
+        } finally {
+          releaseInFlight(waiter);
         }
       }
     }
@@ -556,6 +588,14 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
       syncBackstop();
       scheduleCheck();
       return waiter;
+    },
+
+    /**
+     * Whether queued texts for this CLI are being typed now. They are out of
+     * the queue (`list` does not show them), but a new text still goes behind them.
+     */
+    hasCliTextsInFlight(sessionId: string): boolean {
+      return (cliTextsInFlight.get(sessionId) ?? 0) > 0;
     },
 
     async list(args: { sessionId?: string } = {}): Promise<ChatWaiter[]> {

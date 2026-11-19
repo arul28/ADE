@@ -30303,9 +30303,9 @@ async function runServe(
     },
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
     info: (event, meta) => headlessProjectLogger.info(event, meta),
-    onStall: ({ observedLagMs }) => {
+    onStall: ({ observedLagMs, endedAgoMs }) => {
       recordHostStall({ durationMs: observedLagMs });
-      stallProfiler.noteStall();
+      stallProfiler.noteStall({ startedAgoMs: endedAgoMs + observedLagMs });
     },
     onRecovered: (breadcrumb) => {
       const wedgeAtMs = Date.parse(breadcrumb.ts);

@@ -1,4 +1,5 @@
 import * as inspector from "node:inspector";
+import { performance } from "node:perf_hooks";
 import { captureProblem } from "../../../../desktop/src/shared/sentry/capture";
 import { BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS } from "./brainLoopWatchdog";
 
@@ -16,7 +17,8 @@ import { BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS } from "./brainLoopWatchdog";
  *
  * At most one profile an hour, and only after a freeze, so a healthy brain
  * never profiles. A cause becomes a Sentry issue only when the watchdog saw
- * another freeze during the profile, at most once per cause in a brain's life.
+ * another freeze start during the profile, at most once per cause in a
+ * brain's life.
  */
 
 const PROFILE_MS = 60_000;
@@ -28,6 +30,12 @@ const MIN_RUN_MS = 1_000;
 /** Frames kept from the heaviest stack, leaf first. */
 const STACK_FRAMES_KEPT = 12;
 const TOP_FRAMES_KEPT = 5;
+/**
+ * How long a finished profile waits for the watchdog's word on a freeze that
+ * started inside it. The watchdog holds a lag that looks like a sleep for up
+ * to 3 s (`BRAIN_LOOP_SLEEP_PROOF_GRACE_MS`) before it says it was a freeze.
+ */
+const LATE_STALL_WAIT_MS = 10_000;
 
 type CallFrame = { functionName: string; url: string; lineNumber: number; columnNumber: number };
 type ProfileNode = { id: number; callFrame: CallFrame; children?: number[] };
@@ -57,7 +65,10 @@ type BrainStallProfileSummary = {
 };
 
 const IDLE = "(idle)";
-const NON_CODE = new Set(["(root)", "(program)", "(garbage collector)", IDLE]);
+const GARBAGE_COLLECTOR = "(garbage collector)";
+const NON_CODE = new Set(["(root)", "(program)", GARBAGE_COLLECTOR, IDLE]);
+/** Frames that cannot name a freeze. Garbage collection can: a freeze that is mostly GC is named after it. */
+const NOT_A_CAUSE = new Set(["(root)", "(program)", IDLE]);
 
 function fileName(url: string): string {
   if (!url) return "";
@@ -112,16 +123,20 @@ function summarizeBrainStallProfile(profile: BrainCpuProfile): BrainStallProfile
   closeRun(samples.length);
   if (runs.length === 0) return null;
 
-  // Time per leaf node and self time per frame, inside the runs only.
+  // The freezes long enough to report name the cause; shorter runs only when
+  // there is no such freeze. Five 1.1 s calls must not outweigh one 3 s freeze.
+  const nearMisses = runs.filter((run) => run.ms >= BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS);
+  const blamed = nearMisses.length > 0 ? nearMisses : runs;
+  // Time per leaf node and self time per frame, inside those runs only.
   const leafUs = new Map<number, number>();
   const selfUs = new Map<string, number>();
-  for (const run of runs) {
+  for (const run of blamed) {
     for (let index = run.start; index < run.end; index += 1) {
       const id = samples[index]!;
       const us = Math.max(0, deltas[index + 1] ?? deltas[index] ?? 0);
       leafUs.set(id, (leafUs.get(id) ?? 0) + us);
       const node = byId.get(id);
-      if (node && !NON_CODE.has(node.callFrame.functionName)) {
+      if (node && !NOT_A_CAUSE.has(node.callFrame.functionName)) {
         const label = frameLabel(node.callFrame);
         selfUs.set(label, (selfUs.get(label) ?? 0) + us);
       }
@@ -131,7 +146,7 @@ function summarizeBrainStallProfile(profile: BrainCpuProfile): BrainStallProfile
   let heaviest: number | null = null;
   for (const [id, us] of leafUs) {
     const node = byId.get(id);
-    if (!node || NON_CODE.has(node.callFrame.functionName)) continue;
+    if (!node || NOT_A_CAUSE.has(node.callFrame.functionName)) continue;
     if (heaviest == null || us > (leafUs.get(heaviest) ?? 0)) heaviest = id;
   }
   const frames: CallFrame[] = [];
@@ -164,8 +179,11 @@ function summarizeBrainStallProfile(profile: BrainCpuProfile): BrainStallProfile
 }
 
 export type BrainStallProfiler = {
-  /** A freeze ended: profile the next minute, unless one ran within the hour. */
-  noteStall(): void;
+  /**
+   * The watchdog saw a freeze that started `startedAgoMs` ago: profile the
+   * next minute, unless one ran within the hour.
+   */
+  noteStall(stall: { startedAgoMs: number }): void;
   dispose(): void;
 };
 
@@ -181,8 +199,15 @@ export function createBrainStallProfiler(deps: {
   let timer: ReturnType<typeof setTimeout> | null = null;
   /** Freezes the watchdog saw while the profile ran. */
   let stallsInProfile = 0;
+  /** A finished profile that caught a freeze, waiting for the watchdog's late word on it. */
+  let awaitingStall: { summary: BrainStallProfileSummary; stoppedAt: number; timer: ReturnType<typeof setTimeout> } | null = null;
   let disposed = false;
   const reportedCauses = new Set<string>();
+
+  const stopAwaitingStall = () => {
+    if (awaitingStall) clearTimeout(awaitingStall.timer);
+    awaitingStall = null;
+  };
 
   const post = (target: inspector.Session, method: string, params?: Record<string, unknown>) =>
     new Promise<unknown>((resolve, reject) => {
@@ -206,10 +231,13 @@ export function createBrainStallProfiler(deps: {
     session = null;
   };
 
-  /** One Sentry issue for each cause, and only for a freeze long enough to be a near miss. */
-  const report = (summary: BrainStallProfileSummary, sawStall: boolean) => {
+  /** A freeze in the profile long enough to be a near miss. */
+  const reportable = (summary: BrainStallProfileSummary) => summary.longestRunMs >= BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS;
+
+  /** One Sentry issue for each cause. */
+  const report = (summary: BrainStallProfileSummary) => {
     const key = summary.fingerprint.join("|");
-    if (!sawStall || summary.longestRunMs < BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS || reportedCauses.has(key)) return;
+    if (reportedCauses.has(key)) return;
     reportedCauses.add(key);
     captureProblem(`Brain froze in ${summary.culprit ?? summary.leaf ?? "unknown code"}`, {
       level: "warning",
@@ -226,14 +254,10 @@ export function createBrainStallProfiler(deps: {
   };
 
   const finish = async (target: inspector.Session) => {
-    // A freeze that ended just now reaches `noteStall` one loop turn later
-    // (the watchdog logs it from `setImmediate`, which may be queued after
-    // this timer's own): wait two turns before counting.
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    const sawStall = stallsInProfile > 0;
     try {
       const stopped = (await post(target, "Profiler.stop")) as { profile?: BrainCpuProfile } | undefined;
+      // Read after the stop: a freeze noted while it ran is in the profile.
+      const sawStall = stallsInProfile > 0;
       const summary = stopped?.profile ? summarizeBrainStallProfile(stopped.profile) : null;
       if (!summary) {
         deps.log("brain.stall_profile", { caught: false, profiledMs: PROFILE_MS, stallsInProfile });
@@ -251,7 +275,17 @@ export function createBrainStallProfiler(deps: {
         stack: summary.stack.join(" < "),
         topFrames: summary.topFrames.map((entry) => `${entry.frame} ${entry.ms}ms`).join(" | "),
       });
-      report(summary, sawStall);
+      if (!reportable(summary) || disposed) return;
+      if (sawStall) {
+        report(summary);
+        return;
+      }
+      // A freeze that ended just before the stop reaches `noteStall` later
+      // (one loop turn, or seconds for a lag the watchdog held).
+      stopAwaitingStall();
+      const timer = setTimeout(stopAwaitingStall, LATE_STALL_WAIT_MS);
+      timer.unref?.();
+      awaitingStall = { summary, stoppedAt: performance.now(), timer };
     } catch (error) {
       logFailure(error);
     } finally {
@@ -260,10 +294,16 @@ export function createBrainStallProfiler(deps: {
   };
 
   return {
-    noteStall() {
+    noteStall({ startedAgoMs }) {
       if (disposed) return;
       if (session) {
         stallsInProfile += 1;
+        return;
+      }
+      if (awaitingStall && performance.now() - startedAgoMs <= awaitingStall.stoppedAt) {
+        const { summary } = awaitingStall;
+        stopAwaitingStall();
+        report(summary);
         return;
       }
       if (process.env.ADE_DISABLE_STALL_PROFILE === "1") return;
@@ -297,6 +337,7 @@ export function createBrainStallProfiler(deps: {
     },
     dispose() {
       disposed = true;
+      stopAwaitingStall();
       end();
     },
   };

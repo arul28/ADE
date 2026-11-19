@@ -19,10 +19,18 @@ export function ChatSlowLinkChip() {
     <StatusChip
       tone="info"
       icon={<WifiLow size={10} weight="bold" />}
-      label={`Slow connection to ${scope.machineName}`}
+      label={(
+        <>
+          {"Slow connection to "}
+          {/* A long machine name is cut, so the X stays in the chip; the hover has it in full. */}
+          <span className="inline-block max-w-[18ch] truncate align-bottom">{scope.machineName}</span>
+        </>
+      )}
       detail={typeof rttMs === "number" ? `${Math.round(rttMs)} ms` : undefined}
       tooltip={[
-        typeof rttMs === "number" ? `Round trip to ${scope.machineName}: ${Math.round(rttMs)} ms.` : null,
+        typeof rttMs === "number"
+          ? `Round trip to ${scope.machineName}: ${Math.round(rttMs)} ms.`
+          : `Slow connection to ${scope.machineName}.`,
         "Pictures load when you click them, and terminals show what you type before the machine echoes it.",
       ].filter(Boolean).join(" ")}
       onDismiss={() => closeSlowLinkChip(targetId)}

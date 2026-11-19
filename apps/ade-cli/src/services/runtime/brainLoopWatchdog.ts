@@ -748,7 +748,11 @@ export function startBrainLoopWatchdog(args: {
    * A stall the process came back from (not a suspension). Lets the host tell
    * devices that reconnect after it why they lost it.
    */
-  onStall?: (stall: { observedLagMs: number }) => void;
+  onStall?: (stall: {
+    observedLagMs: number;
+    /** How long ago the stall ended: a lag held for the worker's verdict reaches this seconds later. */
+    endedAgoMs: number;
+  }) => void;
 }): () => void {
   const recovered = recoverBrainLoopWatchdogBreadcrumb({
     runtimeDir: args.runtimeDir,
@@ -954,7 +958,10 @@ export function startBrainLoopWatchdog(args: {
       return;
     }
     try {
-      args.onStall?.({ observedLagMs: held.lagMs });
+      args.onStall?.({
+        observedLagMs: held.lagMs,
+        endedAgoMs: Math.max(0, monotonicMs() - held.observedAtMonotonicMs),
+      });
     } catch {
       // Reporting a stall must never break the watchdog.
     }
