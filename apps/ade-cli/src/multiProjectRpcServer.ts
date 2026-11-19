@@ -1,5 +1,5 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
-import { brainFreezeJustEndedMs } from "./services/runtime/brainLoopWatchdog";
+import { brainPingReply } from "./services/runtime/brainLoopWatchdog";
 import { CHAT_LAUNCH_KINDS } from "../../desktop/src/shared/types/chatLaunch";
 import { MACHINE_SCOPE_DOMAINS, MACHINE_SCOPE_PROJECT_ID, machineScopeActionAllowed, machineScopeRefusalMessage } from "../../desktop/src/shared/machineScope";
 import { readDeletedChatOnDisk } from "../../desktop/src/main/services/chat/deletedChats";
@@ -3129,8 +3129,8 @@ export function createMultiProjectRpcRequestHandler(
           // `chat.sendMessage` drops a repeat of a `clientSendId` it has seen.
           // A client retries a send of unknown outcome only against this.
           clientSendDedupe: true,
-          // `chat.typeIntoCli` takes `when: "now"` (a terminal's local line)
-          // and answers a repeat of a `clientMessageId` once, in both modes.
+          // `chat.typeIntoCli` takes `when: "now"` (older desktops' terminal
+          // local line) and answers a repeat of a `clientMessageId` once, in both modes.
           agentCliTypeNow: true,
           // `runtimeEvents.subscribe` and `stream_events` take `ptyDataIds`
           // (send only these terminals' output), and
@@ -3191,9 +3191,8 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "ping") {
-      // A freeze here is not the network: the client takes it off its round trip.
-      const hostFrozenMs = brainFreezeJustEndedMs();
-      return { pong: true, at: new Date().toISOString(), ...(hostFrozenMs > 0 ? { hostFrozenMs } : {}) };
+      // A freeze here is not the network: the reply says so (`hostFrozenMs`).
+      return brainPingReply(new Date().toISOString());
     }
 
     // Another machine's agents reach projects, `projects.list` and personal

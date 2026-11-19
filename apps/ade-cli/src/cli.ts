@@ -153,7 +153,7 @@ import { settingAgentAccess } from "../../desktop/src/shared/settingsAgentAccess
 import { setAdeCloudSkillVisible, setAgentSkillAccessRefresh } from "../../desktop/src/shared/agentSkillRoots";
 import { cloudAccessKey, rememberedCloudAccess, useCloudAccessMemory } from "../../desktop/src/main/services/adeCloud/cloudAccessMemory";
 import { OPEN_PLACES } from "../../desktop/src/shared/openPlaces";
-import { captureError, captureProblem, flushSentry } from "../../desktop/src/shared/sentry/capture";
+import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
 import { canonicalGitOriginUrl } from "../../desktop/src/main/services/github/githubSshAlias";
 import { isMachineScopedAdeAction } from "../../desktop/src/main/services/adeActions/actionPolicy";
 import { parseGithubRemoteUrl } from "../../desktop/src/shared/githubRemote";
@@ -774,12 +774,11 @@ import { RESTART_RESUME_MAX_AGE_MS } from "../../desktop/src/shared/chatAutoResu
 import type { UpdateRequestedBy } from "../../desktop/src/shared/types/remoteRuntime";
 import {
   currentBrainLoopWatchdogCommand,
-  BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS,
   readBrainLoopWatchdogLastWedge,
   resolveBrainLoopWatchdogThresholdMs,
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
-import { createBrainStallProfiler } from "./services/runtime/brainStallProfiler";
+import { createBrainStallProfiler, type BrainStallProfiler } from "./services/runtime/brainStallProfiler";
 import { recordHostStall } from "./services/runtime/hostStallRecord";
 import { installSyncFsCallTracker, isStallCapablePath } from "./services/runtime/syncFsCallTracker";
 import { expectedErrorKind } from "../../desktop/src/shared/expectedError";
@@ -30084,6 +30083,7 @@ async function runServe(
   }
   let serveStarted = false;
   let stopBrainLoopWatchdog: (() => void) | null = null;
+  let brainStallProfiler: BrainStallProfiler | null = null;
   let stopBrainHeartbeat: (() => void) | null = null;
   let stopBrainFreshnessMonitor: (() => void) | null = null;
   // Built much later than the watchdog that feeds it: the memory mitigation may
@@ -30287,29 +30287,11 @@ async function runServe(
   }
   const { memoryBreachForRestartCause, readResourcePressureRecord } = await import("./services/runtime/resourcePressureMonitor");
   restartCauseFacts.memoryPressure = memoryBreachForRestartCause(readResourcePressureRecord(layout.runtimeDir));
-  // After a freeze, a one-minute profile names the code behind it: a Sentry
-  // issue for each cause, at most one per cause in a brain's life.
-  const reportedStallCauses = new Set<string>();
-  const brainStallProfiler = createBrainStallProfiler({
+  // After a freeze, a one-minute profile names the code behind it (`brainStallProfiler.ts`).
+  brainStallProfiler = createBrainStallProfiler({
     log: (event, meta) => headlessProjectLogger.warn(event, meta),
-    onCulprit: (summary) => {
-      const key = summary.fingerprint.join("|");
-      if (summary.longestRunMs < BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS || reportedStallCauses.has(key)) return;
-      reportedStallCauses.add(key);
-      captureProblem(`Brain froze in ${summary.culprit ?? summary.leaf ?? "unknown code"}`, {
-        level: "warning",
-        fingerprint: summary.fingerprint,
-        tags: { stall_leaf: summary.leaf?.split(" ")[0] ?? null },
-        extra: {
-          frozenMs: summary.frozenMs,
-          runs: summary.runs,
-          longestRunMs: summary.longestRunMs,
-          stack: summary.stack,
-          topFrames: summary.topFrames,
-        },
-      });
-    },
   });
+  const stallProfiler = brainStallProfiler;
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     thresholdMs: freezeThresholdMs,
@@ -30321,7 +30303,7 @@ async function runServe(
     info: (event, meta) => headlessProjectLogger.info(event, meta),
     onStall: ({ observedLagMs }) => {
       recordHostStall({ durationMs: observedLagMs });
-      brainStallProfiler.noteStall();
+      stallProfiler.noteStall();
     },
     onRecovered: (breadcrumb) => {
       const wedgeAtMs = Date.parse(breadcrumb.ts);
@@ -30390,11 +30372,6 @@ async function runServe(
       void brainMemoryRestartGuard?.handle(sample);
     },
   });
-  const stopLoopWatchdogOnly = stopBrainLoopWatchdog;
-  stopBrainLoopWatchdog = () => {
-    stopLoopWatchdogOnly();
-    brainStallProfiler.dispose();
-  };
   // The loop watchdog above lives inside the process it guards, so it cannot
   // report a brain whose whole runtime is stuck. This heartbeat is the same
   // signal published where something OUTSIDE the process can read it: the
@@ -34434,6 +34411,7 @@ async function runServe(
     brainMemoryRestartGuard?.stop();
     stopBrainHeartbeat?.();
     stopBrainLoopWatchdog?.();
+    brainStallProfiler?.dispose();
   }
 }
 

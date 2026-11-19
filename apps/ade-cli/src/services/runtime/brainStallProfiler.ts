@@ -1,4 +1,6 @@
 import * as inspector from "node:inspector";
+import { captureProblem } from "../../../../desktop/src/shared/sentry/capture";
+import { BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS } from "./brainLoopWatchdog";
 
 /**
  * Names the code behind a brain freeze.
@@ -13,36 +15,39 @@ import * as inspector from "node:inspector";
  * stack while it waits, so both busy and waiting freezes are named.
  *
  * At most one profile an hour, and only after a freeze, so a healthy brain
- * never profiles.
+ * never profiles. A cause becomes a Sentry issue only when the watchdog saw
+ * another freeze during the profile, at most once per cause in a brain's life.
  */
 
-export const BRAIN_STALL_PROFILE_MS = 60_000;
-export const BRAIN_STALL_PROFILE_COOLDOWN_MS = 60 * 60_000;
+const PROFILE_MS = 60_000;
+const PROFILE_COOLDOWN_MS = 60 * 60_000;
 /** Sampling interval in microseconds; coarse on purpose, a freeze is seconds long. */
-export const BRAIN_STALL_PROFILE_SAMPLING_US = 2_000;
+const PROFILE_SAMPLING_US = 2_000;
 /** A run of busy samples at least this long is a freeze, not ordinary work. */
-export const BRAIN_STALL_MIN_RUN_MS = 1_000;
+const MIN_RUN_MS = 1_000;
 /** Frames kept from the heaviest stack, leaf first. */
 const STACK_FRAMES_KEPT = 12;
 const TOP_FRAMES_KEPT = 5;
 
 type CallFrame = { functionName: string; url: string; lineNumber: number; columnNumber: number };
 type ProfileNode = { id: number; callFrame: CallFrame; children?: number[] };
-export type BrainCpuProfile = {
+type BrainCpuProfile = {
   nodes: ProfileNode[];
   samples?: number[];
   timeDeltas?: number[];
 };
 
-export type BrainStallProfileSummary = {
+type BrainStallProfileSummary = {
   /** Time covered by long busy runs: the freezes the profile caught. */
   frozenMs: number;
   runs: number;
   longestRunMs: number;
   /** The deepest ADE frame of the heaviest stack: the code to fix. */
   culprit: string | null;
-  /** The function the culprit was inside: `all` (SQLite), `readFileSync`, `spawnSync`, or ADE code itself. */
+  /** The frame the culprit was inside: `all` (SQLite), `readFileSync`, `spawnSync`, or ADE code itself. */
   leaf: string | null;
+  /** The leaf's function name alone, for grouping in Sentry. */
+  leafName: string | null;
   /** The heaviest stack in the freezes, leaf first. */
   stack: string[];
   /** The frames with the most self time in the freezes. */
@@ -77,10 +82,7 @@ function stableName(name: string): boolean {
   return name.length >= 4 && name !== "(anonymous)";
 }
 
-export function summarizeBrainStallProfile(
-  profile: BrainCpuProfile,
-  minRunMs: number = BRAIN_STALL_MIN_RUN_MS,
-): BrainStallProfileSummary | null {
+function summarizeBrainStallProfile(profile: BrainCpuProfile): BrainStallProfileSummary | null {
   const samples = profile.samples ?? [];
   const deltas = profile.timeDeltas ?? [];
   if (samples.length === 0) return null;
@@ -93,7 +95,7 @@ export function summarizeBrainStallProfile(
   let start = -1;
   let runUs = 0;
   const closeRun = (end: number) => {
-    if (start >= 0 && runUs / 1_000 >= minRunMs) runs.push({ start, end, ms: runUs / 1_000 });
+    if (start >= 0 && runUs / 1_000 >= MIN_RUN_MS) runs.push({ start, end, ms: runUs / 1_000 });
     start = -1;
     runUs = 0;
   };
@@ -151,6 +153,7 @@ export function summarizeBrainStallProfile(
     longestRunMs: Math.round(Math.max(...runs.map((run) => run.ms))),
     culprit: culpritFrame ? frameLabel(culpritFrame) : null,
     leaf: leafFrame ? frameLabel(leafFrame) : null,
+    leafName: leafFrame ? leafFrame.functionName || "(anonymous)" : null,
     stack: frames.slice(0, STACK_FRAMES_KEPT).map(frameLabel),
     topFrames: [...selfUs]
       .sort((a, b) => b[1] - a[1])
@@ -160,40 +163,37 @@ export function summarizeBrainStallProfile(
   };
 }
 
-type InspectorSessionLike = {
-  connect(): void;
-  disconnect(): void;
-  post(method: string, params: Record<string, unknown> | undefined, callback: (error: Error | null, result?: unknown) => void): void;
-};
-
 export type BrainStallProfiler = {
   /** A freeze ended: profile the next minute, unless one ran within the hour. */
   noteStall(): void;
   dispose(): void;
 };
 
+/**
+ * `log` gets the summary as a log line (`brain.stall_profile`); the logger
+ * mirrors it to Sentry Logs.
+ */
 export function createBrainStallProfiler(deps: {
-  /** The summary as a log line (`brain.stall_profile`); the logger mirrors it to Sentry Logs. */
   log: (event: string, meta: Record<string, unknown>) => void;
-  /** One freeze cause the profile caught. The host turns it into a Sentry issue. */
-  onCulprit?: (summary: BrainStallProfileSummary) => void;
-  env?: NodeJS.ProcessEnv;
-  now?: () => number;
-  createSession?: () => InspectorSessionLike;
-  profileMs?: number;
 }): BrainStallProfiler {
-  const env = deps.env ?? process.env;
-  const now = deps.now ?? Date.now;
-  const profileMs = deps.profileMs ?? BRAIN_STALL_PROFILE_MS;
   let lastStartedAt: number | null = null;
-  let session: InspectorSessionLike | null = null;
+  let session: inspector.Session | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  /** Freezes the watchdog saw while the profile ran. */
+  let stallsInProfile = 0;
   let disposed = false;
+  const reportedCauses = new Set<string>();
 
-  const post = (target: InspectorSessionLike, method: string, params?: Record<string, unknown>) =>
+  const post = (target: inspector.Session, method: string, params?: Record<string, unknown>) =>
     new Promise<unknown>((resolve, reject) => {
       target.post(method, params, (error, result) => (error ? reject(error) : resolve(result)));
     });
+
+  const logFailure = (error: unknown) => {
+    // Stopping the brain disconnects the session under a profile in flight.
+    if (disposed) return;
+    deps.log("brain.stall_profile_failed", { error: error instanceof Error ? error.message : String(error) });
+  };
 
   const end = () => {
     if (timer) clearTimeout(timer);
@@ -206,17 +206,38 @@ export function createBrainStallProfiler(deps: {
     session = null;
   };
 
-  const finish = async (target: InspectorSessionLike) => {
+  /** One Sentry issue for each cause, and only for a freeze long enough to be a near miss. */
+  const report = (summary: BrainStallProfileSummary, sawStall: boolean) => {
+    const key = summary.fingerprint.join("|");
+    if (!sawStall || summary.longestRunMs < BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS || reportedCauses.has(key)) return;
+    reportedCauses.add(key);
+    captureProblem(`Brain froze in ${summary.culprit ?? summary.leaf ?? "unknown code"}`, {
+      level: "warning",
+      fingerprint: summary.fingerprint,
+      tags: { stall_leaf: summary.leafName },
+      extra: {
+        frozenMs: summary.frozenMs,
+        runs: summary.runs,
+        longestRunMs: summary.longestRunMs,
+        stack: summary.stack,
+        topFrames: summary.topFrames,
+      },
+    });
+  };
+
+  const finish = async (target: inspector.Session) => {
+    const sawStall = stallsInProfile > 0;
     try {
       const stopped = (await post(target, "Profiler.stop")) as { profile?: BrainCpuProfile } | undefined;
       const summary = stopped?.profile ? summarizeBrainStallProfile(stopped.profile) : null;
       if (!summary) {
-        deps.log("brain.stall_profile", { caught: false, profiledMs: profileMs });
+        deps.log("brain.stall_profile", { caught: false, profiledMs: PROFILE_MS, stallsInProfile });
         return;
       }
       deps.log("brain.stall_profile", {
         caught: true,
-        profiledMs: profileMs,
+        profiledMs: PROFILE_MS,
+        stallsInProfile,
         frozenMs: summary.frozenMs,
         runs: summary.runs,
         longestRunMs: summary.longestRunMs,
@@ -225,9 +246,9 @@ export function createBrainStallProfiler(deps: {
         stack: summary.stack.join(" < "),
         topFrames: summary.topFrames.map((entry) => `${entry.frame} ${entry.ms}ms`).join(" | "),
       });
-      deps.onCulprit?.(summary);
+      report(summary, sawStall);
     } catch (error) {
-      deps.log("brain.stall_profile_failed", { error: error instanceof Error ? error.message : String(error) });
+      logFailure(error);
     } finally {
       if (session === target) end();
     }
@@ -235,32 +256,37 @@ export function createBrainStallProfiler(deps: {
 
   return {
     noteStall() {
-      if (disposed || session) return;
-      if (env.ADE_DISABLE_STALL_PROFILE === "1") return;
-      const startedAt = now();
-      if (lastStartedAt != null && startedAt - lastStartedAt < BRAIN_STALL_PROFILE_COOLDOWN_MS) return;
+      if (disposed) return;
+      if (session) {
+        stallsInProfile += 1;
+        return;
+      }
+      if (process.env.ADE_DISABLE_STALL_PROFILE === "1") return;
+      const startedAt = Date.now();
+      if (lastStartedAt != null && startedAt - lastStartedAt < PROFILE_COOLDOWN_MS) return;
       lastStartedAt = startedAt;
-      let target: InspectorSessionLike;
+      stallsInProfile = 0;
+      let target: inspector.Session;
       try {
-        target = deps.createSession ? deps.createSession() : new inspector.Session();
+        target = new inspector.Session();
         target.connect();
       } catch (error) {
-        deps.log("brain.stall_profile_failed", { error: error instanceof Error ? error.message : String(error) });
+        logFailure(error);
         return;
       }
       session = target;
       void (async () => {
         try {
           await post(target, "Profiler.enable");
-          await post(target, "Profiler.setSamplingInterval", { interval: BRAIN_STALL_PROFILE_SAMPLING_US });
+          await post(target, "Profiler.setSamplingInterval", { interval: PROFILE_SAMPLING_US });
           await post(target, "Profiler.start");
         } catch (error) {
-          deps.log("brain.stall_profile_failed", { error: error instanceof Error ? error.message : String(error) });
+          logFailure(error);
           if (session === target) end();
           return;
         }
         if (disposed || session !== target) return;
-        timer = setTimeout(() => void finish(target), profileMs);
+        timer = setTimeout(() => void finish(target), PROFILE_MS);
         timer.unref?.();
       })();
     },

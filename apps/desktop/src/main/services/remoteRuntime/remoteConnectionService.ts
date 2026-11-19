@@ -49,6 +49,7 @@ import type {
   RemoteRuntimeStreamEventsResult,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeTarget,
+  RuntimePingReply,
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
 } from "../../../shared/types";
@@ -2371,13 +2372,11 @@ export class RemoteConnectionService {
               timeoutMs: options.pingTimeoutMs,
             },
           );
-          // A machine whose ADE froze answers late, and says for how long: that
-          // wait is not the network, so it does not count toward a slow link.
-          const hostFrozenMs = Number((pong as { hostFrozenMs?: unknown } | null | undefined)?.hostFrozenMs);
-          const latencyMs = Math.max(
-            0,
-            Date.now() - startedAt - (Number.isFinite(hostFrozenMs) && hostFrozenMs > 0 ? hostFrozenMs : 0),
-          );
+          // A machine whose ADE froze answers late, and says so: that round
+          // trip measured the freeze, not the network, so it is not a sample.
+          const hostFrozenMs = Number((pong as Partial<RuntimePingReply> | null | undefined)?.hostFrozenMs);
+          if (Number.isFinite(hostFrozenMs) && hostFrozenMs > 0) continue;
+          const latencyMs = Date.now() - startedAt;
           const currentRoute = this.statusById.get(target.id)?.route;
           if (currentRoute) {
             this.mergeStatus(target.id, {

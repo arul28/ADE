@@ -77,18 +77,15 @@ export type ChatWaitRegistryDeps = {
    */
   wakeDeferred?: (sessionId: string) => boolean;
   /**
-   * For a text queued for a tracked agent CLI (a send wait on the CLI
-   * itself): true while the CLI itself reported that it waits on the person
-   * (a permission menu or a question, where the text's Enter would pick an
-   * option). Null for anything that is not a tracked agent CLI.
-   *
-   * Such a text waits only for this and `wakeDeferred`, the checks an
-   * immediate send makes, and never for the CLI's Work-row status: a hand ADE
-   * raised over an idle prompt ("Waiting for input: …"), or a guessed
-   * "running" left by recent output, held a queued text for good while the
-   * person's later texts queued behind it.
+   * Whether this session is a tracked agent CLI. A text queued for it
+   * (`isQueuedCliTextWaiter`) waits only for `wakeDeferred`, the check an
+   * immediate send makes (a turn running, a menu or question the CLI
+   * reported), and never for the CLI's Work-row status: a hand ADE raised
+   * over an idle prompt ("Waiting for input: …"), or a guessed "running" left
+   * by recent output, held a queued text for good while the person's later
+   * texts queued behind it.
    */
-  cliTextWaitsOnPerson?: (sessionId: string) => boolean | null;
+  isAgentCliSession?: (sessionId: string) => boolean;
   /**
    * Whether another live brain runs this chat. Waiters live in the shared
    * project database, so every brain on it loads them; only the brain that
@@ -120,6 +117,27 @@ export type ChatWaitRegistryDeps = {
   callerIsLiveHere?: (sessionId: string) => boolean;
 };
 
+/** After a CLI's turn ends, its prompt settles within a few seconds (`AGENT_CLI_READY_QUIET_MS` in `ptyService.ts`). */
+const CLI_TURN_END_RECHECK_MS = [800, 2_500] as const;
+
+/**
+ * A text queued for a session to type when it is free: a send wait on that
+ * session itself, for "idle" (`armQueuedAgentCliSend` in `agentChatService.ts`).
+ */
+export function isQueuedCliTextWaiter(waiter: ChatWaiter): waiter is ChatWaiter & { action: { kind: "send"; sessionId: string } } {
+  return waiter.action.kind === "send"
+    && waiter.waitFor === "idle"
+    && waiter.targetSessionIds.length === 1
+    && waiter.targetSessionIds[0] === waiter.action.sessionId;
+}
+
+function waiterMatched(waiter: ChatWaiter, results: Array<{ matches: boolean }>): boolean {
+  if (waiter.matchedWhileDeferred === true) return true;
+  return waiter.mode === "all"
+    ? results.every((result) => result.matches)
+    : results.some((result) => result.matches);
+}
+
 export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
   const { logger } = deps;
   const listeners = new Map<string, Set<() => void>>();
@@ -136,6 +154,7 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
   let recheck = false;
   let backstop: ReturnType<typeof setInterval> | null = null;
   let disposed = false;
+  const turnEndTimers = new Set<ReturnType<typeof setTimeout>>();
 
   const persist = (): void => {
     try {
@@ -296,26 +315,17 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
       const deliverTo = waiter.action.kind === "send" ? waiter.action.sessionId : waiter.callerSessionId;
       if (deliverTo && deps.getMovedAwayTarget?.(deliverTo)) continue;
       if (deliverTo && deps.ownedByAnotherBrain(deliverTo)) continue;
-      // A text queued for a tracked agent CLI is read afresh every check (see
-      // `cliTextWaitsOnPerson`): no target read, and no match kept from an
-      // earlier check, so a menu the CLI opened since then still holds it.
-      const cliTextWaits = waiter.action.kind === "send"
-        && waiter.targetSessionIds.length === 1
-        && waiter.targetSessionIds[0] === waiter.action.sessionId
-        ? deps.cliTextWaitsOnPerson?.(waiter.action.sessionId) ?? null
-        : null;
-      const results = cliTextWaits == null
-        ? await Promise.all(waiter.targetSessionIds.map((target) => readTarget(target, waiter)))
-        : [];
-      const matched = cliTextWaits != null
-        ? !cliTextWaits
-        : waiter.matchedWhileDeferred === true || (waiter.mode === "all"
-          ? results.every((result) => result.matches)
-          : results.some((result) => result.matches));
+      // A text queued for a tracked agent CLI is always due (see
+      // `isAgentCliSession`): only `wakeDeferred` below holds it.
+      const cliText = isQueuedCliTextWaiter(waiter) && deps.isAgentCliSession?.(waiter.action.sessionId) === true;
+      const results = cliText
+        ? []
+        : await Promise.all(waiter.targetSessionIds.map((target) => readTarget(target, waiter)));
+      const matched = cliText || waiterMatched(waiter, results);
       const expired = Date.parse(waiter.expiresAt) <= nowMs;
       const deferred = Boolean(deliverTo && deps.wakeDeferred?.(deliverTo));
       if (deferred && (matched || expired)) {
-        if (matched && cliTextWaits == null && !waiter.matchedWhileDeferred) {
+        if (matched && !cliText && !waiter.matchedWhileDeferred) {
           waiter.matchedWhileDeferred = true;
           persist();
         }
@@ -435,15 +445,28 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
     signal,
 
     /**
-     * A tracked agent CLI's turn ended, so it may take what is held for it
-     * now: re-check the waiters on it and those that deliver to it (a wake for
-     * it, a text queued for it). Otherwise only the backstop looks again.
+     * A tracked agent CLI's turn ended, so it may take what is held for it:
+     * re-check the waiters on it and those that deliver to it (a wake for it,
+     * a text queued for it) now, and again once its prompt has settled, the
+     * moment `wakeDeferred` can first say no. Otherwise only the backstop
+     * looks again, up to 15 s later.
      */
     signalCliTurnEnded(sessionId: string): void {
-      signal(sessionId);
-      if (waiters.some((waiter) =>
-        waiter.callerSessionId === sessionId
-        || (waiter.action.kind === "send" && waiter.action.sessionId === sessionId))) scheduleCheck();
+      const recheck = () => {
+        signal(sessionId);
+        if (waiters.some((waiter) =>
+          waiter.callerSessionId === sessionId
+          || (waiter.action.kind === "send" && waiter.action.sessionId === sessionId))) scheduleCheck();
+      };
+      recheck();
+      for (const delayMs of CLI_TURN_END_RECHECK_MS) {
+        const timer = setTimeout(() => {
+          turnEndTimers.delete(timer);
+          if (!disposed) recheck();
+        }, delayMs);
+        timer.unref?.();
+        turnEndTimers.add(timer);
+      }
     },
 
     /** Resolve once `sessionId`'s summary matches, the budget runs out, or it is gone. */
@@ -565,6 +588,8 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
       disposed = true;
       if (backstop) clearInterval(backstop);
       if (checkTimer) clearTimeout(checkTimer);
+      for (const timer of turnEndTimers) clearTimeout(timer);
+      turnEndTimers.clear();
       backstop = null;
       checkTimer = null;
     },

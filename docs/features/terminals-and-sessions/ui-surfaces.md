@@ -354,7 +354,7 @@ hidden. Plain shells and untracked CLIs get no box. The terminal stays usable.
   CLI typing path (`writeAgentCliInput`: clear the line, paste, submit).
 - `@` opens `ChatCommandMenu`: a file inserts `@path`; models, chats, lanes,
   terminals, PRs, machines and MCP servers insert the chat token, and the host
-  (`typeIntoAgentCliNow` → `expandChatMentionsForSend`) adds the same
+  (`agentCliTyping.ts` → `applyChatMentionExpansion`) adds the same
   `<ade-mention>` block a chat send does (visible in the scrollback). `/`
   lists the provider's commands.
 - Up arrow on the first line recalls the last 50 sends; the draft is saved per
@@ -364,8 +364,17 @@ Every send goes through a queue (`cliInputBoxState.ts`) outside the box, kept
 in local storage, with a runner only while something waits. Each send calls
 `agentChat.typeIntoCli` (`chat.typeIntoCli`) on the CLI's machine
 (`runtimePin`). The host types only at a free prompt
-(`typeIntoAgentCliWhenFree`, through `deliverWakeToSession`); a busy CLI
-answers `deferred`.
+(`typeIntoAgentCliWhenFree` in `agentCliTyping.ts`, through
+`deliverWakeToSession`); a busy CLI answers `deferred`. A free prompt is one
+`canTakeTypedMessage` accepts: never while the CLI reported a menu or a
+question (its Enter would pick an option).
+
+ADE reads the free prompt of Claude, Codex, Cursor, Droid, OpenCode, Pi and
+Muse only (`agentCliReadsFreePrompt` in `shared/cliLaunch.ts`). For Qwen,
+Kimi, Grok, Copilot, Antigravity and Devin, the host types each text at once,
+as the person's own keys would be, and answers `typedAtOnce`. The box never
+shows these CLIs as busy, and its placeholder says that Enter types at once.
+The same rule applies to wakes, scheduled prompts and `ade chat send`.
 
 | State | What it means | What happens next |
 |---|---|---|

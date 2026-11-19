@@ -157,6 +157,7 @@ import {
   type TrackedCliPresetLaunch,
   type TrackedCliUserMcp,
   type WindowsShellLaunchMode,
+  agentCliReadsFreePrompt,
   withClaudePluginInCommandLine,
   withClaudeSessionIdInCommandLine,
   withClaudeSettingsInCommandLine,
@@ -409,11 +410,11 @@ const AGENT_CLI_LINE_SUBMIT_KEY = "\r";
  */
 const AGENT_CLI_SUBMIT_DELAY_MS = 25;
 /**
- * Enter after a multi-line paste from the local line, for every CLI but
- * Codex (its own 180 ms): a paste can take the CLI longer to take in than
+ * Enter after a multi-line paste typed at once (`typeLineIntoAgentCli`), for
+ * every CLI but Codex (its own 180 ms): a paste can take the CLI longer to take in than
  * typed text, and an Enter that comes too soon can land in the paste.
  */
-const LOCAL_LINE_PASTE_SUBMIT_DELAY_MS = 100;
+const AGENT_CLI_PASTE_SUBMIT_DELAY_MS = 100;
 const CODEX_CLI_PASTE_SUBMIT_DELAY_MS = 180;
 const CURSOR_CLI_PASTE_SUBMIT_DELAY_MS = 500;
 const AGENT_CLI_READY_TIMEOUT_MS = 20_000;
@@ -6216,6 +6217,8 @@ export function createPtyService({
   };
 
   const providerReadyMarkerVisible = (provider: TerminalResumeProvider, text: string): boolean => {
+    // Only the CLIs listed in `agentCliReadsFreePrompt` have a check below.
+    if (!agentCliReadsFreePrompt(provider)) return false;
     const normalized = text.toLowerCase();
     if (provider === "codex") {
       const codexText = codexReadyRegion(text);
@@ -7071,9 +7074,10 @@ export function createPtyService({
   });
 
   /**
-   * A line the person wrote in a terminal's local line (slow links): its text
-   * into the CLI's input, then Enter after the CLI's settle delay. Both writes
-   * happen here, so the link's jitter cannot put the Enter inside the paste.
+   * A line typed at once (`chat.typeIntoCli` with `when: "now"`, from older
+   * desktops): its text into the CLI's input, then Enter after the CLI's
+   * settle delay. Both writes happen here, so the link's jitter cannot put
+   * the Enter inside the paste.
    * No clear keys: the CLI's input may hold text typed before, and the line
    * adds to it the way typing would. Lines to one terminal go in order. False
    * when the session has no live terminal. A repeat of one line is dropped by
@@ -7112,7 +7116,7 @@ export function createPtyService({
         if (!written) return false;
         await delay(provider === "codex"
           ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS
-          : needsPaste ? LOCAL_LINE_PASTE_SUBMIT_DELAY_MS : AGENT_CLI_SUBMIT_DELAY_MS);
+          : needsPaste ? AGENT_CLI_PASTE_SUBMIT_DELAY_MS : AGENT_CLI_SUBMIT_DELAY_MS);
         if (entry.disposed) return false;
         return service.write({ ptyId, data: AGENT_CLI_LINE_SUBMIT_KEY, inputOrigin });
       });
@@ -9055,18 +9059,27 @@ export function createPtyService({
      * over while only its background agents still run. For typing only:
      * a relaunch (restart, model or account change) must keep the stricter
      * check, or it would end those agents.
+     *
+     * Never while the CLI reported a menu or question (Claude's hooks,
+     * Codex's OSC 7501): the Enter after the text would pick an option. A CLI
+     * whose free prompt ADE cannot read (`agentCliReadsFreePrompt`) always
+     * takes it, as the person's own keys would be typed; waiting for a prompt
+     * ADE never sees would hold the text for good.
      */
     canTakeTypedMessage(sessionId: string): boolean {
-      if (service.canAcceptScheduledTurn(sessionId)) return true;
       const normalizedSessionId = sessionId.trim();
+      const live = normalizedSessionId ? liveEntryBySessionId(normalizedSessionId) : undefined;
+      const turn = live?.[1].cliTurn;
+      if (turn && isExactCliTurnSource(turn.source) && turn.phase === "needs-input") return false;
+      if (service.canAcceptScheduledTurn(normalizedSessionId)) return true;
       const session = normalizedSessionId ? sessionService.get(normalizedSessionId) : null;
       if (!session?.tracked || !isTrackedAgentCliToolType(session.toolType)) return false;
       if (isOwnedByLivePeerRuntime(session)) return false;
-      const live = liveEntryBySessionId(normalizedSessionId);
       if (!live) return false;
       const provider = session.resumeMetadata?.provider
         ?? providerFromTool(session.toolType ?? live[1].toolTypeHint);
       if (provider == null) return false;
+      if (!agentCliReadsFreePrompt(provider)) return true;
       return (agentCliInputReadiness(normalizedSessionId, provider)?.markerVisible ?? false)
         && agentCliMainTurnEndedAndSettled(live[1]);
     },

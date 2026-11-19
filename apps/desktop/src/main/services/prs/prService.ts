@@ -1433,6 +1433,8 @@ export function createPrService({
    * its provenance back), just not in live lane state.
    */
   const LIVE_PR_ROWS = "detached_at is null";
+  /** One GitHub PR's key in `pull_requests` and `github_pr_projections`: owner, repo and number. */
+  const GITHUB_PR_KEY_SQL = "lower(repo_owner) || '/' || lower(repo_name) || '#' || github_pr_number";
   let mediaResolver: ReturnType<typeof createGithubMediaResolver> | null = null;
   const chatLinks = createPrChatLinkStore({
     db,
@@ -2316,7 +2318,7 @@ export function createPrService({
     const mappedKeys = new Set(
       db.all<{ key: string }>(
         `
-          select lower(repo_owner) || '/' || lower(repo_name) || '#' || github_pr_number as key
+          select ${GITHUB_PR_KEY_SQL} as key
             from pull_requests
            -- A detached row no longer speaks for this PR, so it must not
            -- suppress the projection fallback — otherwise a lane recreated on
@@ -2329,7 +2331,7 @@ export function createPrService({
     return db.all<GitHubPrProjectionRow & { mapped_key: string }>(
       `
         select ${GITHUB_PROJECTION_COLUMNS},
-               lower(repo_owner) || '/' || lower(repo_name) || '#' || github_pr_number as mapped_key
+               ${GITHUB_PR_KEY_SQL} as mapped_key
           from github_pr_projections
          where project_id = ?
          order by updated_at desc, created_at desc

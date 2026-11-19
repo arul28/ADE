@@ -151,6 +151,11 @@ function startSharedSnapshot(): () => void {
       sharedSnapshot = next;
       noteLinkReadiness(next);
     }
+    for (const targetId of slowLinkChipClosed) {
+      if (!connectionLinkSlow(sharedSnapshot?.connections.find((entry) => entry.target.id === targetId))) {
+        slowLinkChipClosed.delete(targetId);
+      }
+    }
     publishSharedSnapshot(true);
   };
   void bridge.getConnectionSnapshot().then(apply, () => apply(null));
@@ -339,6 +344,10 @@ export function remoteConnectionMarkNow(targetId: string | null): string {
   return String(connection.connectedAt ?? "");
 }
 
+function connectionLinkSlow(connection: RemoteRuntimeConnectionStatus | undefined): boolean {
+  return connection?.state === "connected" && connection.slowLink?.active === true;
+}
+
 /**
  * Whether slow-connection mode is on for the connection to this machine
  * (`shared/slowLinkMode.ts`). Same shared feed; null target: false, no feed.
@@ -350,11 +359,40 @@ export function useSlowLinkActive(targetId: string | null): boolean {
   );
   return useSyncExternalStore(
     subscribe,
-    () => {
-      if (!targetId) return false;
-      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
-      return connection?.state === "connected" && connection.slowLink?.active === true;
-    },
+    () => (targetId ? connectionLinkSlow(sharedSnapshot?.connections.find((entry) => entry.target.id === targetId)) : false),
+    () => false,
+  );
+}
+
+/**
+ * Machines whose slow-connection chip the person closed. It stays closed in
+ * every chat on that machine until the link is good again (the shared feed
+ * clears it); the next slow spell shows it again.
+ */
+const slowLinkChipClosed = new Set<string>();
+
+/** Close the slow-connection chip for this machine (`useSlowLinkChipShown`). */
+export function closeSlowLinkChip(targetId: string): void {
+  if (slowLinkChipClosed.has(targetId)) return;
+  slowLinkChipClosed.add(targetId);
+  for (const listener of sharedSnapshotListeners) listener();
+}
+
+/**
+ * `useSlowLinkActive`, unless the person closed the chip during this slow
+ * spell (`closeSlowLinkChip`). Same shared feed; null target: false.
+ */
+export function useSlowLinkChipShown(targetId: string | null): boolean {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => (targetId
+      ? !slowLinkChipClosed.has(targetId)
+        && connectionLinkSlow(sharedSnapshot?.connections.find((entry) => entry.target.id === targetId))
+      : false),
     () => false,
   );
 }
@@ -388,26 +426,10 @@ function connectionLinkFar(connection: RemoteRuntimeConnectionStatus | undefined
 }
 
 /**
- * Whether typed text in this machine's terminals shows at once: a far link
- * (`FAR_RTT_ON_MS`, with its own hysteresis) or slow-connection mode. The
- * machine's "Off" setting turns it off. Same shared feed; null target: false.
- */
-export function useFarLinkActive(targetId: string | null): boolean {
-  const subscribe = useMemo(
-    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
-    [targetId],
-  );
-  return useSyncExternalStore(
-    subscribe,
-    () => (targetId ? connectionLinkFar(sharedSnapshot?.connections.find((entry) => entry.target.id === targetId)) : false),
-    () => false,
-  );
-}
-
-/**
  * The round trip to this machine when its terminals should guess typed
  * characters (`terminalTypeAhead.ts`), else null: the link is far
- * (`useFarLinkActive`). Same shared feed; null target: null.
+ * (`connectionLinkFar`; the machine's "Off" setting turns it off). Same
+ * shared feed; null target: null.
  */
 export function useTypeAheadRoundTripMs(targetId: string | null): number | null {
   const subscribe = useMemo(

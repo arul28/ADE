@@ -9,6 +9,7 @@ import type {
   PtySendToSessionArgs,
   TerminalResumeLaunchConfig,
   TerminalResumeMetadata,
+  TerminalResumeProvider,
   TerminalSessionSummary,
   TerminalToolType,
   WindowsShellKind,
@@ -3201,7 +3202,7 @@ const FREE_PROMPT_PROVIDERS: ReadonlySet<string> = new Set([
   "opencode",
   "pi",
   "muse",
-]);
+] as const satisfies readonly TerminalResumeProvider[]);
 
 export function agentCliReadsFreePrompt(provider: string | null | undefined): boolean {
   return provider != null && FREE_PROMPT_PROVIDERS.has(provider);

@@ -424,8 +424,8 @@ function shouldRetryRemoteRuntimeAction(
  * A send with a client id that the brain answers once: a chat send to a brain
  * that drops a repeat of an id it has seen (`clientSendDedupe`), or text for an
  * agent CLI (`chat.typeIntoCli` with a `clientMessageId`) to a brain that
- * advertises `agentCliTypeNow`, whose one answer ledger covers both the input
- * box and the local line. Sending it again is safe: the brain answers a repeat
+ * advertises `agentCliTypeNow`, whose one answer ledger covers both `when`
+ * modes. Sending it again is safe: the brain answers a repeat
  * with the first send's result and types or writes no second copy. So a send
  * whose answer a dropped link lost goes out again after the reconnect, instead
  * of ending as "outcome unknown" and a second copy from the person's retry.

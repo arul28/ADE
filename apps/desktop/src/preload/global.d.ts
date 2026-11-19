@@ -2873,9 +2873,8 @@ declare global {
         ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
         send: (args: AgentChatSendArgs, pin: OpenProjectBinding) => Promise<void>;
         /**
-         * Text for a running agent CLI (`AgentCliTypeArgs`): typed only at a
-         * free prompt, or at once with `when: "now"` (sent by older desktops'
-         * terminal local line; this client no longer sends it).
+         * Text for a running agent CLI (`AgentCliTypeArgs`) from the Work
+         * input box: typed only at a free prompt.
          */
         typeIntoCli: (
           args: AgentCliTypeArgs,

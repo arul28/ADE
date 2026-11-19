@@ -668,14 +668,14 @@ prompt on the resume command when it can.
 
 `typeLineIntoAgentCli({ sessionId, text, inputOrigin })` answers
 `chat.typeIntoCli` with `when: "now"`. Older desktops sent it from a terminal's
-slow-link local line; the current desktop has no caller, and the host keeps it
-(with the `agentCliTypeNow` capability) for those clients. It writes the line into the CLI's input and then presses Enter, with no line
-clear, no readiness wait and no `@` expansion, because it stands in for the
-person's own keys:
+slow-link local line. The current desktop has no caller, and the host keeps it
+(with the `agentCliTypeNow` capability) for those clients. It writes the line
+into the CLI's input and then presses Enter, with no line clear, no readiness
+wait and no `@` expansion, because it stands in for the person's own keys:
 
 - CR/LF is normalized to a line feed and an ESC in the text becomes `␛`, so
   text never acts as a key. A multi-line line goes as one bracketed paste (and
-  gets `LOCAL_LINE_PASTE_SUBMIT_DELAY_MS = 100 ms` before Enter; Codex keeps
+  gets `AGENT_CLI_PASTE_SUBMIT_DELAY_MS = 100 ms` before Enter; Codex keeps
   its own 180 ms); a single line is typed as text.
 - Lines to one session run in order: the work joins the same
   `submitInputFlights` chain `sendToSession` uses, so such a line and an
