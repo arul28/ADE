@@ -32,6 +32,15 @@ const LEFT_OFF_KEY = "mcpAccountLeftOff";
 const OFF_MEMBERS_KEY = "off";
 
 /**
+ * A stored key list. A value that is not an array of strings (an older or a
+ * broken write) reads as an empty list, so the next write replaces it instead
+ * of every call failing on it.
+ */
+function storedKeys(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((key): key is string => typeof key === "string") : [];
+}
+
+/**
  * The `mcp-account:<accountKey>` object: the machines (relay keys) serving an
  * account, most recent registration last, and the one that last answered.
  */
@@ -40,9 +49,10 @@ export async function handleMcpAccount(
   request: Request,
   pathname: string,
 ): Promise<Response> {
-  const members = (await storage.get<string[]>("members")) ?? [];
-  const front = (await storage.get<string>("front")) ?? null;
-  const off = (await storage.get<string[]>(OFF_MEMBERS_KEY)) ?? [];
+  const members = storedKeys(await storage.get("members"));
+  const storedFront = await storage.get("front");
+  const front = typeof storedFront === "string" ? storedFront : null;
+  const off = storedKeys(await storage.get(OFF_MEMBERS_KEY));
   if (pathname === MCP_ACCOUNT_PATH && request.method === "GET") {
     return jsonResponse(
       { members, front, ...(off.length ? { off } : {}) } satisfies McpAccountState,
@@ -160,7 +170,7 @@ export async function reconcileMcpAccount(
 ): Promise<McpAccountReconcile> {
   const { machineKey, desired, joined, stale } = args;
   const stored = (await storage.get<string>(JOINED_KEY)) ?? null;
-  const previouslyLeaving = (await storage.get<string[]>(LEAVING_KEY)) ?? [];
+  const previouslyLeaving = storedKeys(await storage.get(LEAVING_KEY));
   // The account this machine is remembered as "off" on. Joining any account
   // other than that one tells the old one it moved on, so its address stops
   // saying "off" and says it is no longer served.
