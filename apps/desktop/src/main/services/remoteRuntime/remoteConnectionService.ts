@@ -1988,13 +1988,15 @@ export class RemoteConnectionService {
     if (projectId !== MACHINE_SCOPE_PROJECT_ID) return null;
     const capabilities = this.statusById.get(targetId)?.capabilities;
     // A brain of the route's first version answers it, but not a domain
-    // added since (Keep awake, Android, Passwords).
-    const older = capabilities
+    // added since (Keep awake, Android, Passwords), nor an action added to a
+    // domain it answers (usage.getUsageSnapshot): only its refusal tells.
+    const older = (capabilities
       ? capabilities.machineScope !== true || !machineScopeDomainAnswered(capabilities.machineScopeDomains, domain)
-      : isMachineScopeOlderBrainError(error);
+      : false) || (error !== undefined && isMachineScopeOlderBrainError(error));
     if (!older) return null;
     const known = this.registry.get(targetId);
-    return new Error(machineScopeUpdateMessage(known?.name?.trim() || known?.hostname?.trim() || "That computer"));
+    // The person updates ADE on that computer: an answer, not an ADE fault.
+    return new AdeExpectedError(machineScopeUpdateMessage(known?.name?.trim() || known?.hostname?.trim() || "That computer"), "environment");
   }
 
   /**

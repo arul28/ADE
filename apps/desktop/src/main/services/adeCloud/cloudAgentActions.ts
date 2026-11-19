@@ -197,10 +197,15 @@ function madeByChat(approval: CloudApproval): string | null {
   return approval.by === "agent" ? approval.chatSessionId : null;
 }
 
-export class CloudDeclined extends Error {
+/**
+ * An agent's ask ADE turned down (no chat to ask in, plan mode, the person
+ * said no). The agent reads why and acts on it: an answer, not a fault, so it
+ * stays out of Sentry issues (`shared/expectedError.ts`).
+ */
+export class CloudDeclined extends AdeExpectedError {
   readonly code = "cloud_declined";
   constructor(message: string) {
-    super(message);
+    super(message, "user");
     this.name = "CloudDeclined";
   }
 }

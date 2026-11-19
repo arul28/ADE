@@ -78,7 +78,12 @@ export function registerAdeCloudReadIpc(args: {
       // No answer (offline, a network still coming up at launch) or the
       // server busy: the reader tries again, and it is not an ADE fault.
       const noAnswer = !(error instanceof CloudApiError) || error.status === 0 || error.status === 429 || error.status >= 502;
-      throw noAnswer ? markExpected(failure, "network") : failure;
+      if (noAnswer) throw markExpected(failure, "network");
+      // A sign-in that lapsed: the account token would not refresh (the
+      // client refuses before any request) or the server turned it down.
+      // The person signs in again; nothing in ADE is broken.
+      if (error instanceof CloudApiError && error.status === 401) throw markExpected(failure, "user");
+      throw failure;
     }
   };
 
