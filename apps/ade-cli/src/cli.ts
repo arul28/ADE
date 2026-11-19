@@ -3420,7 +3420,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
       send / message   Typed at the CLI's prompt. Busy: queued as a durable wait
                        that types it at the next free prompt (its id cancels it:
                        ade chat wait --cancel <id>); --interrupt presses the
-                       CLI's cancel key first. Text only: no images.
+                       CLI's cancel key first. Text only: no images. Qwen, Kimi,
+                       Grok, Copilot, Antigravity and Devin: typed at once (ADE
+                       cannot tell when their prompt is free).
       steer            Typed now, even mid-turn; the CLI decides what to do with it.
       interrupt        Presses the provider's cancel key (Esc; Esc twice for
                        OpenCode; Ctrl-C for Cursor). The process keeps running.

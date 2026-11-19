@@ -1285,14 +1285,20 @@ of the last three round trips are 400 ms or more, or two connections dropped
 within five minutes. It turns off only after five round trips under 250 ms with
 no drop in five minutes, so a link near the line does not flicker. The samples
 are the dial's latency and the 30 s maintenance ping; the drops are connection
-evictions that are not a hand-over to another ADE. The result rides the
+evictions that are not a hand-over to another ADE. A ping that a freeze of the
+machine's brain delayed is not a sample: the brain's reply then carries
+`hostFrozenMs` (`brainPingReply`, `RuntimePingReply`), because that round trip
+measured the freeze, not the network. The result rides the
 existing connection snapshot as `slowLink: { active, reason, rttMs, far }` — no new
 poll, timer or IPC call. The person's own setting for the machine wins: **Slow
 connection mode** in the machine's **Edit** panel is **Automatic** (default),
 **Always on** or **Off**, saved on this computer's target record
 (`remoteRuntime.setSlowLinkMode(id, mode)`), so it applies per machine and per
-computer. With the mode on, a chat on that machine shows `Slow connection · <rtt>
-ms` in the composer's status strip, and the machine row reads `<route> · <rtt>
+computer. With the mode on, a chat on that machine shows `Slow connection to
+<machine> · <rtt> ms` in the composer's status strip. Its X closes it in every
+chat on that machine until the link is good again (`closeSlowLinkChip` in
+`renderer/state/projectMachines.ts`, cleared by the shared connection feed);
+the next slow spell shows it again. The machine row reads `<route> · <rtt>
 ms · Slow connection`.
 
 What the mode changes is only what would be hidden or delayed: a transcript
@@ -1411,7 +1417,7 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 - `Remote machine was manually disconnected. Connect again to use this remote project.` — the user explicitly disconnected the target; ADE will not implicitly reconnect or restore it until Connect is pressed.
 - `Not connected · you disconnected it on <date>` — the row's line for a manual disconnect. The same rule applies: ADE waits for Connect.
 - `Not connected · Reconnect automatically is off` — the machine has connected before, but its **Reconnect automatically** checkbox (Edit) is off, so ADE does not reconnect it when the app opens. Connect makes a one-off connection and leaves the checkbox as it is. A machine that has never connected shows `Never connected` instead.
-- `Slow connection · <rtt> ms` in a chat's composer — slow-connection mode is on for that machine, so pictures wait for a click and a plain-shell terminal types ahead. **Slow connection mode** in the machine's **Edit** panel turns it off or forces it on. See [A slow or dropping link](#a-slow-or-dropping-link).
+- `Slow connection to <machine> · <rtt> ms` in a chat's composer — slow-connection mode is on for that machine (its X hides it until the link recovers), so pictures wait for a click and a plain-shell terminal types ahead. **Slow connection mode** in the machine's **Edit** panel turns it off or forces it on. See [A slow or dropping link](#a-slow-or-dropping-link).
 - `Remote ADE service connection failed.` — the target is currently unreachable or its route failed. Automatic reconnects continue with bounded backoff; press Connect to bypass the current backoff when you want an immediate retry.
 - `SSH server at <host:port> closed the connection before ADE could finish the SSH handshake` — the TCP route opened but the server reset or closed the SSH handshake. Check Remote Login/sshd, firewall rules, and Tailscale SSH policy. An sshd that saw many refused sign-ins from this computer also does this for a while (OpenSSH source penalties).
 - `SSH authentication failed for user(s) … ADE won't retry on its own. Fix this, then press Try again.` — the server refused every key. ADE stops retrying so it does not repeat the refusal on a timer; fix the user or key, then press Try again or edit the machine.

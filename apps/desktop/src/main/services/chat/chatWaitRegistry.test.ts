@@ -11,7 +11,7 @@ function harness(
   ownedByAnotherBrain: Set<string> = new Set(),
   overrides: Partial<Pick<
     Parameters<typeof createChatWaitRegistry>[0],
-    "callerToldOfUserWait" | "callerIsLiveHere" | "wakeDeferred"
+    "callerToldOfUserWait" | "callerIsLiveHere" | "wakeDeferred" | "isAgentCliSession"
   >> = {},
 ) {
   const summaries = new Map<string, Summary>(Object.entries(initial));
@@ -96,6 +96,33 @@ describe("chatWaitRegistry", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ sessionId: "caller", kind: "wake" });
     expect(await registry.list()).toEqual([]);
+  });
+
+  // A text queued for an agent CLI (the Work box, the phone) waits only for
+  // the CLI to take a turn. Its Work-row status ("waiting for input" over an
+  // idle prompt, a guessed "running") once held such texts for good.
+  it("types a queued CLI text once the CLI can take it, and keeps an explicit wait's own condition", async () => {
+    let cliCannotTakeText = true;
+    const { registry, arm, sent } = harness(
+      { cli: { status: "active", awaitingInput: true } },
+      new Set(),
+      {
+        isAgentCliSession: (sessionId) => sessionId === "cli",
+        wakeDeferred: (sessionId) => sessionId === "cli" && cliCannotTakeText,
+      },
+    );
+    await arm({ targetSessionIds: ["cli"], mode: "all", waitFor: "idle", sendToSessionId: "cli", text: "queued text" });
+    // `ade chat send cli --after cli --for terminal`: not a queued text.
+    await arm({ targetSessionIds: ["cli"], waitFor: "terminal", sendToSessionId: "cli", text: "after it exits" });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(sent, "held while the CLI cannot take a turn").toEqual([]);
+
+    cliCannotTakeText = false;
+    registry.signalCliTurnEnded("cli");
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(sent).toEqual([{ sessionId: "cli", kind: "wake", text: "queued text" }]);
+    expect((await registry.list()).map((waiter) => waiter.waitFor)).toEqual(["terminal"]);
   });
 
   it("does not fire a wait cancelled while its targets were being read", async () => {
