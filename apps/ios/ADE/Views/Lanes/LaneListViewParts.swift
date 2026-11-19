@@ -976,10 +976,14 @@ extension LanesTabView {
 
   @MainActor
   func refreshFromPullGesture() async {
-    // The other machines are read now, not on their 30-second beat.
-    async let remote: Void = remoteLanes.refresh(sync: syncService, fleet: machineFleet)
-    await reload(refreshRemote: true)
-    await remote
+    async let focused: Void = reload(refreshRemote: true)
+    // A computer made since the last look (from the web, another phone or a
+    // New computer) lists once the account's machines and ADE Cloud computers
+    // are read again; then the other machines are read now, not on their
+    // 30-second beat.
+    await syncService.readCloudForLaunchedChat()
+    await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+    await focused
     if errorMessage == nil {
       withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
         refreshFeedbackToken += 1
