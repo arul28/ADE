@@ -784,12 +784,15 @@ export function WebClientRoot({
       } else {
         const restoredTarget = pendingTargetRef.current ?? readPendingTarget();
         // A lane shared with this account needs no machine of its own.
-        const machineFreeTarget = restoredTarget?.kind === "lane-share" || (!restoredTarget && path === "/shared");
+        // So is Settings › ADE Cloud (a kept lane's page, reloaded).
+        const cloudSettingsVisit = !restoredTarget && path === "/settings"
+          && new URLSearchParams(window.location.search).get("tab") === "ade-cloud";
+        const machineFreeTarget = restoredTarget?.kind === "lane-share" || (!restoredTarget && path === "/shared") || cloudSettingsVisit;
         initialPath = restored || machineFreeTarget
           ? restoredTarget
             ? targetToWebPath(restoredTarget)
             : isAppRoute(path)
-              ? `${path}${window.location.search}`
+              ? `${path}${window.location.search}${cloudSettingsVisit ? window.location.hash : ""}`
               : WELCOME_PATH
           : WELCOME_PATH;
         if (restored || machineFreeTarget) clearPendingTarget();
