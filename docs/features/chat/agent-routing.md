@@ -1387,6 +1387,19 @@ CTO sessions (`identityKey: "cto"`, the only identity session):
   `probeClaudeRuntimeHealth` is fully isolated (`settingSources: []`,
   `mcpServers: {}`, `strictMcpConfig: true`, `persistSession: false`); keep
   any new probe option unable to fail the health answer.
+- **Claude account skills download first.** Claude Code downloads a claude.ai
+  account's skills and plugins into `<config>/skills/synced` and
+  `<config>/plugins/synced` when a session first starts in a Claude home. A
+  chat that starts during that download lists a different skill set, so its
+  cached prefix is of no use to the next chat. `claudeAccountSkillSync.ts`
+  starts one Claude session with no prompt when the AI status reports an
+  account sign-in and the base home has no completed skills round
+  (`.last-complete-round`). It runs in the temp folder, loads user settings
+  only (empty setting sources skip the download), no MCP servers and no hooks,
+  and stops when both rounds complete (2 s after the skills round when no
+  plugins round follows) or after 15 s. Claude chat starts (warm and cold)
+  call `waitForClaudeAccountSkillSync`, which waits at most 5 s. Other Claude
+  accounts (their own `CLAUDE_CONFIG_DIR`) download on their first chat.
 - **Permission mapping is one way.** `permissionMapping.ts`
   (`mapPermissionToClaude`, `mapPermissionToCodex`) maps abstract to native
   only. Changing a native field without the abstract one leaves them out of

@@ -31,6 +31,11 @@ import { isExecutablePath, resolveClaudeCodeExecutable } from "./claudeCodeExecu
 /** The longest the process runs. */
 const SYNC_MAX_MS = 15_000;
 const SYNC_POLL_MS = 250;
+/**
+ * How long the process stays after the skills round when no plugins round
+ * follows: an account with no plugins may never write the plugins marker.
+ */
+const PLUGINS_ROUND_GRACE_MS = 2_000;
 /** The file Claude Code writes in an account's synced folder when a download round ends. */
 const ROUND_COMPLETE_FILE = ".last-complete-round";
 /** How long a closed process may take to exit before it is killed. */
@@ -64,9 +69,6 @@ function roundComplete(configDir: string, kind: "skills" | "plugins"): boolean {
   }
 }
 
-function syncComplete(configDir: string): boolean {
-  return roundComplete(configDir, "skills") && roundComplete(configDir, "plugins");
-}
 
 /**
  * For a Claude chat about to start its process: waits while the download runs,
@@ -86,7 +88,8 @@ export function ensureClaudeAccountSkillsSynced(args: { logger: Logger; env?: No
   if (started) return;
   const env = args.env ?? process.env;
   const configDir = claudeConfigDir({ env });
-  if (syncComplete(configDir)) {
+  // The skills round decides the listing; the plugins round ends with it.
+  if (roundComplete(configDir, "skills")) {
     started = true;
     return;
   }
@@ -102,7 +105,8 @@ export function ensureClaudeAccountSkillsSynced(args: { logger: Logger; env?: No
       executable.path,
       SYNC_ARGS,
       {
-        cwd: os.homedir(),
+        // A neutral folder: no project files and no home tree to read.
+        cwd: os.tmpdir(),
         env: { ...env, ...providerSelfUpdateEnv("claude") },
         stdio: ["pipe", "ignore", "ignore"],
         // Its own process group, so a stop reaches anything it started.
@@ -125,7 +129,7 @@ export function ensureClaudeAccountSkillsSynced(args: { logger: Logger; env?: No
     inFlight = null;
     clearInterval(poll);
     clearTimeout(hardStop);
-    const details = { reason, ms: Date.now() - startedAt, synced: syncComplete(configDir) };
+    const details = { reason, ms: Date.now() - startedAt, synced: roundComplete(configDir, "skills") };
     if (reason === "error" || !details.synced) {
       args.logger.warn("claude.account_skill_sync_failed", { ...details, ...(error ? { error: String(error) } : {}) });
     } else {
@@ -138,8 +142,11 @@ export function ensureClaudeAccountSkillsSynced(args: { logger: Logger; env?: No
       if (child.exitCode === null && child.signalCode === null) terminateChildProcessTree(child).unref();
     }, SYNC_EXIT_GRACE_MS).unref();
   };
+  let skillsDoneAt: number | null = null;
   const poll = setInterval(() => {
-    if (syncComplete(configDir)) finish("synced");
+    if (skillsDoneAt === null && roundComplete(configDir, "skills")) skillsDoneAt = Date.now();
+    if (skillsDoneAt === null) return;
+    if (roundComplete(configDir, "plugins") || Date.now() - skillsDoneAt >= PLUGINS_ROUND_GRACE_MS) finish("synced");
   }, SYNC_POLL_MS);
   poll.unref();
   const hardStop = setTimeout(() => finish("timeout"), SYNC_MAX_MS);
