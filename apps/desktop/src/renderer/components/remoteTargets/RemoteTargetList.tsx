@@ -1518,8 +1518,13 @@ export function RemoteTargetList({
     code: "This computer's pairing code",
   };
 
+  // Signed in and the account's list has not come back yet: its computers are
+  // not known, so the panel says it is loading rather than "Connect your other
+  // computers" (ADE Web scans no network, so nothing else fills the list).
+  const accountListPending = accountSignedIn && accountMachines === undefined;
   const showEmptyState = !loading
     && !loadingDiscovered
+    && !accountListPending
     && totalRows === 0
     && !showCloudGroup
     && !accountMachinesLoadFailed
@@ -1536,7 +1541,12 @@ export function RemoteTargetList({
               aria-label="Refresh"
               title="Look for computers again"
               disabled={loadingDiscovered}
-              onClick={() => void loadDiscoveredMachines()}
+              onClick={() => {
+                // Looking again reads the account's list too: on ADE Web the
+                // account is the whole list, with no network scan behind it.
+                onAccountMachinesChanged?.();
+                void loadDiscoveredMachines();
+              }}
               className="ade-cx-icon-btn"
             >
               <ArrowClockwise size={14} weight="bold" className={loadingDiscovered ? "animate-spin" : undefined} />
@@ -1707,7 +1717,7 @@ export function RemoteTargetList({
           </div>
         ) : null}
 
-        {loading ? (
+        {loading || (accountListPending && totalRows === 0) ? (
           <div
             style={{
               color: COLORS.textMuted,

@@ -274,7 +274,7 @@ import {
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecyclePillVisible } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
-import { remoteConnectionMarkNow, useRemoteConnectionMark, useRemoteTargetReconnecting } from "../../state/projectMachines";
+import { remoteConnectionMarkNow, useReadRetryOnReconnect, useRemoteConnectionMark, useRemoteTargetReconnecting } from "../../state/projectMachines";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
 import { useCloudModelCatalog } from "../../state/cloudModelCatalog";
 import { isWebRuntimePinUnroutableError } from "../../webclient/adapter/runtimePinGuard";
@@ -20056,6 +20056,9 @@ export function AgentChatPane({
   const [attachedShells, setAttachedShells] = useState<TerminalSessionSummary[]>([]);
   const [shellsLoadError, setShellsLoadError] = useState(false);
   const [shellsReloadNonce, setShellsReloadNonce] = useState(0);
+  // A read that lost its link (sent as it dropped, or before it was ready)
+  // reads again, on the chat's machine, once that link is back.
+  const { retryKey: shellsRetryKey, begin: beginShellsRead } = useReadRetryOnReconnect(chatRuntimePin);
   const shellIdsRef = useRef<ReadonlySet<string>>(new Set());
   useEffect(() => {
     const sessionId = selectedSessionId?.trim();
@@ -20074,6 +20077,7 @@ export function AgentChatPane({
     if (typeof listSessions !== "function") return undefined;
     let cancelled = false;
     const load = async () => {
+      const failed = beginShellsRead();
       try {
         const pin = chatRuntimePinRef.current;
         const args = { chatSessionId: sessionId, limit: null };
@@ -20098,6 +20102,7 @@ export function AgentChatPane({
         // A pane that cannot read the list says so with a retry rather than
         // looking like a chat with no shells (notices.md: no false empty state).
         console.error("[AgentChatPane] attached shells read failed", { sessionId, error });
+        failed(error);
         if (!cancelled) {
           setAttachedShells(keepEmptyArray);
           setShellsLoadError(true);
@@ -20133,8 +20138,9 @@ export function AgentChatPane({
       unsubscribe();
     };
     // `shellsReloadNonce` is the Retry action; `chatRuntimePinKey` re-reads and
-    // re-subscribes when the chat's machine resolves or changes.
-  }, [selectedSessionId, chatRuntimePinKey, shellsReloadNonce, isBoundScopePane]);
+    // re-subscribes when the chat's machine resolves or changes; `shellsRetryKey`
+    // reads again once a lost link to it is back.
+  }, [selectedSessionId, chatRuntimePinKey, shellsReloadNonce, shellsRetryKey, beginShellsRead, isBoundScopePane]);
 
   // The chat's terminal watches, read on (and stopped on) the chat's machine.
   const chatTerminalWatches = useChatTerminalWatches(

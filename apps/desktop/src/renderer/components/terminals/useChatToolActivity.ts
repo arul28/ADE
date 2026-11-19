@@ -4,6 +4,7 @@ import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import { summarizeComputerUseCommand, type ComputerUseDomain } from "../../../shared/computerUseActionSummary";
 import { computerUseActionText } from "../../../shared/computerUseActionPresentation";
 import { subscribeWhenChatApiReady } from "../chat/chatEventSubscription";
+import { useReadRetryOnReconnect } from "../../state/projectMachines";
 
 /*
  * What the agent is doing with each tool right now, for the tools pane's
@@ -183,6 +184,9 @@ export function useChatToolActivity(
   const onDeviceChoiceRef = useRef(onDeviceChoice);
   onDeviceChoiceRef.current = onDeviceChoice;
   const pinKey = pin?.key ?? null;
+  // A history read that lost its link (sent as it dropped, or before it was
+  // ready) reads again, on the same pin, once that link is back.
+  const historyRetry = useReadRetryOnReconnect(pin);
 
   useEffect(() => {
     setActivity(EMPTY);
@@ -315,12 +319,14 @@ export function useChatToolActivity(
         if (typeof readHistory !== "function") {
           finishSeed([]);
         } else {
+          const failed = historyRetry.begin();
           void Promise.resolve()
             .then(() => readHistory({ sessionId, maxEvents: SEED_HISTORY_EVENTS, maxBytes: SEED_HISTORY_MAX_BYTES }, feedPin))
             .then(
               (snapshot) => finishSeed(snapshot?.sessionId === sessionId && Array.isArray(snapshot.events) ? snapshot.events : []),
               (error: unknown) => {
                 console.warn("[tools-pane] could not read this chat's recent tool calls", error);
+                failed(error);
                 finishSeed([]);
               },
             );
@@ -332,9 +338,9 @@ export function useChatToolActivity(
       stopped = true;
       unsubscribe();
     };
-    // Keyed on the pin's key, not the object.
+    // Keyed on the pin's key, not the object; `retryKey` reads again after a lost link.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, sessionId, pinKey]);
+  }, [active, sessionId, pinKey, historyRetry.retryKey]);
 
   return activity;
 }

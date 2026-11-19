@@ -6,7 +6,7 @@ import { accountMachinePresence } from "../../../shared/machinePresence";
 import { machineNameForBinding, remoteMachineHostPlatform } from "../../../shared/machineIdentity";
 import { sameMachineKey } from "../../../shared/machineAddress";
 import { fetchAccountMachines } from "../../lib/account";
-import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
+import { useReadRetryOnReconnect, useRemoteConnectionSnapshot } from "../../state/projectMachines";
 import { useAppStore } from "../../state/appStore";
 import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
@@ -53,6 +53,12 @@ export type ToolMachines = {
    * before the read or when the brain can't say.
    */
   cloudIphone: "on" | "soon" | "off" | null;
+  /**
+   * The ADE Cloud iPhone's read lost its link and runs again when the link is
+   * back. Until then nobody knows whether a Mac can run the iPhone, so no tile
+   * says none is online.
+   */
+  cloudIphoneLinkLost: boolean;
 };
 
 let localKeyCache: string | null = null;
@@ -126,7 +132,11 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
   // The ADE Cloud iPhone, read once each time the pane opens, from the chat's
   // own brain (its account's beta list and minutes). Keyed on the pin's key.
   // Each answer names the pin it was read for: one read for another pin never shows here.
-  const [cloudIphoneRead, setCloudIphoneRead] = useState<{ pinKey: string | null; access: ToolMachines["cloudIphone"] } | null>(null);
+  // A read that lost its link (sent as the link dropped, or before it was
+  // ready) runs again when the link to that machine is back: a null pin goes
+  // to the tab's machine, so that is the link it waits on.
+  const [cloudIphoneRead, setCloudIphoneRead] = useState<{ pinKey: string | null; access: ToolMachines["cloudIphone"]; linkLost: boolean } | null>(null);
+  const cloudIphoneRetry = useReadRetryOnReconnect(binding);
   const pinRef = useRef(runtimePin);
   pinRef.current = runtimePin;
   const runtimePinKey = runtimePin?.key ?? null;
@@ -136,17 +146,23 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
     if (!api?.status) return undefined;
     let cancelled = false;
     const pinKey = runtimePinKey;
+    const failed = cloudIphoneRetry.begin();
     void api.status(pinRef.current).then(
-      (status) => { if (!cancelled) setCloudIphoneRead({ pinKey, access: status.access }); },
+      (status) => { if (!cancelled) setCloudIphoneRead({ pinKey, access: status.access, linkLost: false }); },
       (error: unknown) => {
         // An older brain (no `cloud_phone`) or signed out: the row keeps "soon".
         console.warn("[tools-pane] could not read the ADE Cloud iPhone", error);
-        if (!cancelled) setCloudIphoneRead({ pinKey, access: null });
+        const linkLost = failed(error);
+        if (!cancelled) setCloudIphoneRead({ pinKey, access: null, linkLost });
       },
     );
     return () => { cancelled = true; };
-  }, [active, runtimePinKey]);
-  const cloudIphone = cloudIphoneRead?.pinKey === runtimePinKey ? cloudIphoneRead.access : null;
+    // `begin` is stable; `retryKey` is the read again after a lost link.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, runtimePinKey, cloudIphoneRetry.retryKey]);
+  const cloudIphoneForPin = cloudIphoneRead?.pinKey === runtimePinKey ? cloudIphoneRead : null;
+  const cloudIphone = cloudIphoneForPin?.access ?? null;
+  const cloudIphoneLinkLost = cloudIphoneForPin?.linkLost === true;
   const targetId = binding?.kind === "remote" ? binding.targetId : null;
   const bindingName = binding ? machineNameForBinding(binding) : null;
 
@@ -223,8 +239,8 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
     const chatMachine = out.find((machine) => machine.isChat) ?? null;
     if (chatMachine && !chatMachine.platform && hostPlatform) chatMachine.platform = hostPlatform;
     if (cloudIphone === "on") out.push(ADE_CLOUD_TOOL_MACHINE);
-    return { machines: out, read, cloudIphone };
+    return { machines: out, read, cloudIphone, cloudIphoneLinkLost };
     // `bindingKey` stands for the binding's identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bindingKey, bindingName, cloudIndex, cloudIphone, directory, hostPlatform, localKey, read, snapshot, targetId]);
+  }, [bindingKey, bindingName, cloudIndex, cloudIphone, cloudIphoneLinkLost, directory, hostPlatform, localKey, read, snapshot, targetId]);
 }

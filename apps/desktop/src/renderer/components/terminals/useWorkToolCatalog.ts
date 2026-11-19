@@ -95,6 +95,8 @@ export type WorkToolCatalogInputs = {
   context: WorkToolContext;
   statuses: WorkToolStatusMap;
   machines: readonly ToolMachine[];
+  /** A read that says which Macs can run devices lost its link and runs again when it is back (`useToolMachines`). */
+  macsUnknown?: boolean;
   sources: ChatDeviceSources | null;
   /** Where each device is now when that is another machine (`currentRemoteDeviceMachines`). */
   deviceMachines: Partial<Record<DeviceKind, ToolMachine>>;
@@ -131,6 +133,7 @@ export function useWorkToolCatalog(inputs: WorkToolCatalogInputs): CatalogCardVi
     context,
     statuses,
     machines,
+    macsUnknown = false,
     sources,
     deviceMachines,
     activity,
@@ -179,7 +182,10 @@ export function useWorkToolCatalog(inputs: WorkToolCatalogInputs): CatalogCardVi
       // A device this machine cannot run: the tool opens on a machine that can.
       if (cannotRunHere || (!remote && availability.reason === IOS_RUNTIME_UNSUPPORTED_REASON)) {
         line = "Runs on a Mac";
-        detail = onlineMacElsewhere(machines) ? "Open it to pick one" : "No Mac on this account is online";
+        detail = onlineMacElsewhere(machines)
+          ? "Open it to pick one"
+          // A read that lost its link is not a verdict: it runs again when the link is back.
+          : macsUnknown ? "Checking for a Mac…" : "No Mac on this account is online";
       }
       // Another chat holds the lane's device here.
       if (!remote && card === "ios" && heldBy(iosSession?.chatSessionId, panelSessionId)) detail = "In use by another chat";
@@ -231,6 +237,7 @@ export function useWorkToolCatalog(inputs: WorkToolCatalogInputs): CatalogCardVi
     heldTool,
     iosSession,
     machines,
+    macsUnknown,
     panelSessionId,
     probes,
     remoteWork,

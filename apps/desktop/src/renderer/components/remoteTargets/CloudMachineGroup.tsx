@@ -281,10 +281,12 @@ export function AdeCloudMachineRow({
   const lanes = boxes.filter((box) => (box as CloudLaneMachine).lane).length;
   const awake = cloudGroupTotals(boxes).running;
   const hoursLeft = account ? formatCloudHours(cloudHoursLeftMilli(account)) : null;
+  // Parts of one line, each its own phrase: a sentence never gets the hours
+  // joined onto it with a comma ("…start one., 0 h left").
   const line = !known
     ? "Your account's cloud machine"
     : lanes === 0
-      ? "No lanes yet. Pick ADE Cloud in Run on to start one."
+      ? "No lanes yet: pick ADE Cloud in Run on to start one"
       : `${lanes} ${lanes === 1 ? "lane" : "lanes"}, ${awake === 0 ? "all asleep" : `${awake} awake`}`;
   return (
     <div style={machineRowStyle} data-ade-cloud-machine="">
@@ -296,7 +298,7 @@ export function AdeCloudMachineRow({
           <span style={nameStyle}>{ADE_CLOUD_NAME}</span>
           <span style={subTextStyle}>
             {line}
-            {hoursLeft != null ? <span className="kit-num">{`, ${hoursLeft} h left`}</span> : null}
+            {hoursLeft != null ? <span className="kit-num">{` · ${hoursLeft} h left`}</span> : null}
           </span>
         </div>
         {onOpenSettings ? (

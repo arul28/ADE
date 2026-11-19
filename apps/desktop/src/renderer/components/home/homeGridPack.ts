@@ -343,6 +343,44 @@ function widthFor(columns: number, available: number): number {
  * rows when they fit, so one small widget is not stretched page-tall.
  */
 export function packLayout(cells: readonly HomeLayoutCell[], metrics: Pick<GridMetrics, "columns" | "maxRows" | "height" | "width">, shapeOf: ShapeOf): PackResult {
+  const best = packBest(cells, metrics, shapeOf);
+  if (!hidesWayIn(best.hidden)) return best;
+  // Projects is the way into a project, so on a small page it is never the
+  // card with no room. First it keeps its place without the cards stacked
+  // under it (they become cards of their own after it); then it goes first.
+  for (const variant of wayInFirstVariants(cells)) {
+    const result = packBest(variant, metrics, shapeOf);
+    if (!hidesWayIn(result.hidden)) return result;
+  }
+  return best;
+}
+
+/** The widget that opens a project. */
+const WAY_IN_TYPE: HomeWidgetType = "projects";
+
+function hidesWayIn(hidden: readonly HomeLayoutCell[]): boolean {
+  return hidden.some((cell) => cell.host.type === WAY_IN_TYPE || cell.stacked.some((item) => item.type === WAY_IN_TYPE));
+}
+
+/**
+ * The layout with Projects in a cell of its own, where it was, and then first.
+ * Anything stacked with it stays in order as cards of their own.
+ */
+function wayInFirstVariants(cells: readonly HomeLayoutCell[]): HomeLayoutCell[][] {
+  const index = cells.findIndex((cell) => cell.host.type === WAY_IN_TYPE || cell.stacked.some((item) => item.type === WAY_IN_TYPE));
+  if (index < 0) return [];
+  const own = [cells[index]!.host, ...cells[index]!.stacked];
+  const wayIn = own.find((item) => item.type === WAY_IN_TYPE)!;
+  const alone = own.map((item): HomeLayoutCell => ({ host: item, stacked: [] }));
+  const before = cells.slice(0, index);
+  const after = cells.slice(index + 1);
+  return [
+    [...before, ...alone, ...after],
+    [{ host: wayIn, stacked: [] }, ...before, ...alone.filter((cell) => cell.host !== wayIn), ...after],
+  ];
+}
+
+function packBest(cells: readonly HomeLayoutCell[], metrics: Pick<GridMetrics, "columns" | "maxRows" | "height" | "width">, shapeOf: ShapeOf): PackResult {
   if (cells.length === 0) {
     return { placed: [], hidden: [], holes: 0, shrunk: 0, grown: 0, trailing: 0, rows: 1, rowPx: rowPx(1, metrics.height), columns: metrics.columns, width: metrics.width };
   }
