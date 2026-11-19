@@ -441,6 +441,26 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
         return;
       }
 
+      // A freeze long enough to be a near miss: tell the main thread which sync
+      // file call it is inside, so the near miss it logs when it wakes names
+      // what it waited on. The main thread cannot see this itself: by the time
+      // it runs again, the call has returned.
+      if (evaluation.blockedMs >= workerData.nearMissMs) {
+        const call = currentSyncFsCall();
+        if (call) {
+          try {
+            parentPort.postMessage({
+              type: "blockedFsCall",
+              method: call.method,
+              path: call.path,
+              caller: call.caller,
+              blockedMs: call.blockedMs,
+              atMonotonicMs: nowMonotonicMs,
+            });
+          } catch {}
+        }
+      }
+
       // Named well before the kill, so a wait that ends on its own (a person
       // answering the prompt) still leaves the path and caller in the log.
       if (evaluation.blockedMs >= BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS) {

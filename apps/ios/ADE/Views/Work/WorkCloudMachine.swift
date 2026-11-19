@@ -59,16 +59,23 @@ struct WorkCloudLaunchCard: View {
           .padding(.leading, 30)
           .padding(.vertical, 4)
         }
-        stepRow("Cloned repo", steps.repo)
-        stepRow("Sign in to \(providerLabel)", steps.signIn)
-        if steps.signIn == .waiting, let signIn = record?.signIn {
-          CloudSignInStepDetail(signIn: signIn, instanceId: record?.instanceId) {
-            await launches.refresh(entry.launchId, using: syncService)
+        if entry.isLane {
+          // A lane alone (a kept lane's new computer): no sign-in, no message.
+          stepRow("Checked out \(laneBranch ?? "its branch")", steps.repo)
+          // Running: the computer has the lane and lists it (the title says so too).
+          stepRow("Lane ready", running ? .done : steps.send)
+        } else {
+          stepRow("Cloned repo", steps.repo)
+          stepRow("Sign in to \(providerLabel)", steps.signIn)
+          if steps.signIn == .waiting, let signIn = record?.signIn {
+            CloudSignInStepDetail(signIn: signIn, instanceId: record?.instanceId) {
+              await launches.refresh(entry.launchId, using: syncService)
+            }
+              .padding(.leading, 30)
+              .padding(.vertical, 6)
           }
-            .padding(.leading, 30)
-            .padding(.vertical, 6)
+          stepRow("Send your message", steps.send)
         }
-        stepRow("Send your message", steps.send)
       }
 
       if !entry.prompt.isEmpty {
@@ -86,7 +93,7 @@ struct WorkCloudLaunchCard: View {
 
       if failed {
         VStack(alignment: .leading, spacing: 8) {
-          Text("\(entry.startError ?? record?.error ?? "ADE Cloud didn't say why.") Your message is not sent.")
+          Text("\(entry.startError ?? record?.error ?? "ADE Cloud didn't say why.")\(entry.isLane ? "" : " Your message is not sent.")")
             .font(.system(size: 13))
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -107,6 +114,15 @@ struct WorkCloudLaunchCard: View {
               .disabled(retrying)
           }
         }
+      } else if running && entry.isLane {
+        HStack(spacing: 8) {
+          Text("It lists with your lanes again, on the same branch.")
+            .font(.system(size: 12))
+            .foregroundStyle(ADEColor.textSecondary)
+          Spacer(minLength: 4)
+          Button("Hide") { launches.hide(entry.launchId) }
+            .buttonStyle(ADEKitButtonStyle())
+        }
       } else if running {
         HStack(spacing: 8) {
           if record?.sessionId != nil {
@@ -122,7 +138,9 @@ struct WorkCloudLaunchCard: View {
             .buttonStyle(ADEKitButtonStyle())
         }
       } else {
-        Text("You can close the app. ADE Cloud keeps your message and sends it when the agent is ready.")
+        Text(entry.isLane
+          ? "You can close the app. ADE Cloud finishes the computer on its own."
+          : "You can close the app. ADE Cloud keeps your message and sends it when the agent is ready.")
           .font(.system(size: 12))
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize(horizontal: false, vertical: true)
@@ -152,7 +170,23 @@ struct WorkCloudLaunchCard: View {
     .adeKitCard(padding: nil)
   }
 
+  /// The lane's name on a lane launch: the record's, else the one this phone sent.
+  private var laneName: String { nonEmptyTrimmed(record?.laneName) ?? entry.laneName ?? "the lane" }
+
+  /// The branch a lane launch works on, from the start it sent.
+  private var laneBranch: String? {
+    guard case .object(let fields)? = entry.body ?? record?.request,
+          case .object(let lane)? = fields["lane"],
+          case .string(let branch)? = lane["existingBranch"] else { return nil }
+    return branch.hasPrefix("origin/") ? String(branch.dropFirst("origin/".count)) : branch
+  }
+
   private var title: String {
+    if entry.isLane {
+      if failed { return "ADE Cloud couldn't make a computer for \(laneName)" }
+      if running { return "\(laneName) has a new computer" }
+      return "Making a new computer for \(laneName)"
+    }
     if failed { return "ADE Cloud couldn't start this chat" }
     if running { return "The chat is running" }
     if record?.state == "waiting_for_sign_in" { return "Sign in to \(providerLabel) to go on" }

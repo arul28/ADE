@@ -9,6 +9,7 @@ import type {
   PtySendToSessionArgs,
   TerminalResumeLaunchConfig,
   TerminalResumeMetadata,
+  TerminalResumeProvider,
   TerminalSessionSummary,
   TerminalToolType,
   WindowsShellKind,
@@ -516,45 +517,6 @@ const LAUNCH_PROFILE_TOOL_TYPES: Record<LaunchProfile, readonly TerminalToolType
   antigravity: ["antigravity", "antigravity-chat"],
   shell: ["shell"],
 };
-
-/**
- * Providers whose CLI the terminal's local line may type for on a slow link
- * (`terminalLocalLine.ts`): the CLI turns bracketed paste on and takes a
- * typed or pasted line, then Enter, as one message. Checked by starting each
- * installed CLI in a terminal; the local line also waits until the program has
- * bracketed paste on, so a screen that turns it off gets keys as before.
- * - Cursor: no. cursor-agent 2026.07.23 never turns bracketed paste on at its
- *   start screen, and its Enter needs a ready wait the line cannot give.
- * - Devin: no. Not checked (its CLI was not installed).
- * - Muse: yes, not started here, but ADE already sends its prompts as one
- *   bracketed paste (Muse 1.4.7).
- */
-const LAUNCH_PROFILE_TAKES_LOCAL_LINE: Record<LaunchProfile, boolean> = {
-  claude: true,
-  codex: true,
-  cursor: false,
-  droid: true,
-  opencode: true,
-  pi: true,
-  muse: true,
-  qwen: true,
-  kimi: true,
-  grok: true,
-  copilot: true,
-  devin: false,
-  antigravity: true,
-  // A plain shell keeps type-ahead (`terminalTypeAhead.ts`).
-  shell: false,
-};
-
-/** Whether a terminal running this tool may get the local line on a slow link. */
-export function toolTypeTakesLocalLine(toolType: TerminalToolType | null | undefined): boolean {
-  if (!toolType) return false;
-  for (const profile of LAUNCH_PROFILES) {
-    if (LAUNCH_PROFILE_TOOL_TYPES[profile].includes(toolType)) return LAUNCH_PROFILE_TAKES_LOCAL_LINE[profile];
-  }
-  return false;
-}
 
 export function isLaunchProfile(value: string | null | undefined): value is LaunchProfile {
   return typeof value === "string" && (LAUNCH_PROFILES as readonly string[]).includes(value);
@@ -3222,4 +3184,26 @@ export function resolveLaunchFields<P extends LaunchProfile>(args: {
     ...(defaultLaunch.initialInput !== undefined ? { initialInput: defaultLaunch.initialInput } : {}),
     ...(defaultLaunch.initialInputDelayMs !== undefined ? { initialInputDelayMs: defaultLaunch.initialInputDelayMs } : {}),
   };
+}
+
+/**
+ * The agent CLIs whose free prompt ADE can read on screen
+ * (`providerReadyMarkerVisible` in `ptyService.ts`; keep the two the same).
+ * A message from the Work input box or the phone waits for that prompt. For
+ * any other CLI (Qwen, Kimi, Grok, Copilot, Antigravity, Devin) ADE cannot
+ * tell when it is free, so the message is typed at once, as the person's own
+ * keys would be, instead of waiting for a prompt ADE never sees.
+ */
+const FREE_PROMPT_PROVIDERS: ReadonlySet<string> = new Set([
+  "claude",
+  "codex",
+  "cursor",
+  "droid",
+  "opencode",
+  "pi",
+  "muse",
+] as const satisfies readonly TerminalResumeProvider[]);
+
+export function agentCliReadsFreePrompt(provider: string | null | undefined): boolean {
+  return provider != null && FREE_PROMPT_PROVIDERS.has(provider);
 }

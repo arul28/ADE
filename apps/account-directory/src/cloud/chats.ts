@@ -681,6 +681,23 @@ export async function deleteSavedChatsForLane(env: CloudEnv, userId: string, mac
 }
 
 /**
+ * Deletes a lane's saved chats under every computer they were filed under: a
+ * lane kept without a computer can have had several (a move, a new computer),
+ * and a client sees only the keys of the chats it listed.
+ */
+export async function deleteSavedChatsForLaneEverywhere(env: CloudEnv, userId: string, laneId: string): Promise<number> {
+  const keys = await env.DB.prepare(`
+    select machine_key from cloud_chat_copies where user_id = ? and lane_id = ?
+    union select machine_key from cloud_session_copies where user_id = ? and lane_id = ?
+    union select machine_key from cloud_fork_capsules where user_id = ? and lane_id = ?
+    union select machine_key from cloud_git_summaries where user_id = ? and lane_id = ?
+  `).bind(userId, laneId, userId, laneId, userId, laneId, userId, laneId).all<{ machine_key: string }>();
+  let removed = 0;
+  for (const row of keys.results ?? []) removed += await deleteSavedChatsForLane(env, userId, row.machine_key, laneId);
+  return removed;
+}
+
+/**
  * Deletes every saved chat of an account and its key. Deleting the key is what
  * makes it final: anything a later retry missed can no longer be opened.
  */

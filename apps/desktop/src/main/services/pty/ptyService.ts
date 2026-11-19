@@ -157,6 +157,7 @@ import {
   type TrackedCliPresetLaunch,
   type TrackedCliUserMcp,
   type WindowsShellLaunchMode,
+  agentCliReadsFreePrompt,
   withClaudePluginInCommandLine,
   withClaudeSessionIdInCommandLine,
   withClaudeSettingsInCommandLine,
@@ -409,11 +410,11 @@ const AGENT_CLI_LINE_SUBMIT_KEY = "\r";
  */
 const AGENT_CLI_SUBMIT_DELAY_MS = 25;
 /**
- * Enter after a multi-line paste from the local line, for every CLI but
- * Codex (its own 180 ms): a paste can take the CLI longer to take in than
+ * Enter after a multi-line paste typed at once (`typeLineIntoAgentCli`), for
+ * every CLI but Codex (its own 180 ms): a paste can take the CLI longer to take in than
  * typed text, and an Enter that comes too soon can land in the paste.
  */
-const LOCAL_LINE_PASTE_SUBMIT_DELAY_MS = 100;
+const AGENT_CLI_PASTE_SUBMIT_DELAY_MS = 100;
 const CODEX_CLI_PASTE_SUBMIT_DELAY_MS = 180;
 const CURSOR_CLI_PASTE_SUBMIT_DELAY_MS = 500;
 const AGENT_CLI_READY_TIMEOUT_MS = 20_000;
@@ -6216,6 +6217,8 @@ export function createPtyService({
   };
 
   const providerReadyMarkerVisible = (provider: TerminalResumeProvider, text: string): boolean => {
+    // Only the CLIs listed in `agentCliReadsFreePrompt` have a check below.
+    if (!agentCliReadsFreePrompt(provider)) return false;
     const normalized = text.toLowerCase();
     if (provider === "codex") {
       const codexText = codexReadyRegion(text);
@@ -6465,7 +6468,7 @@ export function createPtyService({
   const writeAgentCliInput = async (
     write: (data: string) => boolean,
     inputText: string,
-    provider: TerminalResumeProvider,
+    provider: TerminalResumeProvider | null,
   ): Promise<boolean> => {
     // Codex binds Ctrl-U to "kill to beginning of line"; move to end first so
     // saved single-line drafts are cleared even when the cursor starts at col 0.
@@ -6476,8 +6479,17 @@ export function createPtyService({
     await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
     if (!write(AGENT_CLI_INPUT_CLEAR_TO_START_KEY)) return false;
     await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
-    return await writeAgentCliText(write, inputText, provider, false);
+    return await writeAgentCliText(write, inputText, provider, agentCliTextNeedsPaste(provider, inputText));
   };
+
+  /**
+   * A CLI whose prompt ADE cannot read (`agentCliReadsFreePrompt`) gets text
+   * with a line break or a tab as one paste: typed, the line break could
+   * submit part of it and the tab could complete a word. The CLIs ADE reads
+   * keep their own handling.
+   */
+  const agentCliTextNeedsPaste = (provider: TerminalResumeProvider | null, inputText: string): boolean =>
+    !agentCliReadsFreePrompt(provider) && /[\r\n\t]/.test(inputText);
 
   /**
    * Puts text into an agent CLI's input without submitting it. Codex and Muse
@@ -7071,9 +7083,10 @@ export function createPtyService({
   });
 
   /**
-   * A line the person wrote in a terminal's local line (slow links): its text
-   * into the CLI's input, then Enter after the CLI's settle delay. Both writes
-   * happen here, so the link's jitter cannot put the Enter inside the paste.
+   * A line typed at once (`chat.typeIntoCli` with `when: "now"`, from older
+   * desktops): its text into the CLI's input, then Enter after the CLI's
+   * settle delay. Both writes happen here, so the link's jitter cannot put
+   * the Enter inside the paste.
    * No clear keys: the CLI's input may hold text typed before, and the line
    * adds to it the way typing would. Lines to one terminal go in order. False
    * when the session has no live terminal. A repeat of one line is dropped by
@@ -7112,7 +7125,7 @@ export function createPtyService({
         if (!written) return false;
         await delay(provider === "codex"
           ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS
-          : needsPaste ? LOCAL_LINE_PASTE_SUBMIT_DELAY_MS : AGENT_CLI_SUBMIT_DELAY_MS);
+          : needsPaste ? AGENT_CLI_PASTE_SUBMIT_DELAY_MS : AGENT_CLI_SUBMIT_DELAY_MS);
         if (entry.disposed) return false;
         return service.write({ ptyId, data: AGENT_CLI_LINE_SUBMIT_KEY, inputOrigin });
       });
@@ -9055,18 +9068,28 @@ export function createPtyService({
      * over while only its background agents still run. For typing only:
      * a relaunch (restart, model or account change) must keep the stricter
      * check, or it would end those agents.
+     *
+     * Never while the CLI reported a menu or question (Claude's hooks,
+     * Codex's OSC 7501): the Enter after the text would pick an option. A CLI
+     * whose free prompt ADE cannot read (`agentCliReadsFreePrompt`) always
+     * takes it, as the person's own keys would be typed; waiting for a prompt
+     * ADE never sees would hold the text for good.
      */
     canTakeTypedMessage(sessionId: string): boolean {
-      if (service.canAcceptScheduledTurn(sessionId)) return true;
       const normalizedSessionId = sessionId.trim();
+      const live = normalizedSessionId ? liveEntryBySessionId(normalizedSessionId) : undefined;
+      const turn = live?.[1].cliTurn;
+      if (turn && isExactCliTurnSource(turn.source) && turn.phase === "needs-input") return false;
+      if (service.canAcceptScheduledTurn(normalizedSessionId)) return true;
       const session = normalizedSessionId ? sessionService.get(normalizedSessionId) : null;
       if (!session?.tracked || !isTrackedAgentCliToolType(session.toolType)) return false;
       if (isOwnedByLivePeerRuntime(session)) return false;
-      const live = liveEntryBySessionId(normalizedSessionId);
       if (!live) return false;
       const provider = session.resumeMetadata?.provider
         ?? providerFromTool(session.toolType ?? live[1].toolTypeHint);
-      if (provider == null) return false;
+      // A CLI that ADE cannot name (a Devin launch without resume metadata)
+      // has no prompt that ADE can read either.
+      if (provider == null || !agentCliReadsFreePrompt(provider)) return true;
       return (agentCliInputReadiness(normalizedSessionId, provider)?.markerVisible ?? false)
         && agentCliMainTurnEndedAndSettled(live[1]);
     },
@@ -9087,7 +9110,8 @@ export function createPtyService({
       const writeSubmittedText = async (
         targetSessionId: string,
         inputText: string,
-        provider: TerminalResumeProvider,
+        /** Null for a running CLI that ADE cannot name (a Devin launch without resume metadata). */
+        provider: TerminalResumeProvider | null,
         options: { waitForReady?: boolean } = {},
       ): Promise<boolean> => {
         const previous = submitInputFlights.get(targetSessionId) ?? Promise.resolve(true);
@@ -9095,7 +9119,7 @@ export function createPtyService({
         const flight = previous
           .catch(() => true)
           .then(async () => {
-            if (options.waitForReady) {
+            if (options.waitForReady && provider) {
               const ready = await waitForAgentCliInputReady(targetSessionId, provider);
               if (!ready) return false;
             }
@@ -9109,7 +9133,9 @@ export function createPtyService({
               ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS
               : provider === "cursor"
                 ? CURSOR_CLI_PASTE_SUBMIT_DELAY_MS
-                : AGENT_CLI_SUBMIT_DELAY_MS);
+                : agentCliTextNeedsPaste(provider, inputText)
+                  ? AGENT_CLI_PASTE_SUBMIT_DELAY_MS
+                  : AGENT_CLI_SUBMIT_DELAY_MS);
             return service.writeBySessionId(targetSessionId, submitKey);
           });
         submitInputFlights.set(targetSessionId, flight);
@@ -9125,8 +9151,9 @@ export function createPtyService({
       const live = liveEntryBySessionId(sessionId);
       if (live) {
         const [ptyId, entry] = live;
+        // A running CLI takes typed text without a provider ADE can name: only
+        // a resume needs one.
         const provider = session?.resumeMetadata?.provider ?? providerFromTool(session?.toolType ?? entry.toolTypeHint);
-        if (!provider) throw ptySendPreDeliveryError(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
         const written = await writeSubmittedText(sessionId, text, provider, {
           waitForReady: provider === "cursor",
         });

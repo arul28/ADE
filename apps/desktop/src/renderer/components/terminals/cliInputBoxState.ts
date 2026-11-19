@@ -16,7 +16,7 @@ import { sendAgentCliText } from "./agentCliTypeSend";
  *
  * Every send goes to the session's own machine (`route.pin`), and the host
  * types it only at a free prompt (`chat.typeIntoCli` through
- * `sendAgentCliText`, which the terminal's local line uses too). A busy CLI
+ * `sendAgentCliText`). A busy CLI
  * answers `deferred` and nothing is typed; the runner asks again a little
  * later.
  */
@@ -457,7 +457,6 @@ async function step(sessionId: string): Promise<void> {
       sessionId,
       text: head.text,
       clientMessageId: head.id,
-      when: "free",
       pin: runner.route.pin,
     });
     if (sent.kind === "typed") {

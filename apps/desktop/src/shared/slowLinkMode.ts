@@ -19,9 +19,11 @@
  * - The person's setting for the machine wins: "on" or "off".
  *
  * A far link (`far`) is a lower level of the same rule, for typing only. At
- * `FAR_RTT_ON_MS` each key already lags enough to feel, so a terminal shows
- * typed text at once (type-ahead, the agent CLI local line). Pictures and the
- * other heavy parts still wait for slow-connection mode.
+ * `FAR_RTT_ON_MS` each key already lags enough to feel, so a shell terminal
+ * shows typed text at once (type-ahead). Pictures and the other heavy parts
+ * still wait for slow-connection mode. A round trip a frozen machine reports
+ * (`hostFrozenMs` on its ping) is taken off first: a frozen brain is not a
+ * slow network.
  */
 export const SLOW_RTT_ON_MS = 400;
 export const SLOW_RTT_OFF_MS = 250;

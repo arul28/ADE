@@ -4,10 +4,9 @@ import { REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE } from "../../../shared/ty
 import { requireChatPin } from "../chat/chatMachinePin";
 
 /**
- * One send of a person's text to a running agent CLI (`chat.typeIntoCli`), on
- * the CLI's own machine, for both ways of typing into it: the Work input box
- * (`when: "free"`, typed at a free prompt) and the terminal's local line on a
- * slow link (`when: "now"`, typed at once).
+ * One send of a person's text from the Work input box to a running agent CLI
+ * (`chat.typeIntoCli`), on the CLI's own machine. The machine types it at a
+ * free prompt, or at once for a CLI whose prompt it cannot read.
  *
  * The caller keeps one `clientMessageId` for a text until the machine has it,
  * and sends the same id again for a retry. The machine answers a repeated id
@@ -16,9 +15,9 @@ import { requireChatPin } from "../chat/chatMachinePin";
  * with any id, can type a text twice.
  */
 export type AgentCliTypeSendResult =
-  /** Typed (or, for `free`, held by the machine to type at a free prompt). */
+  /** Typed (or held by the machine to type at a free prompt). */
   | { kind: "typed" }
-  /** `free` only: the CLI is mid-turn; nothing was typed. */
+  /** The CLI is mid-turn; nothing was typed. */
   | { kind: "busy" }
   /** The CLI's process has ended; nothing was typed. */
   | { kind: "ended" }
@@ -53,7 +52,6 @@ export async function sendAgentCliText(args: {
   sessionId: string;
   text: string;
   clientMessageId: string;
-  when: "now" | "free";
   /** The CLI's machine. No machine known: the send fails here, never on the tab's machine. */
   pin: OpenProjectBinding | null;
 }): Promise<AgentCliTypeSendResult> {
@@ -64,8 +62,6 @@ export async function sendAgentCliText(args: {
       sessionId: args.sessionId,
       text: args.text,
       clientMessageId: args.clientMessageId,
-      // An older machine reads no `when`; "free" is its only way, so only "now" is sent.
-      ...(args.when === "now" ? { when: "now" as const } : {}),
     }, requireChatPin(args.pin));
     if (result.outcome === "delivered" || result.outcome === "held") return { kind: "typed" };
     if (result.outcome === "ended") return { kind: "ended" };

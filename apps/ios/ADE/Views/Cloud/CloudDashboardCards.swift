@@ -69,8 +69,9 @@ struct CloudDashboardScreen: View {
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
       if let onClose {
-        ToolbarItem(placement: .topBarLeading) {
-          Button { onClose() } label: { Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)) }
+        // As every Settings page's close: the trailing side, which the Duo's edge bar carries.
+        ToolbarItem(placement: .topBarTrailing) {
+          Button(role: .close) { onClose() }
             .accessibilityLabel("Close ADE Cloud")
         }
       }
@@ -361,6 +362,8 @@ struct CloudNotices: View {
 struct CloudLanesCard: View {
   @ObservedObject var store: CloudPaneStore
   var pushes: Bool
+  /// The lanes ADE kept without a computer, every project's: they list under the computers.
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
 
   private var hint: String? {
     guard let computers = store.account?.computers else { return nil }
@@ -377,13 +380,24 @@ struct CloudLanesCard: View {
         }
         .padding(.horizontal, ADEKit.inset)
         .padding(.bottom, ADEKit.inset)
-      } else if store.machines.isEmpty {
+        // Every branch keeps the block: it shows nothing when empty, and its pull and first-look reads live in it.
+        keptLanes
+      } else if store.machines.isEmpty, cloudStore.lanesWithoutComputer.isEmpty, cloudStore.lanesWithoutComputerUnread {
+        // The kept lanes couldn't be read: an empty list says nothing.
+        ADESettingsNotice(message: "ADE couldn't read your cloud lanes without a computer.", tone: .warn, actionTitle: "Try again") {
+          Task { await cloudStore.refreshLanesWithoutComputer(using: store.syncService, force: true) }
+        }
+        .padding(.horizontal, ADEKit.inset)
+        .padding(.bottom, ADEKit.inset)
+        keptLanes
+      } else if store.machines.isEmpty, cloudStore.lanesWithoutComputer.isEmpty {
         Text("No cloud lanes yet. Pick ADE Cloud under Run on when you send a message: ADE makes a computer for the lane, and it shows here.")
           .font(.system(size: 13))
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
           .padding(.horizontal, ADEKit.inset)
           .padding(.bottom, ADEKit.inset)
+        keptLanes
       } else {
         VStack(spacing: 0) {
           ForEach(Array(store.machines.enumerated()), id: \.element.id) { index, machine in
@@ -391,8 +405,21 @@ struct CloudLanesCard: View {
             row(machine)
           }
         }
+        keptLanes
       }
     }
+  }
+
+  /// Lanes whose computer ADE removed while it kept the lane (every
+  /// project's, as the computers above are), each with "New computer".
+  private var keptLanes: some View {
+    CloudKeptLanesBlock(
+      origin: nil,
+      refreshToken: store.refreshes,
+      onComputerUp: { await store.load() },
+      insets: EdgeInsets(top: store.machines.isEmpty ? 0 : 8, leading: ADEKit.inset, bottom: ADEKit.inset, trailing: ADEKit.inset),
+      opensChats: false
+    )
   }
 
   @ViewBuilder
@@ -718,11 +745,18 @@ struct CloudSizesCard: View {
         .frame(width: 28, height: 28)
         .background(CloudBrandColor.violet.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
       VStack(alignment: .leading, spacing: 3) {
-        HStack(spacing: 6) {
-          Text(tier.label)
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-          if tier.full { ADEKitTag(text: "Full computer") }
+        // The name never breaks; the tag goes under it when it doesn't fit beside it.
+        let name = Text(tier.label)
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1).fixedSize()
+        if tier.full {
+          ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) { name; ADEKitTag(text: "Full computer").fixedSize() }
+            VStack(alignment: .leading, spacing: 4) { name; ADEKitTag(text: "Full computer").fixedSize() }
+          }
+        } else {
+          name
         }
         Text(facts(tier))
           .font(.system(size: 12.5))

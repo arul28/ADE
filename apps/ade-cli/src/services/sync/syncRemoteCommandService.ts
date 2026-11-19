@@ -5832,7 +5832,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
         ? { clientMessageId: payload.clientMessageId.trim().slice(0, 128) }
         : {}),
     });
-    return { ok: true, outcome: result.outcome };
+    return { ok: true, outcome: result.outcome, ...(result.typedAtOnce ? { typedAtOnce: true } : {}) };
   });
   register("chat.cancelSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").cancelSteer(parseAgentChatCancelSteerArgs(payload));

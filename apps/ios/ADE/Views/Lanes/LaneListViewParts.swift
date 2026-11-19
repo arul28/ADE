@@ -341,11 +341,7 @@ extension LanesTabView {
         onAwake: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
       )
     } else {
-      ADEEmptyStateView(
-        symbol: "square.stack.3d.up.slash",
-        title: "Lane unavailable",
-        message: "This lane is no longer on this phone. Refresh Lanes and try again."
-      )
+      UnavailableLaneDestination(laneId: route.laneId)
     }
   }
 
@@ -484,8 +480,9 @@ extension LanesTabView {
     let accountHasNoLanes = syncService.isAccountProjectScope
       // A failed read did not show there are none: its machine row says so.
       && remoteLanes.machines.allSatisfy { $0.snapshots.isEmpty && $0.error == nil }
-    if accountHasNoLanes, !remoteLanes.hasRead {
+    if accountHasNoLanes, !remoteLanes.hasRead || inputs.keptCloudLaneCount > 0 {
       // The first read of the cloud lanes is still out: nothing to say yet.
+      // Or the only lanes are kept without a computer: their block says so.
       EmptyView()
     } else if accountHasNoLanes {
       // No computer's copy, and no cloud lane yet.
@@ -982,12 +979,15 @@ extension LanesTabView {
   @MainActor
   func refreshFromPullGesture() async {
     async let focused: Void = reload(refreshRemote: true)
+    // The ADE Cloud lanes kept without a computer, from the account.
+    async let kept: Void = AccountCloudStore.shared.refreshLanesWithoutComputer(using: syncService, force: true)
     // A computer made since the last look lists once the account's machines
     // and ADE Cloud computers are read again; then the other machines are
     // read now, not on their 30-second beat.
     let cloudRead = await syncService.readCloudForPull()
     await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
     await focused
+    await kept
     if cloudReadFailed == cloudRead { cloudReadFailed = !cloudRead }
     if errorMessage == nil {
       withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
@@ -1097,5 +1097,73 @@ struct LanePinLabel: View {
 
   var body: some View {
     Label(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash.fill" : "pin.fill")
+  }
+}
+
+
+/// A lane page whose lane left the phone's list. A cloud lane whose computer
+/// was just freed (or removed by the idle cleanup) is still the account's: the
+/// page shows it as kept, with New computer and Delete, instead of a dead end.
+struct UnavailableLaneDestination: View {
+  let laneId: String
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
+  @ObservedObject private var launches = AccountCloudLaunchStore.shared
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+
+  /// A lane opened from another machine's row keeps that machine in its id
+  /// (`fleet|machine|lane`); the account keeps the lane under its own id.
+  private var accountLaneId: String { workParseRemoteLaneId(laneId)?.laneId ?? laneId }
+
+  /// This lane's New computer launch, as `launchId:state`: once its computer is up, the kept lane leaves the list.
+  private var launchState: String {
+    guard let lane = cloudStore.lanesWithoutComputer.first(where: { $0.laneId == accountLaneId }),
+          let launch = launches.laneLaunch(for: lane) else { return "" }
+    return "\(launch.launchId):\(launch.record?.state ?? "")"
+  }
+
+  var body: some View {
+    Group {
+      if let lane = cloudStore.lanesWithoutComputer.first(where: { $0.laneId == accountLaneId }) {
+        ScrollView {
+          VStack(alignment: .leading, spacing: 10) {
+            Label("No computer now", systemImage: ADECloudMachine.symbol)
+              .font(.system(size: 12.5, weight: .semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+            CloudKeptLaneRow(lane: lane, launch: launches.laneLaunch(for: lane))
+          }
+          .padding(16)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .refreshable { await cloudStore.refreshLanesWithoutComputer(using: syncPublishes.service, force: true) }
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .navigationTitle(lane.laneName)
+        .navigationBarTitleDisplayMode(.inline)
+      } else {
+        ADEEmptyStateView(
+          symbol: "square.stack.3d.up.slash",
+          title: "Lane unavailable",
+          message: "This lane is no longer on this phone. Refresh Lanes and try again."
+        )
+      }
+    }
+    // The page can open as the computer goes, before the server has kept the
+    // lane: read again a few times (about half a minute), and stop once it's
+    // there or the page closes.
+    .task(id: laneId) {
+      for attempt in 0..<6 {
+        await cloudStore.refreshLanesWithoutComputer(using: syncPublishes.service, force: true)
+        if Task.isCancelled || cloudStore.lanesWithoutComputer.contains(where: { $0.laneId == accountLaneId }) { return }
+        try? await Task.sleep(for: .seconds(attempt == 0 ? 2 : 5))
+      }
+    }
+    // As in the kept-lanes block: the new computer is up, so the account lists
+    // it and the kept lane (with its held Delete) leaves this page.
+    .onChange(of: launchState) { _, state in
+      guard state.hasSuffix(":running") || state.hasSuffix(":done") else { return }
+      Task { @MainActor in
+        await syncPublishes.service.readCloudForLaunchedChat()
+        await cloudStore.refreshLanesWithoutComputer(using: syncPublishes.service, force: true)
+      }
+    }
   }
 }

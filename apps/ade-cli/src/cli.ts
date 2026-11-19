@@ -778,6 +778,7 @@ import {
   resolveBrainLoopWatchdogThresholdMs,
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
+import { createBrainStallProfiler, type BrainStallProfiler } from "./services/runtime/brainStallProfiler";
 import { recordHostStall } from "./services/runtime/hostStallRecord";
 import { installSyncFsCallTracker, isStallCapablePath } from "./services/runtime/syncFsCallTracker";
 import { expectedErrorKind } from "../../desktop/src/shared/expectedError";
@@ -3419,7 +3420,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
       send / message   Typed at the CLI's prompt. Busy: queued as a durable wait
                        that types it at the next free prompt (its id cancels it:
                        ade chat wait --cancel <id>); --interrupt presses the
-                       CLI's cancel key first. Text only: no images.
+                       CLI's cancel key first. Text only: no images. Qwen, Kimi,
+                       Grok, Copilot, Antigravity and Devin: typed at once (ADE
+                       cannot tell when their prompt is free).
       steer            Typed now, even mid-turn; the CLI decides what to do with it.
       interrupt        Presses the provider's cancel key (Esc; Esc twice for
                        OpenCode; Ctrl-C for Cursor). The process keeps running.
@@ -30082,6 +30085,7 @@ async function runServe(
   }
   let serveStarted = false;
   let stopBrainLoopWatchdog: (() => void) | null = null;
+  let brainStallProfiler: BrainStallProfiler | null = null;
   let stopBrainHeartbeat: (() => void) | null = null;
   let stopBrainFreshnessMonitor: (() => void) | null = null;
   // Built much later than the watchdog that feeds it: the memory mitigation may
@@ -30285,6 +30289,11 @@ async function runServe(
   }
   const { memoryBreachForRestartCause, readResourcePressureRecord } = await import("./services/runtime/resourcePressureMonitor");
   restartCauseFacts.memoryPressure = memoryBreachForRestartCause(readResourcePressureRecord(layout.runtimeDir));
+  // After a freeze, a one-minute profile names the code behind it (`brainStallProfiler.ts`).
+  brainStallProfiler = createBrainStallProfiler({
+    log: (event, meta) => headlessProjectLogger.warn(event, meta),
+  });
+  const stallProfiler = brainStallProfiler;
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     thresholdMs: freezeThresholdMs,
@@ -30294,7 +30303,10 @@ async function runServe(
     },
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
     info: (event, meta) => headlessProjectLogger.info(event, meta),
-    onStall: ({ observedLagMs }) => recordHostStall({ durationMs: observedLagMs }),
+    onStall: ({ observedLagMs, endedAgoMs }) => {
+      recordHostStall({ durationMs: observedLagMs });
+      stallProfiler.noteStall({ startedAgoMs: endedAgoMs + observedLagMs });
+    },
     onRecovered: (breadcrumb) => {
       const wedgeAtMs = Date.parse(breadcrumb.ts);
       if (Number.isFinite(wedgeAtMs)) {
@@ -34401,6 +34413,7 @@ async function runServe(
     brainMemoryRestartGuard?.stop();
     stopBrainHeartbeat?.();
     stopBrainLoopWatchdog?.();
+    brainStallProfiler?.dispose();
   }
 }
 

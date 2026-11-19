@@ -261,14 +261,32 @@ struct CloudLaneBackupRow: Decodable, Equatable, Identifiable {
 
 private struct LaneBackupList: Decodable { let backups: [CloudLaneBackupRow] }
 
-struct CloudLaneWithoutComputer: Decodable, Equatable {
+struct CloudLaneWithoutComputer: Decodable, Equatable, Identifiable {
   let laneId: String
   let laneName: String
   let projectOrigin: String?
   let branchRef: String?
+  /// `freed`, `idle_cleanup`, `plan_limit` or `inactive`.
   let reason: String?
+  /// The size the old computer had (`default` or `vm`, CPU, memory).
+  let type: String?
+  let cpu: Int?
+  let memoryGb: Double?
+  /// The old computer's machine key: the lane's saved chats are filed under it.
+  let formerMachineKey: String?
+  /// The old computer's instance id: a launch that made it is over.
+  let formerInstanceId: String?
+  /// When the computer went (ms).
+  let since: Double?
 
-  private enum CodingKeys: String, CodingKey { case laneId, laneName, projectOrigin, branchRef, reason }
+  var id: String { laneId }
+  /// The branch without its remote's name (`ade/x`, never `origin/ade/x`).
+  var branchName: String? {
+    guard let ref = branchRef.flatMap({ nonEmptyTrimmed($0) }) else { return nil }
+    return ref.hasPrefix("origin/") ? String(ref.dropFirst("origin/".count)) : ref
+  }
+
+  private enum CodingKeys: String, CodingKey { case laneId, laneName, projectOrigin, branchRef, reason, type, cpu, memoryGb, formerMachineKey, formerInstanceId, since }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -277,6 +295,12 @@ struct CloudLaneWithoutComputer: Decodable, Equatable {
     projectOrigin = c.lenient(String.self, forKey: .projectOrigin)?.lowercased()
     branchRef = c.lenient(String.self, forKey: .branchRef)
     reason = c.lenient(String.self, forKey: .reason)
+    type = c.lenient(String.self, forKey: .type)
+    cpu = c.lenient(Int.self, forKey: .cpu)
+    memoryGb = c.lenient(Double.self, forKey: .memoryGb)
+    formerMachineKey = c.lenient(String.self, forKey: .formerMachineKey)
+    formerInstanceId = c.lenient(String.self, forKey: .formerInstanceId)
+    since = c.lenient(Double.self, forKey: .since)
   }
 }
 
@@ -410,6 +434,13 @@ struct CloudServerClient {
 
   func lanesWithoutComputer() async throws -> [CloudLaneWithoutComputer] {
     try decode(LanesWithoutComputer.self, from: try await send("GET", "cloud/lanes/without-computer")).lanes
+  }
+
+  /// Stops listing a lane kept without a computer and deletes its saved work
+  /// (`DELETE /cloud/lanes/without-computer/:lane`). Its chats are deleted on
+  /// their own (`deleteSavedChats`); its branch stays on GitHub.
+  func forgetLaneWithoutComputer(laneId: String) async throws {
+    _ = try await send("DELETE", "cloud/lanes/without-computer/\(segment(laneId))")
   }
 
   /// The lane's saved work that isn't on GitHub (`laneBackups.ts`), newest first. Reads with no wake and no hours.

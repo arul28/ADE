@@ -9319,6 +9319,8 @@ struct RestoreDeletedLaneResult: Decodable, Equatable {
 enum WorkCliTypeOutcome: Equatable {
   /// Typed at the CLI's prompt.
   case delivered
+  /// Typed at once: the computer cannot tell when this CLI's prompt is free.
+  case typedAtOnce
   /// The CLI is mid-turn; its computer types it when the prompt is free.
   case heldUntilFree
   /// The phone is offline; the message goes out when it reconnects.
@@ -9341,7 +9343,7 @@ func workCliTypeOutcome(from response: Any) throws -> WorkCliTypeOutcome {
   }
   if payload["queued"] as? Bool == true { return .queuedOffline }
   switch payload["outcome"] as? String {
-  case "delivered": return .delivered
+  case "delivered": return payload["typedAtOnce"] as? Bool == true ? .typedAtOnce : .delivered
   case "held": return .heldUntilFree
   case "deferred":
     // Only an answer to a send that did not ask the host to hold it.

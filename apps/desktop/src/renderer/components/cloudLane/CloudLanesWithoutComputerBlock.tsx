@@ -256,21 +256,24 @@ async function deleteRow(row: LaneRow): Promise<void> {
   if (!ok) return;
   const removed = new Set<string>();
   try {
+    // The lane first: the server refuses it while a computer holds the lane
+    // (another device started it again), so chats that computer carries on
+    // are never deleted.
+    if (row.kept) {
+      await forgetCloudLaneWithoutComputer(row.laneId);
+      refreshCloudLanesWithoutComputer();
+    }
     const skipped = await deleteRowChats(row, removed);
     if (skipped > 0) {
       console.warn("[cloud] a lane's delete skipped saved chats with no known location", { laneId: row.laneId, skipped });
       dropFromStore(row, removed);
       showToast({
         tone: "error",
-        title: `Kept ${row.laneName}`,
+        title: row.kept ? `Deleted ${row.laneName}, not all its chats` : `Kept ${row.laneName}`,
         message: `ADE couldn't find where ${skipped === 1 ? "1 of its chats is" : `${skipped} of its chats are`} kept on ADE Cloud. Try again in a moment.`,
         replayMask: { title: true },
       });
       return;
-    }
-    if (row.kept) {
-      await forgetCloudLaneWithoutComputer(row.laneId);
-      refreshCloudLanesWithoutComputer();
     }
     dropFromStore(row, null);
     showToast({ tone: "success", title: `Deleted ${row.laneName}`, message: !row.kept ? "Its chats are gone." : chats ? "The lane and its chats are gone." : "The lane is gone.", replayMask: { title: true } });

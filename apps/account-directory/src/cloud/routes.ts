@@ -6,7 +6,7 @@ import { CloudBillingError, accountReturnUrl, createCheckoutUrl, createFreeUnloc
 import { setExtraPhoneMinutes } from "./phoneBilling";
 import { parseSustainedCpuReport, recordSustainedCpu } from "./abuseSignals";
 import { buildAccountState } from "./accountState";
-import { routeSavedChats } from "./chats";
+import { deleteSavedChatsForLaneEverywhere, routeSavedChats } from "./chats";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
@@ -1925,7 +1925,11 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   }
   // Lanes without a computer are rows only: readable with no provider, like saved chats.
   if (path === CLOUD_PATHS.lanesWithoutComputer || path.startsWith(`${CLOUD_PATHS.lanesWithoutComputer}/`)) {
-    return routeLanesWithoutComputer(request, path, env, caller.userId, (laneId) => deleteBackupsForLane(env, caller.userId, laneId));
+    // A forgotten lane's saved work and its chats under every computer go with it.
+    return routeLanesWithoutComputer(request, path, env, caller.userId, async (laneId) => {
+      await deleteBackupsForLane(env, caller.userId, laneId);
+      await deleteSavedChatsForLaneEverywhere(env, caller.userId, laneId);
+    });
   }
   // The account vault's ADE Cloud sign-ins, for the web (status only), and the model list: no provider needed.
   if (path === CLOUD_PATHS.signIns || path.startsWith(`${CLOUD_PATHS.signIns}/`)) return routeAccountSignIns(request, path, env, now);

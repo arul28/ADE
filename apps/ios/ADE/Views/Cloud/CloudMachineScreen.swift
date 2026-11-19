@@ -328,6 +328,12 @@ struct CloudMachineSizeCard: View {
     return "Move \(machine.displayName) to a \(ask.full ? "Full" : "Standard") computer?"
   }
 
+  @ViewBuilder
+  private func tierTags(_ tier: CloudPhoneTier, isCurrent: Bool) -> some View {
+    if tier.full { ADEKitTag(text: "Full computer") }
+    if isCurrent { ADEKitTag(text: "Current", tone: .ok) }
+  }
+
   private func row(_ tier: CloudPhoneTier, current: CloudPhoneTier, busy: Bool) -> some View {
     let isCurrent = tier.id == current.id
     let sameKind = tier.type == current.type
@@ -339,20 +345,27 @@ struct CloudMachineSizeCard: View {
           .frame(width: 28, height: 28)
           .background(CloudBrandColor.violet.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         VStack(alignment: .leading, spacing: 2) {
-          HStack(spacing: 6) {
-            Text(tier.label).font(.system(size: 14.5, weight: .semibold)).foregroundStyle(ADEColor.textPrimary)
-            if tier.full { ADEKitTag(text: "Full computer") }
-            if isCurrent { ADEKitTag(text: "Current", tone: .ok) }
+          // The name never breaks: its tags go under it when they don't fit
+          // beside it, and on a very narrow row the tags stack and the name
+          // truncates instead of pushing the rate off the card.
+          let name = Text(tier.label).font(.system(size: 14.5, weight: .semibold)).foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) { name.fixedSize(); HStack(spacing: 6) { tierTags(tier, isCurrent: isCurrent) }.fixedSize() }
+            VStack(alignment: .leading, spacing: 4) { name.fixedSize(); HStack(spacing: 6) { tierTags(tier, isCurrent: isCurrent) }.fixedSize() }
+            VStack(alignment: .leading, spacing: 4) { name; VStack(alignment: .leading, spacing: 4) { tierTags(tier, isCurrent: isCurrent) } }
           }
           Text("\(tier.cpu) CPU · \(cloudGbText(tier.memoryGb)) GB memory")
             .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
         Spacer(minLength: 8)
         Text(cloudHoursRate(tier.rate))
           .font(.system(size: 13, weight: .semibold))
           .monospacedDigit()
           .foregroundStyle(CloudBrandColor.mark)
+          .fixedSize()
       }
       .padding(.horizontal, ADEKit.inset)
       .padding(.vertical, 10)

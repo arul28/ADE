@@ -49,6 +49,7 @@ import type {
   RemoteRuntimeStreamEventsResult,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeTarget,
+  RuntimePingReply,
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
 } from "../../../shared/types";
@@ -2362,7 +2363,7 @@ export class RemoteConnectionService {
         this.latencyProbeTargetIds.add(target.id);
         const startedAt = Date.now();
         try {
-          await this.pool.callMachineForTarget(
+          const pong = await this.pool.callMachineForTarget(
             target,
             "ping",
             // An older machine ignores the report; a newer one logs it.
@@ -2371,7 +2372,11 @@ export class RemoteConnectionService {
               timeoutMs: options.pingTimeoutMs,
             },
           );
-          const latencyMs = Math.max(0, Date.now() - startedAt);
+          // A machine whose ADE froze answers late, and says so: that round
+          // trip measured the freeze, not the network, so it is not a sample.
+          const hostFrozenMs = Number((pong as Partial<RuntimePingReply> | null | undefined)?.hostFrozenMs);
+          if (Number.isFinite(hostFrozenMs) && hostFrozenMs > 0) continue;
+          const latencyMs = Date.now() - startedAt;
           const currentRoute = this.statusById.get(target.id)?.route;
           if (currentRoute) {
             this.mergeStatus(target.id, {

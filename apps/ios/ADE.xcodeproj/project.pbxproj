@@ -13,6 +13,7 @@
 		C1AE00000000000000B00007 /* SyncService+LinearAccount.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00007 /* SyncService+LinearAccount.swift */; };
 		C1AE00000000000000B00008 /* WorkCloudAtRest.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00008 /* WorkCloudAtRest.swift */; };
 		C1AE00000000000000B00009 /* CloudLaneAtRest.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00009 /* CloudLaneAtRest.swift */; };
+		C1AE00000000000000B0F0E1 /* CloudKeptLanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A0F0E1 /* CloudKeptLanes.swift */; };
 		C1AE00000000000000B00010 /* CloudAtRestPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00010 /* CloudAtRestPreviews.swift */; };
 		C1AE00000000000000B00011 /* CtoAccountCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00011 /* CtoAccountCopy.swift */; };
 		C1AE00000000000000B00004 /* CloudNoComputerPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00004 /* CloudNoComputerPreviews.swift */; };
@@ -591,6 +592,7 @@
 		C1AE00000000000000A00007 /* SyncService+LinearAccount.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+LinearAccount.swift"; path = "ADE/Services/SyncService+LinearAccount.swift"; sourceTree = "<group>"; };
 		C1AE00000000000000A00008 /* WorkCloudAtRest.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkCloudAtRest.swift; path = ADE/Views/Work/WorkCloudAtRest.swift; sourceTree = "<group>"; };
 		C1AE00000000000000A00009 /* CloudLaneAtRest.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudLaneAtRest.swift; path = ADE/Views/Cloud/CloudLaneAtRest.swift; sourceTree = "<group>"; };
+		C1AE00000000000000A0F0E1 /* CloudKeptLanes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudKeptLanes.swift; path = ADE/Views/Cloud/CloudKeptLanes.swift; sourceTree = "<group>"; };
 		C1AE00000000000000A00010 /* CloudAtRestPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudAtRestPreviews.swift; path = ADE/Views/Cloud/CloudAtRestPreviews.swift; sourceTree = "<group>"; };
 		C1AE00000000000000A00011 /* CtoAccountCopy.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoAccountCopy.swift; path = ADE/Views/Cto/CtoAccountCopy.swift; sourceTree = "<group>"; };
 		C1AE00000000000000A00004 /* CloudNoComputerPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudNoComputerPreviews.swift; path = ADE/Views/Cloud/CloudNoComputerPreviews.swift; sourceTree = "<group>"; };
@@ -1205,6 +1207,7 @@
 				A37A0000000000000000A0F1 /* CloudPreviews.swift */,
 				C1AE00000000000000A00010 /* CloudAtRestPreviews.swift */,
 				C1AE00000000000000A00009 /* CloudLaneAtRest.swift */,
+				C1AE00000000000000A0F0E1 /* CloudKeptLanes.swift */,
 				C1AE00000000000000A00004 /* CloudNoComputerPreviews.swift */,
 				C10D000000000000000A0001 /* CloudDashboardCards.swift */,
 				C10D000000000000000A0002 /* CloudMachineScreen.swift */,
@@ -2390,6 +2393,7 @@
 				A37A0000000000000000B0F1 /* CloudPreviews.swift in Sources */,
 				C1AE00000000000000B00010 /* CloudAtRestPreviews.swift in Sources */,
 				C1AE00000000000000B00009 /* CloudLaneAtRest.swift in Sources */,
+				C1AE00000000000000B0F0E1 /* CloudKeptLanes.swift in Sources */,
 				C1AE00000000000000B00004 /* CloudNoComputerPreviews.swift in Sources */,
 				C10D000000000000000B0001 /* CloudDashboardCards.swift in Sources */,
 				C10D000000000000000B0002 /* CloudMachineScreen.swift in Sources */,

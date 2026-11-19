@@ -105,8 +105,8 @@ struct CloudPaneSheet: View {
         .navigationTitle(store.selected?.displayName ?? "ADE Cloud")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-          ToolbarItem(placement: .topBarLeading) {
-            Button { dismiss() } label: { Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)) }
+          ToolbarItem(placement: .topBarTrailing) {
+            Button(role: .close) { dismiss() }
               .accessibilityLabel("Close ADE Cloud")
           }
         }
@@ -172,8 +172,10 @@ struct CloudLaneManageSheet: View {
     NavigationStack {
       CloudMachineScreen(store: store, instanceId: instanceId, showsOpenWork: showsOpenWork)
         .toolbar {
-          ToolbarItem(placement: .cancellationAction) {
-            Button("Done") { dismiss() }
+          // The trailing side, as Settings' close: on the Duo it sits on the edge bar.
+          ToolbarItem(placement: .topBarTrailing) {
+            Button(role: .close) { dismiss() }
+              .accessibilityLabel("Close")
           }
         }
     }

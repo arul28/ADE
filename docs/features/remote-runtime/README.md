@@ -1285,26 +1285,33 @@ of the last three round trips are 400 ms or more, or two connections dropped
 within five minutes. It turns off only after five round trips under 250 ms with
 no drop in five minutes, so a link near the line does not flicker. The samples
 are the dial's latency and the 30 s maintenance ping; the drops are connection
-evictions that are not a hand-over to another ADE. The result rides the
+evictions that are not a hand-over to another ADE. A ping that a freeze of the
+machine's brain delayed is not a sample: the brain's reply then carries
+`hostFrozenMs` (`brainPingReply`, `RuntimePingReply`), because that round trip
+measured the freeze, not the network. The result rides the
 existing connection snapshot as `slowLink: { active, reason, rttMs, far }` — no new
 poll, timer or IPC call. The person's own setting for the machine wins: **Slow
 connection mode** in the machine's **Edit** panel is **Automatic** (default),
 **Always on** or **Off**, saved on this computer's target record
 (`remoteRuntime.setSlowLinkMode(id, mode)`), so it applies per machine and per
-computer. With the mode on, a chat on that machine shows `Slow connection · <rtt>
-ms` in the composer's status strip, and the machine row reads `<route> · <rtt>
+computer. With the mode on, a chat on that machine shows `Slow connection to
+<machine> · <rtt> ms` in the composer's status strip. Its X closes it in every
+chat on that machine until the link is good again (`closeSlowLinkChip` in
+`renderer/state/projectMachines.ts`, cleared by the shared connection feed);
+the next slow spell shows it again. The machine row reads `<route> · <rtt>
 ms · Slow connection`.
 
 What the mode changes is only what would be hidden or delayed: a transcript
 picture from that machine waits as a `Show picture · <size>` tile until it is
-clicked (a picture already shown stays), a plain-shell terminal types ahead,
-and an agent CLI's terminal gets a local line (below) so a typed letter shows in
-one frame instead of most of a second later.
+clicked (a picture already shown stays) and a plain-shell terminal types
+ahead. An agent CLI's terminal sends every key to the machine as on a fast
+link; to type on this computer first, the person opens the Work input box
+(keyboard button in the terminal header).
 
 Typing has a lower line of its own, `far`: two of the last three round trips at
 150 ms or more turn it on, and the last five under 110 ms turn it off
 (`FAR_RTT_ON_MS`, `FAR_RTT_OFF_MS`). At 150 ms each key already lags enough to
-feel, so a far link gets the type-ahead and the local line without the rest of
+feel, so a far link gets the type-ahead without the rest of
 the mode. Slow-connection mode always counts as far; **Always on** and **Off**
 set both. Pictures in the proof drawer and
 the lightbox load as before. The always-on transport work below runs in every
@@ -1344,13 +1351,14 @@ for the same redial and ask again, while a write still reports that its outcome
 is unknown.
 
 Text for a running agent CLI (`chat.typeIntoCli`) gets the same treatment from
-both ways of typing into it: the Work box (`when: "free"`, typed at a free
-prompt) and the terminal's local line (`when: "now"`, typed at once). A brain
+both modes: the Work box (`when: "free"`, typed at a free prompt) and
+`when: "now"` (typed at once; sent only by older desktops' terminal local
+line, which this desktop no longer has). A brain
 that announces `agentCliTypeNow` answers a repeated `clientMessageId` once for
 both modes; the pool sends the text again after a reconnect only to such a
 brain, and a send refused before it dialled comes back to the caller as not
 sent. See
-[Terminal and Session UI Surfaces](../terminals-and-sessions/ui-surfaces.md#the-terminals-local-line-on-a-far-link).
+[Terminal and Session UI Surfaces](../terminals-and-sessions/ui-surfaces.md#input-box-for-a-running-agent-cli-workcliinputboxtsx).
 
 **A drop that is a blip.** A link that was up and dropped redials every 2 s for
 3 minutes (`FAST_REDIAL_WINDOW_MS`, cleared by the ordinary bounded backoff
@@ -1409,7 +1417,7 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 - `Remote machine was manually disconnected. Connect again to use this remote project.` — the user explicitly disconnected the target; ADE will not implicitly reconnect or restore it until Connect is pressed.
 - `Not connected · you disconnected it on <date>` — the row's line for a manual disconnect. The same rule applies: ADE waits for Connect.
 - `Not connected · Reconnect automatically is off` — the machine has connected before, but its **Reconnect automatically** checkbox (Edit) is off, so ADE does not reconnect it when the app opens. Connect makes a one-off connection and leaves the checkbox as it is. A machine that has never connected shows `Never connected` instead.
-- `Slow connection · <rtt> ms` in a chat's composer — slow-connection mode is on for that machine, so pictures wait for a click and a plain-shell terminal types ahead. **Slow connection mode** in the machine's **Edit** panel turns it off or forces it on. See [A slow or dropping link](#a-slow-or-dropping-link).
+- `Slow connection to <machine> · <rtt> ms` in a chat's composer — slow-connection mode is on for that machine (its X hides it until the link recovers), so pictures wait for a click and a plain-shell terminal types ahead. **Slow connection mode** in the machine's **Edit** panel turns it off or forces it on. See [A slow or dropping link](#a-slow-or-dropping-link).
 - `Remote ADE service connection failed.` — the target is currently unreachable or its route failed. Automatic reconnects continue with bounded backoff; press Connect to bypass the current backoff when you want an immediate retry.
 - `SSH server at <host:port> closed the connection before ADE could finish the SSH handshake` — the TCP route opened but the server reset or closed the SSH handshake. Check Remote Login/sshd, firewall rules, and Tailscale SSH policy. An sshd that saw many refused sign-ins from this computer also does this for a while (OpenSSH source penalties).
 - `SSH authentication failed for user(s) … ADE won't retry on its own. Fix this, then press Try again.` — the server refused every key. ADE stops retrying so it does not repeat the refusal on a timer; fix the user or key, then press Try again or edit the machine.

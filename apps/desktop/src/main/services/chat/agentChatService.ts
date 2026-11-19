@@ -873,8 +873,6 @@ import type {
   DeletedChatRemoveArgs,
   DeletedChatReopenArgs,
   TerminalSessionSummary,
-  AgentCliTypeArgs,
-  AgentCliTypeResult,
 } from "../../../shared/types";
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
 import {
@@ -1406,6 +1404,7 @@ import type { MachinePowerSource } from "../../../../../ade-cli/src/services/pow
 import { createHostSleepChipTracker, sessionTurnInFlight } from "./hostSleepChipTracker";
 import { ChatWakeDeferredError, createChatWaitRegistry, type ChatWaitRegistry } from "./chatWaitRegistry";
 import { createChatWebhookRegistry, type ChatWebhookRegistry } from "./chatWebhookRegistry";
+import { createAgentCliTyping } from "./agentCliTyping";
 import { createAgentCliWakes } from "./agentCliWakes";
 import { createAgentCliSessionActions } from "./agentCliSessionActions";
 import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS, parseClaudeGoalCommand } from "../../../shared/chatGoals";
@@ -12382,8 +12381,9 @@ export function createAgentChatService(args: {
     & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal" | "onExit" | "waitForResumeTargetBackfill" | "ensureResumeTargets" | "dispose" | "isSessionOwnedByLivePeerRuntime" | "resumeSession" | "hasLivePty" | "showSessionNotice">>
     // The `ade chat` commands a tracked agent CLI answers (`agentCliSessionActions.ts`).
     & Partial<Pick<ReturnType<typeof createPtyService>, "interruptAgentCli" | "restartAgentCli" | "regenerateAgentCliTitle">>
-    // A line from a terminal's local line, typed now (`chat.typeIntoCli` with `when: "now"`).
-    & Partial<Pick<ReturnType<typeof createPtyService>, "typeLineIntoAgentCli">>
+    // A person's text for a CLI (`agentCliTyping.ts`): `typeLineIntoAgentCli` for an older
+    // desktop's `when: "now"`; `getTrackedCliTurn`, whether the CLI reported its turn running.
+    & Partial<Pick<ReturnType<typeof createPtyService>, "typeLineIntoAgentCli" | "getTrackedCliTurn">>
     // A tracked CLI's turn boundaries: its finished turns report to its parent
     // and settle a waiting automation step.
     & TrackedCliTurnSignals
@@ -51777,123 +51777,22 @@ export function createAgentChatService(args: {
     isDisposed: () => serviceDisposed,
   });
 
-  // Text a person sends to a running agent CLI from an ADE box (Work, phone,
-  // web). Typed through the wake path above, so it never lands mid-turn and
-  // never shares a turn with a wake. A text that has to wait (`holdUntilFree`
-  // from a phone or the web) joins the same durable queue `ade chat send` uses
-  // for a busy CLI (a send wait on the CLI itself), so every queued text for a
-  // CLI is typed in the order it was sent and survives a brain restart.
-  const agentCliProcessEnded = (sessionId: string): boolean =>
-    typeof ptyService?.hasLivePty === "function" && !ptyService.hasLivePty(sessionId);
-
-  const queuedAgentCliSendWaits = async (sessionId: string) => {
-    if (!chatWaits) return [];
-    return (await chatWaits.list({ sessionId })).filter((waiter) =>
-      waiter.action.kind === "send"
-      && waiter.action.sessionId === sessionId
-      && waiter.targetSessionIds.length === 1
-      && waiter.targetSessionIds[0] === sessionId);
-  };
-
-  const armQueuedAgentCliSend = async (args: { sessionId: string; text: string; metadata?: Record<string, unknown> | null }) => {
-    if (!chatWaits) throw new Error("Queued sends are not available yet; try again in a moment.");
-    // A wait on the CLI itself: it types the text at the CLI's next free
-    // prompt, survives a brain restart, and gives up after a day.
-    return await chatWaits.arm({
-      targetSessionIds: [args.sessionId],
-      mode: "all",
-      waitFor: "idle",
-      sendToSessionId: args.sessionId,
-      text: args.text,
-      ...(args.metadata ? { sendMetadata: args.metadata } : {}),
-    });
-  };
-
-  /**
-   * Answers to `typeIntoAgentCliWhenFree` by session and the caller's message
-   * id, so one text sent by two windows, or sent again after a dropped link,
-   * is typed once. Both ways of typing share it: the input box's queued texts
-   * (`when: "free"`) and the terminal's local line (`when: "now"`). A call in
-   * flight is shared; a typed or queued answer is kept for a while.
-   */
-  const agentCliTypeAnswers = new Map<string, { at: number; answer: Promise<AgentCliTypeResult> }>();
-  const AGENT_CLI_TYPE_ANSWER_TTL_MS = 10 * 60_000;
-  const typeIntoAgentCliWhenFree = async (args: AgentCliTypeArgs): Promise<AgentCliTypeResult> => {
-    const clientMessageId = typeof args?.clientMessageId === "string" ? args.clientMessageId.trim() : "";
-    if (!clientMessageId) return await typeIntoAgentCliNow(args);
-    const key = `${typeof args?.sessionId === "string" ? args.sessionId.trim() : ""}:${clientMessageId}`;
-    const now = Date.now();
-    for (const [entryKey, entry] of agentCliTypeAnswers) {
-      if (now - entry.at > AGENT_CLI_TYPE_ANSWER_TTL_MS) agentCliTypeAnswers.delete(entryKey);
-    }
-    const known = agentCliTypeAnswers.get(key);
-    if (known) return await known.answer;
-    const answer = typeIntoAgentCliNow(args);
-    agentCliTypeAnswers.set(key, { at: now, answer });
-    try {
-      const result = await answer;
-      // Only a typed or queued text is final; busy, ended or a failure may be sent again.
-      if (result.outcome !== "delivered" && result.outcome !== "held") agentCliTypeAnswers.delete(key);
-      return result;
-    } catch (error) {
-      agentCliTypeAnswers.delete(key);
-      throw error;
-    }
-  };
-
-  const typeIntoAgentCliNow = async (args: AgentCliTypeArgs): Promise<AgentCliTypeResult> => {
-    const sessionId = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
-    const text = typeof args?.text === "string" ? args.text : "";
-    if (!sessionId) throw new AdeExpectedError("A session id is required.", "user");
-    if (!text.trim()) throw new AdeExpectedError("There is no text to send.", "user");
-    if (args.when === "now") return await typeAgentCliLineNow(sessionId, text, args.inputOrigin);
-    if (!isTrackedAgentCliSession(sessionId)) {
-      throw new AdeExpectedError(`Session '${sessionId}' is not an agent CLI session.`, "user");
-    }
-    if (sessionService.get(sessionId)?.archivedAt) {
-      throw new AdeExpectedError("This CLI session is archived.", "user");
-    }
-    if (agentCliProcessEnded(sessionId)) return { outcome: "ended" };
-    // `@model:` / `@chat:` / `@lane:` … tokens from the input box get the same
-    // facts block a chat send appends, so the CLI agent reads exact ids and
-    // flags instead of guessing. The chat's own expansion step logs a failed
-    // lookup, sends the text as typed, and records the same usage event.
-    const typedText = (await chatMentionService.applyChatMentionExpansion({ sessionId, text })).text;
-    // Queued texts go first: a later send must not jump the line.
-    if ((await queuedAgentCliSendWaits(sessionId)).length === 0) {
-      const outcome = await deliverWakeToSession({ sessionId, text: typedText, kind: "auto" });
-      if (outcome === "delivered") return { outcome };
-    }
-    if (args.holdUntilFree === true) {
-      await armQueuedAgentCliSend({ sessionId, text: typedText });
-      return { outcome: "held" };
-    }
-    return { outcome: "deferred" };
-  };
-
-  /**
-   * `when: "now"`: the terminal's local line. Typed into the CLI's input at
-   * once, as the person's own keys would be, then Enter; no wait for a free
-   * prompt, no clear keys, no `@` expansion. Any agent CLI terminal takes it,
-   * tracked or not, like keys typed there.
-   */
-  const typeAgentCliLineNow = async (sessionId: string, text: string, inputOrigin: unknown): Promise<AgentCliTypeResult> => {
-    const row = sessionService.get(sessionId);
-    // A plain terminal is not a chat: the line would run in its shell. A
-    // tracked or untracked agent CLI terminal has a CLI tool type. The queued
-    // path refuses the same ids; this immediate one used to skip it.
-    if (row && row.toolType === "shell") {
-      throw new AdeExpectedError(`Session '${sessionId}' is not an agent CLI session.`, "user");
-    }
-    if (row?.archivedAt) {
-      throw new AdeExpectedError("This CLI session is archived.", "user");
-    }
-    if (typeof ptyService?.typeLineIntoAgentCli !== "function") {
-      throw new AdeExpectedError("Typing a line into a CLI session is not available in this runtime.", "user");
-    }
-    const typed = await ptyService.typeLineIntoAgentCli({ sessionId, text, inputOrigin });
-    return { outcome: typed ? "delivered" : "ended" };
-  };
+  // Text a person sends to a running agent CLI from an ADE box (`agentCliTyping.ts`).
+  const {
+    typeIntoAgentCliWhenFree,
+    queuedSendWaits: queuedAgentCliSendWaits,
+    hasQueuedSends: hasQueuedAgentCliSends,
+    armQueuedSend: armQueuedAgentCliSend,
+  } = createAgentCliTyping({
+    sessionService,
+    ptyService: ptyService ?? null,
+    getChatWaits: () => chatWaits,
+    isTrackedAgentCliSession,
+    expandMentions: (mentionArgs) => chatMentionService.applyChatMentionExpansion(mentionArgs),
+    deliverWakeToSession: (wakeArgs) => deliverWakeToSession(wakeArgs),
+    agentCliTypingDeferred,
+    isDisposed: () => serviceDisposed,
+  });
 
   // The `ade chat` commands a tracked agent CLI answers: each public chat
   // action below routes a CLI row here before `ensureManagedSession`, which
@@ -51906,7 +51805,7 @@ export function createAgentChatService(args: {
     agentCliOwnedByAnotherRuntime,
     deliverWakeToSession: (wakeArgs) => deliverWakeToSession(wakeArgs),
     armQueuedSend: ({ sessionId, text, metadata }) => armQueuedAgentCliSend({ sessionId, text, metadata }),
-    hasQueuedSends: async (sessionId) => (await queuedAgentCliSendWaits(sessionId)).length > 0,
+    hasQueuedSends: hasQueuedAgentCliSends,
     cancelQueuedSends: async (sessionId) => {
       if (!chatWaits) return 0;
       let cancelled = 0;
@@ -73006,6 +72905,7 @@ export function createAgentChatService(args: {
       return row.tracked && isTrackedAgentCliToolType(row.toolType) && !row.archivedAt;
     },
     wakeDeferred: (sessionId) => agentCliTypingDeferred(sessionId),
+    isAgentCliSession: (sessionId) => isTrackedAgentCliSession(sessionId),
     ownedByAnotherBrain: chatOwnedByAnotherBrain,
     getMovedAwayTarget: (sessionId) => getCrossMachineMoveLock(sessionId, "chat_wait"),
     assertDeliverableHere: (sessionId) => {
@@ -78924,6 +78824,8 @@ export function createAgentChatService(args: {
   /** Long enough for the pty to finish the output chunk that ended the turn, and the CLI to print its last lines. */
   const ARCHIVED_CLI_STOP_DELAY_MS = 1_000;
   const unsubscribeCliChildTurnEnded = ptyService?.onTrackedCliTurnEnded?.((event) => {
+    // Whatever the source: the wait checks read the prompt themselves.
+    if (event.outcome !== "needs-input") chatWaits?.signalCliTurnEnded(event.sessionId);
     // A turn end guessed from quiet output is taken only when the CLI's
     // composer is visibly back (the check scheduled work uses), so a CLI that
     // thinks quietly is not reported, or its automation step settled, mid-turn.

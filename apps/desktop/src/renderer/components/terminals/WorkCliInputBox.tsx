@@ -16,6 +16,7 @@ import type {
   TerminalResumeProvider,
   TerminalRuntimeState,
 } from "../../../shared/types";
+import { agentCliReadsFreePrompt } from "../../../shared/cliLaunch";
 import { CliLaunchChips } from "./CliLaunchChips";
 import {
   composerFileSearchQuery,
@@ -527,13 +528,14 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
   }, [sessionId]);
 
   const hasText = draft.trim().length > 0;
-  const busy = runtimeState === "running";
+  // A CLI whose free prompt ADE cannot read takes the text at once, busy or not.
+  const readsFreePrompt = agentCliReadsFreePrompt(provider);
+  const busy = readsFreePrompt && runtimeState === "running";
   const willQueue = offline || busy || queue.length > 0;
-  const placeholder = offline
-    ? `${machineName ?? "This computer"} is offline. What you send goes out when it reconnects.`
-    : busy
-      ? `${providerLabel} is working. What you send waits for its turn to end.`
-      : `Message ${providerLabel}…`;
+  let placeholder = `Message ${providerLabel}…`;
+  if (offline) placeholder = `${machineName ?? "This computer"} is offline. What you send goes out when it reconnects.`;
+  else if (busy) placeholder = `${providerLabel} is working. What you send waits for its turn to end.`;
+  else if (!readsFreePrompt) placeholder = `Message ${providerLabel}… ADE can't tell when it is free, so Enter types it at once.`;
 
   return (
     <div className="shrink-0 bg-[color:var(--chat-canvas-bg)] px-3 pb-3 pt-2" data-testid="work-cli-input-box">

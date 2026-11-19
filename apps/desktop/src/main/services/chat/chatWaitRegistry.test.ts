@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatMessageSessionArgs } from "../../../shared/types";
-import { createChatWaitRegistry } from "./chatWaitRegistry";
+import { ChatWakeDeferredError, createChatWaitRegistry } from "./chatWaitRegistry";
 
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never;
 
@@ -11,7 +11,7 @@ function harness(
   ownedByAnotherBrain: Set<string> = new Set(),
   overrides: Partial<Pick<
     Parameters<typeof createChatWaitRegistry>[0],
-    "callerToldOfUserWait" | "callerIsLiveHere" | "wakeDeferred"
+    "callerToldOfUserWait" | "callerIsLiveHere" | "wakeDeferred" | "isAgentCliSession" | "messageSession"
   >> = {},
 ) {
   const summaries = new Map<string, Summary>(Object.entries(initial));
@@ -96,6 +96,61 @@ describe("chatWaitRegistry", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ sessionId: "caller", kind: "wake" });
     expect(await registry.list()).toEqual([]);
+  });
+
+  // A text queued for an agent CLI (the Work box, the phone) waits only for
+  // the CLI to take a turn. Its Work-row status ("waiting for input" over an
+  // idle prompt, a guessed "running") once held such texts for good.
+  it("types a queued CLI text once the CLI can take it, and keeps an explicit wait's own condition", async () => {
+    let cliCannotTakeText = true;
+    const { registry, arm, sent } = harness(
+      { cli: { status: "active", awaitingInput: true } },
+      new Set(),
+      {
+        isAgentCliSession: (sessionId) => sessionId === "cli",
+        wakeDeferred: (sessionId) => sessionId === "cli" && cliCannotTakeText,
+      },
+    );
+    await arm({ targetSessionIds: ["cli"], mode: "all", waitFor: "idle", sendToSessionId: "cli", text: "queued text" });
+    // `ade chat send cli --after cli --for terminal`: not a queued text.
+    await arm({ targetSessionIds: ["cli"], waitFor: "terminal", sendToSessionId: "cli", text: "after it exits" });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(sent, "held while the CLI cannot take a turn").toEqual([]);
+
+    cliCannotTakeText = false;
+    registry.signalCliTurnEnded("cli");
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(sent).toEqual([{ sessionId: "cli", kind: "wake", text: "queued text" }]);
+    expect((await registry.list()).map((waiter) => waiter.waitFor)).toEqual(["terminal"]);
+
+    // The CLI turns busy as the first of two queued texts is typed: the
+    // second waits behind it, and both are typed in the order they were sent.
+    const typed: string[] = [];
+    let refuseNext = true;
+    const ordered = harness(
+      { cli: { status: "active" } },
+      new Set(),
+      {
+        isAgentCliSession: (sessionId) => sessionId === "cli",
+        wakeDeferred: () => cliCannotTakeText,
+        messageSession: async (args) => {
+          if (refuseNext) {
+            refuseNext = false;
+            throw new ChatWakeDeferredError(args.sessionId);
+          }
+          typed.push(args.text);
+        },
+      },
+    );
+    cliCannotTakeText = true;
+    await ordered.arm({ targetSessionIds: ["cli"], waitFor: "idle", sendToSessionId: "cli", text: "first" });
+    await vi.advanceTimersByTimeAsync(5);
+    await ordered.arm({ targetSessionIds: ["cli"], waitFor: "idle", sendToSessionId: "cli", text: "second" });
+    cliCannotTakeText = false;
+    ordered.registry.signalCliTurnEnded("cli");
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(typed).toEqual(["first", "second"]);
   });
 
   it("does not fire a wait cancelled while its targets were being read", async () => {
