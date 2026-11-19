@@ -655,8 +655,8 @@ export function closedComputerStatements(
 
 /**
  * A deleted computer leaves the account's machine list, as a machine the person
- * removes does: revoked (so its key can't register again), off the roster, and
- * its project copies gone (the project list's cursor moves, so every client
+ * removes does: revoked (so its key can't register again), off the roster, its
+ * lanes off the account lane index, and its project copies gone (the project list's cursor moves, so every client
  * reads it again). The desktop did this itself after its own deletes; a delete
  * from the web, the phone or the server (idle cleanup, a sign-in that never
  * finished) left it listed as an offline machine. Kept when another live
@@ -677,6 +677,12 @@ function forgetMachineStatements(env: CloudDb, computer: ComputerRow, now: numbe
       on conflict (user_id, machine_key) do update set revoked_at = excluded.revoked_at
     `).bind(now, computer.user_id, key, ...unshared.binds),
     env.DB.prepare(`delete from machines where user_id = ? and machine_key = ? and ${unshared.sql}`)
+      .bind(computer.user_id, key, ...unshared.binds),
+    // Its lanes leave the account lane index, as `dropAccountLanes` does for a
+    // removed machine; kept, every client listed them under a machine that's gone.
+    env.DB.prepare(`delete from account_lane_index where user_id = ? and lower(machine_key) = lower(?) and ${unshared.sql}`)
+      .bind(computer.user_id, key, ...unshared.binds),
+    env.DB.prepare(`delete from account_lane_index_state where user_id = ? and lower(machine_key) = lower(?) and ${unshared.sql}`)
       .bind(computer.user_id, key, ...unshared.binds),
   ];
 }
