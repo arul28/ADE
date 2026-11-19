@@ -734,6 +734,16 @@ export function adoptionStatements(
       lane.laneId, lane.laneName, lane.projectOrigin, lane.branch,
       pendingId, instance.id,
     ),
+    // An adoption that learns the machine key after the account's machine
+    // row exists names that row here (the registration names a row made
+    // later, and the tick only names on a key it hasn't seen).
+    env.DB.prepare(`
+      update machines set custom_name = (select nullif(trim(c.name), '') from cloud_computers c where c.instance_id = ?)
+      where custom_name is null and (user_id, machine_key) in (
+        select user_id, machine_key from cloud_computers
+        where instance_id = ? and deleted_at is null and machine_key is not null and nullif(trim(name), '') is not null
+      )
+    `).bind(instance.id, instance.id),
     // The lane this computer is for has a computer again. In the adoption's
     // batch, and safe to repeat, so a create that died after it (or a replay
     // of it) can't leave the lane listed twice.

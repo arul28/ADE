@@ -975,7 +975,14 @@ async function supersedePhantomDuplicates(
         env.DB.prepare(`
           update machines
              set custom_name = ?
-           where user_id = ? and machine_key = ? and custom_name is null
+           where user_id = ? and machine_key = ?
+             and (custom_name is null
+               -- An ADE Cloud computer's row was named after the computer
+               -- at registration (upsertMachine): a default, so the
+               -- person's own name for the old row wins over it.
+               or custom_name = (select nullif(trim(c.name), '') from cloud_computers c
+                 where c.user_id = machines.user_id and c.machine_key = machines.machine_key and c.deleted_at is null
+                 order by c.created_at desc limit 1))
         `).bind(carriedName, userId, input.machineKey),
       ]
       : []),
