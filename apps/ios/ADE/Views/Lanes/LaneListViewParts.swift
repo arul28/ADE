@@ -1125,7 +1125,15 @@ struct UnavailableLaneDestination: View {
         )
       }
     }
-    // A free that just ended: the kept lane is on the account a moment later.
-    .task { await cloudStore.refreshLanesWithoutComputer(using: syncPublishes.service, force: true) }
+    // The page can open as the computer goes, before the server has kept the
+    // lane: read again a few times (about half a minute), and stop once it's
+    // there or the page closes.
+    .task(id: laneId) {
+      for attempt in 0..<6 {
+        await cloudStore.refreshLanesWithoutComputer(using: syncPublishes.service, force: true)
+        if Task.isCancelled || cloudStore.lanesWithoutComputer.contains(where: { $0.laneId == laneId }) { return }
+        try? await Task.sleep(for: .seconds(attempt == 0 ? 2 : 5))
+      }
+    }
   }
 }
