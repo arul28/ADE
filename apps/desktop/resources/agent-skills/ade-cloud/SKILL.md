@@ -151,6 +151,8 @@ person, commit and push the lane's branch, then start a lane on a full computer
 on that branch: `ade lanes create --machine cloud --size large --existing-branch
 <branch> --name "<name>"`. Then start a chat there: `ade chat create --machine
 <its computer> --lane <its lane id> --provider <p> --model <id> --prompt "<the
-task, and what is done>"`, and end your turn. Never make a computer for it
+task, and what is done>"`, and end your turn. Over ADE MCP, `--machine <its
+computer>` is refused: make the lane with the `lanes create` step above, tell
+the person it is ready, and ask them to start the chat in it. Never make a computer for it
 (`ade cloud create --kind vm`). The old computer stays; offer to delete it from
 the new chat.

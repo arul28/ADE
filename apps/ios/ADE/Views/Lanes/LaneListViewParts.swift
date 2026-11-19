@@ -961,7 +961,14 @@ extension LanesTabView {
       // An ADE Cloud lane whose computer is gone (a PR's or a chat's "Go to
       // lane"): its kept page, with New computer and Delete.
       let accountLaneId = workParseRemoteLaneId(request.laneId)?.laneId ?? request.laneId
-      if AccountCloudStore.shared.lanesWithoutComputer.contains(where: { $0.laneId == accountLaneId }) {
+      let keptStore = AccountCloudStore.shared
+      if !keptStore.lanesWithoutComputer.contains(where: { $0.laneId == accountLaneId }),
+         AccountService.shared.phase == .signedIn {
+        // Its computer may have gone on another device since the last read.
+        await keptStore.refreshLanesWithoutComputer(using: syncService, force: true)
+        guard !Task.isCancelled, syncService.requestedLaneNavigation?.id == request.id else { return }
+      }
+      if keptStore.lanesWithoutComputer.contains(where: { $0.laneId == accountLaneId }) {
         syncService.requestedLaneNavigation = nil
         openLane(request.laneId)
         return

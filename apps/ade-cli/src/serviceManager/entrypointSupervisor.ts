@@ -163,7 +163,7 @@ export async function restartEntrypointSupervisedBrain(deps: EntrypointSuperviso
       entrypoint,
       "This machine was made from an older ADE machine template, whose start script always runs the ADE it was built with, "
         + "so an update can't take effect on it. A new lane on ADE Cloud gets a computer with the current version "
-        + "(ade lanes create --machine cloud --existing-branch <branch>); the person can also make one in Settings › ADE Cloud. A copy keeps the old template.",
+        + "(ade lanes create --machine cloud --existing-branch <branch> --name <name>); the person can also make one in Settings › ADE Cloud. A copy keeps the old template.",
       { failureStep: "entrypoint_too_old" },
     );
   }

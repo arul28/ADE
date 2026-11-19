@@ -890,7 +890,17 @@ export function WebClientRoot({
       });
       if (!current() || !result) return;
       const landing = settleOwnedLink(result);
-      if (landing) navigateMountedApp(landing);
+      if (!landing) return;
+      if (landing.startsWith("/settings")) {
+        // As a settings link does in the app: leave the new-tab page, and
+        // with no project open, show Settings on its own (a kept lane's link).
+        const { useAppStore } = await import("../../state/appStore");
+        if (!current()) return;
+        const shell = useAppStore.getState();
+        shell.cancelNewTab();
+        if (!shell.project?.rootPath) shell.setStandaloneSettingsOpen(true);
+      }
+      navigateMountedApp(landing);
     })().catch((error) => {
       if (!current()) return;
       setOwnedLink({

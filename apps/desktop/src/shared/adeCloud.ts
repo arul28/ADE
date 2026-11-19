@@ -311,7 +311,7 @@ export function cloudAndroidNeedsVmCost(boxShape: CloudShape | null, kind: Cloud
  */
 export function cloudAndroidNeedsVmMessage(boxShape: CloudShape | null): string {
   return `${cloudAndroidNeedsVmCost(boxShape)} `
-    + "ADE can start a new lane on this lane's pushed branch with a full computer (Large or X-Large) and continue the task there. "
+    + "ADE can start a new lane on this lane's pushed branch with a full computer of that size and continue the task there. "
     + "This computer stays, and you can delete it later.";
 }
 

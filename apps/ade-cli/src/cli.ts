@@ -5206,7 +5206,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   raising the limits, a new lane (--machine cloud). The card shows in your chat and gives up
   after 5 minutes. In a full-auto chat or an automation ADE answers it with
   the person's limits (balanced: 3 new machines a day, up to 4x16), and says
-  no to deleting a machine that chat didn't make. create, copy and move work
+  no to deleting a machine that chat didn't make. create, copy and move are
+  the exception: an agent's always shows the card, also in a full-auto chat,
+  and with nobody to ask (an automation, ADE MCP) the answer is no. They work
   from any of your signed-in machines; without an ADE window there, your chat
   gets a link to approve the new machine joining your account.
   From a terminal with no ADE chat, what asks first is refused: ADE can't
@@ -22030,7 +22032,7 @@ function formatCloudList(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const machines = isRecord(raw) && Array.isArray(raw.machines) ? raw.machines.filter(isRecord) : [];
   const lines: string[] = [];
-  if (!machines.length) lines.push("No ADE Cloud computers. A new lane on ADE Cloud makes one: ade chat create --machine cloud, or ade lanes create --machine cloud.");
+  if (!machines.length) lines.push("No ADE Cloud computers. A new lane on ADE Cloud makes one: ade chat create --machine cloud, or ade lanes create --machine cloud --name <name>.");
   for (const box of machines) {
     const sleep = isRecord(box.sleep) && box.sleep.state !== "auto" ? "sleep pending" : "";
     const rate = typeof box.hoursRate === "number" ? `${box.hoursRate}× hours` : "—";

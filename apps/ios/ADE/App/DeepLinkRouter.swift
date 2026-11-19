@@ -419,7 +419,10 @@ final class DeepLinkRouter {
     ownedLinkTask?.cancel()
     ownedLinkTask = Task { @MainActor [weak self] in
       guard let self else { return }
-      if await self.openKeptLane(laneId) { return }
+      // A link that names its machine or project waits for sign-in, as its
+      // own route would, so a kept lane opens after the person signs in.
+      let waitsForSignIn = ownership.owner != nil || { if case .id = accountProject { return true } else { return false } }()
+      if await self.openKeptLane(laneId, waitsForSignIn: waitsForSignIn) { return }
       // A later link took over while the kept lanes were read.
       guard !Task.isCancelled else { return }
       self.routeLaneOnItsMachine(laneId: laneId, ownership: ownership, accountProject: accountProject, url: url)
@@ -429,13 +432,24 @@ final class DeepLinkRouter {
   /// Opens the lane's kept page when the account keeps it without a computer.
   /// False (the link goes on) when it doesn't, when the phone isn't signed in,
   /// or when the account has no ADE Cloud. A failed read keeps the last list.
-  private func openKeptLane(_ laneId: String) async -> Bool {
+  /// True also when a link that needs sign-in gave up waiting for it (the
+  /// notice says so), as the owned route ends.
+  private func openKeptLane(_ laneId: String, waitsForSignIn: Bool) async -> Bool {
     guard let sync = SyncService.shared else { return false }
     let account = AccountService.shared
-    // The account is still starting (a cold launch from the link): wait for it,
-    // as an owned link does. Signed out: the link's own route says so.
-    if account.phase == .loading {
-      guard await waitUntilSignedIn(account) else { return false }
+    // The account is still starting (a cold launch from the link), or the
+    // link names its machine or project and the phone is signed out: wait
+    // for sign-in, as an owned link does. A link with neither goes on to its
+    // "Send to your computer" card, which needs no account.
+    if account.phase == .loading || (account.phase == .signedOut && waitsForSignIn) {
+      if account.phase == .signedOut {
+        sync.landOnHub(notice: "Sign in to ADE to open this link.")
+      }
+      guard await waitUntilSignedIn(account) else {
+        guard waitsForSignIn else { return false }
+        if !Task.isCancelled { sync.landOnHub(notice: "Sign in to ADE to open this link.") }
+        return true
+      }
     }
     guard account.phase == .signedIn else { return false }
     let store = AccountCloudStore.shared
@@ -543,6 +557,8 @@ final class DeepLinkRouter {
     case .malformed:
       landOnBrokenLink()
     case .none:
+      // A newer link: an earlier lane link's kept-lane read must not open after it.
+      ownedLinkTask?.cancel()
       postSession(scope.accountMachineKey, nil)
     case .owned(let owner):
       // A chat another live machine already streams opens through that
@@ -553,6 +569,7 @@ final class DeepLinkRouter {
            accountMachineKey: owner.accountMachineKey,
            origin: .external
          )) != nil {
+        ownedLinkTask?.cancel()
         postSession(owner.accountMachineKey, nil)
         return
       }
