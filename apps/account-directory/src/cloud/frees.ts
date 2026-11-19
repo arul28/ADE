@@ -173,8 +173,11 @@ async function push(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepRe
     // is not a lane to open and fix: say that, apart from work that didn't push.
     // Unknown (an older ADE) counts as work.
     const unpushed = left.filter((lane) => lane.state === "unpushed" || lane.dirty !== false || lane.ahead !== 0);
+    // The read can fail for a while (a cold disk right after a wake) or for
+    // good (a lane folder that's no longer a Git worktree): name the lanes and
+    // say what to do in both cases.
     if (unpushed.length === 0) {
-      return { kind: "fail", error: "ADE couldn't read the work on this computer in time, so nothing was deleted. Try again in a minute." };
+      return { kind: "fail", error: `ADE couldn't read the work in${laneNamesOf(left)}, so nothing was deleted. Try again in a minute; if it fails again, open that lane to see why.` };
     }
     return { kind: "fail", error: `ADE couldn't push the work in${laneNamesOf(unpushed)} to GitHub, so the computer stays. Open it, push or discard that work, then try again.` };
   }

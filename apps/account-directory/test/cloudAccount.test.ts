@@ -4312,7 +4312,7 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
         lane("clean", { dirty: false, ahead: 0 }),
         lane("failed", { laneId: "main", laneName: "Primary", branchRef: "main", primary: true, dirty: false, ahead: 0 }),
       ] });
-    }, "ADE couldn't read the work on this computer in time, so nothing was deleted. Try again in a minute."],
+    }, "ADE couldn't read the work in (main checkout), so nothing was deleted. Try again in a minute; if it fails again, open that lane to see why."],
     ["work changed while it pushed", () => {
       shell.check = JSON.stringify({ pushed: 0, failed: 0, skipped: 0, lanes: [lane("unpushed")] });
     }, "Work changed on this computer while ADE pushed it (Fix login), so it stays. Try again."],
