@@ -95,6 +95,11 @@ vi.mock("./claudeRuntimeProbe", () => ({
   resetClaudeRuntimeProbeCache: (...args: unknown[]) => mockState.resetClaudeRuntimeProbeCache(...args),
 }));
 
+// Starts a real Claude process against the real home.
+vi.mock("./claudeAccountSkillSync", () => ({
+  ensureClaudeAccountSkillsSynced: vi.fn(),
+}));
+
 vi.mock("./providerTaskRunner", () => ({
   runProviderTask: (...args: unknown[]) => mockState.runProviderTask(...args),
 }));

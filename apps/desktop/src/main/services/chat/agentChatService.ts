@@ -22,6 +22,7 @@ import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePr
 import { claudeCompactionSettings, claudeCompactWindow, claudeEstimatedCompactAt, compactionIdleModeDefault, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { withClaudeSubagentCompactWindow } from "../../../shared/claudeBuiltinAgentPrompts";
 import { claudeToolProfileOrNull, noteClaudeCodeInit } from "../ai/claudeCodeInit";
+import { waitForClaudeAccountSkillSync } from "../ai/claudeAccountSkillSync";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
@@ -50130,6 +50131,11 @@ export function createAgentChatService(args: {
       warm: startsWarm,
     });
 
+    const accountSkillSync = runtime.warmQuery ? null : waitForClaudeAccountSkillSync();
+    if (accountSkillSync) {
+      await accountSkillSync;
+      assertCurrentStart();
+    }
     // Repair a corrupted thinking history before resuming directly (the warm
     // path already ran this in pre-warm). No-op for healthy transcripts.
     if (!runtime.warmQuery && options.resume) {
@@ -50572,6 +50578,8 @@ export function createAgentChatService(args: {
         claudeSdkLoad.catch(() => {});
         const claudeDownload = chatPinnedToolDownload(null, "claude-code", "Claude Code");
         if (claudeDownload) await claudeDownload;
+        const accountSkillSync = waitForClaudeAccountSkillSync();
+        if (accountSkillSync) await accountSkillSync;
         await chatUserMcp.prepareClaude({
       ...chatMcpTarget(managed),
       // The query's own strict decision: it ignores ~/.claude.json, so there is nothing to prepare.

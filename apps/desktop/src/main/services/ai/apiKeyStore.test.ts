@@ -855,3 +855,107 @@ describe("apiKeyStore", () => {
     expect(vault.remove).not.toHaveBeenCalled();
   });
 });
+
+describe("apiKeyStore credential launch homes", () => {
+  let tempRoot: string;
+  let keychain: Map<string, string>;
+
+  beforeEach(() => {
+    spawnSyncMock.mockReset();
+    safeStorageState.available = false;
+    safeStorageState.decrypted = "{}";
+    safeStorageState.encrypted = Buffer.from("encrypted");
+    keychain = new Map();
+    installSecurityMock(keychain);
+    process.env = { ...originalEnv, ADE_API_KEY_STORE_FORCE_KEYCHAIN: "1" };
+    delete process.env.ADE_API_KEY_STORE_DISABLE_KEYCHAIN;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_API_KEY;
+    delete process.env.CURSOR_API_KEY;
+    setPlatform("darwin");
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-api-key-launch-homes-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    process.env = { ...originalEnv };
+    setPlatform(originalPlatform);
+    vi.resetModules();
+  });
+
+  it("rejects traversal credential ids and removes their ADE launch home", async () => {
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, { credentialStore: new MemoryCredentialStore() });
+
+    store.storeApiCredential({ provider: "acme", credentialId: "work", label: "Acme", key: "sk-acme" });
+    expect(store.listApiCredentials("acme")).toEqual([
+      expect.objectContaining({ provider: "acme", credentialId: "work" }),
+    ]);
+    expect(() => store.storeApiCredential({ provider: "openai", credentialId: "../outside", label: "Unsafe", key: "sk-unsafe" })).toThrow(/Credential ids may contain only/);
+    expect(() => store.storeApiCredential({ provider: "openai", credentialId: "..\\outside", label: "Unsafe", key: "sk-unsafe" })).toThrow(/Credential ids may contain only/);
+
+    const launchHome = path.join(tempRoot, "provider-homes", "preset", "credential-openai-secondary");
+    fs.mkdirSync(launchHome, { recursive: true });
+    fs.writeFileSync(path.join(launchHome, "secret.json"), "raw key");
+    const { removeCredentialLaunchHome } = await import("../chat/harnessPresetConfigHomes");
+    removeCredentialLaunchHome("openai", "secondary", tempRoot);
+    expect(fs.existsSync(launchHome)).toBe(false);
+  });
+
+  it("binds hydrated API keys to their account and purges only account-origin values", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const store = await loadStoreModule();
+    let accountUserId: string | null = "account-a";
+    store.initApiKeyStore(tempRoot, {
+      credentialStore,
+      getAccountUserId: () => accountUserId,
+      launchHomeAdeDir: tempRoot,
+    });
+    store.storeApiKey("cursor", "device-key", { deviceOnly: true });
+    store.storeApiKey("openai", "hydrated-key", { deviceOnly: true, source: "account", accountUserId: "account-a" });
+    expect(store.getApiKeyProvenance("cursor")).toEqual({ source: "device", accountUserId: null });
+    expect(store.getApiKeyProvenance("openai")).toEqual({ source: "account", accountUserId: "account-a" });
+    const purgedHome = path.join(tempRoot, "provider-homes", "credential", "openai-default");
+    fs.mkdirSync(purgedHome, { recursive: true });
+    fs.writeFileSync(path.join(purgedHome, "opencode.json"), "raw key");
+    accountUserId = null;
+    store.purgeAccountApiKeys();
+    expect(store.getApiKey("cursor")).toBe("device-key");
+    expect(store.getApiKey("openai")).toBeNull();
+    expect(fs.existsSync(purgedHome)).toBe(false);
+  });
+
+  it("mirrors and purges credentials with composite vault keys", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const vault = createVaultMock();
+    let accountUserId: string | null = "account-a";
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, { credentialStore, getAccountVault: () => vault as never, getAccountUserId: () => accountUserId, launchHomeAdeDir: tempRoot });
+    store.storeApiKey("openai", "sk-default");
+    store.storeApiCredential({ provider: "openai", credentialId: "secondary", label: "Secondary", key: "sk-secondary" });
+    await vi.waitFor(() => expect(vault.set).toHaveBeenCalledWith("all", "provider_api_key", "openai", "sk-default"));
+    await vi.waitFor(() => expect(vault.set).toHaveBeenCalledWith("all", "provider_api_key", "openai#secondary", "sk-secondary"));
+
+    vault.list.mockResolvedValue({ ok: true, value: [{ scope: "all", kind: "provider_api_key", key: "openai#hydrated", value: null, updatedAt: "now" }] } as never);
+    vault.get.mockResolvedValueOnce({ ok: true, value: "sk-hydrated" } as never);
+    await store.hydrateApiKeysFromVault();
+    expect(vault.get).toHaveBeenCalledWith("all", "provider_api_key", "openai#hydrated");
+    expect(store.getApiCredentialKey("openai", "hydrated")).toBe("sk-hydrated");
+    expect(credentialStore.values.get("ai.api_key.provenance.v1")).toContain("openai#hydrated");
+    const purgedHome = path.join(tempRoot, "provider-homes", "credential", "openai-hydrated");
+    fs.mkdirSync(purgedHome, { recursive: true });
+    fs.writeFileSync(path.join(purgedHome, "settings.json"), "raw key");
+    accountUserId = null;
+    store.purgeAccountApiKeys();
+    expect(store.getApiCredentialKey("openai", "hydrated")).toBeNull();
+    expect(credentialStore.values.has("ai.api_key.openai#hydrated.v1")).toBe(false);
+    expect(fs.existsSync(purgedHome)).toBe(false);
+    const removedHome = path.join(tempRoot, "provider-homes", "credential", "openai-secondary");
+    fs.mkdirSync(removedHome, { recursive: true });
+    fs.writeFileSync(path.join(removedHome, "settings.json"), "raw key");
+    store.removeApiCredential("openai", "secondary");
+    expect(fs.existsSync(removedHome)).toBe(false);
+    await vi.waitFor(() => expect(vault.remove).toHaveBeenCalledWith("all", "provider_api_key", "openai#secondary"));
+  });
+});

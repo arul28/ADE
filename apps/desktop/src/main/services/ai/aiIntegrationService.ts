@@ -133,6 +133,7 @@ import {
   resolveBundledClaudeBinary,
   withReportedClaudeVersion,
 } from "./claudeAvailability";
+import { ensureClaudeAccountSkillsSynced } from "./claudeAccountSkillSync";
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { loadCursorSdk } from "./cursorSdkLoader";
@@ -2498,6 +2499,11 @@ export function createAiIntegrationService(args: {
             devin: listable("devin", providerConnections.devin),
             antigravity: listable("antigravity", providerConnections.antigravity),
           };
+          // A claude.ai account's skills download once per home; do it before
+          // the first chat so every chat lists the same skills.
+          if (availability.claude.auth.ready && availability.claude.auth.mode === "oauth") {
+            ensureClaudeAccountSkillsSynced({ logger });
+          }
           const runtimeFilteredAvailable = timeSyncPhase("filter_available_models", () => available.filter((descriptor) => {
             // API/local rows are not owned by any one provider tile (they reach
             // ADE through OpenCode, Pi, or a local runtime), so the tile toggle
