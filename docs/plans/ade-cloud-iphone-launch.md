@@ -174,7 +174,7 @@ paused). The brain already logs `cloud_phone.*` events.
 
 ## Launch day
 
-Done 2026-11-18: migrations 0047 and 0048 applied by the main deploy; the three NoMac secrets set on production; NoMac webhook `whk_81d6fff272eb9b0257d5c40b` to the URL below (phone.queued, phone.ready, phone.ended, credit.low; its test delivery verified); the live Stripe product `ade_cloud_extra_phone`, meter `ade_cloud_phone_minutes` and price `price_1UdF4HPWulQjqSYPydFHhXGd` (made on their own, so the existing live prices were not touched); `CLOUD_PHONE_ACCESS=all` in `wrangler.jsonc`. Open: the raised NoMac phone limit (step 5).
+Done 2026-11-18: migrations 0047 and 0048 applied by the main deploy; the three NoMac secrets set on production; NoMac webhook `whk_81d6fff272eb9b0257d5c40b` to the URL below (phone.queued, phone.ready, phone.ended, credit.low; its test delivery verified); the live Stripe product `ade_cloud_extra_phone`, meter `ade_cloud_phone_minutes` and price `price_1UdF4HPWulQjqSYPydFHhXGd` (made on their own, so the existing live prices were not touched); `CLOUD_PHONE_ACCESS=all` in `wrangler.jsonc`, then set back to `beta` the same day: the owner approves each account on the beta list (`POST /cloud/owner/phone-beta`). Open: the raised NoMac phone limit (step 5) and step 6.
 
 1. Apply the migrations; deploy the Worker with `CLOUD_PHONE_ACCESS=beta`.
 2. Secrets: `NOMAC_API_KEY`, `NOMAC_EMBED_SECRET`, `NOMAC_WEBHOOK_SECRET`.

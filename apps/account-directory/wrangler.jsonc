@@ -288,7 +288,7 @@
         "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
         "STRIPE_PHONE_MINUTE_PRICE_ID": "price_1UdF4HPWulQjqSYPydFHhXGd",
         "STRIPE_PHONE_METER_EVENT": "ade_cloud_phone_minutes",
-        "CLOUD_PHONE_ACCESS": "all",
+        "CLOUD_PHONE_ACCESS": "beta",
         "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaNNNPWulQjqSYPYyVgxCA6",
         // GitHub App sign-in, restated for the same reason. The two secrets
         // are set with `wrangler secret put … --env production`.
