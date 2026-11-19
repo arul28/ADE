@@ -384,12 +384,13 @@ final class AccountCloudLaunchStore: ObservableObject {
 
     var isLane: Bool { kind == "lane" }
     var inProgress: Bool { startError == nil && (record?.inProgress ?? true) }
-    /// Still worth reading again: in progress, or a chat launch running
-    /// before the server has named its chat (the card's Open chat needs that
-    /// id). A lane launch has no chat, so it is done once its computer runs.
+    /// Still worth reading again: in progress, a lane launch whose computer
+    /// runs its checkout and setup (it ends `done` or `failed`), or a chat
+    /// launch running before the server has named its chat (the card's Open
+    /// chat needs that id).
     var awaitsChat: Bool {
       guard startError == nil, let record else { return false }
-      return record.inProgress || (!isLane && record.state == "running" && record.sessionId == nil)
+      return record.inProgress || (record.state == "running" && (isLane || record.sessionId == nil))
     }
   }
 
