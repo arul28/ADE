@@ -4,7 +4,7 @@ import { invalidateAgentChatSessionListCache } from "../../../lib/agentChatSessi
 import {
   DRAFT_LAUNCH_JOB_STALE_AFTER_MS,
   launchMayOpenItsSession,
-  newDraftRequestCount,
+  markNewDraftRequests,
   pruneDraftLaunchJobs,
   withDraftLaunchTimeout,
   type BackgroundLaunchNotice,
@@ -193,6 +193,8 @@ export type RendererOwnedLaunchDeps = {
   launchBinding: OpenProjectBinding;
   /** Double-press guard key; released when the chain settles. */
   requestKey: string;
+  /** The project tab the send came from; its new-draft requests stop the late open. */
+  projectStateKey: string | null;
   /** The draft targets "Auto-create lane". */
   autoCreate: boolean;
   /** The pane's lane, to refresh its session list when the chat lands there. */
@@ -282,7 +284,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
   if (mode === "foreground") {
     deps.latestForegroundJobIdRef.current = jobId;
   }
-  const newDraftRequestsAtSend = newDraftRequestCount();
+  const newDraftMarkAtSend = markNewDraftRequests(deps.projectStateKey);
   const job: DraftLaunchJob = {
     id: jobId,
     mode,
@@ -301,7 +303,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
     autoOpen: mode === "foreground",
     createdAtMs: Date.now(),
     snapshot,
-    newDraftRequestsAtSend,
+    newDraftMarkAtSend,
   };
   deps.clearPromptSuggestion();
   deps.setError(null);
@@ -391,7 +393,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
       canMutateLaunchUi
       && mode === "foreground"
       && deps.latestForegroundJobIdRef.current === jobId
-      && launchMayOpenItsSession(newDraftRequestsAtSend);
+      && launchMayOpenItsSession(newDraftMarkAtSend);
     const jobStillVisible = deps.draftLaunchJobExists(jobId);
     deps.patchDraftLaunchJob(jobId, {
       status: "ready",

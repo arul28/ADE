@@ -1291,7 +1291,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     (nextKind: WorkDraftKind) => {
       // A send still on its way from the new-chat box must not open its chat
       // over the draft asked for now (`launchMayOpenItsSession`).
-      noteNewDraftRequested();
+      noteNewDraftRequested(projectStateKey);
       setProjectViewState((prev) => ({
         ...prev,
         draftKind: nextKind,
@@ -1303,7 +1303,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         workSidebarOpen: false,
       }));
     },
-    [setProjectViewState],
+    [projectStateKey, setProjectViewState],
   );
 
   const setDraftLaneId = useCallback(

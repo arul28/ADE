@@ -611,7 +611,7 @@ import {
   isDraftLaunchJobStale,
   isDraftLaunchJobTerminal,
   launchMayOpenItsSession,
-  newDraftRequestCount,
+  markNewDraftRequests,
   pruneDraftLaunchJobs,
   withDraftLaunchTimeout,
   LAUNCH_PROJECT_CHANGED_MESSAGE,
@@ -13879,7 +13879,7 @@ export function AgentChatPane({
       (entry) => entry.mode === "foreground"
         && entry.status === "ready"
         && entry.autoOpen
-        && launchMayOpenItsSession(entry.newDraftRequestsAtSend)
+        && launchMayOpenItsSession(entry.newDraftMarkAtSend)
         && Boolean(entry.laneId && entry.laneName && entry.sessionId),
     );
     if (!job) return;
@@ -15080,6 +15080,7 @@ export function AgentChatPane({
         snapshot,
         launchBinding: laneBinding,
         requestKey: cloudRequestKey,
+        projectStateKey: workDraftProjectStateKey,
         autoCreate: false,
         paneLaneId: laneId,
         jobId: createDraftLaunchJobId(),
@@ -15158,6 +15159,7 @@ export function AgentChatPane({
       snapshot,
       launchBinding,
       requestKey,
+      projectStateKey: workDraftProjectStateKey,
       autoCreate: draftLaunchTargetIsAutoCreate,
       paneLaneId: laneId,
       jobId: createDraftLaunchJobId(),
@@ -15229,6 +15231,7 @@ export function AgentChatPane({
     startDraftCliLaunch,
     workDraftKind,
     setSelectedSessionId,
+    workDraftProjectStateKey,
   ]);
 
   const launchDraftChat = useCallback((mode: DraftLaunchMode) => launchDraftSession("chat", mode), [launchDraftSession]);
@@ -15430,7 +15433,7 @@ export function AgentChatPane({
     // over the prompt — so it reports through the same launch-status strip. It just spends
     // longer in each stage, which is exactly why the stages are worth showing.
     const jobId = createDraftLaunchJobId();
-    const newDraftRequestsAtSend = newDraftRequestCount();
+    const newDraftMarkAtSend = markNewDraftRequests(workDraftProjectStateKey);
     setDraftLaunchJobs((current) => pruneDraftLaunchJobs([
       {
         id: jobId,
@@ -15577,16 +15580,19 @@ export function AgentChatPane({
         cursorCloudServiceTier: snapshot.cursorCloudServiceTier,
       };
       cursorCloudIdempotencyByDraftRef.current.delete(draftKey);
-      setCursorCloudMode(false);
       if (createdLaneId) {
         invalidateAgentChatSessionListCache({ laneId: createdLaneId });
         await refreshLanesStore().catch(() => undefined);
       }
       // Read after the last await: a new draft asked for during it counts.
-      const opensChat = launchMayOpenItsSession(newDraftRequestsAtSend);
-      if (createdLaneId) {
-        if (opensChat) onLaneChange?.(createdLaneId);
-        setDraftLaunchTargetId(null);
+      const opensChat = launchMayOpenItsSession(newDraftMarkAtSend);
+      // A draft the person moved on to keeps its own cloud and lane choices.
+      if (opensChat) {
+        setCursorCloudMode(false);
+        if (createdLaneId) {
+          onLaneChange?.(createdLaneId);
+          setDraftLaunchTargetId(null);
+        }
       }
       patchDraftLaunchJob(jobId, {
         status: "ready",
@@ -15638,6 +15644,7 @@ export function AgentChatPane({
     setDraftLaunchJobs,
     setDraftLaunchTargetId,
     lanes,
+    workDraftProjectStateKey,
   ]);
 
   /**
@@ -15707,7 +15714,7 @@ export function AgentChatPane({
       ? { ...snapshot, text: promptText, draft: promptText }
       : snapshot);
     const jobId = createDraftLaunchJobId();
-    const newDraftRequestsAtSend = newDraftRequestCount();
+    const newDraftMarkAtSend = markNewDraftRequests(workDraftProjectStateKey);
     setDraftLaunchJobs((current) => pruneDraftLaunchJobs([
       {
         id: jobId,
@@ -15806,7 +15813,6 @@ export function AgentChatPane({
           branch: targetLane?.branchRef ?? null,
         },
       };
-      setDevinCloudMode(false);
       if (createdLaneId) {
         invalidateAgentChatSessionListCache({ laneId: createdLaneId });
         await refreshLanesStore().catch(() => undefined);
@@ -15814,10 +15820,14 @@ export function AgentChatPane({
         void refreshLanesStore().catch(() => undefined);
       }
       // Read after the last await: a new draft asked for during it counts.
-      const opensChat = launchMayOpenItsSession(newDraftRequestsAtSend);
-      if (createdLaneId) {
-        if (opensChat) onLaneChange?.(createdLaneId);
-        setDraftLaunchTargetId(null);
+      const opensChat = launchMayOpenItsSession(newDraftMarkAtSend);
+      // A draft the person moved on to keeps its own cloud and lane choices.
+      if (opensChat) {
+        setDevinCloudMode(false);
+        if (createdLaneId) {
+          onLaneChange?.(createdLaneId);
+          setDraftLaunchTargetId(null);
+        }
       }
       patchDraftLaunchJob(jobId, {
         status: "ready",
@@ -15865,6 +15875,7 @@ export function AgentChatPane({
     selectedSessionId,
     setDraftLaunchJobs,
     setDraftLaunchTargetId,
+    workDraftProjectStateKey,
   ]);
 
   /**

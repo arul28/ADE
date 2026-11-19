@@ -141,32 +141,38 @@ export type DraftLaunchJob = {
   autoOpen: boolean;
   createdAtMs: number;
   snapshot: DraftLaunchSnapshot;
-  /** `newDraftRequestCount()` at the send; a later request means the person moved on. */
-  newDraftRequestsAtSend?: number;
+  /** `markNewDraftRequests()` at the send; a later request means the person moved on. */
+  newDraftMarkAtSend?: NewDraftRequestMark;
 };
 
 /**
- * Counts the person's requests for a new draft in this window: ⌘⇧N, the New
- * chat button and the Chat/CLI switch (`showDraftKind`), and "New chat" from
- * the palette, a lane's menu or a chip (`openStartChatDraft`). A launch notes
- * the count when it is sent.
+ * Counts the person's requests for a new draft in each project tab: ⌘⇧N, the
+ * New chat button and the Chat/CLI switch (`showDraftKind`), and "New chat"
+ * from the palette, a lane's menu or a chip (`openStartChatDraft`). A launch
+ * notes its project's count when it is sent.
  * When the count has changed by the time its chat or CLI starts, the person
- * asked for something else meanwhile, so the launch must not take the screen
- * back: the new session shows in the list instead.
+ * asked for something else in that project meanwhile, so the launch must not
+ * take the screen back: the new session shows in the list instead. A request
+ * in another project tab does not count.
  */
-let newDraftRequests = 0;
+const newDraftRequestsByProject = new Map<string, number>();
 
-export function noteNewDraftRequested(): void {
-  newDraftRequests += 1;
+export type NewDraftRequestMark = { projectStateKey: string; count: number };
+
+export function noteNewDraftRequested(projectStateKey: string | null): void {
+  const key = projectStateKey ?? "";
+  newDraftRequestsByProject.set(key, (newDraftRequestsByProject.get(key) ?? 0) + 1);
 }
 
-export function newDraftRequestCount(): number {
-  return newDraftRequests;
+export function markNewDraftRequests(projectStateKey: string | null): NewDraftRequestMark {
+  const key = projectStateKey ?? "";
+  return { projectStateKey: key, count: newDraftRequestsByProject.get(key) ?? 0 };
 }
 
-/** False when the person asked for a new draft after this send. */
-export function launchMayOpenItsSession(requestsAtSend: number | undefined): boolean {
-  return requestsAtSend === undefined || requestsAtSend === newDraftRequests;
+/** False when the person asked for a new draft in the launch's project after its send. */
+export function launchMayOpenItsSession(markAtSend: NewDraftRequestMark | undefined): boolean {
+  return markAtSend === undefined
+    || markAtSend.count === (newDraftRequestsByProject.get(markAtSend.projectStateKey) ?? 0);
 }
 
 export function isDraftLaunchJobTerminal(status: DraftLaunchJobStatus): boolean {

@@ -53,7 +53,7 @@ export function openStartChatDraft(
   modelRequest?: WorkDraftModelRequest | null,
 ): void {
   // A new draft asked for: a send still on its way must not open over it.
-  noteNewDraftRequested();
+  noteNewDraftRequested(projectStateKey);
   setWorkViewState(projectStateKey, (prev) => ({
     ...prev,
     ...startChatDraftPatch(laneId, machineId),

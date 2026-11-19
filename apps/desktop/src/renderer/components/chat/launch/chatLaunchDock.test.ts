@@ -122,6 +122,7 @@ function rendererLaunchDeps(
     snapshot: launchSnapshot,
     launchBinding,
     requestKey: "request",
+    projectStateKey: "project-a",
     autoCreate: false,
     paneLaneId: "lane-1",
     jobId: "job-1",
@@ -673,6 +674,7 @@ describe("renderer-owned launch handoff", () => {
     { name: "nothing happened meanwhile", during: "none", paneMounted: true, opens: true, autoOpen: true },
     { name: "the pane remounted", during: "none", paneMounted: false, opens: false, autoOpen: true },
     { name: "a new draft was asked for", during: "new-draft", paneMounted: true, opens: false, autoOpen: false },
+    { name: "a new draft was asked for in another project", during: "other-project-draft", paneMounted: true, opens: true, autoOpen: true },
     { name: "a newer send started", during: "newer-send", paneMounted: true, opens: false, autoOpen: false },
   ] as const)("opens the started chat only when it still may: $name", async ({ during, paneMounted, opens, autoOpen }) => {
     const calls: string[] = [];
@@ -684,7 +686,8 @@ describe("renderer-owned launch handoff", () => {
       patchDraftLaunchJob,
       startChat: async () => {
         calls.push("start");
-        if (during === "new-draft") noteNewDraftRequested();
+        if (during === "new-draft") noteNewDraftRequested("project-a");
+        if (during === "other-project-draft") noteNewDraftRequested("project-b");
         if (during === "newer-send") launchDeps.latestForegroundJobIdRef.current = "job-2";
         return { sessionId: "session-1", draftKind: "chat" };
       },
