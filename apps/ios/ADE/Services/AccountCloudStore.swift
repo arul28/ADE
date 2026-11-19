@@ -150,7 +150,8 @@ final class AccountCloudStore: ObservableObject {
     if !force, let at = lanesReadAt, Date().timeIntervalSince(at) < 15 { return }
     lanesReadAt = Date()
     let generation = accountGeneration
-    guard let client = await sync.cloudServerClient() else { return }
+    // An account change while the client was fetched: this read is not that account's.
+    guard let client = await sync.cloudServerClient(), generation == accountGeneration else { return }
     lanesReadSeq &+= 1
     let seq = lanesReadSeq
     let next = await readLanesWithoutComputer(client)
@@ -192,7 +193,12 @@ final class AccountCloudStore: ObservableObject {
       accountCloudLog.notice("cloud_store forget_lane failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
       return cloudServerFailureMessage(error)
     }
-    if generation == accountGeneration { lanesWithoutComputer.removeAll { $0.laneId == lane.laneId } }
+    if generation == accountGeneration {
+      // A read that started before the delete must not bring the lane back.
+      lanesReadSeq &+= 1
+      lanesReadAt = nil
+      lanesWithoutComputer.removeAll { $0.laneId == lane.laneId }
+    }
     do {
       for machineKey in machineKeys.sorted() {
         do {

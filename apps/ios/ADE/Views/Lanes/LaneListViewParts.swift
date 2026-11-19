@@ -1105,6 +1105,13 @@ struct UnavailableLaneDestination: View {
   /// (`fleet|machine|lane`); the account keeps the lane under its own id.
   private var accountLaneId: String { workParseRemoteLaneId(laneId)?.laneId ?? laneId }
 
+  /// This lane's New computer launch, as `launchId:state`: once its computer is up, the kept lane leaves the list.
+  private var launchState: String {
+    guard let lane = cloudStore.lanesWithoutComputer.first(where: { $0.laneId == accountLaneId }),
+          let launch = launches.laneLaunch(for: lane) else { return "" }
+    return "\(launch.launchId):\(launch.record?.state ?? "")"
+  }
+
   var body: some View {
     Group {
       if let lane = cloudStore.lanesWithoutComputer.first(where: { $0.laneId == accountLaneId }) {
@@ -1118,6 +1125,7 @@ struct UnavailableLaneDestination: View {
           .padding(16)
           .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .refreshable { await cloudStore.refreshLanesWithoutComputer(using: syncPublishes.service, force: true) }
         .background(ADEColor.pageBackground.ignoresSafeArea())
         .navigationTitle(lane.laneName)
         .navigationBarTitleDisplayMode(.inline)
@@ -1137,6 +1145,15 @@ struct UnavailableLaneDestination: View {
         await cloudStore.refreshLanesWithoutComputer(using: syncPublishes.service, force: true)
         if Task.isCancelled || cloudStore.lanesWithoutComputer.contains(where: { $0.laneId == accountLaneId }) { return }
         try? await Task.sleep(for: .seconds(attempt == 0 ? 2 : 5))
+      }
+    }
+    // As in the kept-lanes block: the new computer is up, so the account lists
+    // it and the kept lane (with its held Delete) leaves this page.
+    .onChange(of: launchState) { _, state in
+      guard state.hasSuffix(":running") || state.hasSuffix(":done") else { return }
+      Task { @MainActor in
+        await syncPublishes.service.readCloudForLaunchedChat()
+        await cloudStore.refreshLanesWithoutComputer(using: syncPublishes.service, force: true)
       }
     }
   }

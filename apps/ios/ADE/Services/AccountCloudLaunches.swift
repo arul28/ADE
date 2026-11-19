@@ -633,11 +633,15 @@ final class AccountCloudLaunchStore: ObservableObject {
   /// This kept lane's launch from "New computer", while the phone shows it.
   /// One that made the lane's former computer is over: that computer was
   /// freed since, and the lane may get another.
+  ///
+  /// Only the newest launch for the lane counts: when it made the former
+  /// computer, every older one is over too. A hidden one that is still on its
+  /// way keeps holding New computer, so a second computer can't start.
   func laneLaunch(for lane: CloudLaneWithoutComputer) -> Entry? {
-    entries.first { entry in
-      entry.isLane && entry.laneId == lane.laneId && entry.record?.state != "cancelled" && !hiddenIds.contains(entry.launchId)
-        && (entry.record?.instanceId == nil || entry.record?.instanceId != lane.formerInstanceId)
-    }
+    guard let newest = entries.first(where: { $0.isLane && $0.laneId == lane.laneId && $0.record?.state != "cancelled" }) else { return nil }
+    if let former = lane.formerInstanceId, newest.record?.instanceId == former { return nil }
+    if hiddenIds.contains(newest.launchId) && !newest.awaitsChat { return nil }
+    return newest
   }
 
   /// Lane launches still on their way, or failed and not hidden: `origin`'s, or every project's.

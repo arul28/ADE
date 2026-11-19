@@ -182,10 +182,15 @@ export async function deleteCapsule(env: CloudEnv, userId: string, machineKey: s
 
 /** A lane's capsules on one machine go with the lane. Bounded: a lane has few chats. */
 export async function deleteCapsulesForLane(env: CloudEnv, userId: string, machineKey: string, laneId: string): Promise<number> {
-  const rows = (await env.DB.prepare("select chat_id from cloud_fork_capsules where user_id = ? and machine_key = ? and lane_id = ? limit 200")
-    .bind(userId, machineKey, laneId).all<{ chat_id: string }>()).results ?? [];
-  for (const row of rows) await deleteCapsule(env, userId, machineKey, row.chat_id);
-  return rows.length;
+  // 200 at a time, until none are left.
+  let removed = 0;
+  for (;;) {
+    const rows = (await env.DB.prepare("select chat_id from cloud_fork_capsules where user_id = ? and machine_key = ? and lane_id = ? limit 200")
+      .bind(userId, machineKey, laneId).all<{ chat_id: string }>()).results ?? [];
+    for (const row of rows) await deleteCapsule(env, userId, machineKey, row.chat_id);
+    removed += rows.length;
+    if (rows.length < 200) return removed;
+  }
 }
 
 export function deleteAccountCapsulesStatement(env: Pick<CloudEnv, "DB">, userId: string): D1PreparedStatement {
