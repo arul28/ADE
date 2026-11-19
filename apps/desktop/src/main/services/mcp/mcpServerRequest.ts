@@ -56,6 +56,7 @@ import {
 } from "../../../shared/mcpServerRequest";
 import type { AccountVaultItem, AccountVaultWriteOptions } from "../../../shared/types/accountVault";
 import { captureError, captureProblem } from "../../../shared/sentry/capture";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import {
   cardTimeoutMs,
   cardWasDeclined,
@@ -625,7 +626,7 @@ async function askToAdd(
   // ending): a server that went in is added whatever the card says.
   if (settled && "added" in settled && settled.added) return settled;
   if (response.timedOut) {
-    throw new Error(`Nobody answered the request to add ${server.name} in time. Ask again when the person is around.`);
+    throw new AdeExpectedError(`Nobody answered the request to add ${server.name} in time. Ask again when the person is around.`, "user");
   }
   if (cardWasDeclined(response) || !settled) return { name: server.name, added: false, declined: true };
   return settled;
@@ -755,7 +756,7 @@ async function askToRemove(
   const settled = outcome as McpServerRemoveResult | null;
   if (settled?.removed) return settled;
   if (response.timedOut) {
-    throw new Error(`Nobody answered the request to remove ${server.name} in time. Ask again when the person is around.`);
+    throw new AdeExpectedError(`Nobody answered the request to remove ${server.name} in time. Ask again when the person is around.`, "user");
   }
   return { name: server.name, removed: false, declined: true };
 }
