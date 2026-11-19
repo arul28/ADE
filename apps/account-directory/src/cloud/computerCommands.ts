@@ -402,8 +402,7 @@ export function keepAwakeWrittenAt(stdout: string): number {
  * computer gives each read, so its push or check reports the lane unreadable
  * and the free fails. One `git status` per worktree first loads the index and
  * the tree into the cache (30 s each, a minute in all, and it can never fail
- * the command); the reads after it, and the check right after the push, take
- * well under a second.
+ * the command); the reads after it take well under a second.
  */
 const WARM_GIT_COMMAND = [
   "timeout 60 sh -c 'ade projects list --json 2>/dev/null | sed -n \"s/^ *\\\"rootPath\\\": *\\\"\\(.*\\)\\\",\\{0,1\\}$/\\1/p\" | while IFS= read -r root; do",
@@ -417,12 +416,13 @@ const WARM_GIT_COMMAND = [
  * work-state`; never `push-work --check`: an older ADE ignores the flag and
  * pushes). ADE on the computer answers a few seconds after a start.
  */
-export function pushWorkCommand(check: boolean): string {
+export function pushWorkCommand(check: boolean, options: { afterPush?: boolean } = {}): string {
   return [
     'export PATH="$ADE_HOME/bin:$PATH"',
     'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
-    // The check runs right after the push, on a warm cache, inside a shorter budget.
-    ...(check ? ["ade cloud work-state --json"] : [WARM_GIT_COMMAND, "ade cloud push-work --json"]),
+    // A check right after a push (the free's recheck) finds the cache warm and has a shorter budget.
+    ...(options.afterPush ? [] : [WARM_GIT_COMMAND]),
+    check ? "ade cloud work-state --json" : "ade cloud push-work --json",
   ].join("\n");
 }
 

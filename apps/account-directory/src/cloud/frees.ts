@@ -199,7 +199,7 @@ async function recheck(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<Ste
   const waiting = await awake(env, job, ctx, computer);
   if (waiting) return waiting;
   // Read once more after the push: anything new or unknown keeps the computer.
-  const ran = await tryExec(ctx, computer.instance_id, pushWorkCommand(true), CHECK_EXEC_MS);
+  const ran = await tryExec(ctx, computer.instance_id, pushWorkCommand(true, { afterPush: true }), CHECK_EXEC_MS);
   const tally = ran && ran.exitCode === 0 ? readPushWorkTally(ran.stdout) : null;
   if (!tally || !tally.lanes) return { kind: "fail", error: "ADE couldn't confirm all work is on GitHub, so the computer stays. Try again." };
   if (tally.failed > 0) return { kind: "fail", error: "ADE couldn't read every project on this computer, so it stays. Try again." };
