@@ -228,9 +228,12 @@ function CloudPhoneStrip({ control, failure = control.failure }: { control: Clou
     // allow it, and when they don't the server's refusal shows here.
     return (
       <AppleDeviceNoticeStrip
-        sentence={minutes && minutes.left <= 0
-          ? `This period's ${minutes.included} ADE Cloud iPhone minutes are used up.${why}`
-          : `The ADE Cloud iPhone is off.${why}`}
+        sentence={minutes && minutes.included <= 0
+          // Every plan has minutes: none at all is a free plan the free-plan checks hold.
+          ? "The free plan's iPhone minutes need the same check as its free hours. Finish it in Settings › ADE Cloud, or pick a plan."
+          : minutes && minutes.left <= 0
+            ? `This period's ${minutes.included} ADE Cloud iPhone minutes are used up.${why}`
+            : `The ADE Cloud iPhone is off.${why}`}
         actionLabel={busy === "start" ? "Starting" : "Start"}
         busy={busy === "start"}
         onAction={() => void run("start")}
