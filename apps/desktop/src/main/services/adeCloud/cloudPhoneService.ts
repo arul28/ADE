@@ -764,9 +764,9 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         phone.checkedAt = Date.now();
       }
       const answer = await nomac(phone, "POST", "/tools/ui_look", {}, newKey());
+      // Gone, or only this token (the next status read settles whether it ended).
       if (cloudPhoneGone(answer.status)) {
         if (held === phone) held = null;
-        if (liveRun?.phoneId === phone.phoneId) await settleEnd(liveRun, false);
         return { ok: false };
       }
       if (answer.status !== 200) throw failureOf(answer, "Keeping the cloud iPhone awake");

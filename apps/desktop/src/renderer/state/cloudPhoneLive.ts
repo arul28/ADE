@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../shared/types";
-import { CLOUD_PHONE_IDLE_SECONDS, type CloudPhoneStatusView } from "../../shared/cloudPhone";
+import { CLOUD_PHONE_IDLE_SECONDS, CLOUD_PHONE_MAX_MINUTES, type CloudPhoneStatusView } from "../../shared/cloudPhone";
 
 /*
  * The account's ADE Cloud iPhone as this window last read it, shared by every
@@ -81,7 +81,8 @@ export function cloudPhoneIdleStopAt(value: CloudPhoneLive): number | null {
   if (!phone || phone.state !== "ready") return null;
   const last = Math.max(value.status?.lastActivityAt ?? 0, value.inputAt ?? 0, phone.readyAt ?? 0);
   if (last <= 0) return null;
-  const stopAt = last + CLOUD_PHONE_IDLE_SECONDS * 1_000;
+  // Never past the phone's time limit, when it ends whatever is done.
+  const stopAt = Math.min(last + CLOUD_PHONE_IDLE_SECONDS * 1_000, phone.readyAt ? phone.readyAt + CLOUD_PHONE_MAX_MINUTES * 60_000 : Number.POSITIVE_INFINITY);
   return value.readAt > stopAt + IDLE_STOP_GRACE_MS ? null : stopAt;
 }
 
@@ -119,11 +120,13 @@ export function useCloudPhoneIdleCountdown(value: CloudPhoneLive, active: boolea
   return { now, stopAt, warn: stopAt != null && stopAt - now <= CLOUD_PHONE_IDLE_WARN_MS };
 }
 
+export const CLOUD_PHONE_ALREADY_STOPPED = "The phone already stopped.";
+
 /** What a Keep on answer means for the person: null when it worked. */
 export async function keepCloudPhoneOn(pin: OpenProjectBinding | null): Promise<string | null> {
   const answer = await window.ade.cloudPhone.keepAlive(pin);
   await readCloudPhoneStatus(pin).catch(() => null);
-  return answer.ok ? null : "The phone already stopped.";
+  return answer.ok ? null : CLOUD_PHONE_ALREADY_STOPPED;
 }
 
 /** Reads the account's phone through `pin`'s machine and publishes it. Throws what the read throws. */

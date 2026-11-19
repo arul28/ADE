@@ -10,6 +10,7 @@ import {
   cloudPhoneIsUp,
   cloudPhoneMinutesLeft,
   formatPhoneSpan,
+  CLOUD_PHONE_ALREADY_STOPPED as ALREADY_STOPPED,
   keepCloudPhoneOn,
   readCloudPhoneStatus,
   useCloudPhoneBackgroundReads,
@@ -19,6 +20,7 @@ import {
 import { useTabCopyPin } from "../../state/repositoryScope";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
+import { InlineErrorNotice } from "../ui/notice/InlineErrorNotice";
 import { HeaderSheet } from "./HeaderSheet";
 
 /**
@@ -164,7 +166,14 @@ function CloudIphoneDetails({
       <p className="font-sans text-[11px] leading-snug text-muted-fg">
         One phone for the account: every chat that uses ios@cloud drives this one. It stops after {CLOUD_PHONE_IDLE_MINUTES} minutes with no command or input.
       </p>
-      {error ? <p className="font-sans text-[11px] text-error">{error}</p> : null}
+      {error ? (
+        <InlineErrorNotice
+          id="cloud_iphone.top_bar"
+          message={error}
+          report={error === ALREADY_STOPPED ? false : undefined}
+          onDismiss={() => setError(null)}
+        />
+      ) : null}
       <div className="flex flex-wrap items-center justify-end gap-1.5">
         <Button
           variant="ghost"
