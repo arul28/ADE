@@ -15,7 +15,7 @@ Unqualified files are in `apps/desktop/src/renderer/components/chat/`.
 | `AgentChatPane.tsx` | The top-level pane: IPC, session state, presentation profile, lane navigation, parallel launches, sub-panels and composer. Reads the last-viewed time (`ade.chat.lastViewed.v1:<sessionId>`) for the list's `unreadSince` divider. Owns draft state (`ade.chat.composerDraft.v1`, keyed per session or lane draft; `draftContextTargetId` lets the Work sidebar target an unsaved draft), pending-steer Edit (`cancelSteer({ requireQueued: true })`, unchanged draft when the message already left), and root-store `DraftLaunchJob`s (`creating-lane` → `starting-session` → `sending-prompt` → `ready` / `failed`) that survive a project switch: the launch chain pins every call to the originating binding and caps each step at 90 s. Brain-owned launches clear the composer at job start; a foreground chat from an existing lane keeps the prompt until the new pane's first bubble takes it. Also owns the transcript-resilience rules ([Transcript and turns](transcript-and-turns.md#history-snapshots-scroll-back-and-misses)): `resolveChatHistoryMissAction`, `resolveSnapshotHistoryCursor` (`hasOlderHistory` beats `tailStartOffset`), retries at 800 / 2400 ms, `syncPendingBySession` (`data-chat-sync-pending`, a fading 2 px hairline), the cold skeleton (`data-chat-cold-skeleton`), and `resolveRenderedChatSessionId` (paint from props, not the synced id). The view cache holds 128 MB total, 32 MB per session, and skips a **detached** view. Active-turn recovery is a stall detector (`ACTIVE_TURN_RECOVERY_INTERVAL_MS`, 10 s, skipped when the subscription delivered). Hidden panes hand their subscription to `chatSessionRetention.ts`. An empty draft reserves no side pane. |
 | `useDraftMachineRouting.ts`, `draftAttachmentTransfer.ts`, `draftAttachmentSources.ts` | Draft machine selection: reconcile the restored machine before send, list only that machine's lanes plus auto-create, re-resolve the lane on a switch (`remapDraftLaneToMachine` / `findPrimaryDraftLane`), and hold a foreign machine behind `Loading lanes for <machine>…` (`laneCatalogLoading`, `requestCrossMachineLanesForMachine`). On a user machine switch, `useDraftAttachmentTransfer` keeps image URLs and re-stages what it can (kept bytes or paths through `saveTempAttachment` / `stageFileAttachment`; images through pinned `getImageDataUrl`). Other files and machine-bound context stay behind with an amber notice. A pending or failed transfer blocks send. |
 | `components/usage/ActivityModule.tsx`, `ActivityHeatmap.tsx`, `activityIntensity.ts` | The activity module under an empty Work draft (`WorkActivityModule`, compact; `data-chat-empty-usage`; tab and range in `ade.activity.module.v1`). `scoreActivityDays` scales each of seven dimensions against its own maximum before the weighted sum; `isActiveDay` stays unweighted; `describeActivityInsight` writes the one sentence above the grid from the same scores. Buckets are quartiles over non-zero days. The ramp is explicit light/dark pairs (never `--color-accent`), with tile borders under `prefers-contrast: more` (`usePrefersMoreContrast.ts`) and a "Less → More" key. |
-| `renderer/lib/draftLaunchJobs.ts` | Draft-launch job DTOs, stale detection and pruning (active rows first, at least one terminal row kept); `DRAFT_LAUNCH_TIMEOUT_MS` (90 s) + `withDraftLaunchTimeout` (unwedges the renderer; the IPC keeps running); `LAUNCH_PROJECT_CHANGED_MESSAGE` for unpinned launches. |
+| `renderer/lib/draftLaunchJobs.ts` | Draft-launch job DTOs, stale detection and pruning (active rows first, at least one terminal row kept); `DRAFT_LAUNCH_TIMEOUT_MS` (90 s) + `withDraftLaunchTimeout` (unwedges the renderer; the IPC keeps running); `LAUNCH_PROJECT_CHANGED_MESSAGE` for unpinned launches; the new-draft request count that keeps a late launch from taking the screen back. |
 | `renderer/state/chatLaunchStore.ts`, `state/useChatLaunchSync.ts` | Renderer mirror of brain-owned launches (`shared/types/chatLaunch.ts`), keyed by launch id with their binding; snapshots only move forward (`mergeChatLaunchSnapshot`), and the host's first answer replaces the optimistic one. Holds the window's `originClientId` and a local record per launch it started. `useChatLaunchSync` (in `AppShell`) is the one `chatLaunch.onEvent` subscription, hydrated by `chatLaunch.list`. Narrow selectors: `useChatLaunchRowSources`, `useChatLaunchForPane`, `useChatLaunchSelector`. |
 | `launch/` (`chatLaunchActions.ts`, `LaneSetupCard.tsx`, `LaunchProgressRail.tsx`, `launchClock.ts`, `chatLaunchSynthetic.ts`, `chatLaunchDock.ts`, `chatLaunchDraftRestore.ts`, `useChatLaunchPaneState.ts`, `newLaneLaunchArgs.ts`, `rendererOwnedLaunch.ts`) | The launch surfaces: every Start/Retry/Start now/Cancel/Delete/queue (pinned to the launch's binding); the setup card and its `lane_setup` row; the stand-in roster row, prompt bubble and queued messages of a pending chat; the composer dock and first-message flight (skipped for reduced motion, hidden windows and high resource pressure); the one draft-restore channel back to Work; the pane's launch seam; `chatLaunch.start` args; and the renderer-owned chain (existing lane, Cursor Cloud, runtimes without `chat.startLaunch`). |
 | `renderer/webclient/adapter/chatLaunch.ts`, `renderer/webclient/sync/chatLaunchEvents.ts` | Hosted-web `window.ade.chatLaunch` over the `chat.startLaunch` … `chat.completeLaunchClient` commands (writes skip the read cache; an older host rejects so the composer falls back), with `chat_launch_event` decoded by `decodeChatLaunchEventPayload`. |
@@ -830,9 +830,25 @@ and effort for a new chat's first prompt.
     Jobs live in `appStore.draftLaunchJobsByScope` (project, lane, profile,
     draft kind).
   - A foreground result opens only if it is still the latest
-    (`latestForegroundDraftLaunchJobIdRef`); background jobs show a strip with
-    Open. Failed jobs offer Restore (also on the matching error banner).
-    Stale active jobs can be hidden; terminal rows are pruned.
+    (`latestForegroundDraftLaunchJobIdRef`) and the person asked for no new
+    draft since the send. `showDraftKind` (⌘⇧N, the New chat button, the
+    Chat/CLI switch) and `openStartChatDraft` (the palette, a lane's menu, a
+    chip) count each request per project tab (`noteNewDraftRequested`); the job
+    keeps its project's count at Send, before any await
+    (`markNewDraftRequests`), and
+    `launchMayOpenItsSession` compares it. A request in another project tab
+    does not count. A
+    result that may not open keeps `autoOpen` off, so a later draft pane does
+    not open it either; the session shows in the list. Cursor Cloud and Devin
+    Cloud launches follow the same rule (`adoptCloudChatSession`), and a
+    cloud launch that may not open leaves the draft's cloud and lane choices
+    as they are. A foreground CLI carries the mark into `launchPtySession`
+    (`WorkPtyLaunchArgs.newDraftMarkAtSend`, also on the brain-owned new-lane
+    path through the local launch record), which focuses the terminal only
+    while the mark holds. Background
+    jobs show a strip with Open. Failed jobs offer Restore (also on the
+    matching error banner). Stale active jobs can be hidden; terminal rows are
+    pruned.
 
 ### Staged messages and sending during a turn
 

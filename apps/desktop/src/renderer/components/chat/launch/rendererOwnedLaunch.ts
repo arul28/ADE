@@ -3,9 +3,11 @@ import type { OpenProjectBinding } from "../../../../shared/types";
 import { invalidateAgentChatSessionListCache } from "../../../lib/agentChatSessionListCache";
 import {
   DRAFT_LAUNCH_JOB_STALE_AFTER_MS,
+  launchMayOpenItsSession,
   pruneDraftLaunchJobs,
   withDraftLaunchTimeout,
   type BackgroundLaunchNotice,
+  type NewDraftRequestMark,
   type DraftLaunchJob,
   type DraftLaunchKind,
   type DraftLaunchMode,
@@ -191,6 +193,11 @@ export type RendererOwnedLaunchDeps = {
   launchBinding: OpenProjectBinding;
   /** Double-press guard key; released when the chain settles. */
   requestKey: string;
+  /**
+   * `markNewDraftRequests()` taken at Send, before any await: a new draft asked
+   * for after it stops the late open.
+   */
+  newDraftMarkAtSend: NewDraftRequestMark;
   /** The draft targets "Auto-create lane". */
   autoCreate: boolean;
   /** The pane's lane, to refresh its session list when the chat lands there. */
@@ -230,6 +237,7 @@ export type RendererOwnedLaunchDeps = {
     mode: DraftLaunchMode,
     assertActive: () => void,
     pin: OpenProjectBinding,
+    newDraftMarkAtSend: NewDraftRequestMark,
   ) => Promise<StartedDraftLaunch>;
   clearPromptSuggestion: () => void;
   setError: (message: string | null) => void;
@@ -280,6 +288,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
   if (mode === "foreground") {
     deps.latestForegroundJobIdRef.current = jobId;
   }
+  const { newDraftMarkAtSend } = deps;
   const job: DraftLaunchJob = {
     id: jobId,
     mode,
@@ -298,6 +307,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
     autoOpen: mode === "foreground",
     createdAtMs: Date.now(),
     snapshot,
+    newDraftMarkAtSend,
   };
   deps.clearPromptSuggestion();
   deps.setError(null);
@@ -358,7 +368,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
     };
     const started = kind === "chat"
       ? deps.startChat(prepared, targetLane, launchBinding, assertLaunchActive, onOpeningMessageOut)
-      : deps.startCli(prepared, targetLane, mode, assertLaunchActive, launchBinding);
+      : deps.startCli(prepared, targetLane, mode, assertLaunchActive, launchBinding, newDraftMarkAtSend);
     let launched: StartedDraftLaunch;
     try {
       launched = await withDraftLaunchTimeout(started, "Session start", () => {
@@ -381,8 +391,13 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
       draftKind: launched.draftKind,
     };
     const canMutateLaunchUi = deps.canRefreshPinnedProject(launchBinding);
+    // Not when a newer send from this pane, or a new draft the person asked
+    // for since this send, has the screen: the session shows in the list.
     const shouldAutoOpen =
-      canMutateLaunchUi && mode === "foreground" && deps.latestForegroundJobIdRef.current === jobId;
+      canMutateLaunchUi
+      && mode === "foreground"
+      && deps.latestForegroundJobIdRef.current === jobId
+      && launchMayOpenItsSession(newDraftMarkAtSend);
     const jobStillVisible = deps.draftLaunchJobExists(jobId);
     deps.patchDraftLaunchJob(jobId, {
       status: "ready",
@@ -390,10 +405,12 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
       laneName: launch.laneName,
       sessionId: launch.sessionId,
       draftKind: launch.draftKind,
-      // Keep autoOpen set for foreground sends so the pane's effect can open the
-      // chat even if the pane instance remounted during the launch (otherwise
-      // the inline open is skipped and the job sits at "ready").
-      autoOpen: mode === "foreground" && canMutateLaunchUi,
+      // Keep autoOpen set for a launch that may open its session, so the
+      // pane's effect can open the chat even if the pane instance remounted
+      // during the launch (otherwise the inline open is skipped and the job
+      // sits at "ready"). A launch that may not open it must not keep it: the
+      // next draft pane to mount would open that old session over itself.
+      autoOpen: shouldAutoOpen,
     });
     if (!jobStillVisible) {
       if (holdsComposerUntilOpen) deps.clearDraftLaunchComposer(snapshot);

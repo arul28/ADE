@@ -86,7 +86,6 @@ import {
   type LaneLinearIssue,
   type LaneSummary,
   type AiSettingsStatus,
-  type CursorCloudOpenChatResult,
   type OpenProjectBinding,
   type TerminalSessionDetail,
   type AgentChatSendArgs,
@@ -611,6 +610,9 @@ import { sessionFromSummary } from "./boundAgentChatApi";
 import {
   isDraftLaunchJobStale,
   isDraftLaunchJobTerminal,
+  launchMayOpenItsSession,
+  markNewDraftRequests,
+  type NewDraftRequestMark,
   pruneDraftLaunchJobs,
   withDraftLaunchTimeout,
   LAUNCH_PROJECT_CHANGED_MESSAGE,
@@ -13878,6 +13880,7 @@ export function AgentChatPane({
       (entry) => entry.mode === "foreground"
         && entry.status === "ready"
         && entry.autoOpen
+        && launchMayOpenItsSession(entry.newDraftMarkAtSend)
         && Boolean(entry.laneId && entry.laneName && entry.sessionId),
     );
     if (!job) return;
@@ -14549,6 +14552,7 @@ export function AgentChatPane({
     mode: DraftLaunchMode,
     assertActive?: () => void,
     pin?: OpenProjectBinding | null,
+    newDraftMarkAtSend?: NewDraftRequestMark,
   ): Promise<StartedDraftLaunch> => {
     if (!onLaunchCliSession) throw new Error("CLI sessions are not available from this surface.");
     const cliParams = buildDraftCliLaunchParams(prepared);
@@ -14560,6 +14564,7 @@ export function AgentChatPane({
       laneId: targetLane.laneId,
       disposition: mode,
       pin,
+      ...(newDraftMarkAtSend ? { newDraftMarkAtSend } : {}),
     });
     // The PTY spawn is not cancellable, so if the launch was aborted while it
     // was starting (timeout), dispose the freshly-created
@@ -14694,6 +14699,8 @@ export function AgentChatPane({
       launchId?: string;
       lane?: { laneId: string; laneName: string; branchRef: string };
     } | null = null,
+    /** Send-time mark: a foreground CLI opens its tab only if it still holds. */
+    newDraftMarkAtSend?: NewDraftRequestMark,
   ): boolean => {
     const prepared = prepareDraftLaunch(snapshot);
     let cli: ChatLaunchCliParams | null = null;
@@ -14767,10 +14774,17 @@ export function AgentChatPane({
         binding: launchBinding,
         draftSnapshot: snapshot,
         cli,
+        ...(newDraftMarkAtSend ? { newDraftMarkAtSend } : {}),
         onUnsupported,
       });
     } else {
-      registerChatLaunchLocalRecord(launchId, { args, pin: launchBinding, draftSnapshot: snapshot, cli });
+      registerChatLaunchLocalRecord(launchId, {
+        args,
+        pin: launchBinding,
+        draftSnapshot: snapshot,
+        cli,
+        ...(newDraftMarkAtSend ? { newDraftMarkAtSend } : {}),
+      });
       insertOptimisticChatLaunch(
         launchBinding,
         buildOptimisticChatLaunchSnapshot({ launch: { ...args, laneId: newLaneId, laneName }, includeFetch }),
@@ -14983,6 +14997,9 @@ export function AgentChatPane({
         : "Add a message before sending.", kind: "hint" });
       return;
     }
+    // Taken at Send, before any await: a new draft asked for after this
+    // keeps the screen (`launchMayOpenItsSession`).
+    const newDraftMarkAtSend = markNewDraftRequests(workDraftProjectStateKey);
     if (cloudSend) {
       // Send is off while the label above the box shows; this is the guard.
       if (cloudSend.notice) return;
@@ -15045,6 +15062,7 @@ export function AgentChatPane({
           // Main owns every ADE Cloud launch; there is no older path to fall back to.
           () => setError({ message: "This ADE can't start an ADE Cloud lane. Update ADE, then send again.", kind: "status" }),
           { sizeId: cloudSend.tierId, sizeChoice: cloudSend.sizeChoice, originUrl: cloudSend.originUrl },
+          newDraftMarkAtSend,
         );
         draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
         // The composer clears with the launch, so the same key can only come
@@ -15078,6 +15096,7 @@ export function AgentChatPane({
         snapshot,
         launchBinding: laneBinding,
         requestKey: cloudRequestKey,
+        newDraftMarkAtSend,
         autoCreate: false,
         paneLaneId: laneId,
         jobId: createDraftLaunchJobId(),
@@ -15156,6 +15175,7 @@ export function AgentChatPane({
       snapshot,
       launchBinding,
       requestKey,
+      newDraftMarkAtSend,
       autoCreate: draftLaunchTargetIsAutoCreate,
       paneLaneId: laneId,
       jobId: createDraftLaunchJobId(),
@@ -15191,7 +15211,7 @@ export function AgentChatPane({
       launchDraftIntoNewLane(kind, mode, snapshot, launchBinding, draftNewLaneConfig, () => {
         draftLaunchInFlightKeysRef.current.add(requestKey);
         void runRendererOwnedLaunch();
-      });
+      }, null, newDraftMarkAtSend);
       window.setTimeout(() => draftLaunchInFlightKeysRef.current.delete(requestKey), 400);
       return;
     }
@@ -15227,51 +15247,43 @@ export function AgentChatPane({
     startDraftCliLaunch,
     workDraftKind,
     setSelectedSessionId,
+    workDraftProjectStateKey,
   ]);
 
   const launchDraftChat = useCallback((mode: DraftLaunchMode) => launchDraftSession("chat", mode), [launchDraftSession]);
   const launchDraftCliSession = useCallback((mode: DraftLaunchMode) => launchDraftSession("cli", mode), [launchDraftSession]);
 
   /**
-   * Take over a chat session that was opened for a Cursor Cloud agent: select it, seed the
-   * caches a freshly created chat would have seeded, and hand it to the parent so a locked pane
-   * (single chat tile) can follow the new session instead of snapping back to its lock id.
+   * Take over a chat session that a Cursor Cloud or Devin Cloud launch opened:
+   * seed the caches a freshly created chat would have seeded, hand it to the
+   * parent, and select it so a locked pane (single chat tile) follows the new
+   * session instead of snapping back to its lock id. A launch the person moved
+   * on from (`launchMayOpenItsSession`) only lists the chat.
    */
-  const adoptCursorCloudChatSession = useCallback((
-    result: CursorCloudOpenChatResult,
-    /** The machine that opened the chat, when it is not the tab's own. */
-    runtimePin: OpenProjectBinding | null = null,
-  ) => {
-    const { sessionId, session } = result;
-    if (!sessionId) return;
-    loadedHistoryRef.current.delete(sessionId);
-    optimisticSessionIdsRef.current.add(sessionId);
-    knownSessionIdsRef.current.add(sessionId);
-    pendingSelectedSessionIdRef.current = sessionId;
-    draftSelectionLockedRef.current = false;
-    touchSession(sessionId);
-    if (session) notifySessionCreated(session, runtimePin ? { runtimePin } : undefined);
-    setSelectedSessionId(sessionId);
-    void refreshSessions().catch(() => undefined);
-  }, [notifySessionCreated, refreshSessions, touchSession, setSelectedSessionId]);
-
-  // Identical adoption path for a Devin Cloud chat: select the session the
-  // ACP relay is bound to and let the transcript hydrate.
-  const adoptDevinCloudChatSession = useCallback((
+  const adoptCloudChatSession = useCallback((
     result: { sessionId: string; session?: AgentChatSession | null },
     /** The machine that opened the chat, when it is not the tab's own. */
-    runtimePin: OpenProjectBinding | null = null,
+    runtimePin: OpenProjectBinding | null,
+    opensChat: boolean,
   ) => {
     const { sessionId, session } = result;
     if (!sessionId) return;
     loadedHistoryRef.current.delete(sessionId);
     optimisticSessionIdsRef.current.add(sessionId);
     knownSessionIdsRef.current.add(sessionId);
-    pendingSelectedSessionIdRef.current = sessionId;
-    draftSelectionLockedRef.current = false;
     touchSession(sessionId);
-    if (session) notifySessionCreated(session, runtimePin ? { runtimePin } : undefined);
-    setSelectedSessionId(sessionId);
+    if (opensChat) {
+      pendingSelectedSessionIdRef.current = sessionId;
+      draftSelectionLockedRef.current = false;
+    }
+    if (session) {
+      const pinOption = runtimePin ? { runtimePin } : null;
+      notifySessionCreated(
+        session,
+        opensChat ? pinOption ?? undefined : { activate: false, ...pinOption },
+      );
+    }
+    if (opensChat) setSelectedSessionId(sessionId);
     void refreshSessions().catch(() => undefined);
   }, [notifySessionCreated, refreshSessions, touchSession, setSelectedSessionId]);
 
@@ -15437,6 +15449,7 @@ export function AgentChatPane({
     // over the prompt — so it reports through the same launch-status strip. It just spends
     // longer in each stage, which is exactly why the stages are worth showing.
     const jobId = createDraftLaunchJobId();
+    const newDraftMarkAtSend = markNewDraftRequests(workDraftProjectStateKey);
     setDraftLaunchJobs((current) => pruneDraftLaunchJobs([
       {
         id: jobId,
@@ -15583,12 +15596,19 @@ export function AgentChatPane({
         cursorCloudServiceTier: snapshot.cursorCloudServiceTier,
       };
       cursorCloudIdempotencyByDraftRef.current.delete(draftKey);
-      setCursorCloudMode(false);
       if (createdLaneId) {
         invalidateAgentChatSessionListCache({ laneId: createdLaneId });
         await refreshLanesStore().catch(() => undefined);
-        onLaneChange?.(createdLaneId);
-        setDraftLaunchTargetId(null);
+      }
+      // Read after the last await: a new draft asked for during it counts.
+      const opensChat = launchMayOpenItsSession(newDraftMarkAtSend);
+      // A draft the person moved on to keeps its own cloud and lane choices.
+      if (opensChat) {
+        setCursorCloudMode(false);
+        if (createdLaneId) {
+          onLaneChange?.(createdLaneId);
+          setDraftLaunchTargetId(null);
+        }
       }
       patchDraftLaunchJob(jobId, {
         status: "ready",
@@ -15596,10 +15616,10 @@ export function AgentChatPane({
         draftKind: "chat",
         autoOpen: false,
       });
-      adoptCursorCloudChatSession({
+      adoptCloudChatSession({
         sessionId: openedSession.id,
         session: openedSession,
-      }, cloudPin);
+      }, cloudPin, opensChat);
       return true;
     } catch (cloudError) {
       let message = cursorCloudErrorMessage(cloudError);
@@ -15618,7 +15638,7 @@ export function AgentChatPane({
       cursorCloudLaunchInFlightRef.current = false;
     }
   }, [
-    adoptCursorCloudChatSession,
+    adoptCloudChatSession,
     buildDraftLaunchSnapshotForCurrentState,
     chatMachineLanes,
     cursorCloudAutoPr,
@@ -15640,6 +15660,7 @@ export function AgentChatPane({
     setDraftLaunchJobs,
     setDraftLaunchTargetId,
     lanes,
+    workDraftProjectStateKey,
   ]);
 
   /**
@@ -15709,6 +15730,7 @@ export function AgentChatPane({
       ? { ...snapshot, text: promptText, draft: promptText }
       : snapshot);
     const jobId = createDraftLaunchJobId();
+    const newDraftMarkAtSend = markNewDraftRequests(workDraftProjectStateKey);
     setDraftLaunchJobs((current) => pruneDraftLaunchJobs([
       {
         id: jobId,
@@ -15807,14 +15829,21 @@ export function AgentChatPane({
           branch: targetLane?.branchRef ?? null,
         },
       };
-      setDevinCloudMode(false);
       if (createdLaneId) {
         invalidateAgentChatSessionListCache({ laneId: createdLaneId });
         await refreshLanesStore().catch(() => undefined);
-        onLaneChange?.(createdLaneId);
-        setDraftLaunchTargetId(null);
       } else {
         void refreshLanesStore().catch(() => undefined);
+      }
+      // Read after the last await: a new draft asked for during it counts.
+      const opensChat = launchMayOpenItsSession(newDraftMarkAtSend);
+      // A draft the person moved on to keeps its own cloud and lane choices.
+      if (opensChat) {
+        setDevinCloudMode(false);
+        if (createdLaneId) {
+          onLaneChange?.(createdLaneId);
+          setDraftLaunchTargetId(null);
+        }
       }
       patchDraftLaunchJob(jobId, {
         status: "ready",
@@ -15822,10 +15851,10 @@ export function AgentChatPane({
         draftKind: "chat",
         autoOpen: false,
       });
-      adoptDevinCloudChatSession({
+      adoptCloudChatSession({
         sessionId: openedSession.id,
         session: openedSession,
-      }, cloudPin);
+      }, cloudPin, opensChat);
       return true;
     } catch (cloudError) {
       let message = devinCloudErrorMessage(cloudError);
@@ -15838,7 +15867,7 @@ export function AgentChatPane({
       devinCloudLaunchInFlightRef.current = false;
     }
   }, [
-    adoptDevinCloudChatSession,
+    adoptCloudChatSession,
     buildDraftLaunchSnapshotForCurrentState,
     chatMachineLanes,
     currentNativeControls,
@@ -15862,6 +15891,7 @@ export function AgentChatPane({
     selectedSessionId,
     setDraftLaunchJobs,
     setDraftLaunchTargetId,
+    workDraftProjectStateKey,
   ]);
 
   /**

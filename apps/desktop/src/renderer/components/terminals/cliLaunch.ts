@@ -8,6 +8,7 @@ import type {
 import type { LaneLinearIssue } from "../../../shared/types";
 import type { PtyCreateResult } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
+import type { NewDraftRequestMark } from "../../lib/draftLaunchJobs";
 
 export * from "../../../shared/cliLaunch";
 
@@ -29,6 +30,12 @@ export type WorkPtyLaunchArgs = {
   tracked?: boolean;
   disposition?: WorkPtyLaunchDisposition;
   pin?: OpenProjectBinding | null;
+  /**
+   * The new-chat box's mark at Send. A foreground launch focuses its session
+   * only if the person asked for no new draft since (`launchMayOpenItsSession`).
+   * Stays in the renderer; it is not a `pty.create` field.
+   */
+  newDraftMarkAtSend?: NewDraftRequestMark;
   /**
    * Linear issues to attach to the launched terminal session before spawn, so
    * the CLI agent inherits `ADE_LINEAR_*` env and can drive its issue via
