@@ -628,6 +628,11 @@ extension LanesTabView {
       ADEFlatInlineNotice(message: hydrationNotice.title, retry: { Task { await reload(refreshRemote: true) } })
         .adeFlatRow(separator: .hidden)
     }
+    // With no computer connected too: this read goes to the account server.
+    if cloudReadFailed {
+      ADEFlatInlineNotice(message: "ADE couldn't read your machines and ADE Cloud computers, so a new one may be missing.", tint: ADEColor.danger, retry: { Task { await refreshFromPullGesture() } })
+        .adeFlatRow(separator: .hidden)
+    }
     if let errorMessage, laneStatus.phase == .ready, hostReachable {
       ADEFlatInlineNotice(message: errorMessage, tint: ADEColor.danger, retry: { Task { await reload(refreshRemote: true) } })
         .adeFlatRow(separator: .hidden)
@@ -983,9 +988,7 @@ extension LanesTabView {
     let cloudRead = await syncService.readCloudForPull()
     await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
     await focused
-    if !cloudRead, errorMessage == nil {
-      errorMessage = "ADE couldn't read your machines and ADE Cloud computers, so a new one may be missing. Pull again to retry."
-    }
+    if cloudReadFailed == cloudRead { cloudReadFailed = !cloudRead }
     if errorMessage == nil {
       withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
         refreshFeedbackToken += 1

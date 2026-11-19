@@ -306,9 +306,8 @@ extension WorkRootListScreen {
     // computers are read again.
     async let cloud = syncService.readCloudForPull()
     await reload(refreshRemote: true)
-    if !(await cloud), errorMessage == nil {
-      errorMessage = "ADE couldn't read your machines and ADE Cloud computers, so a new one may be missing. Pull again to retry."
-    }
+    let cloudRead = await cloud
+    if cloudReadFailed == cloudRead { cloudReadFailed = !cloudRead }
     if errorMessage == nil {
       withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
         refreshFeedbackToken += 1
