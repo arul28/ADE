@@ -3,6 +3,8 @@ import type { OpenProjectBinding } from "../../../../shared/types";
 import { invalidateAgentChatSessionListCache } from "../../../lib/agentChatSessionListCache";
 import {
   DRAFT_LAUNCH_JOB_STALE_AFTER_MS,
+  launchMayOpenItsSession,
+  newDraftRequestCount,
   pruneDraftLaunchJobs,
   withDraftLaunchTimeout,
   type BackgroundLaunchNotice,
@@ -280,6 +282,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
   if (mode === "foreground") {
     deps.latestForegroundJobIdRef.current = jobId;
   }
+  const newDraftRequestsAtSend = newDraftRequestCount();
   const job: DraftLaunchJob = {
     id: jobId,
     mode,
@@ -298,6 +301,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
     autoOpen: mode === "foreground",
     createdAtMs: Date.now(),
     snapshot,
+    newDraftRequestsAtSend,
   };
   deps.clearPromptSuggestion();
   deps.setError(null);
@@ -381,8 +385,13 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
       draftKind: launched.draftKind,
     };
     const canMutateLaunchUi = deps.canRefreshPinnedProject(launchBinding);
+    // Not when a newer send from this pane, or a new draft the person asked
+    // for since this send, has the screen: the session shows in the list.
     const shouldAutoOpen =
-      canMutateLaunchUi && mode === "foreground" && deps.latestForegroundJobIdRef.current === jobId;
+      canMutateLaunchUi
+      && mode === "foreground"
+      && deps.latestForegroundJobIdRef.current === jobId
+      && launchMayOpenItsSession(newDraftRequestsAtSend);
     const jobStillVisible = deps.draftLaunchJobExists(jobId);
     deps.patchDraftLaunchJob(jobId, {
       status: "ready",
@@ -390,10 +399,12 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
       laneName: launch.laneName,
       sessionId: launch.sessionId,
       draftKind: launch.draftKind,
-      // Keep autoOpen set for foreground sends so the pane's effect can open the
-      // chat even if the pane instance remounted during the launch (otherwise
-      // the inline open is skipped and the job sits at "ready").
-      autoOpen: mode === "foreground" && canMutateLaunchUi,
+      // Keep autoOpen set for a launch that may open its session, so the
+      // pane's effect can open the chat even if the pane instance remounted
+      // during the launch (otherwise the inline open is skipped and the job
+      // sits at "ready"). A launch that may not open it must not keep it: the
+      // next draft pane to mount would open that old session over itself.
+      autoOpen: shouldAutoOpen,
     });
     if (!jobStillVisible) {
       if (holdsComposerUntilOpen) deps.clearDraftLaunchComposer(snapshot);

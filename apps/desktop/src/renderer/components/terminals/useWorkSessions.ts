@@ -42,6 +42,7 @@ import {
 } from "../../lib/terminalAttention";
 import type { CanonicalStatusBucket } from "../../../shared/sessionCanonicalState";
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
+import { noteNewDraftRequested } from "../../lib/draftLaunchJobs";
 import { boundMachineLanePrs, laneHasAnyPr, useLanePrsByLaneId } from "./useLanePrs";
 import { applyWorkLaneManualMove, type WorkLaneSortMode } from "./workLaneOrder";
 import { EMPTY_WORK_SEEN_AT, stampWorkSeenAt } from "./workLaneFocus";
@@ -1288,6 +1289,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
   const showDraftKind = useCallback(
     (nextKind: WorkDraftKind) => {
+      // A send still on its way from the new-chat box must not open its chat
+      // over the draft asked for now (`launchMayOpenItsSession`).
+      noteNewDraftRequested();
       setProjectViewState((prev) => ({
         ...prev,
         draftKind: nextKind,

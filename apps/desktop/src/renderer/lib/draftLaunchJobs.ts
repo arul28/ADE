@@ -141,7 +141,31 @@ export type DraftLaunchJob = {
   autoOpen: boolean;
   createdAtMs: number;
   snapshot: DraftLaunchSnapshot;
+  /** `newDraftRequestCount()` at the send; a later request means the person moved on. */
+  newDraftRequestsAtSend?: number;
 };
+
+/**
+ * Counts the person's requests for a new draft in this window: ⌘⇧N, the New
+ * chat button, the Chat/CLI switch. A launch notes the count when it is sent.
+ * When the count has changed by the time its chat or CLI starts, the person
+ * asked for something else meanwhile, so the launch must not take the screen
+ * back: the new session shows in the list instead.
+ */
+let newDraftRequests = 0;
+
+export function noteNewDraftRequested(): void {
+  newDraftRequests += 1;
+}
+
+export function newDraftRequestCount(): number {
+  return newDraftRequests;
+}
+
+/** False when the person asked for a new draft after this send. */
+export function launchMayOpenItsSession(requestsAtSend: number | undefined): boolean {
+  return requestsAtSend === undefined || requestsAtSend === newDraftRequests;
+}
 
 export function isDraftLaunchJobTerminal(status: DraftLaunchJobStatus): boolean {
   return status === "ready" || status === "failed";
