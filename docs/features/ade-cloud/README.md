@@ -1145,6 +1145,10 @@ Each call is account level: it names a computer of the account, never a pin.
     Delete asks first, removes the kept record, then the lane's saved chats.
     Everything goes through the account server, so it works with no machine
     of the person's own.
+    A lane page left open while its computer goes (opened from any machine's
+    row) turns into that kept row, with New computer and Delete; it reads
+    the list a few times for about half a minute. When the read fails, the
+    ADE Cloud page says so with Try again, never "No cloud lanes yet".
 - **Keep the lane on a fresh computer.** ADE pushes the work first; a push that
   can't save everything keeps the computer, and freeing is refused while the
   agent works ("Stop it or wait, then free the computer"). Then the server

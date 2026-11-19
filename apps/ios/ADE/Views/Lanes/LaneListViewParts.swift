@@ -1101,9 +1101,13 @@ struct UnavailableLaneDestination: View {
   @ObservedObject private var launches = AccountCloudLaunchStore.shared
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
 
+  /// A lane opened from another machine's row keeps that machine in its id
+  /// (`fleet|machine|lane`); the account keeps the lane under its own id.
+  private var accountLaneId: String { workParseRemoteLaneId(laneId)?.laneId ?? laneId }
+
   var body: some View {
     Group {
-      if let lane = cloudStore.lanesWithoutComputer.first(where: { $0.laneId == laneId }) {
+      if let lane = cloudStore.lanesWithoutComputer.first(where: { $0.laneId == accountLaneId }) {
         ScrollView {
           VStack(alignment: .leading, spacing: 10) {
             Label("No computer now", systemImage: ADECloudMachine.symbol)
@@ -1131,7 +1135,7 @@ struct UnavailableLaneDestination: View {
     .task(id: laneId) {
       for attempt in 0..<6 {
         await cloudStore.refreshLanesWithoutComputer(using: syncPublishes.service, force: true)
-        if Task.isCancelled || cloudStore.lanesWithoutComputer.contains(where: { $0.laneId == laneId }) { return }
+        if Task.isCancelled || cloudStore.lanesWithoutComputer.contains(where: { $0.laneId == accountLaneId }) { return }
         try? await Task.sleep(for: .seconds(attempt == 0 ? 2 : 5))
       }
     }

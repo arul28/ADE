@@ -384,11 +384,12 @@ final class AccountCloudLaunchStore: ObservableObject {
 
     var isLane: Bool { kind == "lane" }
     var inProgress: Bool { startError == nil && (record?.inProgress ?? true) }
-    /// Still worth reading again: in progress, or running before the server
-    /// has named its chat (the card's Open chat needs that id).
+    /// Still worth reading again: in progress, or a chat launch running
+    /// before the server has named its chat (the card's Open chat needs that
+    /// id). A lane launch has no chat, so it is done once its computer runs.
     var awaitsChat: Bool {
       guard startError == nil, let record else { return false }
-      return record.inProgress || (record.state == "running" && record.sessionId == nil)
+      return record.inProgress || (!isLane && record.state == "running" && record.sessionId == nil)
     }
   }
 
@@ -734,7 +735,7 @@ final class AccountCloudLaunchStore: ObservableObject {
 
   /// One loop for every launch in progress; it ends when none is left.
   private func poll(using sync: SyncService) {
-    guard pollTask == nil, entries.contains(where: \.awaitsChat) else { return }
+    guard pollTask == nil, entries.contains(where: { $0.awaitsChat && !hiddenIds.contains($0.launchId) }) else { return }
     pollGeneration += 1
     let generation = pollGeneration
     pollTask = Task { @MainActor [weak self] in
@@ -744,7 +745,7 @@ final class AccountCloudLaunchStore: ObservableObject {
         if Task.isCancelled { break }
         // Paused while the app is in the background.
         if UIApplication.shared.applicationState != .active { delay = 10; continue }
-        let open = self.entries.filter(\.awaitsChat)
+        let open = self.entries.filter { $0.awaitsChat && !self.hiddenIds.contains($0.launchId) }
         if open.isEmpty { break }
         guard let client = await sync.cloudServerClient() else { break }
         var changed = false

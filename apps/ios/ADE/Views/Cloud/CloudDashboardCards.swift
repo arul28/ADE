@@ -380,6 +380,13 @@ struct CloudLanesCard: View {
         }
         .padding(.horizontal, ADEKit.inset)
         .padding(.bottom, ADEKit.inset)
+      } else if store.machines.isEmpty, cloudStore.lanesWithoutComputer.isEmpty, cloudStore.lanesWithoutComputerUnread {
+        // The kept lanes couldn't be read: an empty list says nothing.
+        ADESettingsNotice(message: "ADE couldn't read your cloud lanes without a computer.", tone: .warn, actionTitle: "Try again") {
+          Task { await cloudStore.refreshLanesWithoutComputer(using: store.syncService, force: true) }
+        }
+        .padding(.horizontal, ADEKit.inset)
+        .padding(.bottom, ADEKit.inset)
       } else if store.machines.isEmpty, cloudStore.lanesWithoutComputer.isEmpty {
         Text("No cloud lanes yet. Pick ADE Cloud under Run on when you send a message: ADE makes a computer for the lane, and it shows here.")
           .font(.system(size: 13))

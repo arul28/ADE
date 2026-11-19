@@ -61,6 +61,9 @@ final class AccountCloudStore: ObservableObject {
   @Published private(set) var access: Access?
   @Published private(set) var account: CloudPhoneAccount?
   @Published private(set) var lanesWithoutComputer: [CloudLaneWithoutComputer] = []
+  /// The last read of `lanesWithoutComputer` failed: an empty list then
+  /// means "unknown", never "none".
+  @Published private(set) var lanesWithoutComputerUnread = false
   /// Held messages by chat (`chatKey`), oldest first.
   @Published private(set) var queued: [String: [CloudChatQueuedMessage]] = [:]
   /// "Keep it" went through for these computers this run.
@@ -78,6 +81,8 @@ final class AccountCloudStore: ObservableObject {
   private var accountGeneration = 0
   /// The last read of the kept lanes (`refreshLanesWithoutComputer`, or the account read).
   private var lanesReadAt: Date?
+  /// Bumped by each kept-lane read as it starts (and by an account change).
+  private var lanesReadSeq: UInt64 = 0
   /// Where the next older page of a saved chat starts (`nextBefore`), by thread key.
   private var transcriptCursors: [String: Int] = [:]
   /// Saved chats read this run, by thread key: one read per open.
@@ -97,15 +102,14 @@ final class AccountCloudStore: ObservableObject {
     let generation = accountGeneration
     async let accessRead = readAccess(client)
     async let accountRead = readAccount(client)
+    lanesReadSeq &+= 1
+    let lanesSeq = lanesReadSeq
     async let lanesRead = readLanesWithoutComputer(client)
     let (nextAccess, nextAccount, nextLanes) = await (accessRead, accountRead, lanesRead)
     guard generation == accountGeneration, AccountService.shared.isPairingCommitAuthorized(owner) else { return }
     if let nextAccess, nextAccess != access { access = nextAccess }
     if let nextAccount, nextAccount != account { account = nextAccount }
-    if let nextLanes {
-      lanesReadAt = Date()
-      if nextLanes != lanesWithoutComputer { lanesWithoutComputer = nextLanes }
-    }
+    applyLanesRead(nextLanes, seq: lanesSeq)
   }
 
   private func readAccess(_ client: CloudServerClient) async -> Access? {
@@ -132,7 +136,7 @@ final class AccountCloudStore: ObservableObject {
       return try await client.lanesWithoutComputer()
     } catch CloudServerClient.Failure.noAccess {
       // An older server, or no ADE Cloud: nothing to add, and nothing to drop.
-      return nil
+      return lanesWithoutComputer
     } catch {
       accountCloudLog.notice("cloud_store read=lanes_without_computer failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
       return nil
@@ -147,12 +151,25 @@ final class AccountCloudStore: ObservableObject {
     lanesReadAt = Date()
     let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else { return }
-    guard let next = await readLanesWithoutComputer(client) else {
-      // A failed read doesn't count: the next look reads again.
-      if generation == accountGeneration { lanesReadAt = nil }
+    lanesReadSeq &+= 1
+    let seq = lanesReadSeq
+    let next = await readLanesWithoutComputer(client)
+    guard generation == accountGeneration else { return }
+    applyLanesRead(next, seq: seq)
+  }
+
+  /// A read of the kept lanes, unless a later read already started: an
+  /// older answer never replaces a newer one. A failed read keeps the list,
+  /// marks it unread, and doesn't count toward the 15 s wait.
+  private func applyLanesRead(_ next: [CloudLaneWithoutComputer]?, seq: UInt64) {
+    guard seq == lanesReadSeq else { return }
+    guard let next else {
+      lanesReadAt = nil
+      if !lanesWithoutComputerUnread { lanesWithoutComputerUnread = true }
       return
     }
-    guard generation == accountGeneration else { return }
+    lanesReadAt = Date()
+    if lanesWithoutComputerUnread { lanesWithoutComputerUnread = false }
     if next != lanesWithoutComputer { lanesWithoutComputer = next }
   }
 
@@ -467,6 +484,8 @@ final class AccountCloudStore: ObservableObject {
     access = nil
     account = nil
     lanesWithoutComputer = []
+    lanesWithoutComputerUnread = false
+    lanesReadSeq &+= 1
     lanesReadAt = nil
     queued = [:]
     keptInstanceIds = []

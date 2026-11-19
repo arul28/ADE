@@ -4248,6 +4248,23 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
     expect(await keptLanes()).toEqual([expect.objectContaining({ laneId: "lane-1", branchRef: "ade/fix-login" })]);
   });
 
+  it("deleting the kept lane deletes its chats under every computer they were filed under, and no other lane's", async () => {
+    harness.env.CLOUD_CHATS = memoryBucket();
+    expect((await start()).status).toBe(201);
+    await drive();
+    const chat = (machineKey: string, chatId: string, laneId: string) => harness.exec(
+      "insert into cloud_chat_copies (user_id, machine_key, chat_id, lane_id, r2_key, updated_at) values (?, ?, ?, ?, ?, ?)",
+      OWNER, machineKey, chatId, laneId, `chats/${OWNER}/${machineKey}/${chatId}`, clock,
+    );
+    // Its own computer's key, and a key from before a move that no client listed.
+    chat("mk_source", "c1", "lane-1");
+    chat("mk_before_move", "c2", "lane-1");
+    chat("mk_before_move", "c3", "lane-2");
+    expect((await harness.send(OWNER, "DELETE", "/cloud/lanes/without-computer/lane-1")).status).toBe(200);
+    expect(await keptLanes()).toEqual([]);
+    expect(harness.rows("select chat_id from cloud_chat_copies where user_id = ? order by chat_id", OWNER)).toEqual([{ chat_id: "c3" }]);
+  });
+
   it("a watched free goes on with each read of its record, with no cron", async () => {
     const pending: Array<Promise<unknown>> = [];
     const waitUntil = (promise: Promise<unknown>) => { pending.push(promise); };
