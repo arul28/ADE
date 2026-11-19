@@ -654,6 +654,7 @@ extension SyncService {
     cloudServerReadTask = nil
     cloudServerReadAt = nil
     cloudServerReadFinished = false
+    cloudServerLastReadFailed = false
     cloudServerInstances = []
     cloudSavedChats = []
     // The last account's chat launches from this phone go too.
