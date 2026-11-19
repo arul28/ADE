@@ -4,10 +4,10 @@ import { invalidateAgentChatSessionListCache } from "../../../lib/agentChatSessi
 import {
   DRAFT_LAUNCH_JOB_STALE_AFTER_MS,
   launchMayOpenItsSession,
-  markNewDraftRequests,
   pruneDraftLaunchJobs,
   withDraftLaunchTimeout,
   type BackgroundLaunchNotice,
+  type NewDraftRequestMark,
   type DraftLaunchJob,
   type DraftLaunchKind,
   type DraftLaunchMode,
@@ -193,8 +193,11 @@ export type RendererOwnedLaunchDeps = {
   launchBinding: OpenProjectBinding;
   /** Double-press guard key; released when the chain settles. */
   requestKey: string;
-  /** The project tab the send came from; its new-draft requests stop the late open. */
-  projectStateKey: string | null;
+  /**
+   * `markNewDraftRequests()` taken at Send, before any await: a new draft asked
+   * for after it stops the late open.
+   */
+  newDraftMarkAtSend: NewDraftRequestMark;
   /** The draft targets "Auto-create lane". */
   autoCreate: boolean;
   /** The pane's lane, to refresh its session list when the chat lands there. */
@@ -234,6 +237,7 @@ export type RendererOwnedLaunchDeps = {
     mode: DraftLaunchMode,
     assertActive: () => void,
     pin: OpenProjectBinding,
+    newDraftMarkAtSend: NewDraftRequestMark,
   ) => Promise<StartedDraftLaunch>;
   clearPromptSuggestion: () => void;
   setError: (message: string | null) => void;
@@ -284,7 +288,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
   if (mode === "foreground") {
     deps.latestForegroundJobIdRef.current = jobId;
   }
-  const newDraftMarkAtSend = markNewDraftRequests(deps.projectStateKey);
+  const { newDraftMarkAtSend } = deps;
   const job: DraftLaunchJob = {
     id: jobId,
     mode,
@@ -364,7 +368,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
     };
     const started = kind === "chat"
       ? deps.startChat(prepared, targetLane, launchBinding, assertLaunchActive, onOpeningMessageOut)
-      : deps.startCli(prepared, targetLane, mode, assertLaunchActive, launchBinding);
+      : deps.startCli(prepared, targetLane, mode, assertLaunchActive, launchBinding, newDraftMarkAtSend);
     let launched: StartedDraftLaunch;
     try {
       launched = await withDraftLaunchTimeout(started, "Session start", () => {

@@ -834,14 +834,18 @@ and effort for a new chat's first prompt.
     draft since the send. `showDraftKind` (⌘⇧N, the New chat button, the
     Chat/CLI switch) and `openStartChatDraft` (the palette, a lane's menu, a
     chip) count each request per project tab (`noteNewDraftRequested`); the job
-    keeps its project's count at send (`markNewDraftRequests`), and
+    keeps its project's count at Send, before any await
+    (`markNewDraftRequests`), and
     `launchMayOpenItsSession` compares it. A request in another project tab
     does not count. A
     result that may not open keeps `autoOpen` off, so a later draft pane does
     not open it either; the session shows in the list. Cursor Cloud and Devin
     Cloud launches follow the same rule (`adoptCloudChatSession`), and a
     cloud launch that may not open leaves the draft's cloud and lane choices
-    as they are. Background
+    as they are. A foreground CLI carries the mark into `launchPtySession`
+    (`WorkPtyLaunchArgs.newDraftMarkAtSend`, also on the brain-owned new-lane
+    path through the local launch record), which focuses the terminal only
+    while the mark holds. Background
     jobs show a strip with Open. Failed jobs offer Restore (also on the
     matching error banner). Stale active jobs can be hidden; terminal rows are
     pruned.

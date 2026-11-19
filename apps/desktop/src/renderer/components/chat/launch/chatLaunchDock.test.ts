@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope, OpenProjectBinding } from "../../../../shared/types";
 import {
   DRAFT_LAUNCH_JOB_STALE_AFTER_MS,
+  markNewDraftRequests,
   noteNewDraftRequested,
   type DraftLaunchKind,
   type DraftLaunchMode,
@@ -122,7 +123,7 @@ function rendererLaunchDeps(
     snapshot: launchSnapshot,
     launchBinding,
     requestKey: "request",
-    projectStateKey: "project-a",
+    newDraftMarkAtSend: markNewDraftRequests("project-a"),
     autoCreate: false,
     paneLaneId: "lane-1",
     jobId: "job-1",

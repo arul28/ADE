@@ -42,7 +42,7 @@ import {
 } from "../../lib/terminalAttention";
 import type { CanonicalStatusBucket } from "../../../shared/sessionCanonicalState";
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
-import { noteNewDraftRequested } from "../../lib/draftLaunchJobs";
+import { launchMayOpenItsSession, noteNewDraftRequested } from "../../lib/draftLaunchJobs";
 import { boundMachineLanePrs, laneHasAnyPr, useLanePrsByLaneId } from "./useLanePrs";
 import { applyWorkLaneManualMove, type WorkLaneSortMode } from "./workLaneOrder";
 import { EMPTY_WORK_SEEN_AT, stampWorkSeenAt } from "./workLaneFocus";
@@ -2881,7 +2881,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // Invalidate all cache entries so other views (e.g. Lanes tab) pick up
       // the new session on their next refresh.
       invalidateSessionListCache();
-      if (args.disposition !== "background") {
+      // A launch sent from the new-chat box does not take the screen from a
+      // draft asked for while it started; it shows in the list instead.
+      if (args.disposition !== "background" && launchMayOpenItsSession(args.newDraftMarkAtSend)) {
         // Lane selection is the active binding's own cursor; pointing it at a
         // lane that lives on another machine selects nothing.
         if (belongsToActiveBinding) selectLane(args.laneId);

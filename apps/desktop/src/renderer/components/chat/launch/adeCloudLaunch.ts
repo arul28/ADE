@@ -145,6 +145,7 @@ export function startAdeCloudLaunch(input: {
   binding: OpenProjectBinding;
   draftSnapshot?: ChatLaunchLocalRecord["draftSnapshot"];
   cli?: ChatLaunchLocalRecord["cli"];
+  newDraftMarkAtSend?: ChatLaunchLocalRecord["newDraftMarkAtSend"];
   onUnsupported?: (() => void) | null;
 }): Promise<StartChatLaunchOutcome> {
   const args: ChatLaunchArgs & { laneId: string; laneName: string } = {
@@ -163,6 +164,7 @@ export function startAdeCloudLaunch(input: {
     pin: input.binding,
     draftSnapshot: input.draftSnapshot ?? null,
     cli: input.cli ?? null,
+    ...(input.newDraftMarkAtSend ? { newDraftMarkAtSend: input.newDraftMarkAtSend } : {}),
   });
   insertOptimisticChatLaunch(
     input.binding,

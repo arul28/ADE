@@ -187,6 +187,7 @@ import {
   resetProjectOriginMemory,
 } from "../lanes/laneMachines";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
+import { markNewDraftRequests, noteNewDraftRequested } from "../../lib/draftLaunchJobs";
 import {
   resetCrossMachineLaneSyncForTest,
   seedCrossMachineOptimisticSession,
@@ -544,6 +545,18 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(openTabIdx).toBeGreaterThanOrEqual(0);
     expect(focusIdx).toBeLessThan(refreshDoneIdx);
     expect(openTabIdx).toBeLessThan(refreshDoneIdx);
+
+    // A launch from the new-chat box whose project asked for a new draft after
+    // its Send starts, but leaves the screen on that draft.
+    callOrder.length = 0;
+    listSessionsCachedMock.mockResolvedValue([]);
+    const markAtSend = markNewDraftRequests("/fake/project");
+    noteNewDraftRequested("/fake/project");
+    await act(async () => {
+      await result.current.launchPtySession({ laneId: "lane-1", profile: "claude", newDraftMarkAtSend: markAtSend });
+    });
+    expect((window as any).ade.pty.create).toHaveBeenCalledTimes(2);
+    expect(callOrder).not.toContain("focusSession");
   });
 
   it("lightly refreshes lanes when Work sessions load before lane state recovers", async () => {

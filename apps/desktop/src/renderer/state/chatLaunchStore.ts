@@ -10,7 +10,7 @@ import type {
   OpenProjectBinding,
 } from "../../shared/types";
 import { chatLaunchErrorMessage, chatLaunchStatusLine, createChatLaunchSnapshot, isChatLaunchPending, isChatLaunchSucceeded, mergeChatLaunchSnapshot } from "../../shared/chatLaunch";
-import type { DraftLaunchSnapshot } from "../lib/draftLaunchJobs";
+import type { DraftLaunchSnapshot, NewDraftRequestMark } from "../lib/draftLaunchJobs";
 import type { WorkPtyLaunchArgs } from "../components/terminals/cliLaunch";
 import { announceChatLaunchClosed } from "../components/chat/launch/chatLaunchDraftRestore";
 
@@ -126,6 +126,8 @@ export type ChatLaunchLocalRecord = {
   pin: OpenProjectBinding | null;
   draftSnapshot: DraftLaunchSnapshot | null;
   cli: ChatLaunchCliParams | null;
+  /** The new-chat box's mark at Send; a late CLI start does not take the screen after a new draft. */
+  newDraftMarkAtSend?: NewDraftRequestMark;
 };
 
 const localRecords = new Map<string, ChatLaunchLocalRecord>();

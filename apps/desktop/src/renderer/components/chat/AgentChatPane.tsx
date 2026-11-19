@@ -612,6 +612,7 @@ import {
   isDraftLaunchJobTerminal,
   launchMayOpenItsSession,
   markNewDraftRequests,
+  type NewDraftRequestMark,
   pruneDraftLaunchJobs,
   withDraftLaunchTimeout,
   LAUNCH_PROJECT_CHANGED_MESSAGE,
@@ -14551,6 +14552,7 @@ export function AgentChatPane({
     mode: DraftLaunchMode,
     assertActive?: () => void,
     pin?: OpenProjectBinding | null,
+    newDraftMarkAtSend?: NewDraftRequestMark,
   ): Promise<StartedDraftLaunch> => {
     if (!onLaunchCliSession) throw new Error("CLI sessions are not available from this surface.");
     const cliParams = buildDraftCliLaunchParams(prepared);
@@ -14562,6 +14564,7 @@ export function AgentChatPane({
       laneId: targetLane.laneId,
       disposition: mode,
       pin,
+      ...(newDraftMarkAtSend ? { newDraftMarkAtSend } : {}),
     });
     // The PTY spawn is not cancellable, so if the launch was aborted while it
     // was starting (timeout), dispose the freshly-created
@@ -14696,6 +14699,8 @@ export function AgentChatPane({
       launchId?: string;
       lane?: { laneId: string; laneName: string; branchRef: string };
     } | null = null,
+    /** Send-time mark: a foreground CLI opens its tab only if it still holds. */
+    newDraftMarkAtSend?: NewDraftRequestMark,
   ): boolean => {
     const prepared = prepareDraftLaunch(snapshot);
     let cli: ChatLaunchCliParams | null = null;
@@ -14769,10 +14774,17 @@ export function AgentChatPane({
         binding: launchBinding,
         draftSnapshot: snapshot,
         cli,
+        ...(newDraftMarkAtSend ? { newDraftMarkAtSend } : {}),
         onUnsupported,
       });
     } else {
-      registerChatLaunchLocalRecord(launchId, { args, pin: launchBinding, draftSnapshot: snapshot, cli });
+      registerChatLaunchLocalRecord(launchId, {
+        args,
+        pin: launchBinding,
+        draftSnapshot: snapshot,
+        cli,
+        ...(newDraftMarkAtSend ? { newDraftMarkAtSend } : {}),
+      });
       insertOptimisticChatLaunch(
         launchBinding,
         buildOptimisticChatLaunchSnapshot({ launch: { ...args, laneId: newLaneId, laneName }, includeFetch }),
@@ -14985,6 +14997,9 @@ export function AgentChatPane({
         : "Add a message before sending.", kind: "hint" });
       return;
     }
+    // Taken at Send, before any await: a new draft asked for after this
+    // keeps the screen (`launchMayOpenItsSession`).
+    const newDraftMarkAtSend = markNewDraftRequests(workDraftProjectStateKey);
     if (cloudSend) {
       // Send is off while the label above the box shows; this is the guard.
       if (cloudSend.notice) return;
@@ -15047,6 +15062,7 @@ export function AgentChatPane({
           // Main owns every ADE Cloud launch; there is no older path to fall back to.
           () => setError({ message: "This ADE can't start an ADE Cloud lane. Update ADE, then send again.", kind: "status" }),
           { sizeId: cloudSend.tierId, sizeChoice: cloudSend.sizeChoice, originUrl: cloudSend.originUrl },
+          newDraftMarkAtSend,
         );
         draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
         // The composer clears with the launch, so the same key can only come
@@ -15080,7 +15096,7 @@ export function AgentChatPane({
         snapshot,
         launchBinding: laneBinding,
         requestKey: cloudRequestKey,
-        projectStateKey: workDraftProjectStateKey,
+        newDraftMarkAtSend,
         autoCreate: false,
         paneLaneId: laneId,
         jobId: createDraftLaunchJobId(),
@@ -15159,7 +15175,7 @@ export function AgentChatPane({
       snapshot,
       launchBinding,
       requestKey,
-      projectStateKey: workDraftProjectStateKey,
+      newDraftMarkAtSend,
       autoCreate: draftLaunchTargetIsAutoCreate,
       paneLaneId: laneId,
       jobId: createDraftLaunchJobId(),
@@ -15195,7 +15211,7 @@ export function AgentChatPane({
       launchDraftIntoNewLane(kind, mode, snapshot, launchBinding, draftNewLaneConfig, () => {
         draftLaunchInFlightKeysRef.current.add(requestKey);
         void runRendererOwnedLaunch();
-      });
+      }, null, newDraftMarkAtSend);
       window.setTimeout(() => draftLaunchInFlightKeysRef.current.delete(requestKey), 400);
       return;
     }

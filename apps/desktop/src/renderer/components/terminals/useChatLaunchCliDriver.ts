@@ -87,6 +87,7 @@ export function useChatLaunchCliDriver(
         laneId: snapshot.laneId,
         disposition: snapshot.mode,
         pin: ptyPin,
+        ...(record.newDraftMarkAtSend ? { newDraftMarkAtSend: record.newDraftMarkAtSend } : {}),
       }).then(
         async (result) => {
           const snapshot = await report({ sessionId: result.sessionId });
