@@ -919,6 +919,8 @@ async function supersedePhantomDuplicates(
     input: RegisterInput;
     pairingProof: PairingProofBroker;
     refuse: RefusalLogger;
+    /** This registration's time: a row it inserted has this `created_at`. */
+    nowMs: number;
   },
 ): Promise<string[]> {
   const { userId, input } = args;
@@ -977,13 +979,14 @@ async function supersedePhantomDuplicates(
              set custom_name = ?
            where user_id = ? and machine_key = ?
              and (custom_name is null
-               -- An ADE Cloud computer's row was named after the computer
-               -- at registration (upsertMachine): a default, so the
-               -- person's own name for the old row wins over it.
-               or custom_name = (select nullif(trim(c.name), '') from cloud_computers c
+               -- An ADE Cloud computer's row this registration just made
+               -- was named after the computer (upsertMachine): a default,
+               -- so the person's own name for the old row wins over it. An
+               -- older row's name may be one the person chose, and stays.
+               or (machines.created_at = ? and custom_name = (select nullif(trim(c.name), '') from cloud_computers c
                  where c.user_id = machines.user_id and c.machine_key = machines.machine_key and c.deleted_at is null
-                 order by c.created_at desc limit 1))
-        `).bind(carriedName, userId, input.machineKey),
+                 order by c.created_at desc limit 1)))
+        `).bind(carriedName, userId, input.machineKey, args.nowMs),
       ]
       : []),
     // The identifiers stay in the predicate, and it mirrors the select exactly:
@@ -1070,6 +1073,7 @@ async function handleRegister(
     input,
     pairingProof,
     refuse,
+    nowMs,
   });
 
   // A replaced key's folders are not on the account any more; this machine
