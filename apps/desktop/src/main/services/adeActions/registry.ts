@@ -322,7 +322,8 @@ import { buildProviderLoginsDomainService } from "../providerLogins/providerLogi
 import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
 import { ADE_CLOUD_HOME_UNAVAILABLE } from "../../../shared/automationCloud";
 import { CloudPhoneError, createCloudPhoneService, type CloudPhoneService } from "../adeCloud/cloudPhoneService";
-import { captureError } from "../../../shared/sentry/capture";
+import { captureError, markReportedToSentry } from "../../../shared/sentry/capture";
+import { CLOUD_ACCESS_REFUSED } from "../adeCloud/cloudProvider";
 import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudServerFor, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
 import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import type { CloudSignInVaults } from "../adeCloud/cloudSignInStore";
@@ -4570,7 +4571,7 @@ function cloudPhoneServiceFor(runtime: AccountDomainRuntime): CloudPhoneService 
 const CLOUD_PHONE_EXPECTED_CODES: ReadonlySet<string> = new Set([
   "phone_free_held", "phone_minutes_out", "phone_extra_limit", "phone_not_on_account", "phone_paused",
   "phone_not_running", "phone_running", "no_account", "declined", "bad_request", "out_path_outside_root",
-  "unauthorized", "not_signed_in",
+  "device_build", CLOUD_ACCESS_REFUSED,
 ]);
 /** Waiting on NoMac (its phone limit, a slow call): a warning, not an error. */
 const CLOUD_PHONE_WARNING_CODES: ReadonlySet<string> = new Set([
@@ -4590,6 +4591,9 @@ function reportCloudPhoneFailure(action: string, error: unknown): void {
   const raw = error && typeof error === "object" ? (error as { code?: unknown }).code : null;
   const code = typeof raw === "string" && raw ? raw : "none";
   if (CLOUD_PHONE_EXPECTED_CODES.has(code)) return;
+  // Reported here (or held back by the interval below): the RPC server's own
+  // report of the same throw is skipped either way.
+  markReportedToSentry(error);
   const key = `${action}:${code}`;
   const now = Date.now();
   if (now - (cloudPhoneLastReport.get(key) ?? 0) < CLOUD_PHONE_REPORT_INTERVAL_MS) return;
