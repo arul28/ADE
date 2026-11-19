@@ -38,8 +38,11 @@ const KEEP_AWAKE_EXEC_MS = 30_000;
  */
 const KEEP_AWAKE_FRESH_MAX_MS = 75_000;
 const KEEP_AWAKE_FRESH_POLL_MS = 5_000;
-/** As the desktop's (`PUSH_ALL_WORK_TIMEOUT_MS`): a frozen push can't hold the computer awake for long. */
-const PUSH_EXEC_MS = 3 * 60_000;
+/**
+ * The desktop's 3 minutes (`PUSH_ALL_WORK_TIMEOUT_MS`) plus the minute the git
+ * warm-up may take: a frozen push can't hold the computer awake for long.
+ */
+const PUSH_EXEC_MS = 4 * 60_000;
 const CHECK_EXEC_MS = 2 * 60_000;
 const DELETE_CONFIRM_MAX_MS = 3 * 60_000;
 const DELETE_CONFIRM_POLL_MS = 10_000;
@@ -169,7 +172,19 @@ async function push(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepRe
   logCloud("cloud.free_pushed", { jobId: job.job_id, pushed: tally.pushed, failed: tally.failed, skipped: tally.skipped });
   const left = (tally.lanes ?? []).filter((lane) => lane.state === "unpushed" || lane.state === "failed");
   if (tally.failed > 0 || left.length > 0 || (!tally.lanes && tally.skipped > 0)) {
-    return { kind: "fail", error: `ADE couldn't push all work on this computer${laneNamesOf(left)}, so it stays. Open the lane to see why, then try again.` };
+    // A lane it couldn't read (nothing seen to push, the read itself failed)
+    // is not a lane to open and fix: say that, apart from work that didn't push.
+    // Unknown (an older ADE) counts as work.
+    const unpushed = left.filter((lane) => lane.state === "unpushed" || lane.dirty !== false || lane.ahead !== 0);
+    // The read can fail for a while (a cold disk right after a wake) or for
+    // good (a lane folder that's no longer a Git worktree): name the lanes and
+    // say what to do in both cases.
+    // An older ADE names no lanes: say so plainly, as work that didn't push.
+    if (left.length === 0) return { kind: "fail", error: "ADE couldn't push all work on this computer, so it stays. Open the lane to see why, then try again." };
+    if (unpushed.length === 0) {
+      return { kind: "fail", error: `ADE couldn't read the work in${laneNamesOf(left)}, so nothing was deleted. Try again in a minute; if it fails again, open that lane to see why.` };
+    }
+    return { kind: "fail", error: `ADE couldn't push the work in${laneNamesOf(unpushed)} to GitHub, so the computer stays. Open it, push or discard that work, then try again.` };
   }
   const facts = factsOf(job);
   const own = tally.lanes?.find((lane) => lane.laneId === facts.laneId) ?? tally.lanes?.find((lane) => !lane.primary) ?? null;
@@ -184,7 +199,7 @@ async function recheck(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<Ste
   const waiting = await awake(env, job, ctx, computer);
   if (waiting) return waiting;
   // Read once more after the push: anything new or unknown keeps the computer.
-  const ran = await tryExec(ctx, computer.instance_id, pushWorkCommand(true), CHECK_EXEC_MS);
+  const ran = await tryExec(ctx, computer.instance_id, pushWorkCommand(true, { afterPush: true }), CHECK_EXEC_MS);
   const tally = ran && ran.exitCode === 0 ? readPushWorkTally(ran.stdout) : null;
   if (!tally || !tally.lanes) return { kind: "fail", error: "ADE couldn't confirm all work is on GitHub, so the computer stays. Try again." };
   if (tally.failed > 0) return { kind: "fail", error: "ADE couldn't read every project on this computer, so it stays. Try again." };

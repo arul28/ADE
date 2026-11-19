@@ -29,6 +29,7 @@ import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
 import { wakeThroughTransition } from "./cloudInstanceOps";
 import { getErrorMessage } from "../shared/utils";
 import { withDeadline } from "../shared/withTimeout";
+import { pushWorkCommand } from "../../../../../account-directory/src/cloud/computerCommands";
 
 type Logger = {
   info?(event: string, meta?: Record<string, unknown>): void;
@@ -126,21 +127,13 @@ function emptyResult(state: CloudMachinesResult["state"], message: string | null
   };
 }
 
-/** Bounded so a frozen push can't outlast the free short wake it runs in. */
-const PUSH_ALL_WORK_TIMEOUT_MS = 3 * 60_000;
-
 /**
- * Commits and pushes every project's lanes on the computer (`ade cloud
- * push-work`). The new ADE sits on the disk (`$ADE_HOME/bin`), and ADE on the
- * computer answers a few seconds after a start.
+ * Bounded so a frozen push can't outlast the free short wake it runs in: 3
+ * minutes plus the minute the git warm-up may take.
  */
-function pushWorkCommand(check: boolean): string {
-  return [
-    'export PATH="$ADE_HOME/bin:$PATH"',
-    'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
-    check ? "ade cloud work-state --json" : "ade cloud push-work --json",
-  ].join("\n");
-}
+const PUSH_ALL_WORK_TIMEOUT_MS = 4 * 60_000;
+
+/** The server's command (`pushWorkCommand`): it warms each worktree's `git status` first, since a wake drops the file cache. */
 const PUSH_ALL_WORK_COMMAND = pushWorkCommand(false);
 /**
  * Only reads which lanes have work that isn't on GitHub (`ade cloud

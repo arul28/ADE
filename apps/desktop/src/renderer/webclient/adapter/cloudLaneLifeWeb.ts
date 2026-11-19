@@ -45,7 +45,8 @@ import type { CloudFreeRecord, CloudInstance } from "../../../../../account-dire
  *   "When the agent is idle" waits here too, so the page has to stay open.
  */
 
-const PUSH_WORK_TIMEOUT_MS = 3 * 60_000;
+/** As the desktop's: 3 minutes, plus the minute the git warm-up may take. */
+const PUSH_WORK_TIMEOUT_MS = 4 * 60_000;
 const KEEP_AWAKE_TIMEOUT_MS = 30_000;
 const PREPARE_STOP_TIMEOUT_MS = 90_000;
 const WAKE_RETRY_MS = 15_000;
