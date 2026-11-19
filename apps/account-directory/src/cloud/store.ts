@@ -521,6 +521,19 @@ export function powerLogStatement(env: CloudEnv, computer: Pick<ComputerRow, "in
  * stretch, logs the power change, and updates `computer` in place so the rest
  * of a tick sees it. Writes nothing when the status didn't change.
  */
+/**
+ * The account's machine row for a cloud computer that just named its account
+ * key takes the computer's name, unless a name was set on it already (the
+ * person's, or a move's or copy's). A computer the server made (a launch from
+ * the phone or the web) otherwise lists under its instance id: its ADE names
+ * its row for its host, and only the desktop renamed it after the sign-in.
+ */
+export function nameMachineAfterComputerStatement(env: CloudEnv, computer: Pick<ComputerRow, "user_id" | "name">, machineKey: string): D1PreparedStatement | null {
+  const name = computer.name?.trim();
+  if (!name) return null;
+  return env.DB.prepare("update machines set custom_name = ? where user_id = ? and machine_key = ? and custom_name is null").bind(name, computer.user_id, machineKey);
+}
+
 export function statusChangeStatements(env: CloudEnv, computer: ComputerRow, status: string, now: number, reason: string): D1PreparedStatement[] {
   if (computer.status === status) return [];
   const statements: D1PreparedStatement[] = [];
@@ -642,8 +655,8 @@ export function closedComputerStatements(
 
 /**
  * A deleted computer leaves the account's machine list, as a machine the person
- * removes does: revoked (so its key can't register again), off the roster, and
- * its project copies gone (the project list's cursor moves, so every client
+ * removes does: revoked (so its key can't register again), off the roster, its
+ * lanes off the account lane index, and its project copies gone (the project list's cursor moves, so every client
  * reads it again). The desktop did this itself after its own deletes; a delete
  * from the web, the phone or the server (idle cleanup, a sign-in that never
  * finished) left it listed as an offline machine. Kept when another live
@@ -664,6 +677,12 @@ function forgetMachineStatements(env: CloudDb, computer: ComputerRow, now: numbe
       on conflict (user_id, machine_key) do update set revoked_at = excluded.revoked_at
     `).bind(now, computer.user_id, key, ...unshared.binds),
     env.DB.prepare(`delete from machines where user_id = ? and machine_key = ? and ${unshared.sql}`)
+      .bind(computer.user_id, key, ...unshared.binds),
+    // Its lanes leave the account lane index, as `dropAccountLanes` does for a
+    // removed machine; kept, every client listed them under a machine that's gone.
+    env.DB.prepare(`delete from account_lane_index where user_id = ? and lower(machine_key) = lower(?) and ${unshared.sql}`)
+      .bind(computer.user_id, key, ...unshared.binds),
+    env.DB.prepare(`delete from account_lane_index_state where user_id = ? and lower(machine_key) = lower(?) and ${unshared.sql}`)
       .bind(computer.user_id, key, ...unshared.binds),
   ];
 }
@@ -721,6 +740,16 @@ export function adoptionStatements(
       lane.laneId, lane.laneName, lane.projectOrigin, lane.branch,
       pendingId, instance.id,
     ),
+    // An adoption that learns the machine key after the account's machine
+    // row exists names that row here (the registration names a row made
+    // later, and the tick only names on a key it hasn't seen).
+    env.DB.prepare(`
+      update machines set custom_name = (select nullif(trim(c.name), '') from cloud_computers c where c.instance_id = ?)
+      where custom_name is null and (user_id, machine_key) in (
+        select user_id, machine_key from cloud_computers
+        where instance_id = ? and deleted_at is null and machine_key is not null and nullif(trim(name), '') is not null
+      )
+    `).bind(instance.id, instance.id),
     // The lane this computer is for has a computer again. In the adoption's
     // batch, and safe to repeat, so a create that died after it (or a replay
     // of it) can't leave the lane listed twice.

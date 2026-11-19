@@ -790,9 +790,16 @@ async function upsertMachine(
     insert into machines (
       user_id, machine_key, device_id, name, platform, device_type, pubkey,
       reachable_endpoints, power, sleep_state, sleep_state_at,
-      last_seen_at, created_at, hardware_id, channel, ade_home
+      last_seen_at, created_at, hardware_id, channel, ade_home, custom_name
     )
-    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    -- A new row for an ADE Cloud computer lists under the computer's name
+    -- (its lane), not its host name. The computer's metadata names the row
+    -- when the row is there first (nameMachineAfterComputerStatement); this
+    -- covers the other order. An existing row keeps whatever name it has.
+    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      (select nullif(trim(c.name), '') from cloud_computers c
+        where c.user_id = ? and c.machine_key = ? and c.deleted_at is null
+        order by c.created_at desc limit 1)
      where exists (select 1 from machines where user_id = ? and machine_key = ?)
         or (select count(*) from machines where user_id = ?) < ?
     on conflict(user_id, machine_key) do update set
@@ -862,6 +869,8 @@ async function upsertMachine(
     args.userId,
     input.machineKey,
     args.userId,
+    input.machineKey,
+    args.userId,
     MAX_MACHINES_PER_ACCOUNT,
     input.retainRelayEndpoints ? 1 : 0,
   ).run();
@@ -910,6 +919,8 @@ async function supersedePhantomDuplicates(
     input: RegisterInput;
     pairingProof: PairingProofBroker;
     refuse: RefusalLogger;
+    /** This registration's time: a row it inserted has this `created_at`. */
+    nowMs: number;
   },
 ): Promise<string[]> {
   const { userId, input } = args;
@@ -966,8 +977,16 @@ async function supersedePhantomDuplicates(
         env.DB.prepare(`
           update machines
              set custom_name = ?
-           where user_id = ? and machine_key = ? and custom_name is null
-        `).bind(carriedName, userId, input.machineKey),
+           where user_id = ? and machine_key = ?
+             and (custom_name is null
+               -- An ADE Cloud computer's row this registration just made
+               -- was named after the computer (upsertMachine): a default,
+               -- so the person's own name for the old row wins over it. An
+               -- older row's name may be one the person chose, and stays.
+               or (machines.created_at = ? and custom_name = (select nullif(trim(c.name), '') from cloud_computers c
+                 where c.user_id = machines.user_id and c.machine_key = machines.machine_key and c.deleted_at is null
+                 order by c.created_at desc limit 1)))
+        `).bind(carriedName, userId, input.machineKey, args.nowMs),
       ]
       : []),
     // The identifiers stay in the predicate, and it mirrors the select exactly:
@@ -1054,6 +1073,7 @@ async function handleRegister(
     input,
     pairingProof,
     refuse,
+    nowMs,
   });
 
   // A replaced key's folders are not on the account any more; this machine

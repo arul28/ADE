@@ -101,6 +101,7 @@ import {
   overPlanDiskMessage,
   planIdOf,
   logCloud,
+  nameMachineAfterComputerStatement,
   reportCloudFailure,
   PENDING_TIMEOUT_MS,
   AWAKE_CAP_COUNT_SQL,
@@ -1450,6 +1451,8 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
     const statements: D1PreparedStatement[] = [];
     if (machineKey !== computer.machine_key) {
       statements.push(env.DB.prepare("update cloud_computers set machine_key = ? where instance_id = ?").bind(machineKey, computer.instance_id));
+      const named = machineKey ? nameMachineAfterComputerStatement(env, computer, machineKey) : null;
+      if (named) statements.push(named);
     }
     const lane = laneFactsStatement(env, computer.instance_id, computer, metadata);
     if (lane) statements.push(lane);
