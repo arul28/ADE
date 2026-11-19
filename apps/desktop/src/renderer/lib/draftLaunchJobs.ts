@@ -147,7 +147,9 @@ export type DraftLaunchJob = {
 
 /**
  * Counts the person's requests for a new draft in this window: ⌘⇧N, the New
- * chat button, the Chat/CLI switch. A launch notes the count when it is sent.
+ * chat button and the Chat/CLI switch (`showDraftKind`), and "New chat" from
+ * the palette, a lane's menu or a chip (`openStartChatDraft`). A launch notes
+ * the count when it is sent.
  * When the count has changed by the time its chat or CLI starts, the person
  * asked for something else meanwhile, so the launch must not take the screen
  * back: the new session shows in the list instead.

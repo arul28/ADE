@@ -15578,10 +15578,13 @@ export function AgentChatPane({
       };
       cursorCloudIdempotencyByDraftRef.current.delete(draftKey);
       setCursorCloudMode(false);
-      const opensChat = launchMayOpenItsSession(newDraftRequestsAtSend);
       if (createdLaneId) {
         invalidateAgentChatSessionListCache({ laneId: createdLaneId });
         await refreshLanesStore().catch(() => undefined);
+      }
+      // Read after the last await: a new draft asked for during it counts.
+      const opensChat = launchMayOpenItsSession(newDraftRequestsAtSend);
+      if (createdLaneId) {
         if (opensChat) onLaneChange?.(createdLaneId);
         setDraftLaunchTargetId(null);
       }
@@ -15804,14 +15807,17 @@ export function AgentChatPane({
         },
       };
       setDevinCloudMode(false);
-      const opensChat = launchMayOpenItsSession(newDraftRequestsAtSend);
       if (createdLaneId) {
         invalidateAgentChatSessionListCache({ laneId: createdLaneId });
         await refreshLanesStore().catch(() => undefined);
-        if (opensChat) onLaneChange?.(createdLaneId);
-        setDraftLaunchTargetId(null);
       } else {
         void refreshLanesStore().catch(() => undefined);
+      }
+      // Read after the last await: a new draft asked for during it counts.
+      const opensChat = launchMayOpenItsSession(newDraftRequestsAtSend);
+      if (createdLaneId) {
+        if (opensChat) onLaneChange?.(createdLaneId);
+        setDraftLaunchTargetId(null);
       }
       patchDraftLaunchJob(jobId, {
         status: "ready",

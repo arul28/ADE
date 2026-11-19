@@ -1,4 +1,5 @@
 import type { WorkProjectViewState } from "../state/appStore";
+import { noteNewDraftRequested } from "./draftLaunchJobs";
 
 export type StartChatDraftPatch = Pick<
   WorkProjectViewState,
@@ -51,6 +52,8 @@ export function openStartChatDraft(
   machineId: string | null,
   modelRequest?: WorkDraftModelRequest | null,
 ): void {
+  // A new draft asked for: a send still on its way must not open over it.
+  noteNewDraftRequested();
   setWorkViewState(projectStateKey, (prev) => ({
     ...prev,
     ...startChatDraftPatch(laneId, machineId),

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope, OpenProjectBinding } from "../../../../shared/types";
 import {
   DRAFT_LAUNCH_JOB_STALE_AFTER_MS,
+  noteNewDraftRequested,
   type DraftLaunchKind,
   type DraftLaunchMode,
   type DraftLaunchSnapshot,
@@ -663,5 +664,41 @@ describe("renderer-owned launch handoff", () => {
     await runRendererOwnedLaunch(rendererLaunchDeps("cli", "foreground", cliCalls));
     expect(backgroundCalls).toEqual(["clear", "start"]);
     expect(cliCalls).toEqual(["clear", "start", "open"]);
+  });
+
+  // While the chat starts, the person may ask for a new draft (⌘⇧N) or send
+  // again; the late start must not take the screen back, and must not leave a
+  // ready job that the next draft pane opens over itself.
+  it.each([
+    { name: "nothing happened meanwhile", during: "none", paneMounted: true, opens: true, autoOpen: true },
+    { name: "the pane remounted", during: "none", paneMounted: false, opens: false, autoOpen: true },
+    { name: "a new draft was asked for", during: "new-draft", paneMounted: true, opens: false, autoOpen: false },
+    { name: "a newer send started", during: "newer-send", paneMounted: true, opens: false, autoOpen: false },
+  ] as const)("opens the started chat only when it still may: $name", async ({ during, paneMounted, opens, autoOpen }) => {
+    const calls: string[] = [];
+    const base = rendererLaunchDeps("chat", "foreground", calls);
+    const patchDraftLaunchJob = vi.fn();
+    const launchDeps: RendererOwnedLaunchDeps = {
+      ...base,
+      paneMountedRef: { current: paneMounted },
+      patchDraftLaunchJob,
+      startChat: async () => {
+        calls.push("start");
+        if (during === "new-draft") noteNewDraftRequested();
+        if (during === "newer-send") launchDeps.latestForegroundJobIdRef.current = "job-2";
+        return { sessionId: "session-1", draftKind: "chat" };
+      },
+    };
+
+    await runRendererOwnedLaunch(launchDeps);
+
+    expect(launchDeps.openLaunchedDraftSession).toHaveBeenCalledTimes(opens ? 1 : 0);
+    expect(patchDraftLaunchJob).toHaveBeenCalledWith(
+      "job-1",
+      expect.objectContaining({ status: "ready", sessionId: "session-1", autoOpen }),
+    );
+    // The sent prompt leaves the new-chat box in every case.
+    expect(calls).toContain("clear");
+    takeRendererLaunchHandoff("job-1");
   });
 });
