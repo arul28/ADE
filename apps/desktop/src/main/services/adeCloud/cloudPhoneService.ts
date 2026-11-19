@@ -427,7 +427,11 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
    * still runs.
    */
   async function settleEnd(ended: CloudPhoneRun<Held>, replaced: boolean): Promise<void> {
-    const answer = await nomac(ended.phone, "GET", "").catch(() => null);
+    const answer = await nomac(ended.phone, "GET", "").catch((error: unknown) => {
+      // Unread: the run stays open, and a later read settles it.
+      deps.logger?.warn?.("cloud_phone.end_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    });
     const session = answer?.body?.session as Record<string, unknown> | undefined;
     if (answer?.status === 200 && typeof session?.state === "string") {
       if (!CLOUD_PHONE_LIVE_STATES.has(session.state)) announceEnd(ended, cloudPhoneEndOf(session));
@@ -745,7 +749,11 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         // one: with none running the server answers phone_not_running.
         const client = await provider();
         // The cheap read first: no phone on, nothing to ask for.
-        if ((await client.phoneState!().catch(() => null))?.phone?.state !== "ready") return { ok: false };
+        const state = await client.phoneState!().catch((error: unknown) => {
+          deps.logger?.warn?.("cloud_phone.keep_alive_read_failed", { error: error instanceof Error ? error.message : String(error) });
+          return null;
+        });
+        if (state?.phone?.state !== "ready") return { ok: false };
         let start: CloudPhoneStart;
         try {
           start = await client.phoneStart!({ attach: true });
@@ -756,7 +764,9 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         if (!start.reused) {
           // A server from before `attach` started a phone nobody asked for: stop it at once.
           deps.logger?.warn?.("cloud_phone.keep_alive_started_phone", { phoneId: start.phone.id });
-          await client.phoneStop?.().catch(() => undefined);
+          await client.phoneStop?.().catch((error: unknown) => {
+            deps.logger?.warn?.("cloud_phone.keep_alive_stop_failed", { error: error instanceof Error ? error.message : String(error) });
+          });
           return { ok: false };
         }
         if (start.phone.state !== "ready") return { ok: false };
