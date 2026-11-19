@@ -31018,8 +31018,7 @@ export function createAgentChatService(args: {
   };
 
   const ensureManagedSession = (sessionId: string): ManagedChatSession => {
-    // A caller that sends no session id made a bad request; the brain is fine.
-    if (typeof sessionId !== "string" || !sessionId.trim()) throw new AdeExpectedError("sessionId is required.", "user");
+    if (typeof sessionId !== "string" || !sessionId.trim()) throw new Error("sessionId is required.");
     const existing = managedSessions.get(sessionId);
     if (existing) return existing;
 
