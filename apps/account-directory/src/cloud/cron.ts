@@ -33,6 +33,7 @@ import {
   MOVE_GRACE_MS,
   liveUsedMilli,
   logCloud,
+  nameMachineAfterComputerStatement,
   allowancePercentUsed,
   planIdOf,
   reportCloudFailure,
@@ -154,6 +155,8 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
     if (instance.metadata.ade_machine_key && instance.metadata.ade_machine_key !== computer.machine_key) {
       computer.machine_key = instance.metadata.ade_machine_key;
       statements.push(env.DB.prepare("update cloud_computers set machine_key = ? where instance_id = ?").bind(computer.machine_key, computer.instance_id));
+      const named = nameMachineAfterComputerStatement(env, computer, computer.machine_key);
+      if (named) statements.push(named);
     }
     // The lane it holds, kept on its row so the 30-day rule and a freed lane never depend on a live read.
     const lane = laneFactsStatement(env, computer.instance_id, computer, instance.metadata);

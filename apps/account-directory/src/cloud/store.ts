@@ -521,6 +521,19 @@ export function powerLogStatement(env: CloudEnv, computer: Pick<ComputerRow, "in
  * stretch, logs the power change, and updates `computer` in place so the rest
  * of a tick sees it. Writes nothing when the status didn't change.
  */
+/**
+ * The account's machine row for a cloud computer that just named its account
+ * key takes the computer's name, unless a name was set on it already (the
+ * person's, or a move's or copy's). A computer the server made (a launch from
+ * the phone or the web) otherwise lists under its instance id: its ADE names
+ * its row for its host, and only the desktop renamed it after the sign-in.
+ */
+export function nameMachineAfterComputerStatement(env: CloudEnv, computer: Pick<ComputerRow, "user_id" | "name">, machineKey: string): D1PreparedStatement | null {
+  const name = computer.name?.trim();
+  if (!name) return null;
+  return env.DB.prepare("update machines set custom_name = ? where user_id = ? and machine_key = ? and custom_name is null").bind(name, computer.user_id, machineKey);
+}
+
 export function statusChangeStatements(env: CloudEnv, computer: ComputerRow, status: string, now: number, reason: string): D1PreparedStatement[] {
   if (computer.status === status) return [];
   const statements: D1PreparedStatement[] = [];
