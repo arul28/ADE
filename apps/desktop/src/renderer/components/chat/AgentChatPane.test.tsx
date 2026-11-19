@@ -5584,8 +5584,10 @@ describe("AgentChatPane Work draft launches", () => {
       contextAttachments: [],
     });
     await waitFor(() => {
-      expect(screen.getByTestId("location").textContent)
-        .toBe(`/work?laneId=${encodeURIComponent(args.laneId!)}&sessionId=${encodeURIComponent(args.launchId)}`);
+      const opened = new URL(screen.getByTestId("location").textContent ?? "", "http://ade.local");
+      expect(opened.pathname).toBe("/work");
+      expect(opened.searchParams.get("laneId")).toBe(args.laneId);
+      expect(opened.searchParams.get("sessionId")).toBe(args.launchId);
     });
     const entry = getChatLaunchEntry(args.launchId);
     expect(entry?.snapshot).toMatchObject({ sessionId: args.launchId, phase: "running", laneId: args.laneId });
