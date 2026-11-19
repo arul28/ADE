@@ -291,21 +291,14 @@ function CloudPhoneRunningStrip({ control }: { control: CloudPhoneControl }) {
   const minutesPart = left != null && live.status?.minutes ? ` · ${left} of ${live.status.minutes.included} min left` : "";
   const onFor = phone?.readyAt ? ` · on ${formatPhoneSpan(now - phone.readyAt, false)}` : "";
   if (warn && stopAt != null) {
+    // The deadline is this window's estimate (another machine's calls don't
+    // reach it): Keep on stays while the phone reads ready, and never starts one.
     const remaining = stopAt - now;
-    // Past the stop time Keep on can't help: the phone is ending.
-    if (remaining <= 0) {
-      return (
-        <AppleDeviceNoticeStrip
-          sentence={`Stopping: nothing used it for ${CLOUD_PHONE_IDLE_MINUTES} minutes.`}
-          actionLabel={busy === "stop" ? "Stopping" : "Stop"}
-          busy={busy === "stop"}
-          onAction={() => void run("stop")}
-        />
-      );
-    }
     return (
       <AppleDeviceNoticeStrip
-        sentence={keepError ?? `Stops in ${formatPhoneSpan(remaining, true)} with no command or input${minutesPart}.`}
+        sentence={keepError ?? (remaining > 0
+          ? `Stops in ${formatPhoneSpan(remaining, true)} with no command or input${minutesPart}.`
+          : `Stopping soon: nothing here used it for ${CLOUD_PHONE_IDLE_MINUTES} minutes.`)}
         actionLabel={keeping ? "Keeping on" : "Keep on"}
         busy={keeping}
         onAction={keepOn}

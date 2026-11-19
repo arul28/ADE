@@ -149,7 +149,7 @@ function CloudIphoneDetails({
   if (!starting && phone.readyAt) rows.push({ label: "On for", value: `${formatPhoneSpan(now - phone.readyAt, false)} of ${CLOUD_PHONE_MAX_MINUTES / 60} h at most` });
   if (left != null && minutes) rows.push({ label: "Plan minutes", value: `${left} of ${minutes.included} left` });
   if (!starting && stopAt != null) {
-    rows.push({ label: "Idle stop", value: stopping ? "now" : `in ${formatPhoneSpan(stopAt - now, warn)} with no input`, warn });
+    rows.push({ label: "Idle stop", value: stopping ? "due now" : `in ${formatPhoneSpan(stopAt - now, warn)} with no input`, warn });
   }
 
   return (
@@ -186,7 +186,7 @@ function CloudIphoneDetails({
         >
           Minutes
         </Button>
-        {!starting && !stopping ? (
+        {!starting ? (
           <Button variant="outline" size="sm" casing="sentence" disabled={busy != null} onClick={() => act("keep")}>
             {busy === "keep" ? "Keeping on…" : "Keep on"}
           </Button>

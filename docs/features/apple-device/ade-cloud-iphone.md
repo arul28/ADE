@@ -181,8 +181,8 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
   the earliest it can stop, and the pane reads again before it says so. A read
   through a brain that didn't drive the phone answers no `lastActivityAt` and
   never erases a known one; a read well past the stop time that still finds
-  the phone on means something else uses it, so the countdown hides. Past the
-  stop time Keep on is not offered. A tab bound to ADE Cloud has no brain to
+  the phone on means something else uses it, so the countdown hides. Keep on
+  stays while the phone reads ready, past the estimate too. A tab bound to ADE Cloud has no brain to
   read through, so its top bar shows only what a tools pane reads.
 - **Older machines.** A brain from before 1.2.131 has no `cloud_phone`
   domain. The pane's "Runs on" row and the pick-a-Mac screen, `ade devices`
