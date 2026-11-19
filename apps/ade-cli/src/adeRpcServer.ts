@@ -188,7 +188,7 @@ import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcReques
 import { readHarnessPresetsFromMachine } from "../../desktop/src/main/services/chat/harnessPresetSettings";
 import { resolveMachineAdeDir } from "./services/projects/machineLayout";
 import { assertActionModelNames, assertCliLaunchModelNamed, assertFullModelName, assertLaunchModels, automationDraftMissingModels, savedRuleModelNames } from "./modelNameGuard";
-import { captureError } from "../../desktop/src/shared/sentry/capture";
+import { captureError, wasReportedToSentry } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import {
@@ -2158,6 +2158,8 @@ function reportFailedAction(
   callerReportsFailure: boolean,
 ): void {
   if (isMovedAwayChatError(error)) return;
+  // The action reported it itself (the ADE Cloud iPhone's domain): one issue, not two.
+  if (wasReportedToSentry(error)) return;
   if (error instanceof JsonRpcError && CALLER_ERROR_CODES.has(error.code)) return;
   if (isExpectedFailure(error)) return;
   const logOnly = (kind: string) => forwardLogToSentry("warn", `runtime_action.${kind}.${actionName}`, {

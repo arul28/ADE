@@ -198,6 +198,19 @@ class AdeProblem extends Error {
   override name = "AdeProblem";
 }
 
+/**
+ * Errors a service already reported itself, so an outer catch that would
+ * report the same throw (the RPC server's `reportFailedAction`) skips it
+ * instead of making a second issue for one failure. Held weakly.
+ */
+const reportedErrors = new WeakSet<object>();
+export function markReportedToSentry(error: unknown): void {
+  if (error && typeof error === "object") reportedErrors.add(error);
+}
+export function wasReportedToSentry(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && reportedErrors.has(error));
+}
+
 export function captureProblem(message: string, context?: CaptureContext): void {
   if (!sentry) return;
   captureError(new AdeProblem(message), { level: "error", ...context });

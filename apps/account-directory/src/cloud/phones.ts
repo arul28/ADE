@@ -152,10 +152,17 @@ function errorOf(answer: NomacAnswer): { code: string; message: string } {
   };
 }
 
-/** NoMac failed us: logged with its code (never a credential), answered as one plain sentence. */
+/** NoMac's code as a Sentry event name part: its own closed codes, or `http_<status>`. */
+const sentryCode = (code: string): string => code.replace(/[^A-Za-z0-9_]/g, "").slice(0, 40) || "unknown";
+
+/**
+ * NoMac failed us: logged with its code (never a credential), sent to Sentry
+ * per event and code (its phone limit, a 5xx and a refusal each their own
+ * issue), and answered as one plain sentence.
+ */
 function providerFailure(event: string, answer: NomacAnswer, userId: string): Response {
   const { code, message } = errorOf(answer);
-  logCloud(event, { userId, status: answer.status, code });
+  reportCloudFailure(`${event}.${sentryCode(code)}`, { userId, status: answer.status, code }, "cloud-phone");
   if (code === "start_rate_limited" || answer.status === 429) {
     return fail("phone_busy", "Too many phones started in a row. Wait a minute, then try again.", 429);
   }
@@ -295,7 +302,9 @@ function phoneMinutesUsed(rows: readonly PhoneRow[], now: number, settledOnly: b
 async function stopPhone(env: CloudEnv, userId: string, phoneId: string, now: number, why: string): Promise<boolean> {
   const answer = await nomac(env, "DELETE", `/api/v1/simulator/sessions/${encodeURIComponent(phoneId)}`).catch((): NomacAnswer => ({ status: 504, body: null }));
   if (answer.status >= 400 && answer.status !== 404) {
-    logCloud("cloud.phone_stop_failed", { userId, phoneId, why, status: answer.status, code: errorOf(answer).code });
+    // A phone that won't stop keeps costing: Sentry hears of it, per NoMac's code.
+    const { code } = errorOf(answer);
+    reportCloudFailure(`cloud.phone_stop_failed.${sentryCode(code)}`, { userId, phoneId, why, status: answer.status, code }, "cloud-phone");
     return false;
   }
   const after = await readSession(env, phoneId);
