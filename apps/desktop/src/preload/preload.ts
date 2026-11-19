@@ -12496,6 +12496,9 @@ const adeBridge = {
       callCloudPhone<unknown>("start", args, pin),
     stop: (pin?: OpenProjectBinding | null): Promise<{ stopped: boolean }> =>
       callCloudPhone<{ stopped: boolean }>("stop", {}, pin),
+    /** One cheap call to the live phone so the idle stop waits; never starts one (`ok: false` with none live). */
+    keepAlive: (pin?: OpenProjectBinding | null): Promise<{ ok: boolean; lastActivityAt?: number | null }> =>
+      callCloudPhone<{ ok: boolean; lastActivityAt?: number | null }>("keepAlive", {}, pin),
     /** A screenshot filed to the proof drawer, owned by the chat and lane given. */
     screenshot: (args: { chatSessionId?: string | null; laneId?: string | null }, pin?: OpenProjectBinding | null): Promise<{ artifactId: string | null }> =>
       callCloudPhone<{ artifactId: string | null }>("screenshot", args, pin),

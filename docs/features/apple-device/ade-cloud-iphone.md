@@ -131,9 +131,16 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
   token on the beta-list route.
 - **Brain.** `cloudPhoneService.ts` exposes the `cloud_phone` action domain
   (`getStatus`, `start`, `stop`, `look`, `act`, `screenshot`, `launch`,
-  `installApp`, `control`, `logs`, `record`, `runTests`, and `view` for the
-  pane). It holds one phone's token in memory and calls NoMac's tools directly:
-  the screen as text, input, screenshots, logs, recordings, builds and tests.
+  `installApp`, `control`, `logs`, `record`, `runTests`, and `view` and
+  `keepAlive` for the pane). It holds one phone's token in memory and calls
+  NoMac's tools directly: the screen as text, input, screenshots, logs,
+  recordings, builds and tests. `getStatus` carries `lastActivityAt`, this
+  brain's last tool call to the live phone, so the pane can show the idle stop
+  coming (`CLOUD_PHONE_IDLE_SECONDS`); `keepAlive` is one cheap call that resets
+  NoMac's idle clock and never starts a phone. When an agent chat's call starts
+  a new phone, that chat gets one quiet notice, and one more when the phone
+  stops (a stop, or found ended on a later read: idle, its 2-hour limit, the
+  period's minutes).
 - **CLI.** `cliCloudIphone.ts` turns each `ade apple` verb into one
   `cloud_phone` action on this machine's brain. `cliDevices.ts` adds the
   `ios@cloud` row and the `ade devices use ios@cloud` choice.
@@ -152,6 +159,24 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
   reach the same `cloud_phone` domain: the desktop through its runtime pin, the
   web through the `cloudPhone.*` sync commands on the chat's machine. The
   chat's agents drive the phone with `ade apple` from every client.
+- **Running strip and top bar.** While the phone runs, the pane's strip says
+  its model, how long it has been on, the plan's minutes left and when the
+  idle stop comes; in its last 90 s it counts in seconds and offers Keep on
+  (`cloud_phone.keepAlive`: one cheap call NoMac counts as use) beside Stop.
+  The top bar shows a phone icon only while a phone starts or runs (a dot for
+  its state), and opens the same facts with Keep on, Stop and a link to the
+  minutes. Both read one shared state (`renderer/state/cloudPhoneLive.ts`):
+  every read of `getStatus` is published there, the pane reads every 30 s
+  while the phone runs, and the top bar reads on focus, every 30 s while a
+  phone runs and every 2 minutes while none does, never while the window is
+  hidden. The idle countdown runs from the later of the brain's last call
+  (`lastActivityAt` on the status) and the person's last input in this
+  window's pane; another machine's agent may also be using the phone, so it is
+  the earliest it can stop, and the pane reads again before it says so.
+- **Older machines.** A brain from before 1.2.131 has no `cloud_phone`
+  domain. The pane's "Runs on" row and the pick-a-Mac screen, `ade devices`
+  and `ade devices use ios@cloud` say to update ADE on that machine
+  (`isCloudPhoneMissingAnswer`), never that the account lacks the phone.
 - **ADE iPhone app.** A Work chat's ⋯ › Tools › ADE Cloud iPhone (also the Duo
   and iPad Tools rails) opens a sheet over the same `cloudPhone.*` commands,
   sent to the chat's machine: minutes left, Start and Stop, why it ended, and
@@ -321,6 +346,27 @@ answers `{ ok: true, users: [{ user_id, email, added_at }] }`.
 stops the account's phones, asks NoMac to forget what it kept for the label
 (saved states, replays, workspace), and removes the row from the beta list.
 NoMac's billing records stay under the label, which is an id, never an email.
+
+## Speed (measured 2026-11-19, from a Mac)
+
+ADE's part is small; the phone's own steps take the time:
+
+| Command | Time |
+|---|---|
+| `status` | 0.5 s |
+| `start` (new phone) | 8–13 s |
+| `snapshot` | 0.7–1.1 s |
+| `act` (one tap) | 2–3 s; 11–21 s for an app's first launch on a new phone |
+| `launch --no-build` (Safari) | 14 s (10 s of it the app's launch) |
+| `open-url` | 2 s |
+| `screenshot` (to the proof drawer) | 3.7 s |
+| `stop` | 1.3 s |
+
+An `act` answers some seconds after the steps it reports ("1 step done in
+5.9 s" took 11.4 s): NoMac waits for the screen to settle and reads it. A step
+right after a navigation can say the content "can't be read" while the page
+loads; a `snapshot` a moment later reads it. The `ade-apple` skill tells agents
+to read with `snapshot`, batch steps in one `act`, and mind the idle stop.
 
 ## Known gaps
 

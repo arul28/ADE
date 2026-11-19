@@ -7047,6 +7047,9 @@ function registerCloudPhoneRemoteCommands({ args, register }: RemoteCommandRegis
     await call("start", payload.device === undefined ? {} : { device: payload.device }));
   register("cloudPhone.stop", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async () =>
     await call("stop", {}));
+  // The pane's "still here" for the idle stop; never starts a phone.
+  register("cloudPhone.keepAlive", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async () =>
+    await call("keepAlive", {}));
   // The capture is filed to the calling project's proof drawer, owned by the
   // chat and lane named here; the answer is the drawer's id, if it has one.
   register("cloudPhone.screenshot", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {

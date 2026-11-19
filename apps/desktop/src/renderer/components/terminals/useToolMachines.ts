@@ -10,6 +10,7 @@ import { useReadRetryOnReconnect, useRemoteConnectionSnapshot } from "../../stat
 import { useAppStore } from "../../state/appStore";
 import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
+import { isCloudPhoneMissingAnswer } from "../../../shared/types/deviceSources";
 
 /**
  * One machine on the person's ADE account, as the tools pane's "runs on" rails
@@ -42,12 +43,6 @@ export const ADE_CLOUD_TOOL_MACHINE: ToolMachine = {
   isViewer: false,
   isCloudIphone: true,
 };
-
-/** The brain's answer when it has no `cloud_phone` domain: an ADE from before the cloud iPhone (1.2.131). */
-function brainPredatesCloudPhone(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? "");
-  return /Domain ['"]cloud_phone['"] is unavailable/i.test(message);
-}
 
 export type ToolMachines = {
   machines: ToolMachine[];
@@ -162,7 +157,7 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
         // panes say to update that machine. Anything else (signed out) shows nothing.
         console.warn("[tools-pane] could not read the ADE Cloud iPhone", error);
         const linkLost = failed(error);
-        const access = brainPredatesCloudPhone(error) ? "update" : null;
+        const access = isCloudPhoneMissingAnswer(error instanceof Error ? error.message : String(error ?? "")) ? "update" : null;
         if (!cancelled) setCloudIphoneRead({ pinKey, access, linkLost });
       },
     );

@@ -48,6 +48,18 @@ export const DEVICE_SOURCE_CLOUD = "cloud";
 
 export const ADE_CLOUD_IPHONE_UNAVAILABLE = "ADE Cloud iPhone is not on this account yet.";
 
+/** What a machine whose ADE predates the cloud iPhone (before 1.2.131) says instead. */
+export const ADE_CLOUD_IPHONE_NEEDS_UPDATE = "The ADE on this machine is too old for the ADE Cloud iPhone. Update ADE there, then try again.";
+
+/**
+ * The brain has no `cloud_phone` domain: an ADE from before the cloud iPhone.
+ * Every newer brain registers the domain, so this answer never means the
+ * account lacks access.
+ */
+export function isCloudPhoneMissingAnswer(reason: string): boolean {
+  return /Domain ['"]cloud_phone['"] is unavailable|Action ['"]cloud_phone\.[^'"]+['"] is not (?:callable|exposed)/i.test(reason);
+}
+
 export function isDeviceKind(value: unknown): value is DeviceKind {
   return typeof value === "string" && (DEVICE_KINDS as readonly string[]).includes(value);
 }

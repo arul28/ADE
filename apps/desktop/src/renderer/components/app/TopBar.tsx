@@ -138,6 +138,7 @@ import { HeaderActivityControl } from "../activity/HeaderActivityControl";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
+import { CloudIphoneTopBarButton } from "./CloudIphoneTopBarButton";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription, type ResourcePressureLevel } from "../../lib/resourcePressure";
 import { ShellNavTab } from "./ShellNavTab";
 import { StoragePressureIndicator } from "./StoragePressureIndicator";
@@ -3350,6 +3351,9 @@ export function TopBar({
 
         {/* App-global voice capture — visible from any tab while recording. */}
         <GlobalVoiceCaptureIndicator />
+
+        {/* The ADE Cloud iPhone, only while one runs: minutes, idle stop, Stop. */}
+        <CloudIphoneTopBarButton enabled={workspaceProjectOpen} />
 
 
         <div className="hidden md:flex items-center gap-1.5">

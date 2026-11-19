@@ -337,7 +337,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                   {showPhoneMinutes ? (
                     <li title={`Time on an iPhone simulator in the cloud, for agents to test your app.${phoneSoon ? " Coming soon." : ""}`}><DeviceMobile size={13} /><span><b className="kit-num" data-face="ui">{column.facts.phoneMinutes ?? "–"}</b> iOS Simulator <span className="adecd-nowrap">minutes{phoneSoon ? <> <em>soon</em></> : null}</span></span></li>
                   ) : null}
-                  {column.facts.extraPhoneMinuteCents != null ? (
+                  {column.facts.extraPhoneMinuteCents != null && !phoneSoon ? (
                     <li title="Only if you turn extra iPhone minutes on"><DeviceMobile size={13} /><span><b className="kit-num" data-face="ui">{formatCloudCentsPerMinute(column.facts.extraPhoneMinuteCents)}</b> an extra iPhone minute</span></li>
                   ) : null}
                   {cents == null ? (
