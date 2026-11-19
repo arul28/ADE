@@ -120,6 +120,7 @@ export function WorkToolPanelBar({
       kind={kind}
       machines={machines}
       cloudIphoneSoon={cloudIphone === "soon"}
+      cloudIphoneNeedsUpdate={cloudIphone === "update"}
       asking={mode === "agent"}
       canChoose={canChoose}
       viewOnly={viewOnly}
@@ -162,6 +163,16 @@ function machineChipTitle(args: {
   return args.chooseUnavailableReason ?? undefined;
 }
 
+function chatMachineName(machines: readonly ToolMachine[]): string {
+  const chat = machines.find((machine) => machine.isChat);
+  return chat ? railMachineName(chat) : "this chat's machine";
+}
+
+/** Why the ADE Cloud iPhone isn't offered: the chat's machine runs an older ADE. */
+export function cloudIphoneUpdateLine(machines: readonly ToolMachine[]): string {
+  return `The ADE Cloud iPhone needs a newer ADE on ${chatMachineName(machines)}. Update ADE there, then open this again.`;
+}
+
 function rowLabel(asking: boolean, viewOnly: boolean): string {
   if (asking) return "Ask the agent to use";
   return viewOnly ? "Show from" : "Runs on";
@@ -178,6 +189,7 @@ function MachineRow({
   kind,
   machines,
   cloudIphoneSoon,
+  cloudIphoneNeedsUpdate,
   asking,
   canChoose,
   viewOnly,
@@ -189,6 +201,8 @@ function MachineRow({
   kind: DeviceKind;
   machines: readonly ToolMachine[];
   cloudIphoneSoon: boolean;
+  /** The chat's machine runs an ADE from before the cloud iPhone: the row says to update it. */
+  cloudIphoneNeedsUpdate: boolean;
   /** The agent is using it: a pick asks the agent instead of switching. */
   asking: boolean;
   canChoose: boolean;
@@ -246,6 +260,12 @@ function MachineRow({
           <span className="inline-flex h-6 shrink-0 items-center gap-1 px-1.5 font-sans text-[11.5px] text-muted-fg/70" title="ADE Cloud: a simulator that runs on no machine of yours. Coming soon.">
             <CloudArrowUp size={12} weight="bold" aria-label="ADE Cloud, coming soon" />
             <span className="hidden @[480px]:inline">ADE Cloud soon</span>
+          </span>
+        ) : null}
+        {kind === "ios" && cloudIphoneNeedsUpdate ? (
+          <span className="inline-flex h-6 shrink-0 items-center gap-1 px-1.5 font-sans text-[11.5px] text-muted-fg/70" title={cloudIphoneUpdateLine(machines)}>
+            <CloudArrowUp size={12} weight="bold" aria-label={cloudIphoneUpdateLine(machines)} />
+            <span className="hidden @[480px]:inline">ADE Cloud: update {chatMachineName(machines)}</span>
           </span>
         ) : null}
       </div>
