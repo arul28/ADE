@@ -86,7 +86,6 @@ import {
   type LaneLinearIssue,
   type LaneSummary,
   type AiSettingsStatus,
-  type CursorCloudOpenChatResult,
   type OpenProjectBinding,
   type TerminalSessionDetail,
   type AgentChatSendArgs,
@@ -15259,11 +15258,11 @@ export function AgentChatPane({
       draftSelectionLockedRef.current = false;
     }
     if (session) {
-      const options: AgentChatSessionCreatedOptions = {
-        ...(opensChat ? {} : { activate: false }),
-        ...(runtimePin ? { runtimePin } : {}),
-      };
-      notifySessionCreated(session, Object.keys(options).length > 0 ? options : undefined);
+      const pinOption = runtimePin ? { runtimePin } : null;
+      notifySessionCreated(
+        session,
+        opensChat ? pinOption ?? undefined : { activate: false, ...pinOption },
+      );
     }
     if (opensChat) setSelectedSessionId(sessionId);
     void refreshSessions().catch(() => undefined);
