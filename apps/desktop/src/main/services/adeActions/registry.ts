@@ -322,6 +322,7 @@ import { buildProviderLoginsDomainService } from "../providerLogins/providerLogi
 import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
 import { ADE_CLOUD_HOME_UNAVAILABLE } from "../../../shared/automationCloud";
 import { CloudPhoneError, createCloudPhoneService, type CloudPhoneService } from "../adeCloud/cloudPhoneService";
+import { captureError } from "../../../shared/sentry/capture";
 import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudServerFor, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
 import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import type { CloudSignInVaults } from "../adeCloud/cloudSignInStore";
@@ -4561,10 +4562,69 @@ function cloudPhoneServiceFor(runtime: AccountDomainRuntime): CloudPhoneService 
 }
 
 /**
+ * Refusals that are the account's or the caller's state, not a failure: out
+ * of minutes, a held free plan, not on the list, paused by the owner, signed
+ * out, an agent the person's settings hold back, a bad argument. They reach
+ * the person as their sentence and never Sentry.
+ */
+const CLOUD_PHONE_EXPECTED_CODES: ReadonlySet<string> = new Set([
+  "phone_free_held", "phone_minutes_out", "phone_extra_limit", "phone_not_on_account", "phone_paused",
+  "phone_not_running", "phone_running", "no_account", "declined", "bad_request", "out_path_outside_root",
+  "unauthorized", "not_signed_in",
+]);
+/** Waiting on NoMac (its phone limit, a slow call): a warning, not an error. */
+const CLOUD_PHONE_WARNING_CODES: ReadonlySet<string> = new Set([
+  "phone_busy", "phone_unavailable", "phone_queue_timeout", "fetch_timeout", "tool_timeout", "fetch_failed",
+]);
+
+/**
+ * Every failed `cloud_phone` call, from any caller (the desktop pane, ADE Web,
+ * the iOS sheet, an agent's `ade apple … --machine cloud`), reported once here,
+ * where they all pass. Grouped by action and code, each at most once every
+ * ten minutes per brain: the panes read the status every few seconds, and an
+ * outage must not send one event per read.
+ */
+const CLOUD_PHONE_REPORT_INTERVAL_MS = 10 * 60_000;
+const cloudPhoneLastReport = new Map<string, number>();
+function reportCloudPhoneFailure(action: string, error: unknown): void {
+  const raw = error && typeof error === "object" ? (error as { code?: unknown }).code : null;
+  const code = typeof raw === "string" && raw ? raw : "none";
+  if (CLOUD_PHONE_EXPECTED_CODES.has(code)) return;
+  const key = `${action}:${code}`;
+  const now = Date.now();
+  if (now - (cloudPhoneLastReport.get(key) ?? 0) < CLOUD_PHONE_REPORT_INTERVAL_MS) return;
+  cloudPhoneLastReport.set(key, now);
+  captureError(error, {
+    level: CLOUD_PHONE_WARNING_CODES.has(code) ? "warning" : "error",
+    tags: { area: "cloud_phone", action, code },
+    fingerprint: ["cloud_phone", action, code],
+  });
+}
+
+/**
  * The `cloud_phone` domain for one project runtime: the brain's one phone,
- * with captures filed to THIS project's proof drawer.
+ * with captures filed to THIS project's proof drawer. Every call's failure is
+ * reported (`reportCloudPhoneFailure`) and then thrown on unchanged.
  */
 function cloudPhoneDomainFor(runtime: AdeRuntime): CloudPhoneService {
+  const domain = cloudPhoneCallsFor(runtime);
+  const reported = { ...domain } as Record<string, unknown>;
+  for (const [action, value] of Object.entries(domain)) {
+    if (typeof value !== "function" || action === "dispose") continue;
+    const call = value as (...args: unknown[]) => unknown;
+    reported[action] = async (...args: unknown[]) => {
+      try {
+        return await call(...args);
+      } catch (error) {
+        reportCloudPhoneFailure(action, error);
+        throw error;
+      }
+    };
+  }
+  return reported as CloudPhoneService;
+}
+
+function cloudPhoneCallsFor(runtime: AdeRuntime): CloudPhoneService {
   const service = cloudPhoneServiceFor(runtime);
   const broker = runtime.computerUseArtifactBrokerService;
   const proof = broker ? { ingest: (request: Parameters<typeof broker.ingest>[0]) => broker.ingest(request), projectRoot: runtime.projectRoot ?? null } : null;

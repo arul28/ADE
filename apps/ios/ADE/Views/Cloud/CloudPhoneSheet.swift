@@ -407,6 +407,11 @@ final class CloudIphoneModel: ObservableObject {
       let next = try await service.fetchCloudIphoneView(sessionId: sessionId, control: true)
       guard request == linkRequest else { return }
       guard cloudIphoneViewURL(next.url) != nil else {
+        // The brain's answer was fine, so only the phone sees this: it reports it.
+        CrashReporting.capture(
+          NSError(domain: "ADE.CloudIphone", code: 1, userInfo: [NSLocalizedDescriptionKey: "The view link isn't one the sheet can open."]),
+          context: ["area": "cloud_iphone.view_link"]
+        )
         linkError = "The cloud answered with a link ADE can't open."
         return
       }
@@ -554,11 +559,20 @@ private struct CloudIphoneWebView: UIViewRepresentable {
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-      loadError.wrappedValue = cloudIphonePageError(error)
+      pageFailed(error)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-      loadError.wrappedValue = cloudIphonePageError(error)
+      pageFailed(error)
+    }
+
+    /// The live page failing to load is seen only here, so the phone reports
+    /// it (`capture` drops offline and other benign network states). The
+    /// brain reports every failed call it answers, so those are not sent twice.
+    private func pageFailed(_ error: Error) {
+      let message = cloudIphonePageError(error)
+      if message != nil { CrashReporting.capture(error, context: ["area": "cloud_iphone.page"]) }
+      loadError.wrappedValue = message
     }
   }
 }
