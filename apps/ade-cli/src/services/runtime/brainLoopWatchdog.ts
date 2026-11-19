@@ -632,6 +632,34 @@ export function trackBrainLoopWatchdogCommand(action: string): () => void {
 
 type TrackedProjectOpen = { projectId: string; phase: string; startedAtMs: number; phaseStartedAtMs: number };
 
+/**
+ * What a reply leaving the brain now was delayed by a freeze of this
+ * process. A request that arrives during a freeze waits in the socket until
+ * the loop runs again, so a client timing it (the desktop's `ping`) would read
+ * the freeze as a slow network. The reply carries this number and the client
+ * takes it off the round trip.
+ *
+ * Two readings, because a request can be handled before or after the
+ * heartbeat that measures the freeze: the gap since the last heartbeat (a
+ * freeze that just ended, not yet measured), and the last measured freeze if
+ * it ended within the last couple of seconds.
+ */
+const RECENT_FREEZE_REPLY_WINDOW_MS = 2_000;
+const FREEZE_REPLY_MIN_MS = 500;
+let lastHeartbeatAtMonotonicMs: number | null = null;
+let lastFreeze: { lagMs: number; endedAtMonotonicMs: number } | null = null;
+
+export function brainFreezeJustEndedMs(nowMonotonicMs: number = Number(process.hrtime.bigint() / 1_000_000n)): number {
+  const ongoing = lastHeartbeatAtMonotonicMs == null
+    ? 0
+    : nowMonotonicMs - lastHeartbeatAtMonotonicMs - BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS;
+  const recent = lastFreeze && nowMonotonicMs - lastFreeze.endedAtMonotonicMs <= RECENT_FREEZE_REPLY_WINDOW_MS
+    ? lastFreeze.lagMs
+    : 0;
+  const frozenMs = Math.max(ongoing, recent);
+  return frozenMs >= FREEZE_REPLY_MIN_MS ? Math.round(frozenMs) : 0;
+}
+
 let nextProjectOpenToken = 0;
 const activeProjectOpens = new Map<number, TrackedProjectOpen>();
 /** Tells a running watchdog worker which project scopes are opening; null when none runs. */
@@ -778,6 +806,7 @@ export function startBrainLoopWatchdog(args: {
         runtimeDir: args.runtimeDir,
         thresholdMs,
         checkIntervalMs: BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
+        nearMissMs: BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS,
         breadcrumbFile: BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE,
         // The machine heartbeat a wait on the machine keeps fresh (see the worker).
         heartbeatFile: BRAIN_HEARTBEAT_FILE,
@@ -852,6 +881,18 @@ export function startBrainLoopWatchdog(args: {
 
   /** The worker's recent pause reports, newest last. Only a pause near a lag can explain it. */
   const recentWorkerPauses: BrainLoopWorkerPause[] = [];
+  /**
+   * The sync file call the worker saw the main thread inside during the
+   * current freeze, longest first; taken by the next lag the heartbeat sees.
+   */
+  let blockedFsCallInFreeze: (BrainLoopBlockedFsCall & { atMonotonicMs: number }) | null = null;
+  const takeBlockedFsCall = (lagEndMonotonicMs: number, lagMs: number): BrainLoopBlockedFsCall | null => {
+    const call = blockedFsCallInFreeze;
+    blockedFsCallInFreeze = null;
+    // Only a call seen inside this lag (with a tick of slack) explains it.
+    if (!call || call.atMonotonicMs < lagEndMonotonicMs - lagMs - BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS) return null;
+    return { method: call.method, path: call.path, caller: call.caller, blockedMs: call.blockedMs };
+  };
   /** A lag as the watchdog observed it, before the worker has had its say. */
   type ObservedLag = {
     observedAtMonotonicMs: number;
@@ -859,6 +900,8 @@ export function startBrainLoopWatchdog(args: {
     lastCommand: string;
     /** Project scopes still opening when the lag was seen: the step a stall interrupted. */
     openingProjects: BrainLoopProjectOpen[];
+    /** The sync file call the main thread was inside during the lag, if the worker saw one. */
+    blockedFsCall: BrainLoopBlockedFsCall | null;
     diagnostics: BrainLoopWatchdogDiagnostics;
     cpuDeltaMs: number;
     majorPageFaultsDelta: number | null;
@@ -908,6 +951,15 @@ export function startBrainLoopWatchdog(args: {
     warn?.("brain.event_loop_near_miss", {
       lastCommand: held.lastCommand,
       ...(held.openingProjects.length > 0 ? { openingProjects: held.openingProjects } : {}),
+      // Flat fields, so Sentry Logs can group near misses by what they waited on.
+      ...(held.blockedFsCall
+        ? {
+          blockedFsMethod: held.blockedFsCall.method,
+          blockedFsPath: held.blockedFsCall.path,
+          blockedFsCaller: held.blockedFsCall.caller,
+          blockedFsMs: held.blockedFsCall.blockedMs,
+        }
+        : {}),
       thresholdMs,
       observedLagMs: held.lagMs,
       workerPauseCoverage,
@@ -946,6 +998,7 @@ export function startBrainLoopWatchdog(args: {
       nowMonotonicMs - lastHeartbeatMonotonicMs - BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
     );
     lastHeartbeatMonotonicMs = nowMonotonicMs;
+    lastHeartbeatAtMonotonicMs = nowMonotonicMs;
     const memory = process.memoryUsage();
     const resources = process.resourceUsage();
     const cpuMicros = resources.userCPUTime + resources.systemCPUTime;
@@ -1057,12 +1110,16 @@ export function startBrainLoopWatchdog(args: {
         observedAtMonotonicMs: nowMonotonicMs,
       }),
     });
+    if (lag.observedLagMs >= FREEZE_REPLY_MIN_MS) {
+      lastFreeze = { lagMs: lag.observedLagMs, endedAtMonotonicMs: nowMonotonicMs };
+    }
     if (lag.verdict !== "normal") {
       const observation: ObservedLag = {
         observedAtMonotonicMs: nowMonotonicMs,
         lagMs: lag.observedLagMs,
         lastCommand: currentCommandName(),
         openingProjects: currentProjectOpens(),
+        blockedFsCall: takeBlockedFsCall(nowMonotonicMs, lag.observedLagMs),
         diagnostics,
         cpuDeltaMs,
         majorPageFaultsDelta,
@@ -1102,7 +1159,29 @@ export function startBrainLoopWatchdog(args: {
       type?: unknown;
       pausedMs?: unknown;
       resumedAtMonotonicMs?: unknown;
+      method?: unknown;
+      path?: unknown;
+      caller?: unknown;
+      blockedMs?: unknown;
+      atMonotonicMs?: unknown;
     };
+    if (record.type === "blockedFsCall") {
+      const blockedMs = Number(record.blockedMs);
+      const atMonotonicMs = Number(record.atMonotonicMs);
+      if (typeof record.method !== "string" || typeof record.path !== "string") return;
+      if (!Number.isFinite(blockedMs) || !Number.isFinite(atMonotonicMs)) return;
+      // The worker reports each tick of a freeze: keep the longest call.
+      if (blockedFsCallInFreeze && blockedFsCallInFreeze.blockedMs > blockedMs
+        && atMonotonicMs - blockedFsCallInFreeze.atMonotonicMs <= BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS * 2) return;
+      blockedFsCallInFreeze = {
+        method: record.method,
+        path: record.path,
+        caller: typeof record.caller === "string" ? record.caller : null,
+        blockedMs: Math.floor(blockedMs),
+        atMonotonicMs,
+      };
+      return;
+    }
     if (record.type !== "sleep") return;
     const pausedMs = Number(record.pausedMs);
     if (!Number.isFinite(pausedMs) || pausedMs <= 0) return;

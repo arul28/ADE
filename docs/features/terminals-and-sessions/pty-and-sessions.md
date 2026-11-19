@@ -664,12 +664,12 @@ A fresh `initialInput` waits up to `AGENT_CLI_READY_TIMEOUT_MS` (20 s) for the
 TUI to print and settle. A continuation avoids that wait by passing the first
 prompt on the resume command when it can.
 
-#### A line typed at once (a slow link's local line)
+#### A line typed at once (`when: "now"`)
 
-`typeLineIntoAgentCli({ sessionId, text, inputOrigin })` is the host half of a
-terminal's local line (`chat.typeIntoCli` with `when: "now"`; see
-[Terminal and Session UI Surfaces](ui-surfaces.md#the-terminals-local-line-on-a-far-link)).
-It writes the line into the CLI's input and then presses Enter, with no line
+`typeLineIntoAgentCli({ sessionId, text, inputOrigin })` answers
+`chat.typeIntoCli` with `when: "now"`. Older desktops sent it from a terminal's
+slow-link local line; the current desktop has no caller, and the host keeps it
+(with the `agentCliTypeNow` capability) for those clients. It writes the line into the CLI's input and then presses Enter, with no line
 clear, no readiness wait and no `@` expansion, because it stands in for the
 person's own keys:
 
@@ -678,17 +678,15 @@ person's own keys:
   gets `LOCAL_LINE_PASTE_SUBMIT_DELAY_MS = 100 ms` before Enter; Codex keeps
   its own 180 ms); a single line is typed as text.
 - Lines to one session run in order: the work joins the same
-  `submitInputFlights` chain `sendToSession` uses, so a local line and an
+  `submitInputFlights` chain `sendToSession` uses, so such a line and an
   `ade chat` send to one CLI cannot interleave.
 - A blank line and a session with no live PTY answer `false`/`ended`, which
-  the renderer puts back in the line. A repeated `clientMessageId` is answered
+  the sender treats as not typed. A repeated `clientMessageId` is answered
   once by `typeIntoAgentCliWhenFree`'s ledger (session + id, ten minutes),
   shared with the Work box's `when: "free"` sends, so a repeat after a dropped
   link types the line once.
 - The function requires no tracked-CLI row: any agent CLI terminal takes it,
-  as it takes the person's keys. Cursor and Devin are not offered the line by
-  the renderer (`toolTypeTakesLocalLine`), and the line appears only once the
-  program has turned bracketed paste on.
+  as it takes the person's keys.
 
 ### AI-driven titles
 

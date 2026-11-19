@@ -776,9 +776,9 @@ export type AgentCliTypeArgs = {
    */
   clientMessageId?: string;
   /**
-   * `free` (the default): typed only at a free prompt, as above. `now`: the
-   * terminal's local line on a slow link, typed into the CLI's input at once
-   * and submitted, like the person's own keys. Only a host that advertises
+   * `free` (the default): typed only at a free prompt, as above. `now`: typed
+   * into the CLI's input at once and submitted, like the person's own keys
+   * (older desktops' terminal local line sent it; this client no longer does). Only a host that advertises
    * `agentCliTypeNow` reads it; an older host types every text as `free`.
    */
   when?: "now" | "free";
@@ -794,7 +794,15 @@ export type AgentCliTypeArgs = {
  */
 export type AgentCliTypeOutcome = "delivered" | "deferred" | "held" | "ended";
 
-export type AgentCliTypeResult = { outcome: AgentCliTypeOutcome };
+export type AgentCliTypeResult = {
+  outcome: AgentCliTypeOutcome;
+  /**
+   * `delivered` only: typed at once, with no wait for a free prompt, because
+   * ADE cannot read this CLI's prompt (`agentCliReadsFreePrompt`). A client
+   * says so, since the CLI may have been mid-turn.
+   */
+  typedAtOnce?: true;
+};
 
 export type PtySendToSessionArgs = {
   sessionId: string;

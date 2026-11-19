@@ -483,8 +483,12 @@ struct TerminalSessionScreen: View {
       switch outcome {
       case .delivered:
         return .sent(nil)
+      case .typedAtOnce:
+        return .sent("Typed now. ADE can't tell when \(runtimeLabel) is free, so it didn't wait.")
       case .heldUntilFree:
-        return .sent("Queued. It's typed when \(runtimeLabel) finishes its turn.")
+        // Held for the next free prompt: a turn still running, a menu the CLI
+        // is showing, or an earlier queued message going first.
+        return .sent("Queued. It's typed when \(runtimeLabel) is free.")
       case .queuedOffline:
         return .sent("You're offline. It's sent when the computer reconnects.")
       case .ended:

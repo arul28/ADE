@@ -1161,7 +1161,7 @@ import {
   type ModelDescriptor,
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
-import { isLaunchProfile, isTrackedCliPermissionMode, piSdkToolPolicyForPermissionMode, piThinkingLevel, type PiSdkMcpPolicy } from "../../../shared/cliLaunch";
+import { agentCliReadsFreePrompt, isLaunchProfile, isTrackedCliPermissionMode, piSdkToolPolicyForPermissionMode, piThinkingLevel, type PiSdkMcpPolicy } from "../../../shared/cliLaunch";
 import { codexAppServerApprovalPolicy } from "../../../shared/codexApprovalPolicy";
 import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import {
@@ -1922,6 +1922,7 @@ import { providerFromTool } from "../../utils/terminalSessionSignals";
 import { createCliCardInputs } from "./cliCardInputs";
 import { createClaudeCliScheduleMirror } from "./claudeCliScheduledWork";
 import type { TrackedCliTurnEndedEvent, TrackedCliTurnStartedEvent } from "../pty/cliTurnSignals";
+import { isExactCliTurnSource } from "../pty/cliTurnSignals";
 import { createCliChildReports, type ChildCompletionDelivery } from "./cliChildReports";
 import { createAgentShellOutputObserver } from "../devServers/agentShellOutput";
 import {
@@ -12383,7 +12384,8 @@ export function createAgentChatService(args: {
     // The `ade chat` commands a tracked agent CLI answers (`agentCliSessionActions.ts`).
     & Partial<Pick<ReturnType<typeof createPtyService>, "interruptAgentCli" | "restartAgentCli" | "regenerateAgentCliTitle">>
     // A line from a terminal's local line, typed now (`chat.typeIntoCli` with `when: "now"`).
-    & Partial<Pick<ReturnType<typeof createPtyService>, "typeLineIntoAgentCli">>
+    // `getTrackedCliTurn`: whether a CLI reported its turn running or waiting on the person.
+    & Partial<Pick<ReturnType<typeof createPtyService>, "typeLineIntoAgentCli" | "getTrackedCliTurn">>
     // A tracked CLI's turn boundaries: its finished turns report to its parent
     // and settle a waiting automation step.
     & TrackedCliTurnSignals
@@ -51853,22 +51855,96 @@ export function createAgentChatService(args: {
     if (sessionService.get(sessionId)?.archivedAt) {
       throw new AdeExpectedError("This CLI session is archived.", "user");
     }
+    // One text per CLI at a time, in the order they came: a later send must
+    // not be typed while an earlier one is still waiting for the prompt to
+    // settle, nor be queued ahead of it.
+    const previous = agentCliTypeFlights.get(sessionId) ?? Promise.resolve();
+    const flight = previous
+      .catch(() => undefined)
+      .then(() => typeOrQueueIntoAgentCli(sessionId, text, args.holdUntilFree === true, args.inputOrigin));
+    agentCliTypeFlights.set(sessionId, flight);
+    try {
+      return await flight;
+    } finally {
+      if (agentCliTypeFlights.get(sessionId) === flight) agentCliTypeFlights.delete(sessionId);
+    }
+  };
+
+  const agentCliTypeFlights = new Map<string, Promise<AgentCliTypeResult>>();
+  /**
+   * How long a text waits for a CLI that did not report a turn running to
+   * show a free prompt before it is queued. A prompt that is only redrawing
+   * (a resize, a focus change, output buffered through a stalled runtime) is
+   * free again within a second; queueing then said "Queued" for an idle CLI
+   * and typed the text only at the queue's next check.
+   */
+  const AGENT_CLI_TYPE_SETTLE_WAIT_MS = 2_000;
+  const AGENT_CLI_TYPE_SETTLE_POLL_MS = 150;
+
+  /** The CLI said itself (Claude's hooks, Codex's OSC 7501) that its turn runs or waits on the person. */
+  const agentCliReportedMidTurn = (sessionId: string): boolean => {
+    const turn = ptyService?.getTrackedCliTurn?.(sessionId) ?? null;
+    return turn != null && isExactCliTurnSource(turn.source) && turn.phase !== "idle";
+  };
+
+  const typeOrQueueIntoAgentCli = async (
+    sessionId: string,
+    text: string,
+    holdUntilFree: boolean,
+    inputOrigin: unknown,
+  ): Promise<AgentCliTypeResult> => {
     if (agentCliProcessEnded(sessionId)) return { outcome: "ended" };
     // `@model:` / `@chat:` / `@lane:` … tokens from the input box get the same
     // facts block a chat send appends, so the CLI agent reads exact ids and
     // flags instead of guessing. The chat's own expansion step logs a failed
     // lookup, sends the text as typed, and records the same usage event.
     const typedText = (await chatMentionService.applyChatMentionExpansion({ sessionId, text })).text;
-    // Queued texts go first: a later send must not jump the line.
-    if ((await queuedAgentCliSendWaits(sessionId)).length === 0) {
-      const outcome = await deliverWakeToSession({ sessionId, text: typedText, kind: "auto" });
-      if (outcome === "delivered") return { outcome };
+    // A CLI whose free prompt ADE cannot read would hold the text for good:
+    // type it at once, as the person's own keys would be.
+    const row = sessionService.get(sessionId);
+    if (!agentCliReadsFreePrompt(row?.resumeMetadata?.provider ?? providerFromTool(row?.toolType))) {
+      const typed = await typeAgentCliLineNow(sessionId, typedText, inputOrigin);
+      return typed.outcome === "delivered" ? { outcome: "delivered", typedAtOnce: true } : typed;
     }
-    if (args.holdUntilFree === true) {
+    // Queued texts go first: a later send must not jump the line. Arming
+    // checks the queue at once, so a CLI that is free now still takes them.
+    if ((await queuedAgentCliSendWaits(sessionId)).length === 0) {
+      if (await deliverWakeToSession({ sessionId, text: typedText, kind: "auto" }) === "delivered") {
+        return { outcome: "delivered" };
+      }
+      const settleBy = Date.now() + AGENT_CLI_TYPE_SETTLE_WAIT_MS;
+      while (Date.now() < settleBy && !serviceDisposed && !agentCliReportedMidTurn(sessionId)) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, AGENT_CLI_TYPE_SETTLE_POLL_MS).unref?.();
+        });
+        if (agentCliProcessEnded(sessionId)) return { outcome: "ended" };
+        if (agentCliTypingDeferred(sessionId)) continue;
+        if (await deliverWakeToSession({ sessionId, text: typedText, kind: "auto" }) === "delivered") {
+          return { outcome: "delivered" };
+        }
+      }
+    }
+    if (holdUntilFree) {
       await armQueuedAgentCliSend({ sessionId, text: typedText });
       return { outcome: "held" };
     }
     return { outcome: "deferred" };
+  };
+
+  /**
+   * A tracked agent CLI's turn ended: what is held for it (a queued text, a
+   * wake) is checked now and again once its prompt has settled, the moment
+   * `canTakeTypedMessage` can first say yes, instead of at the wait
+   * registry's next 15 s backstop.
+   */
+  const AGENT_CLI_TURN_END_RECHECK_MS = [800, 2_500] as const;
+  const signalAgentCliTurnEnded = (sessionId: string): void => {
+    chatWaits?.signalCliTurnEnded(sessionId);
+    for (const delayMs of AGENT_CLI_TURN_END_RECHECK_MS) {
+      setTimeout(() => {
+        if (!serviceDisposed) chatWaits?.signalCliTurnEnded(sessionId);
+      }, delayMs).unref?.();
+    }
   };
 
   /**
@@ -73006,6 +73082,13 @@ export function createAgentChatService(args: {
       return row.tracked && isTrackedAgentCliToolType(row.toolType) && !row.archivedAt;
     },
     wakeDeferred: (sessionId) => agentCliTypingDeferred(sessionId),
+    // A text queued for a CLI waits on what an immediate send waits on, plus
+    // a menu or question the CLI itself reported (its Enter would pick an option).
+    cliTextWaitsOnPerson: (sessionId) => {
+      if (!isTrackedAgentCliSession(sessionId)) return null;
+      const turn = ptyService?.getTrackedCliTurn?.(sessionId) ?? null;
+      return turn != null && isExactCliTurnSource(turn.source) && turn.phase === "needs-input";
+    },
     ownedByAnotherBrain: chatOwnedByAnotherBrain,
     getMovedAwayTarget: (sessionId) => getCrossMachineMoveLock(sessionId, "chat_wait"),
     assertDeliverableHere: (sessionId) => {
@@ -78924,6 +79007,8 @@ export function createAgentChatService(args: {
   /** Long enough for the pty to finish the output chunk that ended the turn, and the CLI to print its last lines. */
   const ARCHIVED_CLI_STOP_DELAY_MS = 1_000;
   const unsubscribeCliChildTurnEnded = ptyService?.onTrackedCliTurnEnded?.((event) => {
+    // Whatever the source: the wait checks read the prompt themselves.
+    if (event.outcome !== "needs-input") signalAgentCliTurnEnded(event.sessionId);
     // A turn end guessed from quiet output is taken only when the CLI's
     // composer is visibly back (the check scheduled work uses), so a CLI that
     // thinks quietly is not reported, or its automation step settled, mid-turn.

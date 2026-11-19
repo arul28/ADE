@@ -2874,7 +2874,8 @@ declare global {
         send: (args: AgentChatSendArgs, pin: OpenProjectBinding) => Promise<void>;
         /**
          * Text for a running agent CLI (`AgentCliTypeArgs`): typed only at a
-         * free prompt, or at once with `when: "now"` (the local line).
+         * free prompt, or at once with `when: "now"` (sent by older desktops'
+         * terminal local line; this client no longer sends it).
          */
         typeIntoCli: (
           args: AgentCliTypeArgs,

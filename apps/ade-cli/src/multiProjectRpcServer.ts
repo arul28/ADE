@@ -1,4 +1,5 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
+import { brainFreezeJustEndedMs } from "./services/runtime/brainLoopWatchdog";
 import { CHAT_LAUNCH_KINDS } from "../../desktop/src/shared/types/chatLaunch";
 import { MACHINE_SCOPE_DOMAINS, MACHINE_SCOPE_PROJECT_ID, machineScopeActionAllowed, machineScopeRefusalMessage } from "../../desktop/src/shared/machineScope";
 import { readDeletedChatOnDisk } from "../../desktop/src/main/services/chat/deletedChats";
@@ -3190,7 +3191,9 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "ping") {
-      return { pong: true, at: new Date().toISOString() };
+      // A freeze here is not the network: the client takes it off its round trip.
+      const hostFrozenMs = brainFreezeJustEndedMs();
+      return { pong: true, at: new Date().toISOString(), ...(hostFrozenMs > 0 ? { hostFrozenMs } : {}) };
     }
 
     // Another machine's agents reach projects, `projects.list` and personal

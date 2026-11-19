@@ -2306,28 +2306,39 @@ export function createPrService({
     return !activeRepoKey || repoRefKey({ owner: row.repo_owner, name: row.repo_name }) === activeRepoKey;
   };
 
-  const listUnmappedGithubProjectionRowsForDisplay = (): GitHubPrProjectionRow[] =>
-    db.all<GitHubPrProjectionRow>(
+  /**
+   * The GitHub PRs no live lane row speaks for. Two plain reads joined here:
+   * the same `not exists` in SQL compared every projection with every PR
+   * through `lower()`, about 250 ms on a project with 1,000 PRs, and the
+   * account lane index ran it once per lane.
+   */
+  const listUnmappedGithubProjectionRowsForDisplay = (): GitHubPrProjectionRow[] => {
+    const mappedKeys = new Set(
+      db.all<{ key: string }>(
+        `
+          select lower(repo_owner) || '/' || lower(repo_name) || '#' || github_pr_number as key
+            from pull_requests
+           -- A detached row no longer speaks for this PR, so it must not
+           -- suppress the projection fallback — otherwise a lane recreated on
+           -- the same branch shows no PR at all.
+           where project_id = ? and ${LIVE_PR_ROWS}
+        `,
+        [projectId],
+      ).map((row) => row.key),
+    );
+    return db.all<GitHubPrProjectionRow & { mapped_key: string }>(
       `
-        select ${GITHUB_PROJECTION_COLUMNS}
-          from github_pr_projections projection
-         where projection.project_id = ?
-           and not exists (
-             select 1
-               from pull_requests mapped
-              where mapped.project_id = projection.project_id
-                and lower(mapped.repo_owner) = lower(projection.repo_owner)
-                and lower(mapped.repo_name) = lower(projection.repo_name)
-                and mapped.github_pr_number = projection.github_pr_number
-                -- A detached row no longer speaks for this PR, so it must not
-                -- suppress the projection fallback — otherwise a lane recreated on
-                -- the same branch shows no PR at all.
-                and mapped.${LIVE_PR_ROWS}
-           )
-         order by projection.updated_at desc, projection.created_at desc
+        select ${GITHUB_PROJECTION_COLUMNS},
+               lower(repo_owner) || '/' || lower(repo_name) || '#' || github_pr_number as mapped_key
+          from github_pr_projections
+         where project_id = ?
+         order by updated_at desc, created_at desc
       `,
       [projectId],
-    );
+    )
+      .filter((row) => !mappedKeys.has(row.mapped_key))
+      .map(({ mapped_key: _mappedKey, ...row }) => row);
+  };
 
   const selectLanePrDisplayCandidate = (args: {
     laneId: string;
@@ -2350,7 +2361,11 @@ export function createPrService({
     return [...mappedCandidates, ...projectionCandidates].sort(compareLanePrDisplayCandidates)[0] ?? null;
   };
 
-  const getDisplayCandidateForCurrentLaneBranch = (laneId: string): LanePrDisplayCandidate | null => {
+  /** `projectionRows`: a caller that asks for many lanes reads them once. */
+  const getDisplayCandidateForCurrentLaneBranch = (
+    laneId: string,
+    projectionRows: () => GitHubPrProjectionRow[] = listUnmappedGithubProjectionRowsForDisplay,
+  ): LanePrDisplayCandidate | null => {
     const lane = getLanePrLookupRow(laneId);
     if (!lane || lane.archived_at) return null;
     const mappedRows = allPrRows(
@@ -2361,8 +2376,35 @@ export function createPrService({
       laneId,
       lane,
       mappedRows,
-      projectionRows: listUnmappedGithubProjectionRowsForDisplay(),
+      projectionRows: projectionRows(),
     });
+  };
+
+  const getForLane = (
+    laneId: string,
+    projectionRows?: () => GitHubPrProjectionRow[],
+  ): PrSummary | null => {
+    const current = getDisplayCandidateForCurrentLaneBranch(laneId, projectionRows)?.summary ?? null;
+    if (current) return withGithubStackMembership(current);
+
+    // The single-value bridge is still used by older chat/web clients. Keep
+    // it honest for a lane that moved on: when there is no current-branch PR,
+    // return the newest retained lane-history row so those clients do not
+    // silently lose the lane's PR badge altogether.
+    const lane = getLanePrLookupRow(laneId);
+    if (!lane || lane.archived_at || !normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""))) {
+      return null;
+    }
+    // ...but a primary lane back on its base branch has no PR to hand out —
+    // not even as history. It cannot be deleted, so returning "the newest
+    // retained row" here is what pinned an old merged PR to `main` on every
+    // consumer of this bridge (lane links, Linear cards, proof owners).
+    if (laneRowIsOnBaseBranch(lane)) return null;
+    const previous = getRowForLane(laneId);
+    const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
+    const previousBranch = normalizeBranchName(branchNameFromRef(previous?.head_branch ?? ""));
+    if (!previous || !previousBranch || previousBranch === laneBranch) return null;
+    return withGithubStackMembership(rowToSummary(previous));
   };
 
   const getActiveRowForCurrentLaneBranch = (laneId: string): PullRequestRow | null => {
@@ -10398,27 +10440,14 @@ export function createPrService({
     },
 
     getForLane(laneId: string): PrSummary | null {
-      const current = getDisplayCandidateForCurrentLaneBranch(laneId)?.summary ?? null;
-      if (current) return withGithubStackMembership(current);
+      return getForLane(laneId);
+    },
 
-      // The single-value bridge is still used by older chat/web clients. Keep
-      // it honest for a lane that moved on: when there is no current-branch PR,
-      // return the newest retained lane-history row so those clients do not
-      // silently lose the lane's PR badge altogether.
-      const lane = getLanePrLookupRow(laneId);
-      if (!lane || lane.archived_at || !normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""))) {
-        return null;
-      }
-      // ...but a primary lane back on its base branch has no PR to hand out —
-      // not even as history. It cannot be deleted, so returning "the newest
-      // retained row" here is what pinned an old merged PR to `main` on every
-      // consumer of this bridge (lane links, Linear cards, proof owners).
-      if (laneRowIsOnBaseBranch(lane)) return null;
-      const previous = getRowForLane(laneId);
-      const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
-      const previousBranch = normalizeBranchName(branchNameFromRef(previous?.head_branch ?? ""));
-      if (!previous || !previousBranch || previousBranch === laneBranch) return null;
-      return withGithubStackMembership(rowToSummary(previous));
+    /** `getForLane` for many lanes, with one read of the GitHub PR list. */
+    getForLanes(laneIds: readonly string[]): Map<string, PrSummary | null> {
+      let projectionRows: GitHubPrProjectionRow[] | null = null;
+      const readOnce = () => (projectionRows ??= listUnmappedGithubProjectionRowsForDisplay());
+      return new Map(laneIds.map((laneId) => [laneId, getForLane(laneId, readOnce)] as const));
     },
 
     listAll(args: { laneId?: string } = {}): PrSummary[] {

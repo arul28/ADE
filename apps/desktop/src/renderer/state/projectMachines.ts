@@ -360,28 +360,6 @@ export function useSlowLinkActive(targetId: string | null): boolean {
 }
 
 /**
- * Whether this machine's brain types a terminal's local line
- * (`agentCliTypeNow`): an older brain types every text at a free prompt, so
- * the local line stays off for its terminals. Same shared feed; null target:
- * false, no feed.
- */
-export function useRemoteTypesLocalLine(targetId: string | null): boolean {
-  const subscribe = useMemo(
-    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
-    [targetId],
-  );
-  return useSyncExternalStore(
-    subscribe,
-    () => {
-      if (!targetId) return false;
-      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
-      return connection?.state === "connected" && connection.capabilities?.agentCliTypeNow === true;
-    },
-    () => false,
-  );
-}
-
-/**
  * The last measured round trip to this machine, in ms, while it is connected;
  * null before the first measure. Same shared feed; null target: null.
  */

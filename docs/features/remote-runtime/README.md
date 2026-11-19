@@ -1297,14 +1297,15 @@ ms · Slow connection`.
 
 What the mode changes is only what would be hidden or delayed: a transcript
 picture from that machine waits as a `Show picture · <size>` tile until it is
-clicked (a picture already shown stays), a plain-shell terminal types ahead,
-and an agent CLI's terminal gets a local line (below) so a typed letter shows in
-one frame instead of most of a second later.
+clicked (a picture already shown stays) and a plain-shell terminal types
+ahead. An agent CLI's terminal sends every key to the machine as on a fast
+link; to type on this computer first, the person opens the Work input box
+(keyboard button in the terminal header).
 
 Typing has a lower line of its own, `far`: two of the last three round trips at
 150 ms or more turn it on, and the last five under 110 ms turn it off
 (`FAR_RTT_ON_MS`, `FAR_RTT_OFF_MS`). At 150 ms each key already lags enough to
-feel, so a far link gets the type-ahead and the local line without the rest of
+feel, so a far link gets the type-ahead without the rest of
 the mode. Slow-connection mode always counts as far; **Always on** and **Off**
 set both. Pictures in the proof drawer and
 the lightbox load as before. The always-on transport work below runs in every
@@ -1344,13 +1345,14 @@ for the same redial and ask again, while a write still reports that its outcome
 is unknown.
 
 Text for a running agent CLI (`chat.typeIntoCli`) gets the same treatment from
-both ways of typing into it: the Work box (`when: "free"`, typed at a free
-prompt) and the terminal's local line (`when: "now"`, typed at once). A brain
+both modes: the Work box (`when: "free"`, typed at a free prompt) and
+`when: "now"` (typed at once; sent only by older desktops' terminal local
+line, which this desktop no longer has). A brain
 that announces `agentCliTypeNow` answers a repeated `clientMessageId` once for
 both modes; the pool sends the text again after a reconnect only to such a
 brain, and a send refused before it dialled comes back to the caller as not
 sent. See
-[Terminal and Session UI Surfaces](../terminals-and-sessions/ui-surfaces.md#the-terminals-local-line-on-a-far-link).
+[Terminal and Session UI Surfaces](../terminals-and-sessions/ui-surfaces.md#input-box-for-a-running-agent-cli-workcliinputboxtsx).
 
 **A drop that is a blip.** A link that was up and dropped redials every 2 s for
 3 minutes (`FAST_REDIAL_WINDOW_MS`, cleared by the ordinary bounded backoff

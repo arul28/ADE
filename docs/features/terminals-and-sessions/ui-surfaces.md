@@ -379,44 +379,13 @@ When the CLI ends, waiting texts move to the ended session's continue box
 (`ade.work.cliContinueDraft.<id>`). Two windows share the queue and claim a
 text before typing it. Typing clears the CLI's prompt line first.
 
-### The terminal's local line on a far link
+### Typing into an agent CLI on a far link
 
-`TerminalLocalLineBar.tsx` and `terminalLocalLine.ts` are the other way to type
-into a running agent CLI. On a far link (150 ms or more, or slow-connection
-mode; see [A slow or dropping link](../remote-runtime/README.md#a-slow-or-dropping-link))
-`TerminalView` keeps plain text on this computer instead of writing each key to
-the machine: the overlay draws the line in the terminal's own font, and Enter
-sends it through `agentChat.typeIntoCli` with `when: "now"`, which the host
-types and submits as one line (`typeLineIntoAgentCli`). The host's answer is
-the same shape as the box's; `agentCliTypeSend.ts` classifies it for both.
-
-- **Offered only when** the terminal's machine is on a far link (`useFarLinkActive`) and
-  announces `agentCliTypeNow`, the session's tool type takes a line
-  (`toolTypeTakesLocalLine` in `shared/cliLaunch.ts`: not Cursor or Devin),
-  the terminal is interactive, the program has bracketed paste on, and the
-  session is not in box mode (`localLineAllowed={!showInputBox}`). Otherwise
-  every key goes to the machine as before.
-- **Keys.** Plain text collects in the line; Backspace, Ctrl+U, Ctrl+W and
-  Option+Backspace edit it; Shift+Enter adds a line break. Enter on a line
-  sends it; Enter on an empty line goes to the CLI. Any other key (Esc, Tab, an
-  arrow, Ctrl+C, a function key) first hands the line to the CLI as keys, then
-  sends the key, so completion and interruption behave as they do when typing
-  there. The terminal's own replies (focus, mouse reports, query answers) go to
-  the CLI and leave the line alone.
-- **Pasting** joins the line; a pasted control character is dropped (ESC is
-  shown as `␛`), so a paste cannot act as a key.
-- **A failed send** puts the line back, in front of anything typed since, and
-  says why (`Not sent: this terminal has stopped / the connection dropped / the
-  machine did not take it`). A line sent again unchanged keeps its id, so the
-  machine types it once. When the answer was lost (the connection dropped), the
-  line stays in the line and is never handed to the CLI as keys — that path has
-  no id — until Enter sends it again with the same id, or editing it makes it a
-  new line. One line is out at a time: Enter while a send is still running
-  keeps the next line here, for the next Enter.
-- **The switch** in the corner turns the line off for that session
-  (`ade.terminal.localLineOff`, most recent 200 sessions) and hands any text
-  already in it to the CLI as keys. With the line off, a fast link's type-ahead
-  (`terminalTypeAhead.ts`) is what a plain shell gets.
+On a far or slow link (see
+[A slow or dropping link](../remote-runtime/README.md#a-slow-or-dropping-link))
+an agent CLI terminal sends every key straight to the CLI, as on a fast link;
+only plain shells get type-ahead (`terminalTypeAhead.ts`). To write text on
+this computer first, the person opens the input box above on purpose.
 
 A CLI on an asleep or deleted ADE Cloud computer takes messages through the
 account server's queue, from the web, the iPhone or the desktop. On wake, the

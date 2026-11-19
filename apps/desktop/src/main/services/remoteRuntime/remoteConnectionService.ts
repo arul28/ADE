@@ -2362,7 +2362,7 @@ export class RemoteConnectionService {
         this.latencyProbeTargetIds.add(target.id);
         const startedAt = Date.now();
         try {
-          await this.pool.callMachineForTarget(
+          const pong = await this.pool.callMachineForTarget(
             target,
             "ping",
             // An older machine ignores the report; a newer one logs it.
@@ -2371,7 +2371,13 @@ export class RemoteConnectionService {
               timeoutMs: options.pingTimeoutMs,
             },
           );
-          const latencyMs = Math.max(0, Date.now() - startedAt);
+          // A machine whose ADE froze answers late, and says for how long: that
+          // wait is not the network, so it does not count toward a slow link.
+          const hostFrozenMs = Number((pong as { hostFrozenMs?: unknown } | null | undefined)?.hostFrozenMs);
+          const latencyMs = Math.max(
+            0,
+            Date.now() - startedAt - (Number.isFinite(hostFrozenMs) && hostFrozenMs > 0 ? hostFrozenMs : 0),
+          );
           const currentRoute = this.statusById.get(target.id)?.route;
           if (currentRoute) {
             this.mergeStatus(target.id, {
