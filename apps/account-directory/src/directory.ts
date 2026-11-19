@@ -790,9 +790,16 @@ async function upsertMachine(
     insert into machines (
       user_id, machine_key, device_id, name, platform, device_type, pubkey,
       reachable_endpoints, power, sleep_state, sleep_state_at,
-      last_seen_at, created_at, hardware_id, channel, ade_home
+      last_seen_at, created_at, hardware_id, channel, ade_home, custom_name
     )
-    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    -- A new row for an ADE Cloud computer lists under the computer's name
+    -- (its lane), not its host name. The computer's metadata names the row
+    -- when the row is there first (nameMachineAfterComputerStatement); this
+    -- covers the other order. An existing row keeps whatever name it has.
+    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      (select nullif(trim(c.name), '') from cloud_computers c
+        where c.user_id = ? and c.machine_key = ? and c.deleted_at is null
+        order by c.created_at desc limit 1)
      where exists (select 1 from machines where user_id = ? and machine_key = ?)
         or (select count(*) from machines where user_id = ?) < ?
     on conflict(user_id, machine_key) do update set
@@ -859,6 +866,8 @@ async function upsertMachine(
     input.hardwareId,
     input.channel,
     input.adeHome,
+    args.userId,
+    input.machineKey,
     args.userId,
     input.machineKey,
     args.userId,
