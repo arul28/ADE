@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AppControlContextItem,
   AppControlSession,
@@ -418,6 +418,13 @@ function cardFor(label: string): HTMLButtonElement {
 }
 
 describe("WorkSidebar context targets", () => {
+  // The iOS tool waits for both iPhone panes' code (\`gatedWorkTool\`); the
+  // cloud pane is real here, and its cold import in a busy CI shard outran the
+  // 5 s waits below. Loading it once up front keeps those waits about render.
+  beforeAll(async () => {
+    await import("../apple/CloudIphonePanel");
+  }, 60_000);
+
   beforeEach(() => {
     Object.defineProperty(window.navigator, "platform", {
       configurable: true,
