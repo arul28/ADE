@@ -6479,8 +6479,17 @@ export function createPtyService({
     await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
     if (!write(AGENT_CLI_INPUT_CLEAR_TO_START_KEY)) return false;
     await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
-    return await writeAgentCliText(write, inputText, provider, false);
+    return await writeAgentCliText(write, inputText, provider, agentCliTextNeedsPaste(provider, inputText));
   };
+
+  /**
+   * A CLI whose prompt ADE cannot read (`agentCliReadsFreePrompt`) gets text
+   * with a line break or a tab as one paste: typed, the line break could
+   * submit part of it and the tab could complete a word. The CLIs ADE reads
+   * keep their own handling.
+   */
+  const agentCliTextNeedsPaste = (provider: TerminalResumeProvider, inputText: string): boolean =>
+    !agentCliReadsFreePrompt(provider) && /[\r\n\t]/.test(inputText);
 
   /**
    * Puts text into an agent CLI's input without submitting it. Codex and Muse
@@ -9122,7 +9131,9 @@ export function createPtyService({
               ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS
               : provider === "cursor"
                 ? CURSOR_CLI_PASTE_SUBMIT_DELAY_MS
-                : AGENT_CLI_SUBMIT_DELAY_MS);
+                : agentCliTextNeedsPaste(provider, inputText)
+                  ? AGENT_CLI_PASTE_SUBMIT_DELAY_MS
+                  : AGENT_CLI_SUBMIT_DELAY_MS);
             return service.writeBySessionId(targetSessionId, submitKey);
           });
         submitInputFlights.set(targetSessionId, flight);

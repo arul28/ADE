@@ -226,6 +226,11 @@ export function createBrainStallProfiler(deps: {
   };
 
   const finish = async (target: inspector.Session) => {
+    // A freeze that ended just now reaches `noteStall` one loop turn later
+    // (the watchdog logs it from `setImmediate`, which may be queued after
+    // this timer's own): wait two turns before counting.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
     const sawStall = stallsInProfile > 0;
     try {
       const stopped = (await post(target, "Profiler.stop")) as { profile?: BrainCpuProfile } | undefined;

@@ -1173,6 +1173,11 @@ describe("ptyService", () => {
       mockPty._emitter.emit("data", "Qwen is thinking...\n");
       expect(service.canAcceptScheduledTurn("session-qwen"), "a relaunch still needs a readable prompt").toBe(false);
       expect(service.canTakeTypedMessage("session-qwen"), "Qwen's prompt cannot be read").toBe(true);
+      // Typed as keys, the line break could submit half of it.
+      (mockPty.write as ReturnType<typeof vi.fn>).mockClear();
+      await service.sendToSession({ sessionId: "session-qwen", text: "first line\nsecond line" });
+      const written = (mockPty.write as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0])).join("");
+      expect(written, "one paste, then Enter").toContain("\x1b[200~first line\nsecond line\x1b[201~");
     });
 
     it("keeps a Claude CLI's background agents as background work until each reports its stop", async () => {
