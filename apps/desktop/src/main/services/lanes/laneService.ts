@@ -529,6 +529,14 @@ function stablePathThroughExistingAncestor(targetPath: string): string {
 
 const STALE_WORKTREE_ROOT_MESSAGE = "Lane worktree is missing or no longer points at its Git worktree root.";
 const CHECKOUT_LEFTOVER_HINT = "The lane folder may hold files from both branches. Open a terminal in the lane and run `git status` before you continue.";
+/**
+ * Each git read in `readUnsavedWork`. Only an ADE Cloud free or delete reads
+ * it (`ade cloud push-work` / `work-state`), in the background with minutes
+ * to spare, and "unreadable" keeps the computer. A big repository's first
+ * `git status` on a Small computer just woken or set up (a cold index)
+ * measured 5.6 s and ran past 8 s, which refused the free for nothing.
+ */
+const UNSAVED_WORK_GIT_TIMEOUT_MS = 45_000;
 const CHECKOUT_TIMEOUT_MESSAGE = `Git stopped making progress, or did not finish within ${GIT_TREE_WRITE_TIMEOUT_MS / 60_000} minutes, so ADE stopped the checkout. ${CHECKOUT_LEFTOVER_HINT}`;
 const CHECKOUT_CANCEL_MESSAGE = `You stopped the checkout. ${CHECKOUT_LEFTOVER_HINT}`;
 const LANE_CREATE_CANCEL_MESSAGE = "Lane creation was cancelled.";
@@ -9567,11 +9575,11 @@ export function createLaneService({
         throw new Error("The lane's folder is not the git worktree ADE expects.");
       }
       const notOnRemotes = async (ref: string, cwd: string): Promise<number> => {
-        const result = await runGit(["rev-list", "--count", ref, "--not", "--remotes"], { cwd, timeoutMs: 8_000 });
+        const result = await runGit(["rev-list", "--count", ref, "--not", "--remotes"], { cwd, timeoutMs: UNSAVED_WORK_GIT_TIMEOUT_MS });
         if (result.exitCode === 0) return Number.parseInt(result.stdout.trim(), 10) || 0;
         // A branch that no longer exists holds no commits; any other failure is unreadable.
         if (ref.startsWith("refs/heads/")) {
-          const exists = await runGit(["show-ref", "--verify", "--quiet", ref], { cwd, timeoutMs: 8_000 });
+          const exists = await runGit(["show-ref", "--verify", "--quiet", ref], { cwd, timeoutMs: UNSAVED_WORK_GIT_TIMEOUT_MS });
           if (exists.exitCode === 1) return 0;
         }
         const reason = result.timedOut ? "timed out" : result.stderr.trim().split(/\r?\n/, 1)[0] || `exit ${result.exitCode}`;
@@ -9581,7 +9589,7 @@ export function createLaneService({
       const baseOnRemote = async (cwd: string): Promise<string | null> => {
         const baseName = row.base_ref ? branchNameForDelete(row.base_ref, "origin") : "";
         for (const candidate of ["refs/remotes/origin/HEAD", ...(baseName ? [`refs/remotes/origin/${baseName}`] : [])]) {
-          const found = await runGit(["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], { cwd, timeoutMs: 8_000 });
+          const found = await runGit(["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], { cwd, timeoutMs: UNSAVED_WORK_GIT_TIMEOUT_MS });
           if (found.exitCode === 0 && found.stdout.trim()) return found.stdout.trim();
         }
         return null;
@@ -9592,8 +9600,8 @@ export function createLaneService({
         const base = await baseOnRemote(cwd);
         if (!base) return false;
         const [merged, baseTree] = await Promise.all([
-          runGit(["merge-tree", "--write-tree", base, ref], { cwd, timeoutMs: 8_000 }),
-          runGit(["rev-parse", `${base}^{tree}`], { cwd, timeoutMs: 8_000 }),
+          runGit(["merge-tree", "--write-tree", base, ref], { cwd, timeoutMs: UNSAVED_WORK_GIT_TIMEOUT_MS }),
+          runGit(["rev-parse", `${base}^{tree}`], { cwd, timeoutMs: UNSAVED_WORK_GIT_TIMEOUT_MS }),
         ]);
         if (merged.exitCode !== 0 || baseTree.exitCode !== 0) return false;
         const tree = merged.stdout.trim().split(/\r?\n/, 1)[0] ?? "";
@@ -9605,7 +9613,7 @@ export function createLaneService({
       };
       const branch = row.branch_ref ? branchNameForDelete(row.branch_ref, "origin") : "";
       const [dirty, branchCommits, folderCommits] = await Promise.all([
-        hasFolder ? readWorktreeDirty(row.worktree_path) : false,
+        hasFolder ? readWorktreeDirty(row.worktree_path, UNSAVED_WORK_GIT_TIMEOUT_MS) : false,
         branch ? unsavedCommits(`refs/heads/${branch}`, projectRoot) : 0,
         hasFolder ? unsavedCommits("HEAD", row.worktree_path) : 0,
       ]);
