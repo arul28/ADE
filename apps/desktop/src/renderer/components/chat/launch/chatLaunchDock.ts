@@ -114,7 +114,7 @@ const handoffsAwaitingReply = new Map<string, number>();
  */
 const SEND_HANDOFF_SETTLE_WINDOW_MS = 1_000;
 
-function pruneDepartures(): void {
+function pruneSendHandoffs(): void {
   for (const host of departuresOnScreen.keys()) {
     if (!host.isConnected) departuresOnScreen.delete(host);
   }
@@ -145,7 +145,7 @@ export function onSendHandoffSettle(listener: () => void): () => void {
  * a chat opened another way changes nothing.
  */
 export function settleSendHandoff(sessionId: string): void {
-  pruneDepartures();
+  pruneSendHandoffs();
   const ends = Array.from(departuresOnScreen.values()).filter((departure) => departure.sessionId === sessionId);
   const tookOver = handoffsAwaitingReply.delete(sessionId);
   if (!ends.length && !tookOver) return;
@@ -809,7 +809,7 @@ export function playDepartingDraftChrome(
   header?: HTMLElement | null,
 ): void {
   // The chat took over from its draft, with or without a copy to play.
-  pruneDepartures();
+  pruneSendHandoffs();
   handoffsAwaitingReply.set(sessionId, Date.now());
   if (!departing || departing.played) return;
   departing.played = true;
