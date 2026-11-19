@@ -4123,13 +4123,17 @@ func syncRelayReauthorizationPayload(
   stillCurrent: () -> Bool = { true }
 ) async throws -> [String: Any] {
   let relaySession = try await AccountService.shared.freshRelaySession()
-  await DpopKeyService.shared.warmKey()
   guard !Task.isCancelled, stillCurrent() else { throw CancellationError() }
-  guard let proof = DpopKeyService.shared.buildRelayReauthorizationProof(
+  // The device key signs off the main thread: a Secure Enclave signature waits
+  // on the enclave over XPC, and on main that wait froze the app (Sentry
+  // 7848777934). `stillCurrent` is checked again after the wait.
+  let signedProof = await DpopKeyService.shared.buildRelayReauthorizationProofOffMain(
     deviceId: deviceId,
     relayAccountToken: relaySession.token,
     challenge: lease.challenge
-  ) else {
+  )
+  guard !Task.isCancelled, stillCurrent() else { throw CancellationError() }
+  guard let proof = signedProof else {
     throw RelayReauthorizationFailure(
       code: "invalid_proof",
       message: "This iPhone could not refresh its secure Relay proof.",
@@ -8712,15 +8716,16 @@ final class SyncService: ObservableObject {
     let relaySession = try await AccountService.shared.freshRelaySession(
       expectedAuthorization: authorization
     )
-    await DpopKeyService.shared.warmKey()
+    // Signs off the main thread (`buildProofOffMain`), then re-checks that
+    // this candidate is still the one connecting.
+    let signedProof = relaySession.authorization.ownerId == owner
+      ? await DpopKeyService.shared.buildProofOffMain(deviceId: deviceId, secret: relaySession.token)
+      : nil
     guard isCurrentCandidate() else {
       throw AccountPairingConnectionSupersededError()
     }
     guard relaySession.authorization.ownerId == owner,
-          let dpop = DpopKeyService.shared.buildProof(
-            deviceId: deviceId,
-            secret: relaySession.token
-          ) else {
+          let dpop = signedProof else {
       throw NSError(
         domain: "ADE",
         code: 31,
@@ -22260,7 +22265,12 @@ final class SyncService: ObservableObject {
       // single-use). Once the host has a key on record, hellos without a valid
       // proof are rejected. Key/sign failure is soft — the legacy path still
       // works until the host stores a key for us.
-      if let proof = DpopKeyService.shared.buildProof(deviceId: pairedDeviceId, secret: token) {
+      // Signed off the main thread (`buildProofOffMain`).
+      let proof = await DpopKeyService.shared.buildProofOffMain(deviceId: pairedDeviceId, secret: token)
+      guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+        throw CancellationError()
+      }
+      if let proof {
         pairedAuth["dpop"] = proof
       } else {
         syncConnectLog.info("ADE_SYNC_TRACE dpop proof unavailable; sending legacy paired hello")

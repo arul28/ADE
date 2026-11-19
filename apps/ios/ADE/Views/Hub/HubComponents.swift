@@ -1173,6 +1173,8 @@ struct HubProjectTile: View, Equatable {
 
   @State private var iconPickerShown = false
   @State private var pickedIcon: PhotosPickerItem?
+  /// Read off the main thread on the first open (`ADEPhotoPickerFilter`).
+  @State private var iconPickerFilter: PHPickerFilter?
   @Environment(\.verticalSizeClass) private var verticalSizeClass
 
   private var isShort: Bool { verticalSizeClass == .compact }
@@ -1287,7 +1289,18 @@ struct HubProjectTile: View, Equatable {
         menuItems
       }
     }
-    .photosPicker(isPresented: $iconPickerShown, selection: $pickedIcon, matching: .images)
+    .photosPicker(
+      isPresented: Binding(
+        get: { iconPickerShown && iconPickerFilter != nil },
+        set: { iconPickerShown = $0 }
+      ),
+      selection: $pickedIcon,
+      matching: iconPickerFilter
+    )
+    .task(id: iconPickerShown) {
+      guard iconPickerShown, iconPickerFilter == nil else { return }
+      iconPickerFilter = await ADEPhotoPickerFilter.images()
+    }
     .onChange(of: pickedIcon) { _, item in
       guard let item else { return }
       pickedIcon = nil

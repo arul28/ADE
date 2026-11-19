@@ -651,22 +651,45 @@ private func workChatRenderedJPEGImage(_ image: UIImage, maxDimension: CGFloat) 
   }
 }
 
+/// The images-only photo picker filter, read off the main thread.
+///
+/// PhotosUI sets up `PHPickerFilter.images` once, the first time anything
+/// reads it. Read in a view body on the main thread, that setup held the app
+/// for 11-12 seconds (Sentry 7840398384). A picker asks for it here when it is
+/// about to open and opens once it has it; after the first read it is instant.
+enum ADEPhotoPickerFilter {
+  private static let imagesTask = Task.detached(priority: .userInitiated) { PHPickerFilter.images }
+
+  static func images() async -> PHPickerFilter {
+    await imagesTask.value
+  }
+}
+
 private struct WorkChatAttachmentPickerModifier: ViewModifier {
   @Binding var isPresented: Bool
   @Binding var attachments: [WorkChatInputAttachment]
   let onDismiss: () -> Void
 
   @State private var pickerItems: [PhotosPickerItem] = []
+  /// Nil until the first open asks for it; the picker shows once it is set.
+  @State private var imageFilter: PHPickerFilter?
 
   func body(content: Content) -> some View {
     content
       .photosPicker(
-        isPresented: $isPresented,
+        isPresented: Binding(
+          get: { isPresented && imageFilter != nil },
+          set: { isPresented = $0 }
+        ),
         selection: $pickerItems,
         maxSelectionCount: max(1, workChatInputAttachmentLimit - attachments.count),
-        matching: .images,
+        matching: imageFilter,
         preferredItemEncoding: .automatic
       )
+      .task(id: isPresented) {
+        guard isPresented, imageFilter == nil else { return }
+        imageFilter = await ADEPhotoPickerFilter.images()
+      }
       .onChange(of: pickerItems) { _, newItems in
         guard !newItems.isEmpty else { return }
         pickerItems = []
@@ -690,16 +713,31 @@ private struct WorkChatAttachmentPickerModifier: ViewModifier {
         state: .loading
       ))
       do {
-        guard let data = try await item.loadTransferable(type: Data.self),
-              let image = UIImage(data: data) else {
+        guard let data = try await item.loadTransferable(type: Data.self) else {
           markAttachment(id: id, failed: "This image could not be read.")
           continue
         }
-        guard let attachment = workChatInputAttachment(from: image, filename: fallbackName, id: id) else {
+        // Decoding a full camera photo and re-encoding it as JPEG (up to five
+        // qualities per size) takes seconds; keep it off the main thread.
+        let encoded = await Task.detached(priority: .userInitiated) { () -> WorkChatEncodedPickedImage in
+          guard let image = UIImage(data: data) else { return .unreadable }
+          guard let encoded = workChatJPEGDataForUpload(image) else { return .tooLarge }
+          return .ready(image: encoded.image, data: encoded.data)
+        }.value
+        switch encoded {
+        case .unreadable:
+          markAttachment(id: id, failed: "This image could not be read.")
+        case .tooLarge:
           markAttachment(id: id, failed: "This image is too large to upload.")
-          continue
+        case .ready(let image, let data):
+          replaceAttachment(id: id, with: WorkChatInputAttachment(
+            id: id,
+            image: image,
+            uploadData: data,
+            filename: fallbackName,
+            state: .ready
+          ))
         }
-        replaceAttachment(id: id, with: attachment)
       } catch is CancellationError {
         attachments.removeAll { $0.id == id }
       } catch {
@@ -722,6 +760,12 @@ private struct WorkChatAttachmentPickerModifier: ViewModifier {
     guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
     attachments[index].state = .failed(message)
   }
+}
+
+private enum WorkChatEncodedPickedImage: Sendable {
+  case unreadable
+  case tooLarge
+  case ready(image: UIImage, data: Data)
 }
 
 extension View {

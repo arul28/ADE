@@ -111,6 +111,18 @@ final class DpopKeyService {
     }.value
   }
 
+  /// `buildRelayReauthorizationProof` off the caller's thread, for the same
+  /// reason as `buildProofOffMain`.
+  func buildRelayReauthorizationProofOffMain(
+    deviceId: String,
+    relayAccountToken: String,
+    challenge: String
+  ) async -> [String: Any]? {
+    await Task.detached(priority: .userInitiated) { [self] in
+      buildRelayReauthorizationProof(deviceId: deviceId, relayAccountToken: relayAccountToken, challenge: challenge)
+    }.value
+  }
+
   /// Builds a fresh proof over the exact host-issued Relay reauthorization
   /// challenge. The bearer token is only returned to callers alongside this
   /// device-key signature; callers must not send it if this method fails.
