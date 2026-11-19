@@ -341,11 +341,7 @@ extension LanesTabView {
         onAwake: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
       )
     } else {
-      ADEEmptyStateView(
-        symbol: "square.stack.3d.up.slash",
-        title: "Lane unavailable",
-        message: "This lane is no longer on this phone. Refresh Lanes and try again."
-      )
+      UnavailableLaneDestination(laneId: route.laneId)
     }
   }
 
@@ -1092,5 +1088,44 @@ struct LanePinLabel: View {
 
   var body: some View {
     Label(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash.fill" : "pin.fill")
+  }
+}
+
+
+/// A lane page whose lane left the phone's list. A cloud lane whose computer
+/// was just freed (or removed by the idle cleanup) is still the account's: the
+/// page shows it as kept, with New computer and Delete, instead of a dead end.
+struct UnavailableLaneDestination: View {
+  let laneId: String
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
+  @ObservedObject private var launches = AccountCloudLaunchStore.shared
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+
+  var body: some View {
+    Group {
+      if let lane = cloudStore.lanesWithoutComputer.first(where: { $0.laneId == laneId }) {
+        ScrollView {
+          VStack(alignment: .leading, spacing: 10) {
+            Label("No computer now", systemImage: ADECloudMachine.symbol)
+              .font(.system(size: 12.5, weight: .semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+            CloudKeptLaneRow(lane: lane, launch: launches.laneLaunch(for: lane))
+          }
+          .padding(16)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .navigationTitle(lane.laneName)
+        .navigationBarTitleDisplayMode(.inline)
+      } else {
+        ADEEmptyStateView(
+          symbol: "square.stack.3d.up.slash",
+          title: "Lane unavailable",
+          message: "This lane is no longer on this phone. Refresh Lanes and try again."
+        )
+      }
+    }
+    // A free that just ended: the kept lane is on the account a moment later.
+    .task { await cloudStore.refreshLanesWithoutComputer(using: syncPublishes.service, force: true) }
   }
 }
