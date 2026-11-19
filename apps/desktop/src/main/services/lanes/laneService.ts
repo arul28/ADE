@@ -9612,11 +9612,14 @@ export function createLaneService({
         return count > 0 && (await changesAlreadyInBase(ref, cwd)) ? 0 : count;
       };
       const branch = row.branch_ref ? branchNameForDelete(row.branch_ref, "origin") : "";
-      const [dirty, branchCommits, folderCommits] = await Promise.all([
+      const [dirtyAtStart, branchCommits, folderCommits] = await Promise.all([
         hasFolder ? readWorktreeDirty(row.worktree_path, UNSAVED_WORK_GIT_TIMEOUT_MS) : false,
         branch ? unsavedCommits(`refs/heads/${branch}`, projectRoot) : 0,
         hasFolder ? unsavedCommits("HEAD", row.worktree_path) : 0,
       ]);
+      // The commit reads can take a while on a cold disk; a file changed
+      // meanwhile shows in one more read of the tree after them.
+      const dirty = dirtyAtStart || (hasFolder ? await readWorktreeDirty(row.worktree_path, UNSAVED_WORK_GIT_TIMEOUT_MS) : false);
       return { dirty, unpushedCommits: Math.max(branchCommits, folderCommits) };
     },
 

@@ -38,8 +38,11 @@ const KEEP_AWAKE_EXEC_MS = 30_000;
  */
 const KEEP_AWAKE_FRESH_MAX_MS = 75_000;
 const KEEP_AWAKE_FRESH_POLL_MS = 5_000;
-/** As the desktop's (`PUSH_ALL_WORK_TIMEOUT_MS`): a frozen push can't hold the computer awake for long. */
-const PUSH_EXEC_MS = 3 * 60_000;
+/**
+ * The desktop's 3 minutes (`PUSH_ALL_WORK_TIMEOUT_MS`) plus the minute the git
+ * warm-up may take: a frozen push can't hold the computer awake for long.
+ */
+const PUSH_EXEC_MS = 4 * 60_000;
 const CHECK_EXEC_MS = 2 * 60_000;
 const DELETE_CONFIRM_MAX_MS = 3 * 60_000;
 const DELETE_CONFIRM_POLL_MS = 10_000;
@@ -176,6 +179,8 @@ async function push(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepRe
     // The read can fail for a while (a cold disk right after a wake) or for
     // good (a lane folder that's no longer a Git worktree): name the lanes and
     // say what to do in both cases.
+    // An older ADE names no lanes: say so plainly, as work that didn't push.
+    if (left.length === 0) return { kind: "fail", error: "ADE couldn't push all work on this computer, so it stays. Open the lane to see why, then try again." };
     if (unpushed.length === 0) {
       return { kind: "fail", error: `ADE couldn't read the work in${laneNamesOf(left)}, so nothing was deleted. Try again in a minute; if it fails again, open that lane to see why.` };
     }
