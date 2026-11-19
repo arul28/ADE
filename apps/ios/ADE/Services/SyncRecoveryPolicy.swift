@@ -562,22 +562,17 @@ func syncRunRelayReauthorizationLoop<Attempt>(
 }
 
 
-/// Reports a live connection to a machine that dropped without either side
-/// closing it (no close frame: 1006, or none at all). Such a drop was seen only
-/// on a real iPhone (a Wi-Fi socket dropped 110 ms after the computer's sync
-/// port moved) and never in the simulator, so the phone says what it saw. The
-/// Sentry event carries the breadcrumbs left just before it (saved port
-/// changes, network path changes). Names and counts only: no address, machine
-/// name or content. At most one report per kind per ten minutes.
+/// Notes a live connection to a machine that dropped without either side
+/// closing it (no close frame: 1006, or none at all). The phone reconnects on
+/// its own, so a drop is expected, not a bug: it leaves a breadcrumb that rides
+/// on whatever is reported next (a reconnect that fails, a hang), never an
+/// issue of its own. As an issue it was 84 events from two phones (Sentry
+/// 7847464039). Names and counts only: no address, machine name or content.
 ///
-/// A drop on a connection that lived through a trip to the background is not
-/// unexplained: iOS suspends the app and kills its sockets without a close
-/// frame, and the failed receive surfaces on the next wake. Those leave a
-/// breadcrumb instead of an issue (ADE-IOS-2P was almost all of them).
+/// A drop on a connection that lived through a trip to the background is iOS
+/// suspending the app and killing its sockets; the breadcrumb says so.
 @MainActor
 enum SyncLiveDropReport {
-  private static var lastReportedAt: [String: Date] = [:]
-  static let minimumInterval: TimeInterval = 600
   /// Uptime of the app's last move to the background.
   private static var lastBackgroundedUptime: TimeInterval?
 
@@ -611,37 +606,10 @@ enum SyncLiveDropReport {
     routeKind: SyncConnectionRouteKind?,
     closeCode: Int?,
     connectionAgeSeconds: TimeInterval?,
-    error: Error? = nil,
-    now: Date = Date()
+    error: Error? = nil
   ) {
     guard isUnexplainedDrop(closeCode: closeCode) else { return }
     let route = routeKind.map { String(describing: $0) } ?? "unknown"
-    var errorContext: [String: String] = [:]
-    if let error {
-      let nsError = error as NSError
-      errorContext["error_domain"] = nsError.domain
-      errorContext["error_code"] = String(nsError.code)
-      if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
-        errorContext["underlying_domain"] = underlying.domain
-        errorContext["underlying_code"] = String(underlying.code)
-      }
-    }
-    if wasSuspendedDuringConnection(
-      connectionAgeSeconds: connectionAgeSeconds,
-      lastBackgroundedUptime: lastBackgroundedUptime,
-      appIsInBackground: UIApplication.shared.applicationState == .background,
-      nowUptime: ProcessInfo.processInfo.systemUptime
-    ) {
-      CrashReporting.breadcrumb(
-        "sync.live_drop",
-        message: "live connection dropped after the app was suspended",
-        data: ["connection": connection, "route": route].merging(errorContext) { current, _ in current }
-      )
-      return
-    }
-    let kind = "\(connection):\(route)"
-    if let last = lastReportedAt[kind], now.timeIntervalSince(last) < minimumInterval { return }
-    lastReportedAt[kind] = now
     let ageBucket: String
     switch connectionAgeSeconds ?? -1 {
     case ..<0: ageBucket = "unknown"
@@ -650,17 +618,33 @@ enum SyncLiveDropReport {
     case ..<600: ageBucket = "under_10m"
     default: ageBucket = "over_10m"
     }
-    CrashReporting.capture(
-      NSError(domain: "ADESyncLiveDrop", code: closeCode ?? 0, userInfo: [
-        NSLocalizedDescriptionKey: "A live machine connection dropped without a close frame.",
-      ]),
-      context: [
-        "area": "sync_live_drop",
-        "connection": connection,
-        "route": route,
-        "close_code": String(closeCode ?? 0),
-        "age": ageBucket,
-      ].merging(errorContext) { current, _ in current }
+    var data: [String: String] = [
+      "connection": connection,
+      "route": route,
+      "close_code": String(closeCode ?? 0),
+      "age": ageBucket,
+    ]
+    if let error {
+      let nsError = error as NSError
+      data["error_domain"] = nsError.domain
+      data["error_code"] = String(nsError.code)
+      if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+        data["underlying_domain"] = underlying.domain
+        data["underlying_code"] = String(underlying.code)
+      }
+    }
+    let suspended = wasSuspendedDuringConnection(
+      connectionAgeSeconds: connectionAgeSeconds,
+      lastBackgroundedUptime: lastBackgroundedUptime,
+      appIsInBackground: UIApplication.shared.applicationState == .background,
+      nowUptime: ProcessInfo.processInfo.systemUptime
+    )
+    CrashReporting.breadcrumb(
+      "sync.live_drop",
+      message: suspended
+        ? "live connection dropped after the app was suspended"
+        : "live connection dropped without a close frame",
+      data: data
     )
   }
 }
