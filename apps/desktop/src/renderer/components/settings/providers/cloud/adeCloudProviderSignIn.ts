@@ -6,14 +6,18 @@
  *
  * Account-level: the reads take no pin. The account's sign-ins, keys and
  * passes are the same from every computer of the account, so the answer
- * does not depend on which machine the tab is bound to. Two reads per call,
- * on demand; no timer and no poll.
+ * does not depend on which machine the tab is bound to. On a tab bound to
+ * ADE Cloud, which has no computer to ask, the desktop reads the sign-ins on
+ * this computer (`callProviderLogins` in the preload); ADE Web has no computer
+ * there and answers "not known", so no card. Two reads per call, on demand;
+ * no timer and no poll.
  *
  *   const parts = await readAdeCloudSignInParts();
  *   const answer = adeCloudProviderSignIn("codex", parts);
  *   if (answer.state === "not_signed_in") showSignInCard(answer.line, answer.action);
  */
 import type { CloudSignInStatus } from "../../../../../shared/cloudSignIns";
+import { expectedErrorKind } from "../../../../../shared/expectedError";
 import { isProviderLoginProvider, type ProviderLoginProvider, type ProviderLoginStatus } from "../../../../../shared/types/providerLogins";
 import {
   adeCloudTile,
@@ -89,7 +93,8 @@ export async function readAdeCloudSignInParts(): Promise<AdeCloudSignInParts> {
     bridge?.providerLogins?.status?.({}) ?? Promise.resolve(null),
     bridge?.cloud?.cloudSignInStatus?.() ?? Promise.resolve(null),
   ]);
-  if (account.status === "rejected") console.warn("[cloud] reading the account's sign-ins failed", account.reason);
+  // An expected answer (ADE Web on an ADE Cloud tab: no computer to ask) is a state, not a failure.
+  if (account.status === "rejected" && !expectedErrorKind(account.reason)) console.warn("[cloud] reading the account's sign-ins failed", account.reason);
   if (signIns.status === "rejected") console.warn("[cloud] reading the saved ADE Cloud keys failed", signIns.reason);
   const status: ProviderLoginStatus | null = account.status === "fulfilled" ? account.value ?? null : null;
   const readsAccount = status != null && (status.thisComputer.capture === "on" || status.thisComputer.reason === "all_off");

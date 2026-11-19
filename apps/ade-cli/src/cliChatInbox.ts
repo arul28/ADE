@@ -114,7 +114,8 @@ function sinceOf(row: JsonObject): string {
 /** Chats waiting on a card, in the order their `pending<i>` steps read them. */
 function chatsWithCards(values: JsonObject): JsonObject[] {
   return waitingChats(values)
-    .filter((row) => !isAgentCliRow(row))
+    // Its card read names the chat; a row with no id has nothing to ask for.
+    .filter((row) => asString(row.id) && !isAgentCliRow(row))
     .filter((row) => asString(row.pendingInputItemId) || row.attentionSource === "provider_structured")
     .slice(0, MAX_DETAILED_CHATS);
 }

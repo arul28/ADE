@@ -1,8 +1,13 @@
 import type { ProviderLoginStatus } from "../../../shared/types/providerLogins";
+import { isAdeCloudTargetId } from "../../../shared/adeCloud/binding";
+import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 import type { AdapterInfra } from "./types";
 
 type ProviderLoginsBridge = NonNullable<Window["ade"]["providerLogins"]>;
+
+const NO_COMPUTER = "ADE Web reads your sign-ins through one of your computers, and none is connected here.";
 
 const DESKTOP_ONLY = "Do this in the ADE desktop app on that computer: only that computer's own ADE can read its OS keyring or its GitHub CLI login.";
 
@@ -32,6 +37,13 @@ export function createWebProviderLoginsNamespace(infra: Pick<AdapterInfra, "clie
 
   const read = async (method: "status", args: object | undefined, pin: RuntimePinArg): Promise<ProviderLoginStatus> => {
     assertWebRuntimePinRoutable(`providerLogins.${method}`, pin, infra);
+    // A tab on ADE Cloud (or a resting cloud lane's pin) is answered by the
+    // account, which keeps the sign-ins in a vault only a computer's brain
+    // reads. There is no machine to ask: say so, never "update ADE".
+    const envId = client.getStatus().selectedEnvId;
+    if (isAdeCloudTargetId(envId) || savedChatsMachineKey(envId) != null) {
+      throw new AdeExpectedError(NO_COMPUTER, "environment");
+    }
     return await commands.call<ProviderLoginStatus>(`providerLogins.${method}`, (args ?? {}) as Record<string, unknown>, {
       fallback: () => {
         throw new Error("Update ADE on that computer to see your sign-ins here.");
