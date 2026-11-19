@@ -397,6 +397,20 @@ export function keepAwakeWrittenAt(stdout: string): number {
 /* ---- A computer's lanes, pushed to GitHub ---- */
 
 /**
+ * A wake drops the computer's file cache, and the first `git status` of a
+ * large repository then takes longer than the 8 s an older ADE on the
+ * computer gives each read, so its push or check reports the lane unreadable
+ * and the free fails. One `git status` per worktree first loads the index and
+ * the tree into the cache (30 s each, a minute in all, and it can never fail
+ * the command); the reads after it take well under a second.
+ */
+const WARM_GIT_COMMAND = [
+  "timeout 60 sh -c 'ade projects list --json 2>/dev/null | sed -n \"s/^ *\\\"rootPath\\\": *\\\"\\(.*\\)\\\",\\{0,1\\}$/\\1/p\" | while IFS= read -r root; do",
+  "  git -C \"$root\" worktree list --porcelain 2>/dev/null | sed -n \"s/^worktree //p\" | while IFS= read -r tree; do timeout 30 git -C \"$tree\" status --porcelain >/dev/null 2>&1; done",
+  "done' || true",
+].join("\n");
+
+/**
  * Commits and pushes every project's lanes on the computer (`ade cloud
  * push-work`), or with `check` only reads what isn't pushed (`ade cloud
  * work-state`; never `push-work --check`: an older ADE ignores the flag and
@@ -406,9 +420,11 @@ export function pushWorkCommand(check: boolean): string {
   return [
     'export PATH="$ADE_HOME/bin:$PATH"',
     'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
+    WARM_GIT_COMMAND,
     check ? "ade cloud work-state --json" : "ade cloud push-work --json",
   ].join("\n");
 }
+
 
 /** One lane as `ade cloud push-work` left it (`CloudPushWorkLane` in the CLI). */
 export type PushWorkLane = {
