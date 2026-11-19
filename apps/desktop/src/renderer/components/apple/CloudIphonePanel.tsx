@@ -478,18 +478,13 @@ function CloudIphoneLive({ pin, sessionId, laneId, hidden: hiddenProp = false }:
 
           {confirmSwitch ? (
             <AppleDeviceConfirmBar sentence="Switch the cloud iPhone? Its apps and data go; the project and its build cache stay.">
-              {CLOUD_PHONE_DEVICES.map((id) => (
-                <Button
-                  key={id}
-                  variant={id === device ? "ghost" : "outline"}
-                  size="sm"
-                  disabled={id === device}
-                  onClick={() => void switchDevice(id)}
-                >
+              {/* The phone it already is isn't a choice: "Keep it" is. Device names read in sentence case. */}
+              {CLOUD_PHONE_DEVICES.filter((id) => id !== device).map((id) => (
+                <Button key={id} variant="outline" size="sm" casing="sentence" onClick={() => void switchDevice(id)}>
                   {CLOUD_PHONE_MODELS[id].label}
                 </Button>
               ))}
-              <Button variant="ghost" size="sm" onClick={() => setConfirmSwitch(false)}>
+              <Button variant="ghost" size="sm" casing="sentence" onClick={() => setConfirmSwitch(false)}>
                 Keep it
               </Button>
             </AppleDeviceConfirmBar>
