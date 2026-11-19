@@ -610,6 +610,7 @@ import { sessionFromSummary } from "./boundAgentChatApi";
 import {
   isDraftLaunchJobStale,
   isDraftLaunchJobTerminal,
+  LAUNCH_URL_OPEN_PARAM,
   launchMayOpenItsSession,
   markNewDraftRequests,
   noteLaunchUrlOpen,
@@ -13719,7 +13720,7 @@ export function AgentChatPane({
     }
     if (embeddedWorkLayout) {
       noteLaunchUrlOpen(launch.sessionId, workDraftProjectStateKey);
-      navigate(`/work?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}`);
+      navigate(`/work?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}&${LAUNCH_URL_OPEN_PARAM}=1`);
       return;
     }
     navigate(`/lanes?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}&focus=single`);

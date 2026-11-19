@@ -176,10 +176,17 @@ export function launchMayOpenItsSession(markAtSend: NewDraftRequestMark | undefi
 }
 
 /**
- * Sessions a launch opened through the Work URL (`?sessionId=`), with the
- * project's mark at that open. The Work page applies that URL only once the
- * session is in its list, which can come after the person asked for a new
- * draft; the draft then keeps the screen.
+ * The Work URL key that marks an open written by a launch
+ * (`/work?sessionId=…&launchOpen=1`), so only that URL is checked below; a
+ * session opened from the palette, a lane or a deeplink is not.
+ */
+export const LAUNCH_URL_OPEN_PARAM = "launchOpen";
+
+/**
+ * Sessions a launch opened through the Work URL, with the project's mark at
+ * that open. The Work page applies that URL only once the session is in its
+ * list, which can come after the person asked for a new draft; the draft then
+ * keeps the screen.
  */
 const urlOpenMarksBySessionId = new Map<string, NewDraftRequestMark>();
 const URL_OPEN_MARKS_MAX = 32;
@@ -187,7 +194,7 @@ const URL_OPEN_MARKS_MAX = 32;
 export function noteLaunchUrlOpen(sessionId: string, projectStateKey: string | null): void {
   urlOpenMarksBySessionId.delete(sessionId);
   urlOpenMarksBySessionId.set(sessionId, markNewDraftRequests(projectStateKey));
-  // A session that never reaches the list leaves its entry; keep the newest few.
+  // A URL that never applies leaves its entry; keep the newest few.
   for (const oldest of urlOpenMarksBySessionId.keys()) {
     if (urlOpenMarksBySessionId.size <= URL_OPEN_MARKS_MAX) break;
     urlOpenMarksBySessionId.delete(oldest);
@@ -195,9 +202,9 @@ export function noteLaunchUrlOpen(sessionId: string, projectStateKey: string | n
 }
 
 /**
- * For the Work URL's `?sessionId=`, when it applies: false when a launch put
- * it there and a new draft was asked for since. Any other URL may open its
- * session. Reading it ends the launch's entry.
+ * For a launch's Work URL (`LAUNCH_URL_OPEN_PARAM`), when it applies: false
+ * when a new draft was asked for since the launch opened the session. Reading
+ * it ends the launch's entry.
  */
 export function takeLaunchUrlOpenAllowed(sessionId: string): boolean {
   const mark = urlOpenMarksBySessionId.get(sessionId);
