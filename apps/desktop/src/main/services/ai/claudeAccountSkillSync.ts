@@ -3,7 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import { claudeConfigDir } from "../externalSessions/discoverClaude";
 import type { Logger } from "../logging/logger";
+import { terminateChildProcessTree } from "../shared/utils";
 import { isExecutablePath, resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 
 /**
@@ -17,9 +19,13 @@ import { isExecutablePath, resolveClaudeCodeExecutable } from "./claudeCodeExecu
  * When the base account (`~/.claude`, or the brain's `CLAUDE_CONFIG_DIR`) is
  * signed in with a claude.ai account and has never synced, this starts one
  * Claude session process with no prompt, so the download finishes before the
- * first chat. The process gets no prompt and writes no session file. Once per
- * brain process; other Claude accounts (their own `CLAUDE_CONFIG_DIR`) keep
- * syncing on their first chat, as before.
+ * first chat, and a chat that starts during the download waits for it
+ * (`waitForClaudeAccountSkillSync`). The process gets no prompt and writes no
+ * session file. It loads
+ * the user settings only (the download needs them) and no MCP servers or
+ * hooks, so nothing of the user's runs for it. Once per brain process; other
+ * Claude accounts (their own `CLAUDE_CONFIG_DIR`) keep syncing on their first
+ * chat, as before.
  */
 
 /** The longest the process runs. */
@@ -29,13 +35,23 @@ const SYNC_POLL_MS = 250;
 const ROUND_COMPLETE_FILE = ".last-complete-round";
 /** How long a closed process may take to exit before it is killed. */
 const SYNC_EXIT_GRACE_MS = 3_000;
+/** The longest a chat start waits for a download in progress. */
+const CHAT_WAIT_MAX_MS = 5_000;
 
 let started = false;
+/** Resolves when the download process ends; null when none ran. */
+let inFlight: Promise<void> | null = null;
 
-function claudeConfigDir(env: NodeJS.ProcessEnv): string {
-  const configured = env.CLAUDE_CONFIG_DIR?.trim();
-  return configured ? configured : path.join(os.homedir(), ".claude");
-}
+const SYNC_ARGS = [
+  "--print",
+  "--input-format", "stream-json",
+  "--output-format", "stream-json",
+  "--verbose",
+  // With no setting sources Claude Code skips the account download.
+  "--setting-sources", "user",
+  "--strict-mcp-config",
+  "--settings", JSON.stringify({ disableAllHooks: true }),
+];
 
 /** True when a download round finished in `<config>/<kind>/synced/<account>/`. */
 function roundComplete(configDir: string, kind: "skills" | "plugins"): boolean {
@@ -52,25 +68,45 @@ function syncComplete(configDir: string): boolean {
   return roundComplete(configDir, "skills") && roundComplete(configDir, "plugins");
 }
 
+/**
+ * For a Claude chat about to start its process: waits while the download runs,
+ * at most `CHAT_WAIT_MAX_MS`, so the chat lists the complete skills.
+ */
+export async function waitForClaudeAccountSkillSync(): Promise<void> {
+  if (!inFlight) return;
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([
+    inFlight,
+    new Promise<void>((resolve) => { timer = setTimeout(resolve, CHAT_WAIT_MAX_MS); }),
+  ]);
+  clearTimeout(timer);
+}
+
 export function ensureClaudeAccountSkillsSynced(args: { logger: Logger; env?: NodeJS.ProcessEnv }): void {
   if (started) return;
-  started = true;
   const env = args.env ?? process.env;
-  const configDir = claudeConfigDir(env);
-  if (fs.existsSync(path.join(configDir, "skills", "synced"))) return;
+  const configDir = claudeConfigDir({ env });
+  if (syncComplete(configDir)) {
+    started = true;
+    return;
+  }
+  // Still downloading Claude Code: a later status read tries again.
   const executable = resolveClaudeCodeExecutable({ env });
   if (!isExecutablePath(executable.path)) return;
+  started = true;
 
   const startedAt = Date.now();
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(
       executable.path,
-      ["--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"],
+      SYNC_ARGS,
       {
         cwd: os.homedir(),
         env: { ...env, ...providerSelfUpdateEnv("claude") },
         stdio: ["pipe", "ignore", "ignore"],
+        // Its own process group, so a stop reaches anything it started.
+        detached: process.platform !== "win32",
         windowsHide: true,
       },
     );
@@ -80,22 +116,26 @@ export function ensureClaudeAccountSkillsSynced(args: { logger: Logger; env?: No
   }
 
   let done = false;
+  let settle: () => void = () => {};
+  inFlight = new Promise<void>((resolve) => { settle = resolve; });
   const finish = (reason: "synced" | "timeout" | "exited" | "error", error?: unknown) => {
     if (done) return;
     done = true;
+    settle();
+    inFlight = null;
     clearInterval(poll);
     clearTimeout(hardStop);
     const details = { reason, ms: Date.now() - startedAt, synced: syncComplete(configDir) };
-    if (reason === "error") {
-      args.logger.warn("claude.account_skill_sync_failed", { ...details, error: String(error) });
-      return;
+    if (reason === "error" || !details.synced) {
+      args.logger.warn("claude.account_skill_sync_failed", { ...details, ...(error ? { error: String(error) } : {}) });
+    } else {
+      args.logger.info("claude.account_skill_sync", details);
     }
-    args.logger.info("claude.account_skill_sync", details);
-    if (reason === "exited") return;
+    if (reason === "error" || reason === "exited") return;
     // Closing stdin ends a session that never got a prompt.
     try { child.stdin?.end(); } catch { /* already closed */ }
     setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) child.kill();
+      if (child.exitCode === null && child.signalCode === null) terminateChildProcessTree(child).unref();
     }, SYNC_EXIT_GRACE_MS).unref();
   };
   const poll = setInterval(() => {
