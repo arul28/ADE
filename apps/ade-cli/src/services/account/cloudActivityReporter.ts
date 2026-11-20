@@ -12,7 +12,10 @@
  * A report goes out only when what it says changes (working or idle, since
  * when, how many agents), and once again after a wake, since the server drops
  * a report older than the stretch awake. One report is in flight at a time;
- * a failed one is sent again with the next check.
+ * a failed one is sent again with a later check: the next one at first, then
+ * spaced out (up to every 8th check) while it keeps failing, as against an
+ * older server with no activity route. A failing streak logs once, and again
+ * only when its error changes.
  */
 
 import type { CloudComputerActivityReport } from "../../../../account-directory/src/cloud/contract";
@@ -55,6 +58,11 @@ export function createCloudActivityReporter(deps: {
   let sentKey: string | null = null;
   let inFlight = false;
   let queued: { report: CloudComputerActivityReport; key: string } | null = null;
+  // The failing streak: how many in a row, the checks to let pass before the
+  // next try, and the error last logged (null once one lands).
+  let failures = 0;
+  let skipChecks = 0;
+  let loggedError: string | null = null;
 
   // The stretch awake is in the key: after a wake the server needs a report from this stretch, even if nothing else changed.
   const keyOf = (report: CloudComputerActivityReport, awakeSince: number) => `${awakeSince}|${report.busy}|${report.runningAgents}|${report.idleSince ?? ""}`;
@@ -68,10 +76,19 @@ export function createCloudActivityReporter(deps: {
     void deps.send(deps.instanceId, report).then(
       () => {
         sentKey = key;
+        failures = 0;
+        skipChecks = 0;
+        loggedError = null;
       },
       (error: unknown) => {
-        // Sent again with the next check: `sentKey` still names the last one that landed.
-        deps.logger?.warn("cloud.activity_report_failed", { error: error instanceof Error ? error.message : String(error) });
+        // Sent again with a later check: `sentKey` still names the last one that landed.
+        failures += 1;
+        skipChecks = Math.min(2 ** (failures - 1) - 1, 7);
+        const message = error instanceof Error ? error.message : String(error);
+        if (message !== loggedError) {
+          loggedError = message;
+          deps.logger?.warn("cloud.activity_report_failed", { error: message, failures });
+        }
       },
     ).finally(() => {
       inFlight = false;
@@ -100,6 +117,10 @@ export function createCloudActivityReporter(deps: {
         };
         const key = keyOf(report, idle.awakeSince);
         if (key === sentKey) return;
+        if (skipChecks > 0 && !inFlight) {
+          skipChecks -= 1;
+          return;
+        }
         flush(report, key);
       } catch (error) {
         deps.logger?.warn("cloud.activity_report_failed", { error: error instanceof Error ? error.message : String(error) });

@@ -162,12 +162,18 @@ function setupScriptFormFrom(script: LaneSetupScriptConfig | undefined): SetupSc
  * it would actually run. The same predicate the card's "setup script" chip uses
  * decides that, so the editor and the card can never disagree.
  */
-function setupScriptFromForm(form: SetupScriptForm): LaneSetupScriptConfig | undefined {
+function setupScriptFromForm(
+  form: SetupScriptForm,
+  saved?: LaneSetupScriptConfig,
+): LaneSetupScriptConfig | undefined {
   // Every commands list first, then every script path: the stored key order.
   const script: LaneSetupScriptConfig = {};
   for (const field of LANE_SETUP_PLATFORM_FIELDS) {
     const commands = parseLines(form[field.commandsKey]);
     if (commands.length > 0) script[field.commandsKey] = commands;
+    // The editor cannot write an explicit empty list ("run nothing on this
+    // OS"), but a saved one left empty survives the save.
+    else if (saved?.[field.commandsKey]?.length === 0) script[field.commandsKey] = [];
   }
   for (const field of LANE_SETUP_PLATFORM_FIELDS) {
     const scriptPath = form[field.scriptKey].trim();
@@ -611,7 +617,7 @@ function TemplateEditor({
   function handleSubmit() {
     if (!name.trim()) return;
 
-    const setupScript = setupScriptFromForm(setupScriptForm);
+    const setupScript = setupScriptFromForm(setupScriptForm, initial.setupScript);
 
     const { dockerCompose, dockerServices, mountPoints, envVars } = advancedForm;
     const filteredEnvVars = envVars.filter((v) => v.key.trim());
@@ -791,6 +797,7 @@ function TemplateEditor({
 
         <SetupScriptFields
           value={setupScriptForm}
+          saved={initial.setupScript}
           onChange={patchSetupScript}
           defaultOpen={hasPlatformVariants}
         />
@@ -842,16 +849,18 @@ const PLATFORM_EDITOR_COPY: Record<
  */
 function SetupScriptFields({
   value,
+  saved,
   onChange,
   defaultOpen,
 }: {
   value: SetupScriptForm;
+  saved: LaneSetupScriptConfig | undefined;
   onChange: (patch: Partial<SetupScriptForm>) => void;
   defaultOpen: boolean;
 }) {
   const { commands, scriptPath, injectPrimaryPath } = value;
   // Shared commands that call a macOS-only tool also run on Linux (ADE Cloud) unless Linux has its own.
-  const macosTool = macosOnlyToolOnLinux(setupScriptFromForm(value) ?? {});
+  const macosTool = macosOnlyToolOnLinux(setupScriptFromForm(value, saved) ?? {});
   return (
     <Field
       label="Setup script"

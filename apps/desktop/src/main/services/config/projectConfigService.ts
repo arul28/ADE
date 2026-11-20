@@ -1132,12 +1132,13 @@ function coerceLaneCopyPath(value: unknown): LaneCopyPathConfig | null {
  */
 function coerceLaneSetupScript(value: unknown): LaneSetupScriptConfig | undefined {
   if (!isRecord(value)) return undefined;
+  // An explicit list is kept even when empty: `linuxCommands: []` means "run
+  // nothing on Linux", not "fall back to the macOS/Linux commands".
   const readCommands = (candidate: unknown): string[] | undefined => {
     if (!Array.isArray(candidate)) return undefined;
-    const commands = candidate
+    return candidate
       .map((entry) => asString(entry)?.trim() ?? "")
       .filter((entry) => entry.length > 0);
-    return commands.length ? commands : undefined;
   };
   const readPath = (candidate: unknown): string | undefined => asString(candidate)?.trim() || undefined;
 

@@ -238,9 +238,17 @@ describe("threadCommentsStore.addLocalThreadComment", () => {
     await waitFor(() => expect(result.current).toEqual([]));
 
     // Before a send: the copy of a comment shown as failed is held, so the host does not send it.
-    await lostAnswer(sessionId, create, "still failed");
+    const stillFailed = await lostAnswer(sessionId, create, "still failed");
     expect(countThreadCommentsReadyToSend(sessionId)).toBe(0);
-    await act(() => holdFailedThreadCommentsTheHostHas(sessionId, CHAT_PIN));
+    // The host could not hold it: the failure stays shown and the send must stop.
+    update.mockRejectedValueOnce(new Error("offline"));
+    let held: boolean | undefined;
+    await act(async () => { held = await holdFailedThreadCommentsTheHostHas(sessionId, CHAT_PIN); });
+    expect(held).toBe(false);
+    expect(threadCommentSaveError(stillFailed.localId)).toBe("Can't reach the computer");
+    expect(result.current.map((entry) => entry.id)).toEqual([stillFailed.localId]);
+    await act(async () => { held = await holdFailedThreadCommentsTheHostHas(sessionId, CHAT_PIN); });
+    expect(held).toBe(true);
     expect(update).toHaveBeenCalledWith({ sessionId, commentId: "host-1", includeInNextSend: false }, CHAT_PIN);
     expect(host.list.map((entry) => entry.includeInNextSend)).toEqual([false]);
     expect(result.current.map((entry) => entry.id)).toEqual(["host-1"]);

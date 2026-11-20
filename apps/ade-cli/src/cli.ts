@@ -31093,7 +31093,11 @@ async function runServe(
       send: async (instanceId, report) => {
         const api = await accountCloudApi();
         if (!api) throw new Error("not signed in to an ADE account");
-        await api.reportActivity(instanceId, report);
+        // Null is a 404: a server with no activity route yet. Not stored, so
+        // it is tried again (the reporter spaces the tries out and logs once).
+        if (await api.reportActivity(instanceId, report) == null) {
+          throw new Error("the account server does not take activity reports yet");
+        }
       },
       logger: headlessProjectLogger,
     });

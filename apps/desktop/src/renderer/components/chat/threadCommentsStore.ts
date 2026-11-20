@@ -299,47 +299,80 @@ export async function waitForThreadCommentSaves(sessionId: string, timeoutMs: nu
  * and the host sends every comment it holds for the next send. Any such copy
  * is held back (unticked) on the host and shown as the saved comment it is,
  * so the send carries only what the person saw going. One list read, and
- * only when a comment in this chat failed.
+ * only when a comment in this chat failed. A failure stays shown as one
+ * until the host confirms the hold (or delete). False when the host could not
+ * be read or a copy could not be held: the send must stop, since the host
+ * would carry that copy.
  */
 export async function holdFailedThreadCommentsTheHostHas(
   sessionId: string,
   pin: OpenProjectBinding | null | undefined,
-): Promise<void> {
+): Promise<boolean> {
   const api = threadCommentsApi();
-  if (!api || !threadCommentSaveFailuresIn(sessionId)) return;
+  if (!api || !threadCommentSaveFailuresIn(sessionId)) return true;
+  let list: ChatThreadComment[];
   try {
-    const list = await withChatPin(pin ?? null, (chatPin) => api.list({ sessionId }, chatPin));
-    if (!Array.isArray(list)) return;
-    // A copy the person discarded is deleted; one that only failed to save is held.
-    const found: Array<{ copy: ChatThreadComment; discard: boolean }> = [];
-    for (const local of localBySession.get(sessionId) ?? EMPTY) {
-      const failed = failedLocal.get(local.id);
-      if (!failed) continue;
-      const copy = hostCopyOf(sessionId, local, list, failed.knownHostIds);
-      if (!copy) continue;
-      claimHostId(copy.id);
-      dropLocal(sessionId, local.id);
-      if (failed.discard || copy.includeInNextSend) found.push({ copy, discard: failed.discard });
-    }
-    const changed = new Map(found.map((entry) => [entry.copy.id, entry.discard] as const));
-    setThreadComments(sessionId, list.flatMap((comment) => {
-      if (!changed.has(comment.id)) return [comment];
-      return changed.get(comment.id) ? [] : [{ ...comment, includeInNextSend: false }];
-    }));
-    for (const { copy, discard } of found) {
-      try {
-        if (discard) await withChatPin(pin ?? null, (chatPin) => api.delete({ sessionId, commentId: copy.id }, chatPin));
-        else await withChatPin(pin ?? null, (chatPin) => api.update({ sessionId, commentId: copy.id, includeInNextSend: false }, chatPin));
-      } catch (error) {
-        if (!discard) throw error;
-        // Could not delete it: at least keep it out of this send.
-        await withChatPin(pin ?? null, (chatPin) => api.update({ sessionId, commentId: copy.id, includeInNextSend: false }, chatPin));
-      }
-    }
+    const read = await withChatPin(pin ?? null, (chatPin) => api.list({ sessionId }, chatPin));
+    if (!Array.isArray(read)) return true;
+    list = read;
   } catch (error) {
-    // The send goes to the same host; when it cannot be read, the send fails too.
-    console.warn("[thread-comments] hold-failed-copies-failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+    console.warn("[thread-comments] hold-failed-copies-failed", { sessionId, stage: "list", error: error instanceof Error ? error.message : String(error) });
+    return false;
   }
+  // A copy the person discarded is deleted; one that only failed to save is held.
+  const found: Array<{ localId: string; copy: ChatThreadComment; discard: boolean }> = [];
+  for (const local of localBySession.get(sessionId) ?? EMPTY) {
+    const failed = failedLocal.get(local.id);
+    if (!failed) continue;
+    const copy = hostCopyOf(sessionId, local, list, failed.knownHostIds);
+    if (copy) found.push({ localId: local.id, copy, discard: failed.discard });
+  }
+  // Host copy id -> how it now shows: "gone" (deleted), "held" (unticked),
+  // "kept" (already unticked); a copy not confirmed stays out of the list so
+  // its local failure keeps showing.
+  const confirmed = new Map<string, "gone" | "held" | "kept">();
+  let ok = true;
+  for (const { copy, discard } of found) {
+    try {
+      if (discard) {
+        try {
+          await withChatPin(pin ?? null, (chatPin) => api.delete({ sessionId, commentId: copy.id }, chatPin));
+          confirmed.set(copy.id, "gone");
+          continue;
+        } catch {
+          // Could not delete it: at least keep it out of this send (it stays marked for Discard).
+          if (copy.includeInNextSend) {
+            await withChatPin(pin ?? null, (chatPin) => api.update({ sessionId, commentId: copy.id, includeInNextSend: false }, chatPin));
+          }
+          continue;
+        }
+      }
+      if (copy.includeInNextSend) {
+        await withChatPin(pin ?? null, (chatPin) => api.update({ sessionId, commentId: copy.id, includeInNextSend: false }, chatPin));
+        confirmed.set(copy.id, "held");
+      } else {
+        confirmed.set(copy.id, "kept");
+      }
+    } catch (error) {
+      ok = false;
+      console.warn("[thread-comments] hold-failed-copies-failed", { sessionId, stage: "hold", error: error instanceof Error ? error.message : String(error) });
+      break;
+    }
+  }
+  for (const { localId, copy } of found) {
+    if (!confirmed.has(copy.id)) continue;
+    claimHostId(copy.id);
+    dropLocal(sessionId, localId);
+  }
+  const unconfirmed = new Set(found.filter(({ copy }) => !confirmed.has(copy.id)).map(({ copy }) => copy.id));
+  setThreadComments(sessionId, list.flatMap((comment) => {
+    if (unconfirmed.has(comment.id)) return [];
+    const outcome = confirmed.get(comment.id);
+    if (outcome === "gone") return [];
+    if (outcome === "held") return [{ ...comment, includeInNextSend: false }];
+    return [comment];
+  }));
+  return ok;
 }
 
 /**

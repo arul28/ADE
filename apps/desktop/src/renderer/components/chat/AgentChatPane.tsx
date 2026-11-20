@@ -17140,16 +17140,24 @@ export function AgentChatPane({
       && !isProviderSlashCommandInput(text)
       && (threadCommentSavesInFlight(threadCommentsSessionAtSend) || threadCommentSaveFailuresIn(threadCommentsSessionAtSend))
     ) {
+      // The chat's machine, read with its id: the pane may show another chat
+      // by the time the wait ends, and the hold must reach this chat's copy.
+      const threadCommentsPinAtSend = chatRuntimePinRef.current;
       submitInFlightRef.current = true;
       setBusy(true);
+      let heldFailedCopies = true;
       try {
         await waitForThreadCommentSaves(threadCommentsSessionAtSend, THREAD_COMMENT_SAVE_SEND_WAIT_MS);
-        await holdFailedThreadCommentsTheHostHas(threadCommentsSessionAtSend, chatRuntimePinRef.current);
+        heldFailedCopies = await holdFailedThreadCommentsTheHostHas(threadCommentsSessionAtSend, threadCommentsPinAtSend);
       } finally {
         submitInFlightRef.current = false;
         setBusy(false);
       }
       if (renderSelectedSessionIdRef.current !== selectedSessionId) return;
+      if (!heldFailedCopies) {
+        setError({ message: "Couldn't hold back a comment that failed to save. Try again.", kind: "status" });
+        return;
+      }
       if (liveDraftRef.current !== draft || attachmentsRef.current !== attachments) {
         setError({ message: "Your message changed while a comment was saving, so nothing was sent. Send it again.", kind: "status" });
         return;

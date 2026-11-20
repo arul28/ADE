@@ -3119,12 +3119,17 @@ function AgentChatComposerImpl({
   // Set when this draft hands its text to a send that opens a new chat; the
   // next session the composer shows is then that chat.
   const draftSendOpensSessionRef = useRef(false);
-  if ((sessionId ?? null) !== attachmentSessionRef.current) {
+  // In a layout effect, not during render (a render React throws away must not
+  // bump it), and ahead of every other effect here, including the cleanup
+  // below. A commit and its layout effects run in one task, so an upload that
+  // settles right after a switch already sees the new epoch.
+  useLayoutEffect(() => {
+    if ((sessionId ?? null) === attachmentSessionRef.current) return;
     const draftBecameItsChat = attachmentSessionRef.current === null && draftSendOpensSessionRef.current;
     if (!draftBecameItsChat) attachmentSessionEpochRef.current += 1;
     draftSendOpensSessionRef.current = false;
     attachmentSessionRef.current = sessionId ?? null;
-  }
+  }, [sessionId]);
   const handledAttachmentSessionEpochRef = useRef(0);
   // An upload still out when the composer goes away belongs to nothing on
   // screen: the bump makes it drop its result instead of reaching the pane.
@@ -4679,6 +4684,14 @@ function AgentChatComposerImpl({
     const attachmentApiPin = chatApiPin(attachmentOwnerBinding, !projectChatPane);
     const filename = image.filename || "clipboard.png";
     const ownerEpoch = attachmentSessionEpochRef.current;
+    const retry = () => void uploadClipboardImageRef.current(image, localPreview, pendingImage, pendingChipPlacement);
+    // A Retry runs this directly: when attachments can't be saved now, it
+    // stays failed with the reason, and nothing is saved.
+    if (attachmentPersistenceUnavailableReason) {
+      setAttachError(attachmentPersistenceUnavailableReason);
+      failPendingImageAttachment(pendingImage.id, attachmentPersistenceUnavailableReason, retry);
+      return;
+    }
     try {
       const { path: tempPath } = await withChatPin(attachmentApiPin, (chatPin) => attachmentApi.saveTempAttachment({
         data: image.data,
@@ -4704,11 +4717,7 @@ function AgentChatComposerImpl({
         cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
         return;
       }
-      failPendingImageAttachment(
-        pendingImage.id,
-        attachmentErrorMessage(error, filename),
-        () => void uploadClipboardImageRef.current(image, localPreview, pendingImage, pendingChipPlacement),
-      );
+      failPendingImageAttachment(pendingImage.id, attachmentErrorMessage(error, filename), retry);
     }
   };
   const uploadClipboardImageRef = useRef(uploadClipboardImage);
@@ -8142,9 +8151,15 @@ function AgentChatComposerImpl({
         trimmed || (issueContextPrompt ? "Use the attached issue context." : null),
       ].filter((part): part is string => Boolean(part)).join("\n\n");
       if (attachmentSessionRef.current === null) draftSendOpensSessionRef.current = true;
+      const draftSendPending = attachmentSessionRef.current === null;
+      const sendFailed = () => {
+        // No chat opened: the next session shown is another chat, not this draft's.
+        if (draftSendPending && attachmentSessionRef.current === null) draftSendOpensSessionRef.current = false;
+      };
       void Promise.resolve(onSubmitToCloud(cloudPrompt)).then((ok) => {
         if (ok) onDraftChange("");
-      });
+        else sendFailed();
+      }, sendFailed);
       return;
     }
     // A linked cloud reply rides this same submit path but never touches the

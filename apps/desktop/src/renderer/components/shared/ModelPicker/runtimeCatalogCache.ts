@@ -204,14 +204,18 @@ export function runtimeCatalogScopeNeedsRefresh(scopeKey: string): boolean {
   return !scope?.catalog || scope.invalidated || scope.catalog.stale === true;
 }
 
-/** The buckets this window holds for one machine, with the pin each was read through. */
+/**
+ * The buckets this window holds for one machine, with the pin each was read
+ * through. A bucket whose first read is still out (no catalog yet, but a read
+ * named its machine) counts: that read may predate the change.
+ */
 export function runtimeCatalogScopesForMachine(
   pin: OpenProjectBinding | null | undefined,
 ): Array<{ scopeKey: string; pin: OpenProjectBinding | null }> {
   const machine = runtimeCatalogMachineForPin(pin);
   const matches: Array<{ scopeKey: string; pin: OpenProjectBinding | null }> = [];
   for (const [scopeKey, scope] of runtimeCatalogScopes) {
-    if (!scope.catalog) continue;
+    if (!scope.catalog && scope.machine === null) continue;
     const sameKey = pin ? scopeKey === pin.key : scopeKey === DEFAULT_RUNTIME_CATALOG_SCOPE;
     if (sameKey || scope.machine === machine) {
       matches.push({ scopeKey, pin: scope.pin ?? (sameKey ? pin ?? null : null) });

@@ -686,7 +686,12 @@ describe("runtime catalog machine scoping", () => {
   // A sign-in lands while a forced read is out. That read describes the
   // machine before the sign-in: the re-read the sign-in starts must not join
   // it, and its answer must neither replace the catalog nor clear the mark.
-  it("keeps a read that started before an invalidation from standing for the machine after it", async () => {
+  // A machine whose first read is still out has no catalog yet; that read is
+  // just as old.
+  it.each([
+    ["with a catalog read before", true],
+    ["while its first read is still out", false],
+  ])("keeps a read that started before an invalidation from standing for the machine after it, %s", async (_label, seeded) => {
     const pin = { kind: "remote", key: "remote:t-login:p-login", targetId: "t-login", projectId: "p-login", rootPath: "/repo", displayName: "repo" } as never;
     const scopeKey = "remote:t-login:p-login";
     const answers: Array<(catalog: AgentChatModelCatalog) => void> = [];
@@ -694,8 +699,8 @@ describe("runtime catalog machine scoping", () => {
       agentChat: { modelCatalog: vi.fn(() => new Promise<AgentChatModelCatalog>((resolve) => { answers.push(resolve); })) },
     };
     try {
-      const seed = localModelCatalog("ollama/seed", ["low"]);
-      rememberRuntimeCatalog(seed, { mode: "force", scopeKey });
+      const seed = seeded ? localModelCatalog("ollama/seed", ["low"]) : null;
+      if (seed) rememberRuntimeCatalog(seed, { mode: "force", scopeKey });
       const beforeLogin = fetchSharedRuntimeCatalog({ scopeKey, mode: "force", refreshProvider: "opencode", pin });
       const afterLogin = refreshRuntimeCatalogsForMachine(pin, { refreshProvider: "opencode" });
       await vi.waitFor(() => expect(answers).toHaveLength(2));

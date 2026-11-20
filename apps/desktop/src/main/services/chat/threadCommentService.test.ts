@@ -176,9 +176,15 @@ describe("createThreadCommentService", () => {
     expect(() => service.create({ ...args, clientId: "client-b" })).toThrow("already sent or deleted");
     const taken = service.takeForSend("s1");
     expect(() => service.create({ ...args, clientId: "client-a" })).toThrow("already sent or deleted");
-    // A failed send puts it back, and the retry finds it again.
+    // A host restart (a new service over the same files) still refuses both.
+    const restarted = () => createThreadCommentService({ chatSessionsDir: root!, logger: { warn: vi.fn() }, onChanged: vi.fn() });
+    const afterRestart = restarted();
+    expect(() => afterRestart.create({ ...args, clientId: "client-b" })).toThrow("already sent or deleted");
+    expect(() => afterRestart.create({ ...args, clientId: "client-a" })).toThrow("already sent or deleted");
+    // A failed send puts it back, and the retry finds it again, after a restart too.
     taken.restore();
     expect(service.create({ ...args, clientId: "client-a" }).id).toBe(first.id);
+    expect(restarted().create({ ...args, clientId: "client-a" }).id).toBe(first.id);
   });
 
   // A guest's comment never rides the owner's next send on its own (its text

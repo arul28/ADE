@@ -433,7 +433,8 @@ describe("projectConfigService - lane env init setup scripts and copy paths", ()
             overrides: {
               envInit: {
                 copyPaths: [{ source: ".env.local" }],
-                setupScript: { unixCommands: ["./scripts/seed.sh"] },
+                // An empty Linux list is "run nothing on Linux", not "absent".
+                setupScript: { unixCommands: ["./scripts/seed.sh"], linuxCommands: [] },
               },
             },
           },
@@ -452,7 +453,7 @@ describe("projectConfigService - lane env init setup scripts and copy paths", ()
 
     expect(service.get().effective.laneOverlayPolicies[0]?.overrides.envInit).toEqual({
       copyPaths: [{ source: ".env.local" }],
-      setupScript: { unixCommands: ["./scripts/seed.sh"] },
+      setupScript: { unixCommands: ["./scripts/seed.sh"], linuxCommands: [] },
     });
   });
 });
