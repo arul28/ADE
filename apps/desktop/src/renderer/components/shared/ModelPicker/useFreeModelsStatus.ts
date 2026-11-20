@@ -17,11 +17,12 @@ import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
  *
  * `status` is null until the status is known, and for a brain too old to send
  * the block: callers then behave as before (someone is signed in). `refresh`
- * makes that machine re-read its status (OpenCode just downloaded there).
+ * makes that machine re-read its status (OpenCode just downloaded there) and
+ * resolves false when the read failed.
  */
 export function useFreeModelsStatus(runtimePin: OpenProjectBinding | null): {
   status: AiFreeModelsStatus | null;
-  refresh: () => void;
+  refresh: () => Promise<boolean>;
 } {
   const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
   // The status cache keys the tab's own machine without a pin, as
@@ -67,9 +68,10 @@ export function useFreeModelsStatus(runtimePin: OpenProjectBinding | null): {
     };
   }, [pinKey, projectRoot]);
 
-  const refresh = useCallback(() => {
-    void getAiStatusCached({ projectRoot, pin: pinRef.current, force: true }).catch(() => undefined);
-  }, [projectRoot]);
+  const refresh = useCallback(
+    () => getAiStatusCached({ projectRoot, pin: pinRef.current, force: true }).then(() => true, () => false),
+    [projectRoot],
+  );
 
   return { status: freeModels, refresh };
 }

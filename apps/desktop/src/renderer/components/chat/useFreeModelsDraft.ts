@@ -32,9 +32,10 @@ export function useFreeModelsDraft(args: {
   catalogScopeKey: string;
   /** The composer machine's binding; the catalog load goes there. */
   runtimeBinding: OpenProjectBinding | null;
-  /** Non-null when the composer machine is not this tab's: no local tools push then. */
-  remotePin: OpenProjectBinding | null;
-  selectedSessionId: string | null;
+  /** The composer machine is not this tab's: no local tools push then. */
+  composerIsRemote: boolean;
+  /** The chat or draft the composer shows (the pane's companion state key). */
+  draftKey: string;
   /**
    * A fresh chat draft the person runs here with the composer's own model:
    * not a subagent, a cloud or CLI draft, a parallel set or a narrowed list.
@@ -44,7 +45,7 @@ export function useFreeModelsDraft(args: {
   /** The composer's model and preferences have loaded. */
   composerReady: boolean;
   /** A person's model choice: sets `draftModelChosenRef`. */
-  chooseModelRef: ModelChangeRef;
+  personModelChangeRef: ModelChangeRef;
   /** The same change for ADE's own pick: not a choice. */
   adeModelChangeRef: ModelChangeRef;
   /** Set to keep ADE's pick out of the launch defaults and "last used". */
@@ -59,12 +60,12 @@ export function useFreeModelsDraft(args: {
     availableModelIds,
     catalogScopeKey,
     runtimeBinding,
-    remotePin,
-    selectedSessionId,
+    composerIsRemote,
+    draftKey,
     freshDraft,
     modelId,
     composerReady,
-    chooseModelRef,
+    personModelChangeRef,
     adeModelChangeRef,
     draftKeepsMachineDefaultsRef,
     draftModelChosenRef,
@@ -85,42 +86,39 @@ export function useFreeModelsDraft(args: {
   const latestRef = useRef({ onCatalogLoaded, runtimeBinding });
   latestRef.current = { onCatalogLoaded, runtimeBinding };
   const runtimeBindingKey = runtimeBinding?.key ?? null;
-  const remotePinKey = remotePin?.key ?? null;
 
   // Free models come from OpenCode's catalog, which loads when a picker opens
   // it. With nothing signed in, load it for the composer's machine, so a new
   // chat can start on a free model before anyone opens the picker.
-  const catalogRequestedForRef = useRef<string | null>(null);
+  // One load per scope and status read: a load that failed, or listed no free
+  // model, runs again on the next status re-read. That retry skips the
+  // freshness check, or it would answer with the same empty list.
+  const catalogRequestedForRef = useRef<{ scopeKey: string; status: AiSettingsStatus | null } | null>(null);
   useEffect(() => {
     if (!freshDraft || !nothingSignedIn || !opencodeInstalled || freeModelIds.length > 0) return;
-    if (catalogRequestedForRef.current === catalogScopeKey) return;
-    const scopeKey = catalogScopeKey;
-    catalogRequestedForRef.current = scopeKey;
+    const previous = catalogRequestedForRef.current;
+    if (previous?.scopeKey === catalogScopeKey && previous.status === aiStatus) return;
+    const retry = previous?.scopeKey === catalogScopeKey;
+    catalogRequestedForRef.current = { scopeKey: catalogScopeKey, status: aiStatus };
     void fetchSharedRuntimeCatalog({
-      scopeKey,
-      mode: "refresh-stale",
+      scopeKey: catalogScopeKey,
+      mode: retry ? "force" : "refresh-stale",
       refreshProvider: "opencode",
       pin: latestRef.current.runtimeBinding,
     }).then((result) => {
-      if (result.status === "ok") {
-        latestRef.current.onCatalogLoaded();
-      } else if (catalogRequestedForRef.current === scopeKey) {
-        catalogRequestedForRef.current = null;
-      }
+      if (result.status === "ok") latestRef.current.onCatalogLoaded();
     });
-    // `aiStatus` is the retry trigger: a load that failed runs again on the
-    // next status re-read.
   }, [aiStatus, catalogScopeKey, freeModelIds.length, freshDraft, nothingSignedIn, opencodeInstalled, runtimeBindingKey]);
 
   // OpenCode is still downloading on this computer (it downloads at launch
   // when no agent is set up): re-read the status when it lands, and the
   // effect above then loads the free models.
   useEffect(() => {
-    if (!freshDraft || !nothingSignedIn || opencodeInstalled || remotePinKey) return undefined;
+    if (!freshDraft || !nothingSignedIn || opencodeInstalled || composerIsRemote) return undefined;
     return subscribeToolInstalled("opencode", () => {
       void refreshAvailableModels({ revalidate: true });
     });
-  }, [freshDraft, nothingSignedIn, opencodeInstalled, refreshAvailableModels, remotePinKey]);
+  }, [composerIsRemote, freshDraft, nothingSignedIn, opencodeInstalled, refreshAvailableModels]);
 
   /** The draft's opening model, and the free model ADE put in its place. */
   const freeDefaultRef = useRef<{ baseModelId: string | null; settled: boolean; appliedId: string | null }>({
@@ -129,11 +127,10 @@ export function useFreeModelsDraft(args: {
     appliedId: null,
   });
   useEffect(() => {
-    // Opening a chat, or leaving one for a new draft: the next draft decides
-    // again. The pane resets `draftModelChosenRef` itself, before the effects
-    // that set it.
+    // Another chat or draft: the next draft decides again. The pane resets
+    // `draftModelChosenRef` itself, before the effects that set it.
     freeDefaultRef.current = { baseModelId: null, settled: false, appliedId: null };
-  }, [selectedSessionId]);
+  }, [draftKey]);
   useEffect(() => {
     const state = freeDefaultRef.current;
     if (state.settled || !freshDraft || !composerReady || !nothingSignedIn) return;
@@ -170,8 +167,8 @@ export function useFreeModelsDraft(args: {
   }, [adeModelChangeRef, availableModelIds, draftModelChosenRef, freshDraft, modelId, signedInNow]);
 
   const handleUseFreeModel = useCallback(() => {
-    if (freeDefaultModelId) chooseModelRef.current?.(freeDefaultModelId);
-  }, [chooseModelRef, freeDefaultModelId]);
+    if (freeDefaultModelId) personModelChangeRef.current?.(freeDefaultModelId);
+  }, [freeDefaultModelId, personModelChangeRef]);
 
   // The strip offers a free model only to a brand-new person: nothing signed
   // in now, and nothing ever signed in on this machine. An open chat can

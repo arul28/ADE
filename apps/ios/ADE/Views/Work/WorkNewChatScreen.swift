@@ -1248,9 +1248,10 @@ struct WorkNewChatScreen: View {
       .flatMap { machineFleet.connection(for: $0) }
       .map { String(describing: $0.phase) }
       ?? String(describing: syncService.connectionState)
-    // A new free list (OpenCode finished downloading) and the end of a
-    // launch both run the free default again.
-    return "\(selectedMachineKey ?? "focused")|\(phase)|\(sessionMode)|\(freeModelsStore.catalogGeneration)|\(busy)"
+    // A new free list (OpenCode finished downloading), a sign-in on this
+    // machine and the end of a launch all run the free default again.
+    let generation = selectedMachineHost.map { freeModelsStore.generation(for: $0) } ?? 0
+    return "\(selectedMachineKey ?? "focused")|\(phase)|\(sessionMode)|\(generation)|\(busy)"
   }
 
   /// Nothing signed in on the chosen machine: start on its free default (the
@@ -1274,6 +1275,9 @@ struct WorkNewChatScreen: View {
       revertFreeDefaultUnlessBusy()
       return
     }
+    // A launch reads the composer, so nothing changes while one runs, and the
+    // free list is not read either. The task runs again when it ends.
+    guard !busy else { return }
     let pick = await workFreeDefaultModelId(on: host, status: status)
     guard !Task.isCancelled else { return }
     freeDefaultModelId = pick
@@ -1282,8 +1286,6 @@ struct WorkNewChatScreen: View {
       revertFreeDefaultUnlessBusy()
       return
     }
-    // A launch reads the composer, so nothing changes while one runs. The
-    // task runs again when it ends.
     guard !busy, sessionMode == .chat, !modelPickedByPerson, selectedPreset == nil,
           isOnFreeDefault || !workIsFreeModel(modelId),
           !(isOnFreeDefault && modelId == pick)
@@ -1354,6 +1356,8 @@ struct WorkNewChatScreen: View {
   }
 
   private func useFreeModel(_ id: String) {
+    // A launch in progress keeps the model it started with.
+    guard !busy else { return }
     modelPickedByPerson = true
     freeDefaultSelection = nil
     selectedPreset = nil
@@ -1416,6 +1420,7 @@ struct WorkNewChatScreen: View {
               .foregroundStyle(ADEColor.accent)
               .buttonStyle(.plain)
               .fixedSize()
+              .disabled(busy)
               .accessibilityIdentifier("Work.NewChat.UseFreeModel")
           }
         }

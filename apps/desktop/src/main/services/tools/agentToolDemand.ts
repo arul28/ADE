@@ -85,7 +85,11 @@ function ghCliSignedIn(env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Pl
 /** Pinned tools that are not agents: their use or download says nothing about a sign-in. */
 export const NON_AGENT_TOOLS: ReadonlySet<string> = new Set(["opencode", "node", "ffmpeg"]);
 
-/** Signs that this machine uses the provider behind a pinned tool, or null for a tool with no rule. */
+/**
+ * Signs that this machine uses the provider behind a pinned tool, or null for
+ * a tool with no rule here. Copilot's rule (both its runtime and its terminal
+ * CLI, one account) is in `selectDemandedAgentTools`.
+ */
 function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): boolean | null {
   const homeArgs = { env, homeDir: home };
   switch (tool) {
@@ -96,10 +100,6 @@ function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, pla
         || exists(path.join(home, ".claude.json"));
     case "codex":
       return onPath("codex", env) || exists(path.join(codexConfigHome(homeArgs), "auth.json"));
-    // The terminal CLI follows the same account as the SDK runtime.
-    case "copilot":
-    case "copilot-cli":
-      return copilotOwnSignals(env, home, platform) || ghCliSignedIn(env, home, platform);
     case "opencode":
       // OpenCode is also the engine for API-key, OpenRouter and local models.
       // Keys saved only in ADE's own store are not read here: saving one starts
@@ -205,12 +205,16 @@ export function selectDemandedAgentTools(pinned: readonly string[], args: Demand
   for (const tool of policy === "off" ? [] : pinned) {
     const usedAt = usage[tool];
     const recentlyUsed = usedAt !== undefined && now - usedAt < RECENT_TOOL_USE_MS;
-    if (!(recentlyUsed || (policy === "signals" && (providerSignals(tool, env, home, platform) ?? false)))) continue;
+    const copilot = tool === "copilot" || tool === "copilot-cli";
+    // Copilot's own signs set it up; a GitHub CLI sign-in alone only fetches it.
+    const copilotOwn = copilot && policy === "signals" && copilotOwnSignals(env, home, platform);
+    const signals = policy === "signals" && (copilot
+      ? copilotOwn || ghCliSignedIn(env, home, platform)
+      : providerSignals(tool, env, home, platform) ?? false);
+    if (!recentlyUsed && !signals) continue;
     wanted.add(tool);
     if (NON_AGENT_TOOLS.has(tool) || agentSetUp) continue;
-    agentSetUp = recentlyUsed
-      || !(tool === "copilot" || tool === "copilot-cli")
-      || copilotOwnSignals(env, home, platform);
+    agentSetUp = recentlyUsed || !copilot || copilotOwn;
   }
   // A computer with no agent set up gets OpenCode anyway: its free models
   // need no account and no key, so they are the only chat such a person can

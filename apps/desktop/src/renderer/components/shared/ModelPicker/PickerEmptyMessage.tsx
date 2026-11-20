@@ -5,8 +5,8 @@ export type PickerEmptyAction = { label: string; onClick: () => void };
 
 /**
  * The model picker's centered empty page: an optional mark, a title, a line,
- * optional extra content (a progress bar), and up to two buttons. The
- * provider pages and the Free page share it.
+ * up to two buttons, and optional content under them (a progress bar, an
+ * error). The provider pages and the Free page share it.
  */
 export function PickerEmptyMessage({
   dataAttributes,
@@ -37,7 +37,6 @@ export function PickerEmptyMessage({
       {icon}
       <span className="text-[12px] font-semibold text-fg/90">{title}</span>
       {body ? <span className="max-w-[280px] text-[11px] leading-relaxed text-muted-fg/65">{body}</span> : null}
-      {children}
       {primary || secondary ? (
         <div className="mt-2 flex items-center gap-1.5">
           {primary ? (
@@ -68,6 +67,7 @@ export function PickerEmptyMessage({
           ) : null}
         </div>
       ) : null}
+      {children}
     </div>
   );
 }

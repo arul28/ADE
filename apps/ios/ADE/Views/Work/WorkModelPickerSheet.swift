@@ -168,6 +168,9 @@ struct WorkModelPickerSheet: View {
   /// The free machine's own catalog, when it is not the machine the main
   /// catalog comes from (see `separateFreeModelsHost`).
   @State private var freeHostCatalogGroups: [WorkModelCatalogGroup]?
+  /// The free machine the page shows now. A late read for another machine
+  /// is dropped.
+  @State private var freeModelsHostKey: String?
 
   private var catalog: [WorkModelCatalogGroup] {
     scopedCatalogGroups ?? []
@@ -451,6 +454,8 @@ struct WorkModelPickerSheet: View {
     .onChange(of: cursorAvailabilityMode) { _, _ in rescopeCatalog() }
     // A machine with nothing signed in opens the picker on the Free page.
     .task(id: freeModelsHost.map { WorkFreeModelsStatusStore.key(for: $0) } ?? "") {
+      freeModelsHostKey = freeModelsHost.map { WorkFreeModelsStatusStore.key(for: $0) }
+      freeSetup.follow(host: freeModelsHost)
       // Another machine now: drop the last one's free models first.
       if freeHostCatalogGroups != nil {
         freeHostCatalogGroups = nil
@@ -951,7 +956,9 @@ struct WorkModelPickerSheet: View {
       apply(hostCatalog: fresh)
     }
     // The New Chat page tries its free default again with the new list.
-    WorkFreeModelsStatusStore.shared.freeCatalogDidRefresh()
+    if let host = freeModelsHost {
+      WorkFreeModelsStatusStore.shared.freeCatalogDidRefresh(for: host)
+    }
   }
 
   /// Reads the free machine's catalog when it is not the main catalog's
@@ -962,8 +969,9 @@ struct WorkModelPickerSheet: View {
       freeHostCatalogGroups = nil
       return
     }
+    let key = WorkFreeModelsStatusStore.key(for: host)
     guard let hostCatalog = await workModelCatalog(on: host, mode: mode, refreshProvider: refreshProvider),
-          !Task.isCancelled else { return }
+          !Task.isCancelled, freeModelsHostKey == key else { return }
     freeHostCatalogGroups = workModelCatalogGroups(
       hostCatalog: hostCatalog,
       currentModelId: currentModelId,

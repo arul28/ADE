@@ -260,7 +260,7 @@ own machine (`Views/Work/WorkFreeModels.swift`).
   access-mode change keeps it ADE's pick, and nothing changes while a launch
   runs. A sign-in, or a machine with no free model, puts back the model the
   screen opened on. The default tries again after a download
-  (`WorkFreeModelsStatusStore.catalogGeneration`).
+  and after a sign-in on that machine (`WorkFreeModelsStatusStore.generation(for:)`).
 - **Sign-in card.** A person who never signed in on that machine gets **Use a
   free model**, which also re-sends a turn that stopped on the sign-in.
 - **Older machines.** A machine without the block, or without the actions,

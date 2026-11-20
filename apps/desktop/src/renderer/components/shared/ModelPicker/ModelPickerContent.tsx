@@ -637,7 +637,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   // However the picker learns OpenCode arrived (its own download, a status
   // re-read, the chat pane's), the catalog it read without OpenCode is stale:
   // reload OpenCode's models once, past the freshness check.
-  const opencodeWasMissingRef = useRef(opencodeMissing);
+  // A Free or OpenCode page that read its catalog before the probe answered
+  // counts as "read without OpenCode" too.
+  const opencodeWasMissingRef = useRef(opencodeMissing || (!opencodeBinaryKnown && activeCatalogFamily === "opencode"));
   useEffect(() => {
     if (opencodeMissing) {
       opencodeWasMissingRef.current = true;

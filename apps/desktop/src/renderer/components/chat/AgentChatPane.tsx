@@ -12428,12 +12428,13 @@ export function AgentChatPane({
    * reads it.
    */
   const draftModelChosenRef = useRef(false);
-  // Opening a chat, or leaving one for a new draft: a choice made before does
-  // not carry over. Declared before the effects that set the flag (the tour's
-  // queued pick, a restored draft), so it runs before them in one commit.
+  // Another chat or draft (a lane's draft, the Work draft): a choice made
+  // before does not carry over. Declared before the effects that set the flag
+  // (the tour's queued pick, a restored draft), so it runs before them in one
+  // commit.
   useEffect(() => {
     draftModelChosenRef.current = false;
-  }, [selectedSessionId]);
+  }, [companionStateKey]);
   useEffect(() => {
     if (!forceDraft) return undefined;
     return registerDraftModelSetter((pick) => {
@@ -19636,8 +19637,8 @@ export function AgentChatPane({
     availableModelIds: effectiveAvailableModelIds,
     catalogScopeKey: composerModelCatalogScopeKey,
     runtimeBinding: activeComposerRuntimeBinding ?? null,
-    remotePin: composerRuntimePin,
-    selectedSessionId: selectedSessionId ?? null,
+    composerIsRemote: composerRuntimePin != null,
+    draftKey: companionStateKey,
     freshDraft: !selectedSessionId
       && selectedEvents.length === 0
       && !chatScope
@@ -19647,7 +19648,7 @@ export function AgentChatPane({
       && !modelSelectionConstrained,
     modelId,
     composerReady: preferencesReady && !loading,
-    chooseModelRef: personModelChangeRef,
+    personModelChangeRef,
     adeModelChangeRef,
     draftKeepsMachineDefaultsRef,
     draftModelChosenRef,
@@ -21664,8 +21665,10 @@ export function AgentChatPane({
   // The composer's own model controls and every outside caller: a choice,
   // which ADE's free default never overrides.
   const handlePersonModelChange = (nextModelId: string, options?: ModelPickerSelection) => {
-    draftModelChosenRef.current = true;
-    return handleComposerModelChange(nextModelId, options);
+    const applied = handleComposerModelChange(nextModelId, options);
+    // A refused pick (models still loading) is not a choice.
+    if (applied !== false) draftModelChosenRef.current = true;
+    return applied;
   };
   personModelChangeRef.current = handlePersonModelChange;
   adeModelChangeRef.current = handleComposerModelChange;

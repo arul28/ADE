@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Gift } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { usePinnedToolStatus } from "../../../hooks/usePinnedToolStatus";
@@ -27,8 +27,11 @@ export const FreeModelsEmptyState = memo(function FreeModelsEmptyState({
   catalogRefreshing: boolean;
   /** OpenCode's last catalog read failed. */
   catalogRefreshFailed: boolean;
-  /** Re-reads the machine: when a download this page watched lands, or when the tool is ready but the picker does not know yet. */
-  onReady: () => void;
+  /**
+   * Re-reads the machine: when a download this page watched lands, or when
+   * the tool is ready but the picker does not know yet. False: the read failed.
+   */
+  onReady: () => Promise<boolean>;
   /** Reloads the free models from OpenCode. */
   onRefresh?: () => void;
 }) {
@@ -46,25 +49,41 @@ export const FreeModelsEmptyState = memo(function FreeModelsEmptyState({
 
   // OpenCode is on the machine (another download got it), but the picker's
   // probe has not seen it: re-read the machine once, or the page waits forever.
-  const toolReadyPickerUnaware = status?.state === "ready" && opencodeInstalled !== true;
+  const toolReadyPickerUnaware = status?.state === "ready" && opencodeInstalled === false;
   const rereadRef = useRef(false);
+  const [rereadFailed, setRereadFailed] = useState(false);
+  const reread = useCallback(() => {
+    setRereadFailed(false);
+    void onReady().then((ok) => {
+      if (!ok) setRereadFailed(true);
+    });
+  }, [onReady]);
   useEffect(() => {
     if (!toolReadyPickerUnaware || rereadRef.current) return;
     rereadRef.current = true;
-    onReady();
-  }, [onReady, toolReadyPickerUnaware]);
+    reread();
+  }, [reread, toolReadyPickerUnaware]);
 
   if (ready && !downloading) {
     // A download that just landed: the picker re-reads the machine and the
     // catalog next, so this is loading, not an empty list.
+    if (rereadFailed && opencodeInstalled !== true) {
+      return (
+        <FreeModelsMessage
+          title="Free models"
+          error="ADE could not read this machine’s status."
+          action={{ label: "Try again", onClick: reread }}
+        />
+      );
+    }
     if (catalogRefreshing || opencodeInstalled !== true) {
       return <FreeModelsMessage title="Loading free models" live />;
     }
     if (catalogRefreshFailed) {
       return (
         <FreeModelsMessage
-          title="Couldn’t load free models"
-          body="OpenCode did not return its model list."
+          title="Free models"
+          error="OpenCode did not return its model list."
           {...(onRefresh ? { action: { label: "Try again", onClick: onRefresh } } : {})}
         />
       );
@@ -140,7 +159,7 @@ function FreeModelsMessage({
   action?: PickerEmptyAction;
   /** 0–100 for a known download size; null draws no bar. */
   progress?: number | null;
-  /** A download that could not start (`usePinnedToolStatus`'s error). */
+  /** A failure: a download that could not start, or a read that failed. */
   error?: string | null;
   live?: boolean;
 }) {

@@ -1134,10 +1134,11 @@ struct WorkChatSessionView: View {
   func refreshProviderSignedOutBeforeSend() async {
     guard let key = providerSignInStatusKey, let host = providerSignInHost, host.providerAccountsConnected else { return }
     let provider = chatSummaryContext.provider
+    let generation = WorkFreeModelsStatusStore.shared.generation(for: host)
     let status = try? await host.runProviderAccountsCommand("ai.getStatus", args: [:])
     guard !Task.isCancelled else { return }
     // The same answer carries the machine's free models; keep it for the card.
-    if let status { WorkFreeModelsStatusStore.shared.record(aiStatus: status, for: host) }
+    if let status { WorkFreeModelsStatusStore.shared.record(aiStatus: status, for: host, readAtGeneration: generation) }
     let signedOut = status.map { workProviderSignedOutBeforeSend($0, provider: provider) } ?? false
     providerSignedOutBeforeSendKey = signedOut ? key : nil
   }

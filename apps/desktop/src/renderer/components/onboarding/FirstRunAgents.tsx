@@ -133,7 +133,11 @@ export function FirstRunAgents({
   const opencodeMissing = status != null && status.opencodeBinaryInstalled !== true;
   useEffect(() => {
     if (remoteTab || !opencodeMissing) return undefined;
-    return subscribeToolInstalled("opencode", () => void refresh());
+    const unsubscribe = subscribeToolInstalled("opencode", () => void refresh());
+    // The tools push sends changes only: an install that landed before the
+    // listener is seen by one more read.
+    void refresh();
+    return unsubscribe;
   }, [opencodeMissing, refresh, remoteTab]);
 
   const agents = useMemo(() => firstRunAgents(), []);

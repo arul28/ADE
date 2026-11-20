@@ -161,10 +161,11 @@ final class WorkFreeModelsStatusStore: ObservableObject {
     let at: Date
   }
 
-  /// Goes up each time a machine's free models are read again (OpenCode
-  /// finished downloading there, or the person tapped Refresh). The New Chat
-  /// page watches it to try its free default again.
-  @Published private(set) var catalogGeneration = 0
+  /// Per machine (`key(for:)`): goes up when its free models are read again
+  /// (OpenCode finished downloading there, or the person tapped Refresh) and
+  /// when its answer is forgotten (a sign-in). The New Chat page watches its
+  /// machine's value to try its free default again.
+  @Published private var generations: [String: Int] = [:]
 
   private var entries: [String: Entry] = [:]
   private var inFlight: [String: Task<(status: WorkFreeModelsStatus?, read: Bool), Never>] = [:]
@@ -198,18 +199,30 @@ final class WorkFreeModelsStatusStore: ObservableObject {
     return entry.status
   }
 
-  /// Forgets the machine's answer (a sign-in finished there).
-  func invalidate(for host: ProviderAccountsHost) {
-    entries[Self.key(for: host)] = nil
+  func generation(for host: ProviderAccountsHost) -> Int {
+    generations[Self.key(for: host)] ?? 0
   }
 
-  func freeCatalogDidRefresh() {
-    catalogGeneration &+= 1
+  /// Forgets the machine's answer (a sign-in finished there).
+  func invalidate(for host: ProviderAccountsHost) {
+    let key = Self.key(for: host)
+    entries[key] = nil
+    // A read started before the sign-in must not answer a new ask.
+    inFlight[key] = nil
+    generations[key, default: 0] &+= 1
+  }
+
+  func freeCatalogDidRefresh(for host: ProviderAccountsHost) {
+    generations[Self.key(for: host), default: 0] &+= 1
   }
 
   /// Keeps the block of an `ai.getStatus` answer read for another reason.
-  func record(aiStatus: Any, for host: ProviderAccountsHost) {
-    entries[Self.key(for: host)] = Entry(status: WorkFreeModelsStatus(aiStatus: aiStatus), at: Date())
+  /// `generation` is the machine's value when the read started: a read that
+  /// a sign-in outran is not kept.
+  func record(aiStatus: Any, for host: ProviderAccountsHost, readAtGeneration generation: Int) {
+    let key = Self.key(for: host)
+    guard (generations[key] ?? 0) == generation else { return }
+    entries[key] = Entry(status: WorkFreeModelsStatus(aiStatus: aiStatus), at: Date())
   }
 
   /// The machine's status, or nil for an older machine or a failed read
@@ -222,6 +235,7 @@ final class WorkFreeModelsStatusStore: ObservableObject {
     if let entry = entries[key], Date().timeIntervalSince(entry.at) < ttl { return entry.status }
     guard host.providerAccountsConnected, host.supportsProviderAccountsAction("ai.getStatus") else { return nil }
     if let task = inFlight[key] { return await task.value.status }
+    let generation = generations[key] ?? 0
     // A failed read is not kept: the next ask tries again.
     let task = Task { @MainActor () -> (status: WorkFreeModelsStatus?, read: Bool) in
       guard let raw = try? await host.runProviderAccountsCommand("ai.getStatus", args: [:]) else { return (nil, false) }
@@ -229,8 +243,11 @@ final class WorkFreeModelsStatusStore: ObservableObject {
     }
     inFlight[key] = task
     let result = await task.value
-    inFlight[key] = nil
-    if result.read { entries[key] = Entry(status: result.status, at: Date()) }
+    if inFlight[key] == task { inFlight[key] = nil }
+    // The machine changed while this read ran (a sign-in): its answer is old.
+    if result.read, generations[key] ?? 0 == generation {
+      entries[key] = Entry(status: result.status, at: Date())
+    }
     return result.status
   }
 }
@@ -319,6 +336,8 @@ final class WorkFreeModelsSetup: ObservableObject {
   @Published private(set) var phase: Phase = .idle
   private var pollTask: Task<Void, Never>?
   private var attempt = 0
+  /// The machine the phase belongs to (`WorkFreeModelsStatusStore.key(for:)`).
+  private var machineKey: String?
   private static let args: [String: Any] = ["provider": "opencode"]
 
   static func canCheck(_ host: ProviderAccountsHost?) -> Bool {
@@ -329,6 +348,7 @@ final class WorkFreeModelsSetup: ObservableObject {
   /// Reads where OpenCode stands on the machine, once. A download already
   /// running (the machine starts one for a new person) shows its progress.
   func check(host: ProviderAccountsHost?, onReady: @escaping @MainActor () async -> Void) async {
+    follow(host: host)
     guard let host, Self.canCheck(host) else {
       phase = .unsupported
       return
@@ -348,6 +368,7 @@ final class WorkFreeModelsSetup: ObservableObject {
   }
 
   func start(host: ProviderAccountsHost?, onReady: @escaping @MainActor () async -> Void) async {
+    follow(host: host)
     guard let host, host.supportsProviderAccountsAction("ai.pinnedToolDownload") else {
       phase = .unsupported
       return
@@ -363,6 +384,18 @@ final class WorkFreeModelsSetup: ObservableObject {
       guard current == attempt else { return }
       phase = .failed(error.localizedDescription)
     }
+  }
+
+  /// Another machine now: the last one's setup and its poll end, and the
+  /// page reads this one from the start. The same machine keeps its progress.
+  func follow(host: ProviderAccountsHost?) {
+    let key = host.map { WorkFreeModelsStatusStore.key(for: $0) }
+    guard key != machineKey else { return }
+    machineKey = key
+    attempt += 1
+    pollTask?.cancel()
+    pollTask = nil
+    phase = .idle
   }
 
   func stop() {
