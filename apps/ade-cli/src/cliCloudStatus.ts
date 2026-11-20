@@ -165,6 +165,8 @@ export function formatCloudStatus(value: unknown): string {
   }
   // Lanes whose computer was deleted: the lane and its chats stay; the next message makes a new computer.
   const gone = Array.isArray(status.lanesComputerDeleted) ? status.lanesComputerDeleted.filter(isRecord) : [];
+  // Null: ADE couldn't read them, which is not "none" (an older ADE sends no field at all).
+  if (status.lanesComputerDeleted === null) lines.push("", "Lanes whose computer was deleted: ADE couldn't read them just now. ade cloud lanes --deleted tries again.");
   if (gone.length) {
     lines.push("", "Lanes whose computer was deleted (their next message makes a new one; ade cloud lanes)", ...table(gone.map((lane) => [
       String(lane.name ?? lane.laneId ?? "lane"),
@@ -172,6 +174,7 @@ export function formatCloudStatus(value: unknown): string {
       typeof lane.why === "string" ? lane.why : "",
     ])));
   }
+  if (status.lanesComputerDeletedPartial === true) lines.push("  (Read from your newest saved chats only: a lane known only from older chats may be missing.)");
   if (sizeRows.length) lines.push("", "Sizes (ade chat create --machine cloud --size <id>)", ...table(sizeRows));
   const plans = Array.isArray(status.plans) ? status.plans.filter(isRecord) : [];
   if (plans.length) {

@@ -1249,7 +1249,9 @@ Reads wake nothing and work from any folder (`ADE_ACTION_MACHINE_SCOPED`).
   - `lane_keep` (`POST /cloud/instances/:id/keep`) needs no card: it stops
     the idle cleanup's delete, wakes nothing and uses no hours.
 - **Status.** `cloud.status` also returns `lanesComputerDeleted`, read beside
-  the computer list; null when it can't be read.
+  the computer list; null when it can't be read, and the text says so.
+  `lanesComputerDeletedPartial: true` when the saved chats were read only up
+  to the page limit, so a lane known only from older chats can be missing.
 - **A brain** holds no connections to the computers, so a delete or free
   from the CLI forgets none; the desktop drops them on its next list read.
 

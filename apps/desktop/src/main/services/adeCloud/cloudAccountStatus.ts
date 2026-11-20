@@ -150,6 +150,8 @@ export type CloudAccountStatus = {
    * as an older ADE sends none.
    */
   lanesComputerDeleted?: CloudStatusDeletedLane[] | null;
+  /** True when `lanesComputerDeleted` came from only the newest saved chats: a lane known only from older ones can be missing. */
+  lanesComputerDeletedPartial?: boolean;
   /** The lane sizes ADE Cloud offers now, Small first; rates are the catalog's. */
   sizes: Array<{ id: CloudTierId; label: string; kind: "standard" | "full"; cpu: number; memoryGb: number; hoursRate: number; isDefault: boolean }>;
   /** The size a new lane starts with when none is named; null when this ADE can't read the person's saved choice. */

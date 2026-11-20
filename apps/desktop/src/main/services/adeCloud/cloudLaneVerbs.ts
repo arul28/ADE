@@ -161,7 +161,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
     machines?: Promise<CloudMachinesResult>;
     /** False: leave the backups out (`status` shows none). */
     backups?: boolean;
-  } = {}): Promise<CloudLanesAnswer & { chatRows: CloudSavedChatRow[]; keptIds: Set<string>; failed: Set<"kept" | "chats" | "backups"> }> => {
+  } = {}): Promise<CloudLanesAnswer & { chatRows: CloudSavedChatRow[]; keptIds: Set<string>; failed: Set<"kept" | "chats" | "backups">; chatsComplete: boolean }> => {
     const unread: string[] = [];
     const failed = new Set<"kept" | "chats" | "backups">();
     // Every read at once. The computers decide: with no ADE Cloud the list
@@ -279,7 +279,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
         link: laneLink(laneId),
       });
     }
-    return { lanes: Array.from(entries.values()), unread, chatRows: chatRead.chats, keptIds: new Set(kept.map((lane) => lane.laneId)), failed };
+    return { lanes: Array.from(entries.values()), unread, chatRows: chatRead.chats, keptIds: new Set(kept.map((lane) => lane.laneId)), failed, chatsComplete: chatRead.complete };
   };
 
   /** One lane by its id, name, branch or a lane link; a name two lanes share is refused with their ids. */
@@ -391,17 +391,19 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
 
   /**
    * `status`'s lanes whose computer was deleted, from the list read it already
-   * runs (no second one); null when they can't be read.
+   * runs (no second one); null when they can't be read. `partial`: the saved
+   * chats were read only up to the page limit, so a lane known only from its
+   * older chats can be missing.
    */
-  const lanesComputerDeleted = async (machines: Promise<CloudMachinesResult>): Promise<CloudStatusDeletedLane[] | null> => {
+  const lanesComputerDeleted = async (machines: Promise<CloudMachinesResult>): Promise<{ lanes: CloudStatusDeletedLane[]; partial: boolean } | null> => {
     try {
-      const { lanes, failed, unread } = await readLanes({ machines, backups: false });
+      const { lanes, failed, unread, chatsComplete } = await readLanes({ machines, backups: false });
       // Either source unread: the list would be short, so status says it couldn't read it.
       if (failed.has("kept") || failed.has("chats")) {
         logger.warn?.("cloud.status_deleted_lanes_unread", { unread });
         return null;
       }
-      return lanes
+      const gone = lanes
         .filter((lane) => lane.state === "computer_deleted")
         .map((lane) => ({
           laneId: lane.laneId,
@@ -411,6 +413,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
           deletedAt: lane.deleted?.at ?? null,
           why: lane.deleted?.sentence ?? "",
         }));
+      return { lanes: gone, partial: !chatsComplete };
     } catch (error) {
       logger.warn?.("cloud.status_deleted_lanes_failed", { error: getErrorMessage(error) });
       return null;

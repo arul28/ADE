@@ -694,7 +694,8 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         ? countAgentMadeToday(deps.machines.recentInstances(60_000) ?? [], Date.now())
         : 0;
       const status = buildCloudAccountStatus({ result, limits, defaultSize, newComputersToday: agentNewComputersToday(listedToday) });
-      return { ...status, lanesComputerDeleted: await lanesComputerDeleted };
+      const gone = await lanesComputerDeleted;
+      return { ...status, lanesComputerDeleted: gone?.lanes ?? null, ...(gone?.partial ? { lanesComputerDeletedPartial: true } : {}) };
     },
 
     async create(rawArgs?: unknown) {
