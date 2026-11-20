@@ -184,7 +184,9 @@ struct WorkChatConnectingFrame: View {
     VStack(spacing: 0) {
       if let held {
         heldStatusLine
-        CloudHeldMessagesStandalone(thread: held, sessionId: sessionId)
+        // No composer here yet to take a failed message back: Put back waits
+        // for the chat to load (Dismiss and Cancel still work).
+        CloudHeldMessagesStandalone(thread: { var thread = held; thread.onPutBack = nil; return thread }(), sessionId: sessionId)
       } else {
         centredConnectingLine
       }

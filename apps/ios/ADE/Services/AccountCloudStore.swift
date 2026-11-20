@@ -616,7 +616,8 @@ final class AccountCloudStore: ObservableObject {
     guard var before = savedPartBefore(id: id, oldestHeld: oldestHeld) else {
       return ChatThreadOlderPageInput(sessionId: key.sessionId, events: [], hasMore: false)
     }
-    guard let client = await sync.cloudServerClient() else {
+    let generation = accountGeneration
+    guard let client = await sync.cloudServerClient(), generation == accountGeneration else {
       return .failed(sessionId: key.sessionId, message: "Sign in to ADE to read earlier messages.")
     }
     while true {
@@ -624,6 +625,10 @@ final class AccountCloudStore: ObservableObject {
       let decoded = await Task.detached(priority: .userInitiated) {
         accountCloudDecodeParts(page.parts)
       }.value
+      // The account changed while the page was out: none of it is this account's.
+      guard generation == accountGeneration else {
+        return .failed(sessionId: key.sessionId, message: "The account changed. Open the chat again.")
+      }
       transcriptPartFirstSequence[id, default: [:]].merge(decoded.firstSequenceByPart) { $1 }
       let next: TranscriptPaging.Cursor = page.hasMore ? page.nextBefore.map(TranscriptPaging.Cursor.before) ?? .top : .top
       transcriptPaging[id]?.olderBefore = next
