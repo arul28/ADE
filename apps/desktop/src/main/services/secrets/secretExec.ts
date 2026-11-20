@@ -73,7 +73,13 @@ export function maskSecretValues(text: string, values: readonly string[]): strin
  */
 function userCommandEnv(): NodeJS.ProcessEnv {
   const env = userProcessEnv(process.env);
-  setPathEnvValue(env, augmentProcessPathWithShellAndKnownCliDirs({ env: process.env }));
+  // The terminal's order: interactive rc entries (version managers), then
+  // login, then the host's, so a host `node` never shadows the person's.
+  setPathEnvValue(env, augmentProcessPathWithShellAndKnownCliDirs({
+    env: process.env,
+    includeInteractiveShell: true,
+    preferShellOrder: true,
+  }));
   return env;
 }
 

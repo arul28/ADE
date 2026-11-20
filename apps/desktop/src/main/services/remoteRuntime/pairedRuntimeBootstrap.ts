@@ -129,7 +129,14 @@ export async function bootstrapPairedRuntime(args: {
   const openTransport = args.options?.openTransport ?? openSyncRuntimeTransport;
   const correlationId = randomUUID();
   const attemptRecorder = createRouteAttemptRecorder();
-  const { attempts, record: recordAttempt } = attemptRecorder;
+  const { attempts } = attemptRecorder;
+  // Seen on every attempt, also the ones the capped list drops: one malformed
+  // hello anywhere keeps the failure a report.
+  let protocolDriftSeen = false;
+  const recordAttempt: typeof attemptRecorder.record = (attempt) => {
+    if (isProtocolDrift(attempt)) protocolDriftSeen = true;
+    attemptRecorder.record(attempt);
+  };
   let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
   let accountHelloCode: PairedRuntimeAccountHelloCode | null = null;
   let relayRetried = false;
@@ -437,7 +444,7 @@ export async function bootstrapPairedRuntime(args: {
     undefined,
     diagnostic,
   );
-  const kind = pairedRouteFailureKind(failure, attempts);
+  const kind = pairedRouteFailureKind(failure, protocolDriftSeen);
   throw kind ? markExpected(unavailable, kind) : unavailable;
 }
 
@@ -448,18 +455,19 @@ export async function bootstrapPairedRuntime(args: {
  */
 const VERSION_SKEW_ERROR_CODES = new Set(["hello_host_update_required", "hello_protocol_version_mismatch"]);
 
+function isProtocolDrift(attempt: { failure?: RemoteRuntimeConnectionAttemptFailure; errorCode?: string }): boolean {
+  return attempt.failure === "protocol" && !VERSION_SKEW_ERROR_CODES.has(attempt.errorCode ?? "");
+}
+
+/**
+ * Drift on any route stays a report, whatever cause dominates the headline;
+ * otherwise every protocol failure was version skew, the person's to fix.
+ */
 function pairedRouteFailureKind(
   failure: RemoteRuntimeConnectionAttemptFailure,
-  attempts: readonly { failure?: RemoteRuntimeConnectionAttemptFailure; errorCode?: string }[],
+  protocolDriftSeen: boolean,
 ): ExpectedErrorKind | null {
-  if (failure !== "protocol") return PAIRED_ROUTE_FAILURE_KIND[failure];
-  // Every protocol failure must be version skew: one malformed hello beside
-  // it is still drift worth a report.
-  const protocolAttempts = attempts.filter((attempt) => attempt.failure === "protocol");
-  return protocolAttempts.length > 0
-    && protocolAttempts.every((attempt) => VERSION_SKEW_ERROR_CODES.has(attempt.errorCode ?? ""))
-    ? "user"
-    : null;
+  return protocolDriftSeen ? null : PAIRED_ROUTE_FAILURE_KIND[failure];
 }
 
 /**

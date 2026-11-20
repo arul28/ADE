@@ -6593,6 +6593,16 @@ final class SyncService: ObservableObject {
       }
       if !switched {
         syncConnectLog.notice("ADE_SYNC_TRACE host_project_reassert refused active=\(active.id, privacy: .public)")
+        // Ask again once the cooldown ends, on this connection and selection
+        // only: nothing else may come along to trigger it.
+        let connection = self.connectionGeneration
+        Task { @MainActor [weak self] in
+          try? await Task.sleep(nanoseconds: UInt64(Self.hostedProjectReassertCooldown * 1_000_000_000))
+          guard let self, self.connectionGeneration == connection,
+                self.isCurrentProjectSelection(selectionGeneration)
+          else { return }
+          self.scheduleHostedProjectReconcile(trigger: trigger)
+        }
       } else if self.hostedProjectReasserts[machineKey]?.at == now {
         self.hostedProjectReasserts[machineKey] = (now, true, false)
       }
