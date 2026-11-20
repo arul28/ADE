@@ -374,8 +374,9 @@ function undoEarlyStartStatements(env: CloudEnv, before: ComputerRow, early: Com
   return [
     env.DB.prepare(`
       delete from cloud_power_log where instance_id = ? and action = 'update' and reason = ? and created_at = ?
-        and exists (select 1 from cloud_computers where instance_id = ? and awake_since = ? and free_wake_until = ?)
-    `).bind(before.instance_id, `update_${reason}`, now, before.instance_id, early.awake_since, early.free_wake_until),
+        and exists (select 1 from cloud_computers where instance_id = ? and update_state = 'updating' and update_started_at = ?
+          and awake_since = ? and free_wake_until = ?)
+    `).bind(before.instance_id, `update_${reason}`, now, before.instance_id, now, early.awake_since, early.free_wake_until),
     env.DB.prepare(`
       update cloud_computers set status = case when status = 'updating' then ? else status end,
         status_changed_at = case when status = 'updating' then ? else status_changed_at end,
