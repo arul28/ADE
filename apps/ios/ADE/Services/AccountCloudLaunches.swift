@@ -478,6 +478,10 @@ final class AccountCloudLaunchStore: ObservableObject {
   private var pendingFiles: [String: [LaunchFile]] = [:]
   /// Launches whose start (uploads, then the start call) is running.
   private var startingLaunchIds: Set<String> = []
+  /// Launches whose start was sent and got no clear answer (a lost
+  /// response, a timeout): the launch may exist on ADE Cloud, so a later
+  /// refusal never makes it discardable.
+  private var startsMaybeMade: Set<String> = []
   /// Finished or failed launches the person hid on this phone (until the account changes).
   @Published private var hiddenIds: Set<String> = []
   /// Launches this app run already connected on its own (`connectWhenReady`).
@@ -773,10 +777,11 @@ final class AccountCloudLaunchStore: ObservableObject {
     startingLaunchIds.insert(launchId)
     defer { startingLaunchIds.remove(launchId) }
     let generation = accountGeneration
+    let maybeMade = startsMaybeMade.contains(launchId)
     guard let client = await sync.cloudServerClient() else {
       patch(launchId) {
         $0.startError = "Sign in to ADE to start a chat on ADE Cloud."
-        $0.startNeverReached = true
+        $0.startNeverReached = !maybeMade
       }
       return
     }
@@ -792,8 +797,9 @@ final class AccountCloudLaunchStore: ObservableObject {
         let reason = cloudServerFailureMessage(error)
         patch(launchId) {
           $0.startError = "ADE couldn't send \(file.name) to ADE Cloud. \(reason)"
-          // The start goes after the files: it was not sent.
-          $0.startNeverReached = true
+          // The start goes after the files: this one was not sent (an
+          // earlier attempt may still have made the launch).
+          $0.startNeverReached = !maybeMade
         }
         return
       }
@@ -807,7 +813,10 @@ final class AccountCloudLaunchStore: ObservableObject {
         $0.startError = nil
         $0.startNeverReached = false
       }
+      startsMaybeMade.remove(launchId)
       poll(using: sync)
+      // A resend of the same id can answer with a launch that already runs.
+      connectWhenReady(using: sync)
     } catch {
       guard generation == accountGeneration else { return }
       let message = cloudServerFailureMessage(error)
@@ -819,9 +828,11 @@ final class AccountCloudLaunchStore: ObservableObject {
         return false
       }()
       let refused = Self.isClearRefusal(error) && !conflict
+      if !refused { startsMaybeMade.insert(launchId) }
+      let neverReached = refused && !startsMaybeMade.contains(launchId)
       patch(launchId) {
         $0.startError = message
-        $0.startNeverReached = refused
+        $0.startNeverReached = neverReached
       }
     }
   }
@@ -1051,6 +1062,7 @@ final class AccountCloudLaunchStore: ObservableObject {
     pendingFiles = [:]
     hiddenIds = []
     autoConnectedLaunchIds = []
+    startsMaybeMade = []
     connectTasks = [:]
     unconfirmedMessages = [:]
     messageSends = [:]

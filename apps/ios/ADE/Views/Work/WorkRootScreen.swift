@@ -1512,7 +1512,12 @@ struct WorkRootListScreen: View, Equatable {
       if path.isEmpty {
         if let route = duoSelectedRoute {
           path.append(route)
-          cloudLaunchPageOpen = workCloudLaunchId(routeSessionId: route.sessionId) != nil
+          if workCloudLaunchId(routeSessionId: route.sessionId) != nil {
+            // The unfold cleared the transition id with the path; the launch
+            // page's handover checks it to know the page still shows.
+            cloudLaunchPageOpen = true
+            selectedSessionTransitionId = route.sessionId
+          }
         }
         if let compose = duoComposeRoute {
           path.append(compose)

@@ -367,7 +367,8 @@ struct WorkCloudLaunchPendingScreen: View {
           draft: $draft,
           focused: $composerFocused,
           hint: composerHint(entry),
-          canType: entry.canQueueMessages,
+          // Locked while the chat opens: the text already went to the chat as its draft.
+          canType: entry.canQueueMessages && !opening,
           sending: sending,
           dictationTargetId: "cloud-launch-\(launchId)",
           onSend: { Task { await sendQueuedMessage() } }
@@ -386,7 +387,7 @@ struct WorkCloudLaunchPendingScreen: View {
   @MainActor
   private func sendQueuedMessage() async {
     let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !text.isEmpty, !sending else { return }
+    guard !text.isEmpty, !sending, !opening else { return }
     sending = true
     errorMessage = nil
     draft = ""

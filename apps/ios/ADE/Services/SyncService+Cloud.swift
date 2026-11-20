@@ -971,7 +971,8 @@ extension SyncService {
     if fleetKey == focusedMachineKey {
       // The focused computer has its own link (the fleet's connect does not cover it).
       if connectionState != .connected { await reconnectIfPossible() }
-      return connectionState == .connected
+      // The person may have picked another computer meanwhile: only this one counts.
+      return focusedMachineKey == fleetKey && connectionState == .connected
     }
     guard let fleet = machineFleet else { return false }
     return await fleet.connect(machineKey: fleetKey, timeout: Self.launchedComputerConnectTimeout, wake: false)
