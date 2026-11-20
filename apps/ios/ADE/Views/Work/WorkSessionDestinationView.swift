@@ -658,6 +658,62 @@ struct WorkSessionDestinationView: View {
     return AccountCloudLaunchStore.shared.catalog ?? .pending
   }
 
+  /// The account machine key this chat's held messages are filed under:
+  /// set only for a chat on an ADE Cloud computer.
+  var cloudQueueAccountKey: String? {
+    guard let fleetKey = sessionCloudMachineKey, syncService.isCloudFleetKey(fleetKey) else { return nil }
+    return syncService.cloudAccountMachineKey(fleetKey: fleetKey)
+  }
+
+  /// The messages ADE Cloud holds for this chat, as its thread draws them,
+  /// less the ones the transcript already shows (no second copy, even for
+  /// the one frame before `retireCloudHeldShownInTranscript` runs). Nil
+  /// when there are none. Every action names the chat's own account key.
+  func cloudHeldThread(frame: ChatThreadFrame?) -> WorkCloudHeldThread? {
+    guard let accountKey = cloudQueueAccountKey else { return nil }
+    let held = accountCloud.threadMessages(machineKey: accountKey, chatId: sessionId)
+    guard !held.isEmpty else { return nil }
+    let shown = cloudHeldMessagesShown(held, in: frame?.transcript ?? [])
+    // The send's own echo can outlive its removal by a frame (the engine
+    // takes overlays off the main actor): the held copy of the same text
+    // waits until it is gone, so the bubble never shows twice.
+    var echoTexts: [String] = (frame?.snapshot.timeline.suffix(8) ?? []).compactMap { entry in
+      guard entry.id.hasPrefix("echo-"), case .message(let message) = entry.payload else { return nil }
+      return message.markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let messages = held.filter { message in
+      guard !shown.contains(message.messageId) else { return false }
+      if let text = nonEmptyTrimmed(message.text), let index = echoTexts.firstIndex(of: text) {
+        echoTexts.remove(at: index)
+        return false
+      }
+      return true
+    }
+    guard !messages.isEmpty else { return nil }
+    let sync = syncService
+    let chatId = sessionId
+    return WorkCloudHeldThread(
+      messages: messages,
+      onCancel: { messageId in
+        let store = AccountCloudStore.shared
+        guard let failure = await store.cancelQueued(machineKey: accountKey, chatId: chatId, messageId: messageId, using: sync) else {
+          return nil
+        }
+        // The computer may have taken it meanwhile: show its state now.
+        await store.reconcile(machineKey: accountKey, chatId: chatId, using: sync)
+        return failure
+      },
+      onPutBack: { message in
+        guard let text = nonEmptyTrimmed(message.text) else { return }
+        composerDraftRestore = WorkChatComposerDraftRestore(text: text)
+        AccountCloudStore.shared.hideFailedMessage(message.messageId)
+      },
+      onDismiss: { messageId in
+        AccountCloudStore.shared.hideFailedMessage(messageId)
+      }
+    )
+  }
+
   var sessionCloudMachineKey: String? {
     crossProjectContext?.machineKey
       ?? syncService.remoteChatMachineKey(sessionId: sessionId)
@@ -1740,10 +1796,9 @@ struct WorkSessionDestinationView: View {
         // read it now that the computer answers.
         onAwake: { await loadMissingSessionWhenLive() }
       )
-      // Messages ADE Cloud holds for this chat until its computer is up.
-      .followsCloudQueue(fleetKey: sessionCloudMachineKey, sessionId: sessionId) { text in
-        composerDraftRestore = WorkChatComposerDraftRestore(text: text)
-      }
+      // Messages ADE Cloud holds for this chat until its computer is up:
+      // the thread draws them (`cloudHeldThread`); this follows the queue.
+      .followsCloudQueue(fleetKey: sessionCloudMachineKey, sessionId: sessionId)
       // The wake can return before this chat's link reads as live.
       .onChange(of: isLiveAndReachable) { _, live in
         guard live, session == nil, initialLoadCompleted else { return }
@@ -2355,7 +2410,12 @@ struct WorkSessionDestinationView: View {
     }
     let resolvedSessionStatus: String? = sessionStatus
     let loadOlderTranscriptAction: (@MainActor () async -> WorkChatOlderHistoryLoadResult)?
-    if isCrossProject && !syncService.supportsSubscribedChatHistory(sessionId: sessionId) {
+    // An ADE Cloud chat whose computer is asleep or deleted pages its saved
+    // copy from the account (`AccountCloudStore.olderSavedPage`), with no
+    // live link and no wake.
+    if isCrossProject
+      && !syncService.supportsSubscribedChatHistory(sessionId: sessionId)
+      && !syncService.chatSendsThroughCloudAccount(sessionId: sessionId) {
       // Older hosts have no scoped transcript-page envelope. Do not fall back
       // to a foreign project command, which would activate its runtime just to
       // read history; the next host upgrade makes the same cached view pageable.
@@ -2631,6 +2691,7 @@ struct WorkSessionDestinationView: View {
       onOpenSideChat: openSideChatAction
     )
     chatView.ctoLive = ctoLiveModel
+    chatView.cloudHeld = cloudHeldThread(frame: thread.frame)
     chatView.modelPickerCloudCatalog = restingCloudModelCatalog
     chatView.sendBlockedReason = cloudNewComputerBlockedReason
     return chatView
@@ -3111,7 +3172,7 @@ struct WorkSessionDestinationView: View {
         errorMessage = "Message not sent — the queue is full. Wait for the current turn to finish, then resend."
         return
       case .heldByServer:
-        // ADE Cloud's queued row above the composer is the message's one copy.
+        // ADE Cloud holds it: the thread draws the held message as the one copy.
         localEchoMessages.removeAll { $0.id == echo.id }
       }
       errorMessage = nil
@@ -3762,6 +3823,17 @@ extension WorkSessionDestinationView {
     syncService.subscribeToChatEventsNow(sessionId: sessionId, requestSnapshot: requestSnapshot)
   }
 
+  /// A held message the transcript now shows is the chat's own message:
+  /// the thread stops drawing the held copy, for good. Cheap when nothing
+  /// is held (no account key, or no held message).
+  @MainActor
+  func retireCloudHeldShownInTranscript(_ transcript: [WorkChatEnvelope]) {
+    guard let accountKey = cloudQueueAccountKey else { return }
+    let held = accountCloud.threadMessages(machineKey: accountKey, chatId: sessionId)
+    guard !held.isEmpty else { return }
+    accountCloud.retireFromThread(cloudHeldMessagesShown(held, in: transcript))
+  }
+
   /// Per-frame bookkeeping that needs the transcript: echo and steer
   /// reconciliation (cheap, and guarded on having any), the summary-mode
   /// patch from `session_meta_updated`, and the Chat Info roster (only when an
@@ -3776,6 +3848,7 @@ extension WorkSessionDestinationView {
     if !localEchoMessages.isEmpty {
       reconcileLocalEchoMessages()
     }
+    retireCloudHeldShownInTranscript(transcript)
     if workChatInfoTranscriptShape(transcript) != chatInfoTranscriptShape {
       refreshChatInfoSnapshots()
     }

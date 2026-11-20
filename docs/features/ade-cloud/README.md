@@ -280,6 +280,13 @@ gives them only to the chat's computer. That computer applies them with
 The person can take back a queued message (`DELETE`); one a claim took
 answers 409 `message_taken`. An unsent message fails after 24 hours.
 
+On the phone a held message looks like any sent message: the person's own
+bubble at the end of the thread and the working line, with a quiet Cancel
+while it is queued. Only a failed message (Put back, Dismiss) and one waiting
+for a sign-in say so. The bubble stays until the chat's transcript shows the
+message with the same `clientSendId`. See
+[iOS companion › Held messages](../sync-and-multi-device/ios-companion.md).
+
 ### Continue a chat whose computer is gone (fork-continue)
 
 When the chat's computer was deleted, the send starts a server launch with

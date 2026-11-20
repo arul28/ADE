@@ -780,7 +780,7 @@ iPhones are `compact` and use the same views stacked.
   `Views/Cloud/CloudNoComputerPreviews.swift`,
   `Views/Cloud/CloudAtRestPreviews.swift` and `Views/Cloud/CloudPreviews.swift`:
   - chats: `duo-cloud-chat-asleep`, `duo-cloud-chat-waking`,
-    `duo-cloud-chat-queued`, `duo-cloud-chat-sign-in`,
+    `duo-cloud-chat-queued`, `duo-cloud-chat-failed`, `duo-cloud-chat-sign-in`,
     `duo-cloud-chat-deleted`, `duo-cloud-deleting-soon`
   - refusals: `duo-cloud-refused-out_of_hours`,
     `duo-cloud-refused-too_many_awake`, `duo-cloud-refused-account_blocked`
@@ -1103,7 +1103,10 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   reason.
 - **Saved chats.** `CloudServerClient.savedChats` reads pages of 200, at most
   5 pages. With no live link, a chat thread reads the saved copy through
-  `AccountCloudStore` (`savedCloudChatAccountKey`). A saved subagent chat nests
+  `AccountCloudStore` (`savedCloudChatAccountKey`), one part at a time.
+  Scrolling up pages older parts with the server's `before` cursor
+  (`olderSavedPage`); the saved lines carry their `sequence`, so the engine
+  pages them like a `chatLogV2` host. A saved subagent chat nests
   under its parent. A computer that left the account still lists its saved
   chats under the key `cloud-saved:<accountMachineKey>`.
 - **The queue.** A send to a cloud chat with no live link goes to
@@ -1113,12 +1116,30 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   on a new computer in the same chat row. A send with attachments wakes the
   computer and sends over the live link. An older server (404) falls back to
   wake, connect and send.
-- **Held messages.** `CloudQueuedMessagesView`
-  (`Views/Work/WorkCloudMachine.swift`) shows each held message above the
-  composer: queued (with Cancel), sending, waiting for a sign-in (with the
-  sign-in step), or failed (with the server's sentence).
-  `AccountCloudStore.followQueue` reads the queue only while the chat is open
-  and the app is in front, from 3 s up to 10 s between reads.
+- **Held messages.** A send to an asleep chat looks like any send, as on
+  desktop: the thread draws each held message as the person's own bubble at
+  its end (`CloudHeldMessageRow`, `WorkCloudHeldThread` in
+  `Views/Work/WorkCloudMachine.swift`), followed by the thread's working line
+  while the server moves it. There is no queue bar and no "waking" copy; the
+  header's cloud button shows the computer's state. Under the bubble:
+  - queued: a quiet Cancel;
+  - sending, or delivered: nothing;
+  - waiting for a sign-in: "Waiting for a sign-in", with the sign-in step
+    above the composer (`CloudQueueSignInSteps`);
+  - failed: the thread's "Couldn't send" mark, the server's sentence, Put
+    back and Dismiss.
+  A message this phone saw open that the server calls delivered stays drawn
+  until the transcript shows it (`AccountCloudStore.deliveredAwaitingThread`,
+  at most 2 minutes), so it never blinks out. The transcript match is the
+  `user_message`'s `clientSendId`, which the computer sets to the held
+  message's id (`cloudHeldMessagesShown`; a computer that writes no send id
+  matches on text written after the send). A matched message is retired for
+  good (`retireFromThread`): no second copy. One delivered before the phone
+  looked is never drawn. Cancel, Put back and Dismiss go to the chat's own
+  account machine key. `AccountCloudStore.followQueue` reads the queue only
+  while the chat is open and the app is in front, from 3 s up to 10 s between
+  reads. A CLI copy with a deleted computer keeps the list above its composer
+  (`CloudQueuedMessagesView`).
 - **CLI and shell copies.** The project overview
   (`GET /cloud/projects/overview?origin=`, at most once in 15 s, in
   `CloudAtRestStore`, `Services/CloudAtRestReads.swift`) adds each saved CLI

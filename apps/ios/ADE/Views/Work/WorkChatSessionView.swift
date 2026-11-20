@@ -1032,6 +1032,10 @@ struct WorkChatSessionView: View {
   /// changes instead of the turn-end line, one working line while it runs.
   /// Every other chat leaves it nil and renders exactly as before.
   var ctoLive: CtoLiveModel? = nil
+  /// Messages ADE Cloud holds for this chat while its computer is asleep:
+  /// drawn after the transcript as the person's own messages, with the
+  /// working line while the server moves them. Nil for any other chat.
+  var cloudHeld: WorkCloudHeldThread? = nil
   /// The CTO greeting's starters: fills the composer with the text.
 
   @State private var threadCommentsSheetPresented = false
@@ -1835,8 +1839,18 @@ struct WorkChatSessionView: View {
         )
       }
     }
-    if isStreamingTurn {
+    for message in cloudHeld?.messages ?? [] {
+      rows.append(
+        WorkChatTranscriptRow(
+          id: "cloud-held-\(message.messageId)",
+          kind: .cloudHeld(messageId: message.messageId),
+          revision: WorkCloudHeldThread.revision(message)
+        )
+      )
+    }
+    if showsStreamingStatus {
       var hasher = Hasher()
+      hasher.combine(isStreamingTurn)
       hasher.combine(turnToolActivity.active?.count ?? 0)
       // A step finishing changes the working line's step words without
       // changing the count.
@@ -1950,6 +1964,10 @@ struct WorkChatSessionView: View {
           maxUserBubbleWidth: maxUserBubbleWidth
         )
       }
+    case .cloudHeld(let messageId):
+      if let cloudHeld, let message = cloudHeld.messages.first(where: { $0.messageId == messageId }) {
+        CloudHeldMessageRow(message: message, maxUserBubbleWidth: maxUserBubbleWidth, thread: cloudHeld)
+      }
     case .streamingStatus:
       streamingStatusSection
     case .tail:
@@ -2030,6 +2048,22 @@ struct WorkChatSessionView: View {
     )
   }
 
+  /// The working line shows: a turn runs, or a held message is on its way.
+  var showsStreamingStatus: Bool {
+    isStreamingTurn || cloudHeld?.isWorking == true
+  }
+
+  /// One stand-in user message at the held send's time, so the working
+  /// line's clock starts at the send, not at the transcript's last row.
+  var cloudHeldWorkingAnchor: [WorkChatEnvelope] {
+    [WorkChatEnvelope(
+      sessionId: session.id,
+      timestamp: workDateFormatter.string(from: cloudHeld?.workingSince ?? Date()),
+      sequence: nil,
+      event: .userMessage(text: "", attachments: nil, turnId: nil, steerId: nil, deliveryState: nil, processed: nil)
+    )]
+  }
+
   @ViewBuilder
   var streamingStatusSection: some View {
     if isStreamingTurn, let ctoLive {
@@ -2041,6 +2075,16 @@ struct WorkChatSessionView: View {
         onOpenSteps: turnToolActivity.active.map { _ in
           { toolActivitySheet = .active }
         }
+      )
+      .id("chat-streaming-status")
+      .frame(maxWidth: .infinity, alignment: .leading)
+    } else if !isStreamingTurn, cloudHeld?.isWorking == true {
+      // A message ADE Cloud holds is on its way: the same working line a
+      // send to an awake computer shows, timed from the send.
+      WorkActivityIndicator(
+        transcript: cloudHeldWorkingAnchor,
+        precomputedPresentation: WorkActivityIndicator.Presentation(label: "Working", detail: nil, tint: ADEColor.accent),
+        isStreaming: true
       )
       .id("chat-streaming-status")
       .frame(maxWidth: .infinity, alignment: .leading)

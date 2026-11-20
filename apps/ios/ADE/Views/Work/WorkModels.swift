@@ -2404,6 +2404,9 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// True for the message that continues a chat after ADE restarted
   /// (`workIsRestartResumeScheduleId`). Never a bubble.
   var userMessageIsRestartResume = false
+  /// The send id of the send that wrote this user message
+  /// (`AgentChatEventEnvelope.userMessageClientSendId`).
+  var userMessageClientSendId: String? = nil
   /// Set on a `system_notice` whose `detail.kind` is `continuity_recovery`. The
   /// event keeps `detail` as text; this is the part the self-healed-failure fold
   /// and the quiet reconnect lines read.

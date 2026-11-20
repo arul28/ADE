@@ -80,6 +80,16 @@ final class AccountCloudStore: ObservableObject {
   /// The account `hiddenMessageIds` belongs to.
   private var hiddenMessagesUserId: String?
   private static let hiddenMessagesLimit = 200
+  /// Held messages the phone saw leave the queue for the chat (open, then
+  /// `delivered`), with when. The chat keeps drawing each as the person's
+  /// own message until its transcript shows the real one, so the message
+  /// never blinks out between the server's word and the chat's. A chat that
+  /// never shows it (the message continued on a new computer's chat) stops
+  /// after `deliveredAwaitingThreadLimit`.
+  @Published private(set) var deliveredAwaitingThread: [String: Date] = [:]
+  /// Held messages the chat's transcript shows: the thread never draws them again.
+  @Published private(set) var retiredFromThread: Set<String> = []
+  private static let deliveredAwaitingThreadLimit: TimeInterval = 120
 
   /// Bumped on an account change: an answer to the last account's read lands nowhere.
   private var accountGeneration = 0
@@ -394,10 +404,59 @@ final class AccountCloudStore: ObservableObject {
       return
     }
     guard generation == accountGeneration else { return }
+    applyQueuedRead(messages, machineKey: machineKey, chatId: chatId)
+  }
+
+  /// One read of a chat's held messages. A message this phone saw open that
+  /// the server now calls delivered stays in the chat's thread until the
+  /// transcript shows it (`deliveredAwaitingThread`); one delivered before
+  /// the phone looked is never drawn.
+  func applyQueuedRead(_ messages: [CloudChatQueuedMessage], machineKey: String, chatId: String) {
     loadHiddenMessagesIfNeeded()
     let key = Self.chatKey(machineKey: machineKey, chatId: chatId)
     let next = messages.sorted { ($0.seq ?? 0) < ($1.seq ?? 0) }
+    let wasOpen = Set((queued[key] ?? []).filter(\.isOpen).map(\.messageId))
+    let now = Date()
+    for message in next where message.state == "delivered"
+      && wasOpen.contains(message.messageId)
+      && !retiredFromThread.contains(message.messageId)
+      && deliveredAwaitingThread[message.messageId] == nil {
+      deliveredAwaitingThread[message.messageId] = now
+    }
     if queued[key] != next { queued[key] = next }
+  }
+
+  /// The held messages a chat draws in its thread as the person's own
+  /// messages, oldest first: the ones on their way (queued, sending,
+  /// waiting for a sign-in), the failed ones the person did not put back
+  /// or dismiss, and the ones delivered while the chat was open that its
+  /// transcript does not show yet. Never one the transcript already showed.
+  func threadMessages(machineKey: String, chatId: String) -> [CloudChatQueuedMessage] {
+    let now = Date()
+    return (queued[Self.chatKey(machineKey: machineKey, chatId: chatId)] ?? []).filter { message in
+      guard !retiredFromThread.contains(message.messageId) else { return false }
+      if message.isOpen { return true }
+      switch message.state {
+      case "failed":
+        return !hiddenMessageIds.contains(message.messageId)
+      case "delivered":
+        guard let at = deliveredAwaitingThread[message.messageId] else { return false }
+        return now.timeIntervalSince(at) < Self.deliveredAwaitingThreadLimit
+      default:
+        return false
+      }
+    }
+  }
+
+  /// The chat's transcript shows these held messages now (see
+  /// `cloudHeldMessagesShown`): the thread stops drawing them, for good.
+  func retireFromThread(_ messageIds: Set<String>) {
+    let fresh = messageIds.subtracting(retiredFromThread)
+    guard !fresh.isEmpty else { return }
+    retiredFromThread.formUnion(fresh)
+    for id in fresh where deliveredAwaitingThread[id] != nil {
+      deliveredAwaitingThread[id] = nil
+    }
   }
 
   /// The held messages a chat shows: the open ones, and the failed ones
@@ -467,14 +526,25 @@ final class AccountCloudStore: ObservableObject {
         accountCloudDecodeParts(page.parts)
       }.value
       guard generation == self.accountGeneration, !Task.isCancelled else { return }
-      self.transcriptCursors[id] = page.hasMore ? page.nextBefore : nil
+      // A read again (the chat reopened, a delivered message) keeps the
+      // older place the reader already paged to: the engine keeps those rows.
+      if !page.hasMore {
+        self.transcriptCursors[id] = nil
+      } else if let next = page.nextBefore {
+        self.transcriptCursors[id] = min(self.transcriptCursors[id] ?? next, next)
+      }
       sync.chatThreadRegistry.routeSnapshot(
         ChatThreadSnapshotInput(
           sessionId: sessionId,
           events: events,
           hasOlderHistory: page.hasMore,
           turnActive: false,
-          sessionFound: true
+          sessionFound: true,
+          // Saved lines carry their durable `sequence`: the engine asks for
+          // older history by sequence, and `olderSavedPage` answers with the
+          // next older part. Without this the engine had no cursor to ask
+          // with, so scrolling up stopped at the newest part.
+          hostSupportsChatLogV2: true
         ),
         key: key
       )
@@ -513,6 +583,8 @@ final class AccountCloudStore: ObservableObject {
     hiddenMessageIds = []
     hiddenMessageOrder = []
     hiddenMessagesUserId = nil
+    deliveredAwaitingThread = [:]
+    retiredFromThread = []
     transcriptCursors = [:]
     for task in transcriptReads.values { task.cancel() }
     transcriptReads = [:]
@@ -541,6 +613,41 @@ func accountCloudDecodeParts(_ parts: [CloudChatTranscriptPage.Part]) -> [ChatTh
     }
   }
   return events
+}
+
+/// The held messages a chat's transcript already shows, by message id: a
+/// user message that carries the held message's send id, or, from a
+/// computer whose ADE writes no send id, a user message with its text
+/// written after the message was held. Each transcript message answers for
+/// one held message. Only the newest rows are read: a delivered message
+/// lands at the end.
+func cloudHeldMessagesShown(_ messages: [CloudChatQueuedMessage], in transcript: [WorkChatEnvelope]) -> Set<String> {
+  guard !messages.isEmpty else { return [] }
+  var sendIds = Set<String>()
+  var unkeyed: [(text: String, at: Date?)] = []
+  for envelope in transcript.suffix(400) {
+    guard case .userMessage(let text, _, _, _, _, _) = envelope.event else { continue }
+    if let sendId = envelope.userMessageClientSendId {
+      sendIds.insert(sendId)
+    } else {
+      unkeyed.append((text.trimmingCharacters(in: .whitespacesAndNewlines), workParsedDate(envelope.timestamp)))
+    }
+  }
+  var shown = Set<String>()
+  for message in messages {
+    if sendIds.contains(message.messageId) {
+      shown.insert(message.messageId)
+      continue
+    }
+    guard let text = nonEmptyTrimmed(message.text), let createdAt = message.createdAt else { continue }
+    // Two minutes of slack for the clocks of the phone's server and the computer.
+    let heldAt = Date(timeIntervalSince1970: createdAt / 1000).addingTimeInterval(-120)
+    if let index = unkeyed.firstIndex(where: { $0.text == text && ($0.at.map { $0 >= heldAt } ?? false) }) {
+      unkeyed.remove(at: index)
+      shown.insert(message.messageId)
+    }
+  }
+  return shown
 }
 
 /// A file sent with a message to a sleeping ADE Cloud chat.

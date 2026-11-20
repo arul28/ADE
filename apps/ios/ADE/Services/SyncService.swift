@@ -145,8 +145,9 @@ enum SyncChatMessageDelivery: Equatable {
   /// mirroring desktop's queue-full handling.
   case dropped(reason: String?)
   /// ADE Cloud's server holds the message for a chat whose computer is
-  /// asleep or deleted. The chat's queued row (`CloudQueuedMessagesView`) is
-  /// its one copy until it reaches the chat, so a caller keeps no echo.
+  /// asleep or deleted. The thread draws the held message
+  /// (`WorkCloudHeldThread`) as its one copy until the chat's transcript
+  /// shows it, so a caller keeps no echo.
   case heldByServer
 }
 
