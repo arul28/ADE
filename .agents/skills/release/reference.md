@@ -1062,7 +1062,10 @@ the account half.
   binding/secret preflights, and the post-deploy auth smokes. `npx wrangler deploy`
   is a bypass, not a workaround. If an entry point stops on a preflight, a missing
   migration, or a missing smoke credential, repair that blocker and rerun the entry
-  point.
+  point. An entry point that is two halves (`deploy:production:prepare` then
+  `deploy:production:upload`, `deploy:prepare` then `deploy:upload`) may run as
+  those halves, as `deploy-web.yml` does, so the upload takes
+  `--var SENTRY_RELEASE:…`; check the halves still make up the whole script.
 - **Reconcile bindings against the account BEFORE deploying.** A binding that
   names a resource which does not exist in the account is a deploy-time failure
   no code test catches.
@@ -1363,7 +1366,9 @@ npx wrangler@4.105.0 pages deploy apps/desktop/dist/web-client \
 # (`workerSentryEnabled` in src/sentryScrub.ts), so pass the release the way
 # deploy-web.yml computes it, or production errors go unreported.
 npm ci
-SENTRY_RELEASE="ade@$(git describe --tags --match 'v[0-9]*' | sed 's/^v//')"
+version="$(git describe --tags --match 'v[0-9]*' 2>/dev/null | sed 's/^v//')"
+[ -n "$version" ] || version="$(node -p "require('./apps/desktop/package.json').version")"
+SENTRY_RELEASE="ade@$version"
 (cd apps/account-directory && npm run deploy:production:prepare && npm run deploy:production:upload -- --var "SENTRY_RELEASE:$SENTRY_RELEASE")
 (cd apps/webhook-relay && npm run deploy:prepare && npm run deploy:upload -- --var "SENTRY_RELEASE:$SENTRY_RELEASE")
 (cd apps/tunnel-relay && npm run deploy -- --tag "$(git rev-parse origin/main)" --message "release $(git rev-parse --short origin/main)" --var "SENTRY_RELEASE:$SENTRY_RELEASE")

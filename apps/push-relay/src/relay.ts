@@ -494,12 +494,15 @@ async function loadSuppressions(
   const keys = [...new Set(dedupeKeys)];
   const suppressions = new Map<string, string>();
   if (keys.length === 0) return suppressions;
+  // A row past its retention suppresses nothing, however late the prune runs.
+  const cutoff = new Date(Date.now() - SUPPRESSION_RETENTION_HOURS * 60 * 60 * 1000).toISOString();
   const rows = (await env.DB
     .prepare(`
       select suppression_key, content_hash from publish_suppression
        where machine_key = ? and suppression_key in (${keys.map(() => "?").join(", ")})
+         and published_at >= ?
     `)
-    .bind(machineKey, ...keys)
+    .bind(machineKey, ...keys, cutoff)
     .all<SuppressionRow & { suppression_key: string }>()).results ?? [];
   for (const row of rows) suppressions.set(row.suppression_key, row.content_hash);
   return suppressions;

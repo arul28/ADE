@@ -9241,6 +9241,9 @@ export function createPtyService({
         promptAtLaunch,
       );
       const created = await flight;
+      // Held from launch: an exit removes the entry from the map, and the
+      // failure below reads the code it recorded.
+      const launchedEntry = ptys.get(created.ptyId);
       // The message itself may be embedded in the provider's launch command,
       // so there is not always a later PTY write that can mark the new turn.
       // Wait until launch succeeds before clearing the previous turn's state.
@@ -9264,7 +9267,7 @@ export function createPtyService({
         // code, so the person and the report can tell it from a stuck prompt.
         const exited = !liveEntryBySessionId(created.sessionId);
         // The resumed process's own code: the session row may show the prior run's.
-        const exitCode = exited ? ptys.get(created.ptyId)?.processExitCode ?? null : null;
+        const exitCode = exited ? launchedEntry?.processExitCode ?? null : null;
         logger.warn("pty.resume_send_input_failed_preserved", {
           sessionId,
           ptyId: created.ptyId,

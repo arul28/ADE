@@ -5306,9 +5306,10 @@ final class SyncService: ObservableObject {
   private var lastProjectSwitchRequestedAt: TimeInterval?
   private static let projectSwitchSettleWindow: TimeInterval = 90
   /// Per machine: when this phone last asked it to serve the phone's project
-  /// again, and whether another device moved it off again soon after. Once
-  /// held, the phone stops asking until the person picks a project.
-  private var hostedProjectReasserts: [String: (at: TimeInterval, held: Bool)] = [:]
+  /// again, whether the machine did, and whether another device moved it off
+  /// again soon after. Once held, the phone stops asking until the person
+  /// picks a project.
+  private var hostedProjectReasserts: [String: (at: TimeInterval, accepted: Bool, held: Bool)] = [:]
   private static let hostedProjectReconcileDelayNanoseconds: UInt64 = 15_000_000_000
   private static let hostedProjectReassertCooldown: TimeInterval = 600
   /// Bumps each time a project open starts, so a caller that waits between
@@ -6554,18 +6555,21 @@ final class SyncService: ObservableObject {
       "hostedProjectId": catalogHostedProjectId ?? "none",
       "hostAppVersion": hostAppVersionByMachineKey[machineKey] ?? "nil",
     ]
-    if let last = hostedProjectReasserts[machineKey]?.at, now - last < Self.hostedProjectReassertCooldown {
+    if let last = hostedProjectReasserts[machineKey], now - last.at < Self.hostedProjectReassertCooldown {
+      // The machine refused the last ask: wait out the cooldown, without
+      // calling it contention.
+      guard last.accepted else { return }
       // Moved off again soon after this phone moved it back: another device
       // on this machine works in another project. Give way instead of taking
       // turns; the person's next project pick asks again.
-      hostedProjectReasserts[machineKey] = (last, true)
+      hostedProjectReasserts[machineKey] = (last.at, true, true)
       syncConnectLog.notice(
         "ADE_SYNC_TRACE host_project_held trigger=\(trigger.rawValue, privacy: .public) hosted=\(self.catalogHostedProjectId ?? "none", privacy: .public)"
       )
       CrashReporting.breadcrumb("sync.project", message: "another device moved the machine to another project; giving way", data: fields)
       return
     }
-    hostedProjectReasserts[machineKey] = (now, false)
+    hostedProjectReasserts[machineKey] = (now, false, false)
     syncConnectLog.notice(
       "ADE_SYNC_TRACE host_project_reassert trigger=\(trigger.rawValue, privacy: .public) active=\(active.id, privacy: .public) hosted=\(self.catalogHostedProjectId ?? "none", privacy: .public)"
     )
@@ -6579,8 +6583,18 @@ final class SyncService: ObservableObject {
         let raw = try await self.sendProjectSwitchRequest(active, rootPath: rootPath)
         switched = (try? self.decode(raw, as: MobileProjectSwitchResultPayload.self))?.ok == true
       } catch {
+        // No answer (the link dropped): this ask does not count, so the
+        // reconnect's hello asks again.
         syncConnectLog.notice("ADE_SYNC_TRACE host_project_reassert failure=\(syncLogErrorSummary(error), privacy: .public)")
+        if self.hostedProjectReasserts[machineKey]?.at == now {
+          self.hostedProjectReasserts.removeValue(forKey: machineKey)
+        }
         return
+      }
+      if !switched {
+        syncConnectLog.notice("ADE_SYNC_TRACE host_project_reassert refused active=\(active.id, privacy: .public)")
+      } else if self.hostedProjectReasserts[machineKey]?.at == now {
+        self.hostedProjectReasserts[machineKey] = (now, true, false)
       }
       // The person picked a project, or the phone moved machines, meanwhile:
       // that open owns the connection now.
@@ -29705,6 +29719,9 @@ extension SyncService {
       "rosterChatDeltaV1",
       "rosterPrioritySnapshotV1",
       "rosterChatPagesV1",
+      // A chat this machine cannot serve answers with its reason
+      // (`MachineConnection.handleChatSnapshot`), not silence.
+      "chatSubscribeUnavailableV1",
     ]
     return metadata
   }

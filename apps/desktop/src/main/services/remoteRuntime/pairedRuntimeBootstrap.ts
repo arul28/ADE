@@ -453,7 +453,11 @@ function pairedRouteFailureKind(
   attempts: readonly { failure?: RemoteRuntimeConnectionAttemptFailure; errorCode?: string }[],
 ): ExpectedErrorKind | null {
   if (failure !== "protocol") return PAIRED_ROUTE_FAILURE_KIND[failure];
-  return attempts.some((attempt) => attempt.failure === "protocol" && VERSION_SKEW_ERROR_CODES.has(attempt.errorCode ?? ""))
+  // Every protocol failure must be version skew: one malformed hello beside
+  // it is still drift worth a report.
+  const protocolAttempts = attempts.filter((attempt) => attempt.failure === "protocol");
+  return protocolAttempts.length > 0
+    && protocolAttempts.every((attempt) => VERSION_SKEW_ERROR_CODES.has(attempt.errorCode ?? ""))
     ? "user"
     : null;
 }
