@@ -300,6 +300,8 @@ Json Engine::stopRecording(const Json& req) {
   std::unique_ptr<Mp4Recorder> recorder;
   int64_t wall = 0, idleCut = 0, media = 0, frames = 0;
   std::wstring path;
+  HWND window = nullptr;
+  std::string writeError;
   {
     std::lock_guard<std::mutex> lock(lane->media);
     if (!lane->recorder) fail(code::kRecordingNotRunning, "Lane " + lane->laneId + " is not recording.");
@@ -309,22 +311,70 @@ Json Engine::stopRecording(const Json& req) {
     media = lane->recordMediaMs;
     path = lane->recordPath;
     frames = lane->recordFrames;
+    window = lane->recordWindow;
+    writeError = lane->recordError;
     lane->recordWindow = nullptr;
   }
-  std::string err;
-  if (!recorder->finish(&err)) fail(code::kInternalError, err);
   // Joining the media thread races stream.start's ensureMediaThread unless
   // both run under the operation lock.
-  std::unique_lock<std::recursive_mutex> operation(operationMutex_);
-  bool streaming;
-  {
-    std::lock_guard<std::mutex> lock(lane->media);
-    streaming = lane->streaming;
+  const auto releaseMediaThread = [&] {
+    std::unique_lock<std::recursive_mutex> operation(operationMutex_);
+    bool streaming;
+    {
+      std::lock_guard<std::mutex> lock(lane->media);
+      streaming = lane->streaming;
+    }
+    if (!streaming) {
+      lane->mediaRun = false;
+      if (lane->mediaThread.joinable()) lane->mediaThread.join();
+    }
+  };
+  // Media Foundation cannot finalize an MP4 that has no samples
+  // (MF_E_SINK_NO_SAMPLES_PROCESSED, 0xC00D4A44). A stop that came before the
+  // media loop's first frame, or a screen that gave none, is saved as one
+  // still picture held for the recording's length, as the Mac driver saves a
+  // screen that never redrew. Only when even that picture cannot be taken is
+  // the recording refused, and the empty file removed.
+  std::string stillError;
+  if (frames == 0 && writeError.empty()) {
+    Frame still;
+    bool captured;
+    {
+      std::lock_guard<std::recursive_mutex> operation(operationMutex_);
+      captured = captureLane(*lane, still, window, &stillError);
+    }
+    if (captured) {
+      Frame sized = still;
+      if (sized.width != recorder->width() || sized.height != recorder->height()) {
+        Frame canvas;
+        canvas.resize(recorder->width(), recorder->height());
+        blit(still, canvas, 0, 0);
+        sized = std::move(canvas);
+      }
+      std::vector<uint8_t> nv12;
+      bgraToNv12(sized, nv12);
+      const int64_t heldMs = std::max<int64_t>(1, wall);
+      if (recorder->write(nv12, 0, heldMs * 10'000, &writeError)) {
+        frames = 1;
+        media = heldMs;
+      }
+    }
   }
-  if (!streaming) {
-    lane->mediaRun = false;
-    if (lane->mediaThread.joinable()) lane->mediaThread.join();
+  if (frames == 0) {
+    recorder.reset();
+    DeleteFileW(path.c_str());
+    releaseMediaThread();
+    if (!writeError.empty()) fail(code::kInternalError, "could not write the recording: " + writeError);
+    if (stillError.find("handle is invalid") != std::string::npos) {
+      fail(code::kLocked, "This PC is locked, so the recording has no picture. Unlock it and record again.");
+    }
+    fail(code::kInternalError, "The recording for lane " + lane->laneId
+                                   + " captured no frames; the Windows screen gave no picture: " + stillError);
   }
+  std::string err;
+  const bool finished = recorder->finish(&err);
+  releaseMediaThread();
+  if (!finished) fail(code::kInternalError, err);
   Json out = Json::object();
   out["filePath"] = narrow(path);
   out["durationMs"] = media;

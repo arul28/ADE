@@ -31,11 +31,12 @@
  * can lose a start, a reused pid reads as alive, and a brain the computer
  * killed by restarting is not counted (it started before this boot).
  */
+import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { captureProblem, flushSentry, isSentryActive } from "../../../desktop/src/shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, type DiagnosticEvent } from "../../../desktop/src/shared/sentry/diagnostics";
-import { isPidAlive } from "../serviceManager/common";
+import { currentUid, isPidAlive, resolveRuntimeServiceName } from "../serviceManager/common";
 import { resolveWindowsServicePidPath } from "../serviceManager/installWindows";
 import { readWindowsServicePidRecord } from "../serviceManager/windowsSupervisor";
 import { BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE } from "../services/runtime/brainLoopWatchdog";
@@ -58,6 +59,9 @@ const RESTART_LOOP_REPORT_COOLDOWN_MS = 24 * 60 * 60_000;
 const STARTS_KEPT = 20;
 /** One issue per platform: the platform is appended. */
 const RESTART_LOOP_FINGERPRINT = ["brain", "restart_loop"] as const;
+
+/** launchd's word on the last brain it saw end (macOS), read when a loop is found. */
+let launchdLastExit: string | null = null;
 
 /** This brain's own start, for `markBrainStoppedCleanly`. */
 let current: { startsPath: string; pid: number; at: string } | null = null;
@@ -105,6 +109,10 @@ export function startBrainRestartLoopWatch(options: { runtimeDir: string; build:
   // This brain sends the report if it lives long enough; if it dies first,
   // the next one finds `loopFoundAt` and takes over.
   const delayMs = Math.max(0, Math.min(LOOP_QUIET_MS, loopFoundAtMs + LOOP_REPORT_MAX_DELAY_MS - nowMs));
+  // Asked now, so the answer is in hand when the report goes.
+  readLaunchdLastExit().then((value) => {
+    launchdLastExit = value;
+  }, () => {});
   setTimeout(() => sendLoopReport(startsPath), delayMs).unref();
 }
 
@@ -261,7 +269,12 @@ function sendLoopReport(startsPath: string): void {
         "brain.restart_loop.supervisors": supervisorPids.size,
       },
       // Flat: Sentry keeps three levels of `extra`, so a nested `cause` would arrive as "[Object]".
-      extra: { restartCount: counted.length, foundAt, starts: starts.map(flattenStart) },
+      extra: {
+        restartCount: counted.length,
+        foundAt,
+        starts: starts.map(flattenStart),
+        ...(launchdLastExit ? { launchdLastExit } : {}),
+      },
     });
     // A brain in a loop may not live long enough for the SDK's own send.
     void flushSentry(2_000);
@@ -293,6 +306,32 @@ function mostCommon(values: readonly string[]): string {
     }
   }
   return best;
+}
+
+/**
+ * How launchd saw the last brain it started end, on macOS: its exit code or
+ * the signal that killed it. A brain launchd restarts writes nothing when it
+ * dies silently (a kill, a native crash), so every start in a loop there says
+ * `previousEnd: unknown`; launchd still knows (ADE-BRAIN-7Q). Null elsewhere,
+ * or when launchd does not answer within two seconds. Runs only in a brain
+ * whose start found a loop waiting for its report, once per start.
+ */
+function readLaunchdLastExit(): Promise<string | null> {
+  if (process.platform !== "darwin") return Promise.resolve(null);
+  const label = resolveRuntimeServiceName();
+  return new Promise((resolve) => {
+    execFile("launchctl", ["print", `gui/${currentUid()}/${label}`], { encoding: "utf8", timeout: 2_000 }, (error, stdout) => {
+      if (error || typeof stdout !== "string") {
+        resolve(null);
+        return;
+      }
+      const facts = ["last exit code", "last terminating signal", "last exit reason"]
+        .map((key) => stdout.match(new RegExp(`^\\s*${key} = (.+)$`, "m"))?.[1]?.trim().slice(0, 120))
+        .map((value, index) => (value ? `${["exit", "signal", "reason"][index]}=${value}` : null))
+        .filter((value): value is string => value !== null);
+      resolve(facts.length > 0 ? facts.join("; ") : null);
+    });
+  });
 }
 
 function flattenStart(start: BrainStart): Record<string, unknown> {

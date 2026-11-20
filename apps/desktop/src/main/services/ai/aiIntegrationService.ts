@@ -138,6 +138,7 @@ import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { loadCursorSdk } from "./cursorSdkLoader";
 import {
+  CursorCloudApiError,
   getCursorApiCloudAgent,
   isCursorCloudAgentId,
   listCursorApiCloudAgents,
@@ -1453,10 +1454,13 @@ export function createAiIntegrationService(args: {
         const message = getErrorMessage(error);
         const planRefusal = classifyProviderAccountRefusal(message) === "plan";
         const rateLimited = CURSOR_REPOS_RATE_LIMIT.test(message);
-        if (planRefusal || rateLimited) {
-          // The account's plan, or Cursor's limit: an answer, not a defect.
+        // A key Cursor refuses (401) is refused again on every read until the
+        // person replaces it, which changes `apiKey` and skips this cache.
+        const keyRefused = error instanceof CursorCloudApiError && error.status === 401;
+        if (planRefusal || rateLimited || keyRefused) {
+          // The account's plan, its key, or Cursor's limit: an answer, not a defect.
           const refusal = error instanceof Error ? error : new Error(message);
-          markExpected(refusal, planRefusal ? "user" : "network");
+          markExpected(refusal, planRefusal || keyRefused ? "user" : "network");
           cursorReposRefusal = { apiKey, at: Date.now(), error: refusal };
           throw refusal;
         }

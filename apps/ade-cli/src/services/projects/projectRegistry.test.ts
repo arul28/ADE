@@ -395,7 +395,8 @@ describe("ProjectRegistry", () => {
     const homeDir = makeTempRoot("ade-project-registry-touch-");
     const projectRoot = path.join(homeDir, "ADE");
     const registryDir = path.join(homeDir, ".ade-runtime");
-    fs.mkdirSync(projectRoot, { recursive: true });
+    // A checkout: the origin read starts git only inside one.
+    fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
     const registry = new ProjectRegistry({
       adeDir: registryDir,
       projectsPath: path.join(registryDir, "projects.json"),
@@ -423,7 +424,8 @@ describe("ProjectRegistry", () => {
     const homeDir = makeTempRoot("ade-project-registry-readd-");
     const projectRoot = path.join(homeDir, "ADE");
     const registryDir = path.join(homeDir, ".ade-runtime");
-    fs.mkdirSync(projectRoot, { recursive: true });
+    // A checkout: the origin read starts git only inside one.
+    fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
     const registry = new ProjectRegistry({
       adeDir: registryDir,
       projectsPath: path.join(registryDir, "projects.json"),
@@ -451,7 +453,8 @@ describe("ProjectRegistry", () => {
     const homeDir = makeTempRoot("ade-project-registry-readd-null-");
     const projectRoot = path.join(homeDir, "ADE");
     const registryDir = path.join(homeDir, ".ade-runtime");
-    fs.mkdirSync(projectRoot, { recursive: true });
+    // A checkout: the origin read starts git only inside one.
+    fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
     const registry = new ProjectRegistry({
       adeDir: registryDir,
       projectsPath: path.join(registryDir, "projects.json"),
@@ -463,6 +466,9 @@ describe("ProjectRegistry", () => {
       runtimeDir: path.join(registryDir, "runtime"),
     });
     registry.add(projectRoot);
+    // git's answer stands until a config file it reads changes; this one gains
+    // a config (no origin in it, so git is asked again).
+    fs.writeFileSync(path.join(projectRoot, ".git", "config"), "[core]\n\trepositoryformatversion = 0\n");
     spawnSyncMock.mockClear();
     spawnSyncMock.mockReturnValueOnce({
       status: 0,

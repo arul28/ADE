@@ -22,6 +22,8 @@ import {
   updateCredentialKeySync,
 } from "../credentials/updateCredentialKey";
 import { runWithAbortSignal } from "../sync/abortSignal";
+import { markExpected } from "../../../../desktop/src/shared/expectedError";
+import { isFetchTransportFailure } from "../../../../desktop/src/shared/fetchTransportFailure";
 import { createRotationJournal } from "./accountSessionRotationJournal";
 import { type DeviceLoginStartOptions, readDeviceStartRetryMs, requestDeviceCodeWithRetry } from "./deviceLoginStart";
 
@@ -2809,6 +2811,19 @@ export function createAccountAuthService(args: {
             });
             break;
           } catch (error) {
+            // Clerk never answered (offline, a dropped connection). undici
+            // throws that as a bare `TypeError: fetch failed`, which the RPC
+            // layer reads as a brain fault and sends on as "Internal error in
+            // account.call": name it, as the env-token exchange above does.
+            if (isFetchTransportFailure(error)) {
+              throw markExpected(
+                new AccountRefreshUnavailableError(
+                  "ADE could not reach the account service to refresh your sign-in. Try again in a moment.",
+                  { cause: error },
+                ),
+                "network",
+              );
+            }
             if (
               !(error instanceof AccountTokenRequestError)
               || error.oauthErrorCode !== "invalid_grant"

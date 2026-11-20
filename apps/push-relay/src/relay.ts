@@ -630,6 +630,24 @@ export async function pruneRelayState(env: PushRelayEnv): Promise<void> {
   await pruneAttentionState(env);
 }
 
+/** How often one isolate prunes from requests; retention is hours to days. */
+const REQUEST_PRUNE_INTERVAL_MS = 60_000;
+const lastRequestPruneAt = new WeakMap<object, number>();
+
+/**
+ * `pruneRelayState` from a request, at most once a minute per isolate and
+ * database. It is nine statements, and it ran after every publish (about
+ * 13,500 a day) for rows whose retention is hours or days; the hourly cron
+ * still runs it in full.
+ */
+async function pruneRelayStateFromRequest(env: PushRelayEnv): Promise<void> {
+  const now = Date.now();
+  const last = lastRequestPruneAt.get(env.DB);
+  if (last !== undefined && now - last < REQUEST_PRUNE_INTERVAL_MS) return;
+  lastRequestPruneAt.set(env.DB, now);
+  await pruneRelayState(env);
+}
+
 function phaseExpiration(phase: PushPhase, nowSeconds = Math.floor(Date.now() / 1000)): number {
   return nowSeconds + PHASE_TTL_SECONDS[phase];
 }
@@ -949,7 +967,7 @@ async function handleDeviceUpsert(
   } else {
     await registrationStatement.run();
   }
-  await pruneRelayState(env);
+  await pruneRelayStateFromRequest(env);
   return json({ ok: true, deviceId, updatedAt: now });
 }
 
@@ -1142,7 +1160,7 @@ async function handlePublish(request: Request, env: PushRelayEnv, machineKey: st
   }
   // Publishes far outnumber device re-registrations, so prune here too or a
   // chatty machine holds expired suppression rows past their retention.
-  await pruneRelayState(env);
+  await pruneRelayStateFromRequest(env);
 
   return json({
     ok: true,

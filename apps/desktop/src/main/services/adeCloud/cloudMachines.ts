@@ -317,6 +317,9 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     const client = await deps.client();
     if (!client) return emptyResult("not_connected", (await deps.whyNoClient?.()) ?? null);
     const asked = startRead();
+    // The plan and hours do not depend on the list: asked together, so the
+    // list costs one server round trip, not two in a row inside its deadline.
+    const accountRead = readAccount(client);
     let instances: CloudInstance[];
     try {
       instances = await client.listInstances();
@@ -325,7 +328,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       logger.warn?.("cloud.machines_read_failed", { error: getErrorMessage(error), refused });
       return emptyResult(refused ? "access_refused" : "unreachable", getErrorMessage(error));
     }
-    const account = await readAccount(client);
+    const account = await accountRead;
     if (account) lastDeletedInstanceIds = account.deletedInstanceIds;
     const catalog = cloudCatalogOf(account);
     const live = instances.filter((instance) => instance.status !== "deleted");

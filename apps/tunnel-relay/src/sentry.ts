@@ -18,13 +18,18 @@ export function sentryOptions(env: SentryEnv): CloudflareOptions {
   // `SENTRY_ENVIRONMENT` is set to `production` only in the deployed config
   // (wrangler.jsonc). Anything else, `wrangler dev` included, is
   // `development` and sends nothing, so local runs never spend the quota.
+  // A run with no SENTRY_RELEASE sends nothing either: every deploy passes it
+  // (deploy-web.yml), and `wrangler dev --env production` or a workerd test
+  // that loads the deployed config does not, so those cannot file production
+  // events (their stacks were local `.wrangler/tmp` and `/app/repo` paths).
   const environment = env.SENTRY_ENVIRONMENT?.trim() || "development";
+  const deployed = Boolean(env.SENTRY_RELEASE?.trim());
   return {
     dsn: env.SENTRY_DSN,
     release: env.SENTRY_RELEASE,
     dist: `worker-${WORKER_NAME}`,
     environment,
-    enabled: environment !== "development",
+    enabled: deployed && environment !== "development",
     initialScope: { tags: { worker: WORKER_NAME } },
     // Every tunnel frame runs webSocketMessage: never start a span for one, so
     // the hot path pays no tracing cost at all (not just a dropped send).

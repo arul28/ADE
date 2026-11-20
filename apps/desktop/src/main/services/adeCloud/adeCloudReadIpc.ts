@@ -25,13 +25,21 @@ import { adeCloudBinding, isAdeCloudBinding } from "../../../shared/adeCloud/bin
 import type { RemoteOpenProjectBinding } from "../../../shared/types";
 import type { AdeCloudQueueSendAnswer } from "../../../shared/adeCloud/chatQueue";
 import { runAdeCloudAccountCall } from "../../../shared/adeCloud/accountCalls";
-import { getSignedInAccountAccessToken } from "../../../../../ade-cli/src/services/account/accountAuthService";
+import { accountTokenWithin, DESKTOP_CLOUD_TOKEN_WAIT_MS } from "./cloudAccess";
+import { CloudProviderError } from "./cloudProvider";
 import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import type { Logger } from "../logging/logger";
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const KEY_MAX_CHARS = 200;
+/**
+ * One request to the account server. With the token wait in front of it
+ * (`DESKTOP_CLOUD_TOKEN_WAIT_MS`) it stays inside the 30 s IPC deadline, so a
+ * slow server answers "did not answer in time" in words, as the network,
+ * instead of the IPC timing out around both (the client default is 30 s).
+ */
+const ACCOUNT_REQUEST_TIMEOUT_MS = 18_000;
 
 function text(value: unknown, max = KEY_MAX_CHARS): string | null {
   return typeof value === "string" && value.trim() && value.length <= max ? value.trim() : null;
@@ -58,7 +66,11 @@ export function registerAdeCloudReadIpc(args: {
       return null;
     }
     if (!baseUrl) return null;
-    return createCloudApiClient({ baseUrl, accessToken: () => getSignedInAccountAccessToken(account) });
+    return createCloudApiClient({
+      baseUrl,
+      timeoutMs: ACCOUNT_REQUEST_TIMEOUT_MS,
+      accessToken: () => accountTokenWithin(account, DESKTOP_CLOUD_TOKEN_WAIT_MS),
+    });
   };
 
   /** A read: its answer, null from an older server or while signed out; a failure says it could not load. */
@@ -66,6 +78,7 @@ export function registerAdeCloudReadIpc(args: {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, channel)) return null;
     const api = client();
     if (!api) return null;
+    const startedAt = Date.now();
     try {
       return await run(api);
     } catch (error) {
@@ -73,6 +86,10 @@ export function registerAdeCloudReadIpc(args: {
         channel,
         error: error instanceof Error ? error.name : "unknown",
         status: error instanceof CloudApiError ? error.status : null,
+        // Which wait ran out: `token_timeout` (the sign-in refresh), `timeout`
+        // (the server), `network`, or the server's own code.
+        code: error instanceof CloudApiError || error instanceof CloudProviderError ? error.code : null,
+        durationMs: Date.now() - startedAt,
       });
       const failure = new Error("ADE couldn't load this from your ADE account. Try again.");
       // No answer (offline, a network still coming up at launch) or the

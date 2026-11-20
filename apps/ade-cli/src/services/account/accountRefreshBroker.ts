@@ -2,6 +2,7 @@ import {
   AccountRefreshUnavailableError,
   type AccountRefreshBroker,
 } from "./accountAuthService";
+import { carryExpected } from "../../../../desktop/src/shared/expectedError";
 
 export type AccountRefreshBrokerTransport = {
   /** Probe the transport immediately before a request; false hands auth back to its local path. */
@@ -64,7 +65,9 @@ export function createAccountRefreshBroker(
         return token.trim();
       } catch (error) {
         if (error instanceof AccountRefreshUnavailableError) throw error;
-        throw new AccountRefreshUnavailableError(unavailableMessage, { cause: error });
+        // The brain's own verdict travels with it: a refresh it could not run
+        // because the network is down is marked so on the wire.
+        throw carryExpected(error, new AccountRefreshUnavailableError(unavailableMessage, { cause: error }));
       }
     },
   };

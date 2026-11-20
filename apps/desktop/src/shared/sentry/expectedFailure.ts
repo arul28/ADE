@@ -320,6 +320,9 @@ const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set([
   "chat_runtime_owned_elsewhere",
   // A machine with no ADE account signed in (lane sharing, account reads).
   "signed_out",
+  // A GitHub read with no GitHub sign-in on this machine (no `gh` login, no
+  // PAT); the repository picker tells the user to sign in.
+  "github_not_connected",
 ]);
 
 /**

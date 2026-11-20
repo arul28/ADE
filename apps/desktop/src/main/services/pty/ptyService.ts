@@ -9255,12 +9255,21 @@ export function createPtyService({
           || !resumeFlightCreated,
       });
       if (!written) {
+        // The usual cause: the resumed CLI ended before its prompt was ready
+        // (Sentry ADE-DESKTOP-D9, Windows, at ~2 s). Say so, with its exit
+        // code, so the person and the report can tell it from a stuck prompt.
+        const exited = !liveEntryBySessionId(created.sessionId);
+        const exitCode = exited ? sessionService.get(created.sessionId)?.exitCode ?? null : null;
         logger.warn("pty.resume_send_input_failed_preserved", {
           sessionId,
           ptyId: created.ptyId,
           provider,
+          exited,
+          exitCode,
         });
-        throw new Error(`Terminal session '${sessionId}' could not receive the message.`);
+        throw new Error(exited
+          ? `Terminal session '${sessionId}' could not receive the message: its ${provider} CLI exited${exitCode != null ? ` (exit code ${exitCode})` : ""} before it was ready.`
+          : `Terminal session '${sessionId}' could not receive the message.`);
       }
 
       return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });

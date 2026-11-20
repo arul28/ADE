@@ -6,13 +6,17 @@ import type {
   SyncChatHistoryRequestPayload,
   SyncChatSubscribePayload,
   SyncChatSubscribeSnapshotPayload,
+  SyncChatSubscribeUnavailable,
   SyncChatToolResultRequestPayload,
   SyncChatToolResultResponsePayload,
   SyncChatUnsubscribePayload,
   SyncEnvelope,
   SyncPeerMetadata,
 } from "../../../../desktop/src/shared/types";
-import { SYNC_MOBILE_CHAT_SLIM_CAPABILITY } from "../../../../desktop/src/shared/types";
+import {
+  SYNC_CHAT_SUBSCRIBE_UNAVAILABLE_CAPABILITY,
+  SYNC_MOBILE_CHAT_SLIM_CAPABILITY,
+} from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
 import {
@@ -132,6 +136,26 @@ export function createBrainChatSubscriptions(args: {
 
   const peerWantsSlimChat = (peer: BrainChatPeer): boolean =>
     peer.metadata?.capabilities?.includes(SYNC_MOBILE_CHAT_SLIM_CAPABILITY) === true;
+
+  /**
+   * Answers a subscribe this ingress cannot serve, to a peer that understands
+   * `unavailable`. Older peers get no answer, as before (see the capability).
+   */
+  const sendSubscribeUnavailable = (
+    peer: BrainChatPeer,
+    requestId: string | null | undefined,
+    sessionId: string,
+    unavailable: SyncChatSubscribeUnavailable,
+  ): void => {
+    if (peer.metadata?.capabilities?.includes(SYNC_CHAT_SUBSCRIBE_UNAVAILABLE_CAPABILITY) !== true) return;
+    send(peer.ws, "chat_subscribe", {
+      sessionId,
+      capturedAt: nowIso(),
+      truncated: false,
+      events: [],
+      unavailable,
+    } satisfies SyncChatSubscribeSnapshotPayload, requestId);
+  };
 
   const markChatEventSent = (subscription: BrainChatSubscription, event: AgentChatEventEnvelope): void => {
     subscription.sentKeys.add(chatEventDeliveryKey(event));
@@ -265,6 +289,19 @@ export function createBrainChatSubscriptions(args: {
       for (const event of prepared.pinnedEvents) markChatEventSent(subscription, event);
       for (const event of prepared.sourceEvents) markChatEventSent(subscription, event);
       hydrated = true;
+    } catch (error) {
+      args.logger.warn("sync_brain.chat_subscribe_failed", {
+        sessionId,
+        scope,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (isCurrent()) {
+        sendSubscribeUnavailable(peer, requestId, sessionId, {
+          code: "transcript_read_failed",
+          message: "The machine couldn’t read this chat’s transcript.",
+        });
+      }
+      throw error;
     } finally {
       subscription.hydrating = false;
       // A failed snapshot must not leave a half-built subscription behind; a
@@ -290,7 +327,12 @@ export function createBrainChatSubscriptions(args: {
       // No project is hosted here, so an unscoped project chat has no owner;
       // a personal chat needs the personal scope wired.
       if (!scope || (scope === "personal" && !args.personalChatScope)) {
-        // The phone gets no answer and shows "Couldn't load the transcript".
+        // A phone that understands `unavailable` is told why; an older one
+        // gets no answer and shows "Couldn't load the transcript".
+        sendSubscribeUnavailable(peer, requestId, sessionId, {
+          code: "no_chat_scope",
+          message: "The machine couldn’t tell which project this chat belongs to. Go back and open it again.",
+        });
         args.logger.warn("sync_brain.chat_subscribe_unanswered", {
           sessionId,
           reason: scope === "personal" ? "personal_scope_unavailable" : "no_chat_scope",

@@ -14262,6 +14262,25 @@ describe("chat_subscribe snapshots", () => {
         events: [foreignEvent],
       });
 
+      // A phone whose active project is no longer the hosted one (the host
+      // moved under it) stamps the envelope, not the payload, with its
+      // project. It is served from that project's transcript, not dropped.
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "stale-active-project-subscribe",
+        projectId: "foreign-project-a",
+        payload: { sessionId: session.id },
+      }));
+      const staleActiveProjectSnapshot = await waitForEnvelope(
+        peer.envelopes,
+        "chat_subscribe",
+        "stale-active-project-subscribe",
+      );
+      expect(staleActiveProjectSnapshot.payload).toMatchObject({
+        sessionId: session.id,
+        events: [foreignEvent],
+      });
+
       const foreignTranscriptSize = Buffer.byteLength(`${JSON.stringify(foreignEvent)}\n`, "utf8");
       peer.ws.send(encodeSyncEnvelope({
         type: "chat_history",

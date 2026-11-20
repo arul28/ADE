@@ -9,7 +9,7 @@ import type {
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
 import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, markExpected, type ExpectedErrorKind } from "../../../shared/expectedError";
 import {
   coerceProjects,
   validateRemoteRuntimeInitializeResult,
@@ -430,11 +430,31 @@ export async function bootstrapPairedRuntime(args: {
       diagnostic,
     );
   }
-  throw new PairedRuntimeTransportUnavailableError(
+  const unavailable = new PairedRuntimeTransportUnavailableError(
     // The message names the computer as ADE shows it (its ADE name), not
     // the host name of its operating system.
     pairedRuntimeFailureMessage(failure, args.target.name.trim() || credentials.hostIdentity.name, accountHelloCode, { handshakeTimedOut }),
     undefined,
     diagnostic,
   );
+  const kind = PAIRED_ROUTE_FAILURE_KIND[failure];
+  throw kind ? markExpected(unavailable, kind) : unavailable;
 }
+
+/**
+ * Every route spent, by its dominant cause. The machine asleep, busy, or
+ * another computer at its saved address is the network between the two; a
+ * stale pairing, a sign-in or an older ADE there is the person's to fix, and
+ * the headline says how. Only a cause ADE could not name stays a report.
+ */
+const PAIRED_ROUTE_FAILURE_KIND: Record<RemoteRuntimeConnectionAttemptFailure, ExpectedErrorKind | null> = {
+  unreachable: "network",
+  timeout: "network",
+  identity: "network",
+  superseded: "network",
+  pairing: "user",
+  authentication: "user",
+  capability: "user",
+  protocol: "user",
+  unknown: null,
+};

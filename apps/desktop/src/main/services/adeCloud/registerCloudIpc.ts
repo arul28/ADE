@@ -46,6 +46,7 @@ import {
   cloudAccessEnabled,
   cloudNoProviderSentence,
   cloudVaultFromBridge,
+  DESKTOP_CLOUD_TOKEN_WAIT_MS,
   readCloudAccessView,
   getCloudProvider,
   knownCloudProvider,
@@ -159,6 +160,7 @@ export function registerCloudIpc(args: {
     runningVersion: () => app.getVersion(),
     logger,
     onDirectoryUnavailable: (error) => logger.warn("cloud.account_directory_unavailable", { error: getErrorMessage(error) }),
+    tokenWaitMs: DESKTOP_CLOUD_TOKEN_WAIT_MS,
   });
   const directoryBaseUrl = credentials.directoryBaseUrl;
 

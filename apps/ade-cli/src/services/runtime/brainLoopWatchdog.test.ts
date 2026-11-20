@@ -21,7 +21,18 @@ import {
   trackBrainMemoryPressure,
   startBrainLoopWatchdog,
 } from "./brainLoopWatchdog";
-import { brainLoopFreezeCause } from "./brainLoopWatchdogWorker";
+import { BRAIN_LOOP_FREEZE_LIMITS, brainLoopFreezeCause as brainLoopFreezeCauseSource } from "./brainLoopWatchdogWorker";
+
+/**
+ * A function as the watchdog worker runs it: recompiled from its source text
+ * with nothing of this module in scope. A minified bundle renames module
+ * constants, so a body that names one throws in the worker and kills it.
+ */
+function asInWorker<T extends (...args: never[]) => unknown>(fn: T): T {
+  return new Function(`return (${fn.toString()});`)() as T;
+}
+const brainLoopFreezeCause = asInWorker(brainLoopFreezeCauseSource);
+const evaluateInWorker = asInWorker(evaluateBrainLoopWatchdog);
 
 describe("brainLoopWatchdog", () => {
 
@@ -46,11 +57,11 @@ describe("brainLoopWatchdog", () => {
       cpuMs,
       windowMs: 30_000,
       syncFsCallBlockedMs: fsMs,
-    })).toBe(cause);
+    }, BRAIN_LOOP_FREEZE_LIMITS)).toBe(cause);
   });
 
   it("detects a main-thread heartbeat gap while the worker check cadence stays healthy", () => {
-    expect(evaluateBrainLoopWatchdog({
+    expect(evaluateInWorker({
       nowWallMs: 20_000,
       nowMonotonicMs: 20_000,
       lastHeartbeatWallMs: 4_000,
@@ -68,7 +79,7 @@ describe("brainLoopWatchdog", () => {
   });
 
   it("skips a suspend/resume gap when worker wall and monotonic clocks jump together", () => {
-    expect(evaluateBrainLoopWatchdog({
+    expect(evaluateInWorker({
       nowWallMs: 120_000,
       nowMonotonicMs: 120_000,
       lastHeartbeatWallMs: 1_000,
@@ -87,7 +98,7 @@ describe("brainLoopWatchdog", () => {
   });
 
   it("uses both clocks so a wall-clock adjustment alone cannot trigger a kill", () => {
-    expect(evaluateBrainLoopWatchdog({
+    expect(evaluateInWorker({
       nowWallMs: 80_000,
       nowMonotonicMs: 5_000,
       lastHeartbeatWallMs: 1_000,

@@ -15,7 +15,7 @@ import type {
   CloudSavedChatsListArgs,
 } from "../../../shared/cloudSavedChats";
 import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
-import { cloudAccessDepsFor, cloudServerFor } from "../adeCloud/cloudAccess";
+import { cloudAccessDepsFor, cloudServerFor, DESKTOP_CLOUD_TOKEN_WAIT_MS } from "../adeCloud/cloudAccess";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import type { Logger } from "../logging/logger";
 
@@ -26,6 +26,7 @@ export function registerCloudSavedChatsIpc(args: { logger: Logger }): void {
     directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl(),
     logger,
     onDirectoryUnavailable: (error) => logger.warn("cloud.saved_chats_directory_unavailable", { error: error instanceof Error ? error.name : "unknown" }),
+    tokenWaitMs: DESKTOP_CLOUD_TOKEN_WAIT_MS,
   });
 
   /** Runs one saved-chat read; null when it couldn't be asked. */
