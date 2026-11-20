@@ -1336,7 +1336,8 @@ export class RemoteConnectionService {
     try {
       // Asked even with a pool entry: a sleeping box's relay tunnel can look
       // open until a call times out. Only cloud boxes cost a lookup.
-      const woke = explicit && !unattended ? await this.wakeForUse(target, { via: "connect" }) : false;
+      // No await without a wake hook: a pending connect's timing is part of the disconnect race.
+      const woke = explicit && !unattended && this.options.wakeForUse ? await this.wakeForUse(target, { via: "connect" }) : false;
       // An explicit connect counts as the person asking for this machine
       // (Connect, Test, Try again, and opening or switching to one of its
       // projects), so it may start the machine's brain. Unattended
