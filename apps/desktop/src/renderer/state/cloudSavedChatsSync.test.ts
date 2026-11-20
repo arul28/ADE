@@ -5,7 +5,7 @@ import type { OpenProjectBinding, TerminalSessionSummary } from "../../shared/ty
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../shared/wokenMachine";
 import { useAppStore } from "./appStore";
 import { SAVED_CHATS_MACHINE_PREFIX } from "../../shared/cloudSavedChats";
-import { markCloudWakeForSend, refreshCloudSavedChats, sendWithCloudWakeMark } from "./cloudSavedChatsSync";
+import { markCloudWakeForSend, noteCloudSavedChatsDeleted, refreshCloudSavedChats, sendWithCloudWakeMark } from "./cloudSavedChatsSync";
 import { noteCloudLaneMachines } from "./adeCloudLaneIndex";
 
 const originalAde = globalThis.window.ade;
@@ -222,5 +222,66 @@ describe("the server's answer for a saved chat's computer", () => {
     expect(slice, "the saved chats get a slice").toBeTruthy();
     expect(slice!.computerGone === true).toBe(gone);
     expect(slice!.sessions.map((session) => session.id).sort()).toEqual(chats.map((chat) => (chat as { chatId: string }).chatId).sort());
+  });
+});
+
+describe("a lane deleted while a saved chats read is out", () => {
+  const MACHINE_ID = `${SAVED_CHATS_MACHINE_PREFIX}key-gone`;
+  const chat = (chatId: string, laneId: string) => ({
+    machineKey: "key-gone",
+    chatId,
+    instanceId: null,
+    lastSeq: 1,
+    updatedAt: 1,
+    title: "Chat",
+    laneId,
+    laneName: laneId,
+    status: null,
+    toolType: "claude-chat",
+    provider: null,
+    model: null,
+    projectKey: "repo-key",
+    projectId: "proj",
+    projectRoot: "/repo",
+    lastActivityAt: null,
+    computer: { state: "deleted", deletedAt: 1, reason: "freed" },
+  });
+  const BOTH = [chat("chat-deleted-lane", "lane-deleted"), chat("chat-other-lane", "lane-other")];
+  const read = () => refreshCloudSavedChats({ projectKey: "repo-key", isActive: () => true, connections: [] as never });
+  const listed = () => {
+    const slice = useAppStore.getState().crossMachineLanesByMachineId[MACHINE_ID];
+    return { lanes: slice?.lanes.map((lane) => lane.id).sort() ?? [], chats: slice?.sessions.map((session) => session.id).sort() ?? [] };
+  };
+
+  it("leaves it out of a read that started before the delete, lists what a later read returns, and drops a lane whose chats are gone", async () => {
+    let answer: Promise<unknown> = Promise.resolve({ nextCursor: null, chats: BOTH });
+    window.ade = { cloud: { savedChats: { list: () => answer } } } as unknown as typeof window.ade;
+    await read();
+    expect(listed().lanes).toEqual(["lane-deleted", "lane-other"]);
+
+    // A read goes out; the server confirms the delete before its answer lands.
+    let land!: (value: unknown) => void;
+    answer = new Promise((resolve) => { land = resolve; });
+    const early = read();
+    noteCloudSavedChatsDeleted({ laneIds: ["lane-deleted"], chatIds: ["chat-deleted-lane"] });
+    const slice = useAppStore.getState().crossMachineLanesByMachineId[MACHINE_ID]!;
+    useAppStore.getState().mergeCrossMachineLanes({
+      ...slice,
+      lanes: slice.lanes.filter((lane) => lane.id !== "lane-deleted"),
+      sessions: slice.sessions.filter((session) => session.laneId !== "lane-deleted"),
+    });
+    land({ nextCursor: null, chats: BOTH });
+    await early;
+    expect(listed(), "the early answer can't bring the lane back").toEqual({ lanes: ["lane-other"], chats: ["chat-other-lane"] });
+
+    // A read that started after the delete is the server's answer: what it returns lists.
+    answer = Promise.resolve({ nextCursor: null, chats: BOTH });
+    await read();
+    expect(listed().lanes).toEqual(["lane-deleted", "lane-other"]);
+
+    // A deleted computer's lane goes once none of its chats is returned.
+    answer = Promise.resolve({ nextCursor: null, chats: [BOTH[1]] });
+    await read();
+    expect(listed()).toEqual({ lanes: ["lane-other"], chats: ["chat-other-lane"] });
   });
 });

@@ -67,6 +67,36 @@ let forcePending = false;
 /** A read asked for while one was running (a project switch); it runs next. */
 let queuedContext: SavedChatsContext | null = null;
 
+/**
+ * Lanes and chats this window deleted, each with the tick of its delete. A
+ * read that started before a delete still carries what it deleted and would
+ * list it again: it leaves those out. A read that started after it is the
+ * server's answer and decides; once one finishes, the mark goes.
+ */
+let deleteTick = 0;
+const deletedSince = new Map<string, number>();
+const deletedLaneKey = (laneId: string) => `lane\u0000${laneId}`;
+const deletedChatKey = (chatId: string) => `chat\u0000${chatId}`;
+
+/** The server confirmed these deletes: a read that started before them can't list them again. */
+export function noteCloudSavedChatsDeleted(deleted: { laneIds?: readonly string[]; chatIds?: Iterable<string> }): void {
+  const tick = ++deleteTick;
+  for (const laneId of deleted.laneIds ?? []) deletedSince.set(deletedLaneKey(laneId), tick);
+  for (const chatId of deleted.chatIds ?? []) deletedSince.set(deletedChatKey(chatId), tick);
+}
+
+/** Whether a read that started at `startTick` predates the delete of this lane or chat. */
+function deletedAfter(startTick: number, laneId: string | null | undefined, chatId?: string | null): boolean {
+  const lane = laneId ? deletedSince.get(deletedLaneKey(laneId)) : undefined;
+  const chat = chatId ? deletedSince.get(deletedChatKey(chatId)) : undefined;
+  return (lane != null && lane > startTick) || (chat != null && chat > startTick);
+}
+
+/** A read that started at `startTick` finished: the deletes it saw are the server's now. */
+function forgetDeletesBefore(startTick: number): void {
+  for (const [key, tick] of deletedSince) if (tick <= startTick) deletedSince.delete(key);
+}
+
 /** Reads the list soon, unless it was read in the last 30 seconds. `force` skips that wait. */
 export function scheduleCloudSavedChatsRefresh(context: () => SavedChatsContext, options?: { force?: boolean }): void {
   if (!window.ade?.cloud?.savedChats) return;
@@ -223,6 +253,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
   inFlight = true;
   lastReadAtMs = Date.now();
   lastReadProjectKey = context.projectKey;
+  // Deletes confirmed after this tick are newer than this read's answer.
+  const startTick = deleteTick;
   try {
     // The project's ADE Cloud lanes from the account, read with the chats:
     // a lane with no chat, or with no computer, lists from it (null from an
@@ -241,7 +273,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     const byMachine = new Map<string, RoutedSavedChatRow[]>();
     // Only this project's chats, as the server filters them: a row that names
     // another project never lists in this tab.
-    const projectChats = list.chats.filter((row) => !row.projectKey || !context.projectKey || row.projectKey === context.projectKey);
+    const projectChats = list.chats.filter((row) => (!row.projectKey || !context.projectKey || row.projectKey === context.projectKey)
+      && !deletedAfter(startTick, row.laneId, row.chatId));
     for (const row of routeSavedChatsToLaneComputers(projectChats)) {
       const rows = byMachine.get(row.machineKey);
       if (rows) rows.push(row);
@@ -365,8 +398,15 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         return name && name !== row.laneName ? { ...row, laneName: name } : row;
       };
       const sessions = rows.map((row) => savedChatSession(current(row)));
-      const known = new Set(previous?.lanes.map((lane) => lane.id) ?? []);
-      const lanes = (previous?.lanes ?? []).map((lane) => {
+      const retained = (previous?.sessions ?? []).filter((session) => !session.cloudSavedCopy && !rows.some((row) => row.chatId === session.id));
+      // A deleted computer's lanes are only its chats: a lane none of them is on
+      // any more (its chats were deleted) leaves, instead of staying for good.
+      const listedLaneIds = gone
+        ? new Set([...rows.map((row) => row.laneId ?? "unknown"), ...retained.map((session) => session.laneId)])
+        : null;
+      const kept = (previous?.lanes ?? []).filter((lane) => !listedLaneIds || listedLaneIds.has(lane.id));
+      const known = new Set(kept.map((lane) => lane.id));
+      const lanes = kept.map((lane) => {
         const name = laneNow.get(lane.id)?.trim();
         return name && name !== lane.name ? { ...lane, name } : lane;
       });
@@ -377,7 +417,6 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
           lanes.push(lane);
         }
       }
-      const retained = (previous?.sessions ?? []).filter((session) => !session.cloudSavedCopy && !rows.some((row) => row.chatId === session.id));
       savedSliceIds.add(machineId);
       store.mergeCrossMachineLanes({
         machineId,
@@ -455,6 +494,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     // its computer's slice. A lane kept without a computer lists through
     // `useCloudLanesWithoutComputerRows` (Work and Lanes), never here.
     for (const lane of overview?.lanes ?? []) {
+      if (deletedAfter(startTick, lane.laneId)) continue;
       const machineKey = lane.machineKey;
       if (!machineKey || !lane.computer || goneMachineKeys.has(machineKey.toLowerCase())) continue;
       const connection = connectionFor(context.connections, machineKey, lane.computer.instanceId);
@@ -500,7 +540,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     // saved chats. A computer that is live here shows its live terminals.
     const terminalsByMachine = new Map<string, NonNullable<CloudProjectOverview["sessions"]>>();
     for (const row of overview?.sessions ?? []) {
-      if (!row.machineKey) continue;
+      if (!row.machineKey || deletedAfter(startTick, row.laneId)) continue;
       const rows = terminalsByMachine.get(row.machineKey);
       if (rows) rows.push(row);
       else terminalsByMachine.set(row.machineKey, [row]);
@@ -577,6 +617,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       });
     }
     if (emptied.length) store.dropCrossMachineLanes(emptied);
+    forgetDeletesBefore(startTick);
   } catch (error) {
     // Keep what the list last showed; the next focus or connection change reads again.
     console.warn("[cloud] saved chats list failed", error instanceof Error ? error.message : String(error));

@@ -194,16 +194,34 @@ export function refreshCloudLanesWithoutComputer(): void {
     (lanes) => {
       if (current !== withoutGeneration) return;
       publishWithout({ lanes, known: true, loading: false });
-      try {
-        window.localStorage.setItem(WITHOUT_STORAGE_KEY, JSON.stringify(lanes));
-      } catch {
-        // This computer's copy is a convenience; the next read fills it again.
-      }
+      saveWithout(lanes);
     },
     () => {
       if (current === withoutGeneration) publishWithout({ loading: false });
     },
   );
+}
+
+function saveWithout(lanes: readonly CloudLaneWithoutComputer[]): void {
+  try {
+    window.localStorage.setItem(WITHOUT_STORAGE_KEY, JSON.stringify(lanes));
+  } catch {
+    // This computer's copy is a convenience; the next read fills it again.
+  }
+}
+
+/**
+ * The server deleted this lane's record: it leaves the list now, here and in
+ * this computer's copy, and a read that started before the delete is dropped
+ * (it would bring the lane back). Then the list is read again. A read that
+ * fails keeps the list without it.
+ */
+export function dropCloudLaneWithoutComputer(laneId: string): void {
+  withoutGeneration += 1;
+  const lanes = without.lanes.filter((lane) => lane.laneId !== laneId);
+  publishWithout({ lanes, loading: false });
+  saveWithout(lanes);
+  refreshCloudLanesWithoutComputer();
 }
 
 function startWithout(): void {

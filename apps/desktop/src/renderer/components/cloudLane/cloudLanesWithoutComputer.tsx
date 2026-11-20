@@ -12,12 +12,14 @@ import { rootAppStoreApi, useAppStore, useRootAppStore, type CrossMachineMachine
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { useCloudAccount } from "../../state/cloudAccountStore";
 import { savedChatLocationForSession } from "../../state/cloudSavedChats";
+import { noteCloudSavedChatsDeleted } from "../../state/cloudSavedChatsSync";
+import { requestCloudSavedChatsRead } from "../../state/crossMachineLanes";
 import { showToast } from "../app/toast/toastStore";
 import { originUrlForBinding } from "../lanes/laneMachines";
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import { confirmDialog } from "../ui/dialog";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneLifeAvailable, forgetCloudLaneWithoutComputer } from "./cloudLaneActions";
-import { refreshCloudLanesWithoutComputer, useCloudLanesWithoutComputer } from "./cloudLaneStores";
+import { dropCloudLaneWithoutComputer, useCloudLanesWithoutComputer } from "./cloudLaneStores";
 
 /**
  * This project's ADE Cloud lanes whose computer was deleted. A deleted
@@ -319,6 +321,16 @@ function dropFromStore(row: CloudLaneWithoutComputerRow, removed: ReadonlySet<st
   if (drop.length) store.dropCrossMachineLanes(drop);
 }
 
+/**
+ * The server deleted this kept lane, and its saved chats on every computer
+ * with it: the lane leaves the lists now, and a read that started before the
+ * delete can't list it again.
+ */
+export function noteKeptLaneDeleted(laneId: string): void {
+  noteCloudSavedChatsDeleted({ laneIds: [laneId] });
+  dropCloudLaneWithoutComputer(laneId);
+}
+
 // A lane's saved chats on one computer are read in pages of this size, at most this many pages.
 const SAVED_CHAT_PAGE = 200;
 const SAVED_CHAT_PAGES = 20;
@@ -400,9 +412,11 @@ export async function deleteCloudLaneWithoutComputer(row: CloudLaneWithoutComput
     // are never deleted.
     if (row.kept) {
       await forgetCloudLaneWithoutComputer(row.laneId);
-      refreshCloudLanesWithoutComputer();
+      noteKeptLaneDeleted(row.laneId);
     }
     const { missing, cut } = await deleteRowChats(row, removed);
+    // Only what is gone: a lane that still has chats stays listed.
+    noteCloudSavedChatsDeleted({ chatIds: removed, laneIds: missing > 0 || cut ? [] : [row.laneId] });
     if (missing > 0 || cut) {
       console.warn("[cloud] a lane's delete left saved chats", { laneId: row.laneId, missing, cut });
       dropFromStore(row, removed);
@@ -420,7 +434,13 @@ export async function deleteCloudLaneWithoutComputer(row: CloudLaneWithoutComput
     showToast({ tone: "success", title: `Deleted ${row.laneName}`, message: !row.kept ? "Its chats are gone." : chats ? "The lane and its chats are gone." : "The lane is gone.", replayMask: { title: true } });
   } catch (error) {
     console.warn("[cloud] deleting a lane without a computer failed", error);
-    if (removed.size) dropFromStore(row, removed);
+    if (removed.size) {
+      noteCloudSavedChatsDeleted({ chatIds: removed });
+      dropFromStore(row, removed);
+    }
     showToast({ tone: "error", title: `Couldn't delete ${row.laneName}`, message: ipcErrorMessage(error) || "Try again in a moment.", replayMask: { title: true } });
+  } finally {
+    // The list says what is left now, not after its 30 s wait.
+    requestCloudSavedChatsRead();
   }
 }

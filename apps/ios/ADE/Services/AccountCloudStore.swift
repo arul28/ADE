@@ -198,6 +198,8 @@ final class AccountCloudStore: ObservableObject {
       lanesReadSeq &+= 1
       lanesReadAt = nil
       lanesWithoutComputer.removeAll { $0.laneId == lane.laneId }
+      // The server deleted the lane's chats on every computer with it.
+      sync.noteCloudLaneDeleted(lane.laneId)
     }
     do {
       for machineKey in machineKeys.sorted() {

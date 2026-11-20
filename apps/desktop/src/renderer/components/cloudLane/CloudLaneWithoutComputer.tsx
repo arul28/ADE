@@ -14,9 +14,9 @@ import { CloudMark } from "../remoteTargets/cloudBrand";
 import { confirmDialog } from "../ui/dialog";
 import { cn } from "../ui/cn";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneLifeAvailable, forgetCloudLaneWithoutComputer } from "./cloudLaneActions";
-import { refreshCloudLanesWithoutComputer } from "./cloudLaneStores";
+import { requestCloudSavedChatsRead } from "../../state/crossMachineLanes";
 import { CloudLaneSavedWork } from "./CloudLaneSavedWork";
-import { keptLaneFateSentence } from "./cloudLanesWithoutComputer";
+import { keptLaneFateSentence, noteKeptLaneDeleted } from "./cloudLanesWithoutComputer";
 import "./cloudLane.css";
 
 /**
@@ -123,14 +123,15 @@ export function CloudLaneWithoutComputerNotice({
   const onForget = async () => {
     const ok = await confirmDialog({
       title: `Forget ${lane.laneName}?`,
-      message: "ADE stops listing this lane and deletes its saved work that isn't on GitHub. Download that work first if you need it. Its branch on GitHub and its chats stay.",
+      message: "ADE stops listing this lane and deletes its saved chats and its saved work that isn't on GitHub. Download that work first if you need it. Its branch stays on GitHub.",
       confirmLabel: "Forget lane",
     });
     if (!ok) return;
     setForgetting(true);
     try {
       await forgetCloudLaneWithoutComputer(lane.laneId);
-      refreshCloudLanesWithoutComputer();
+      noteKeptLaneDeleted(lane.laneId);
+      requestCloudSavedChatsRead();
     } catch (error) {
       showToast({ tone: "error", title: `Couldn't forget ${lane.laneName}`, message: ipcErrorMessage(error) || "Try again in a moment." });
     } finally {
