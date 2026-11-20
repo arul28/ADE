@@ -811,7 +811,14 @@ final class AccountCloudLaunchStore: ObservableObject {
     } catch {
       guard generation == accountGeneration else { return }
       let message = cloudServerFailureMessage(error)
-      let refused = Self.isClearRefusal(error)
+      // A 409 (`create_in_progress`) means a start under this id is still
+      // making the computer: the launch exists, so its page stays and Retry
+      // sends the same id. A new id would make a second computer.
+      let conflict: Bool = {
+        if case .server(409, _)? = error as? CloudServerClient.Failure { return true }
+        return false
+      }()
+      let refused = Self.isClearRefusal(error) && !conflict
       patch(launchId) {
         $0.startError = message
         $0.startNeverReached = refused
