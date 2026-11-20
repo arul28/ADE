@@ -47,6 +47,18 @@ enum CloudNoComputerPreviews {
       return AnyView(CloudChatHeldFixture(queued: [
         CloudChatQueuedMessage(messageId: "m1", state: "queued", text: "Run the tests again and fix what fails."),
       ]))
+    case "duo-cloud-chat-queued-connecting":
+      // The same send while the chat has no cached row yet: the
+      // destination's connecting frame draws the held messages.
+      return AnyView(CloudChatHeldConnectingFixture(queued: [
+        CloudChatQueuedMessage(messageId: "m1", state: "queued", text: "Run the tests again and fix what fails."),
+        CloudChatQueuedMessage(
+          messageId: "m3",
+          state: "failed",
+          text: "Now update the changelog.",
+          error: "This lane's computer couldn't start. Your message wasn't sent."
+        ),
+      ]))
     case "duo-cloud-chat-failed":
       return AnyView(CloudChatHeldFixture(queued: [
         CloudChatQueuedMessage(
@@ -179,6 +191,38 @@ private struct CloudChatHeldFixture: View {
       )
     }
     return view
+  }
+}
+
+/// A cloud chat with no cached row yet: the destination's connecting frame
+/// with the messages ADE Cloud holds for it.
+private struct CloudChatHeldConnectingFixture: View {
+  let queued: [CloudChatQueuedMessage]
+  @ObservedObject private var store = AccountCloudStore.shared
+
+  var body: some View {
+    let messages = store.threadMessages(machineKey: "mk-cloud", chatId: "chat-1")
+    NavigationStack {
+      WorkChatConnectingFrame(
+        machineName: "ADE Cloud",
+        held: messages.isEmpty ? nil : WorkCloudHeldThread(
+          messages: messages,
+          onCancel: { _ in nil },
+          onPutBack: { _ in },
+          onDismiss: { _ in }
+        ),
+        sessionId: "chat-1"
+      )
+      .navigationTitle("Fix flaky upload test")
+      .navigationBarTitleDisplayMode(.inline)
+    }
+    .task {
+      AccountCloudStore.shared.seedPreview(
+        access: nil,
+        account: nil,
+        queued: [AccountCloudStore.chatKey(machineKey: "mk-cloud", chatId: "chat-1"): queued]
+      )
+    }
   }
 }
 

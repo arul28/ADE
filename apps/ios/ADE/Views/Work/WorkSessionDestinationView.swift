@@ -2240,7 +2240,16 @@ struct WorkSessionDestinationView: View {
           .environmentObject(syncService)
       }
     } else {
-      if initialLoadCompleted {
+      if initialLoadCompleted, let held = cloudHeldThread(frame: nil) {
+        // A cloud chat with no cached row yet: its held messages still
+        // show, with their Cancel or Put back, until it loads.
+        WorkChatConnectingFrame(
+          machineName: sessionDestinationNavigationSubtitle,
+          held: held,
+          sessionId: sessionId,
+          unavailableNotice: "This chat loads when its ADE Cloud computer is up."
+        )
+      } else if initialLoadCompleted {
         ADEEmptyStateView(
           symbol: "bubble.left.and.bubble.right",
           title: "Session unavailable",
@@ -2273,7 +2282,13 @@ struct WorkSessionDestinationView: View {
   /// progress, not a failure, so it never times out. The task is cancelled the
   /// moment the real chat replaces the frame.
   private var connectingFrame: some View {
-    WorkChatConnectingFrame(machineName: sessionDestinationNavigationSubtitle)
+    // No chat view here, so its thread does not draw the held messages:
+    // this frame does, until the chat replaces it.
+    WorkChatConnectingFrame(
+      machineName: sessionDestinationNavigationSubtitle,
+      held: cloudHeldThread(frame: nil),
+      sessionId: sessionId
+    )
       .task(id: sessionId) { await watchChatConnecting() }
   }
 

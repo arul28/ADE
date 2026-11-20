@@ -648,6 +648,17 @@ struct WorkCloudHeldThread {
       .map { Date(timeIntervalSince1970: $0 / 1000) }
   }
 
+  /// One stand-in user message at the held send's time, so the working
+  /// line's clock starts at the send, not at the transcript's last row.
+  func workingAnchor(sessionId: String) -> [WorkChatEnvelope] {
+    [WorkChatEnvelope(
+      sessionId: sessionId,
+      timestamp: workDateFormatter.string(from: workingSince ?? Date()),
+      sequence: nil,
+      event: .userMessage(text: "", attachments: nil, turnId: nil, steerId: nil, deliveryState: nil, processed: nil)
+    )]
+  }
+
   /// What a row draws, for its revision: a change reconfigures that row only.
   static func revision(_ message: CloudChatQueuedMessage) -> Int {
     var hasher = Hasher()
@@ -655,6 +666,38 @@ struct WorkCloudHeldThread {
     hasher.combine(message.text)
     hasher.combine(message.error)
     return hasher.finalize()
+  }
+}
+
+/// The held messages on their own, for a chat the phone cannot draw yet
+/// (no cached row, or its thread still loading): the same rows and working
+/// line the thread draws, so a queued send keeps its bubble and Cancel and a
+/// failed one its Put back and Dismiss. Only the destination's loading and
+/// unavailable states use it; once the chat view shows, its thread owns them.
+struct CloudHeldMessagesStandalone: View {
+  let thread: WorkCloudHeldThread
+  let sessionId: String
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 12) {
+        ForEach(thread.messages, id: \.messageId) { message in
+          CloudHeldMessageRow(message: message, maxUserBubbleWidth: nil, thread: thread)
+        }
+        if thread.isWorking {
+          WorkActivityIndicator(
+            transcript: thread.workingAnchor(sessionId: sessionId),
+            precomputedPresentation: WorkActivityIndicator.Presentation(label: "Working", detail: nil, tint: ADEColor.accent),
+            isStreaming: true
+          )
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 8)
+    }
+    .defaultScrollAnchor(.bottom)
+    .adeInspectable("Work.Chat.CloudHeldStandalone")
   }
 }
 
