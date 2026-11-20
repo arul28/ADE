@@ -4,7 +4,9 @@ import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { useRootAppStore } from "../../state/appStore";
 import { useTabCopyPin } from "../../state/repositoryScope";
 import {
+  buildLaneMachineFilterEntries,
   createLaneMachineRouter,
+  laneFilterEntryId,
   machineBlockedReason,
   machineChipFor,
   shouldShowMachineChips,
@@ -12,8 +14,10 @@ import {
   type MachineChipModel,
   type MachineLane,
 } from "../../state/laneMachineRouting";
+import { LANES_MACHINE_FILTER_ALL } from "../../state/laneMachineFilterIds";
 import { SAVED_CHATS_MACHINE_PREFIX } from "../../../shared/cloudSavedChats";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
 import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
@@ -82,6 +86,8 @@ export function useLanesPageMachines({
   localLanes,
   storeSelectedLaneId,
   storeSelectLane,
+  noComputerCount = 0,
+  noComputerUnseen = false,
 }: {
   active: boolean;
   projectStateKey: string | null;
@@ -89,6 +95,10 @@ export function useLanesPageMachines({
   localLanes: LaneSummary[];
   storeSelectedLaneId: string | null;
   storeSelectLane: (laneId: string | null) => void;
+  /** ADE Cloud lanes of this project whose computer is gone (`useCloudLanesWithoutComputerSummary`). */
+  noComputerCount?: number;
+  /** Any of those the person has not looked at yet. */
+  noComputerUnseen?: boolean;
 }) {
   // Mounting this while the tab is visible keeps the shared cross-machine union
   // refreshing (ref-counted, no new loop).
@@ -311,6 +321,54 @@ export function useLanesPageMachines({
   }, [foreignRowByKey, restingMachineIds]);
   const foreignLaneIdSet = useMemo(() => new Set(foreignRowByKey.keys()), [foreignRowByKey]);
 
+  /* ---- The Computer filter ---- */
+
+  // Lanes per listed machine, from the rows already on screen: one pass, no
+  // request. A machine with no lanes here adds nothing to pick.
+  const laneCountByMachineId = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const lane of allViewLanes) {
+      const machineId = machineIdForKey(lane.id);
+      if (machineId) counts.set(machineId, (counts.get(machineId) ?? 0) + 1);
+    }
+    return counts;
+  }, [allViewLanes, machineIdForKey]);
+  // One entry per computer the person owns, one for every ADE Cloud computer,
+  // and the lanes whose computer is gone. `isCloudMachine` is the same rule the
+  // rows and Work's filter use.
+  const machineFilterEntries = useMemo(
+    () => buildLaneMachineFilterEntries({
+      machines: liveMachines.map((machine) => ({
+        entryId: laneFilterEntryId(machine.machineId, isCloudMachine(machine)),
+        // Every ADE Cloud computer is one machine to the person: never the
+        // disambiguated per-computer label ("ADE Cloud (instance-a)") the
+        // machine list builds when cloud names collide.
+        name: machine.isThisMachine
+          ? THIS_MACHINE_NAME
+          : isCloudMachine(machine) ? ADE_CLOUD_NAME : machine.machineName,
+        isCloud: isCloudMachine(machine),
+        isThisMachine: machine.isThisMachine,
+        laneCount: laneCountByMachineId.get(machine.machineId) ?? 0,
+      })),
+      noComputerCount,
+      noComputerUnseen,
+    }),
+    [isCloudMachine, laneCountByMachineId, liveMachines, noComputerCount, noComputerUnseen],
+  );
+  // The entry a row's machine belongs to, so the filter never has to re-derive
+  // cloud-ness or slots per row.
+  const entryIdByMachineId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const machine of liveMachines) {
+      map.set(machine.machineId, laneFilterEntryId(machine.machineId, isCloudMachine(machine)));
+    }
+    return map;
+  }, [isCloudMachine, liveMachines]);
+  const machineFilterIdForKey = useCallback((key: string): string => {
+    const machineId = machineIdForKey(key);
+    return (machineId ? entryIdByMachineId.get(machineId) : null) ?? LANES_MACHINE_FILTER_ALL;
+  }, [entryIdByMachineId, machineIdForKey]);
+
   return {
     allMachineLanes,
     tabLanePin,
@@ -330,5 +388,7 @@ export function useLanesPageMachines({
     foreignLaneIdSet,
     restingMachineIds,
     offlineTabMachineName,
+    machineFilterEntries,
+    machineFilterIdForKey,
   };
 }
