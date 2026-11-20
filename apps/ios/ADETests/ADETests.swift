@@ -3979,9 +3979,9 @@ final class ADETests: XCTestCase {
   /// it delivered already.
   @MainActor
   func testCloudHeldMessageStaysDrawnUntilTheTranscriptShowsItThenNeverAgain() throws {
-    func held(_ state: String) throws -> CloudChatQueuedMessage {
+    func held(_ state: String, id: String = "send-1") throws -> CloudChatQueuedMessage {
       try JSONDecoder().decode(CloudChatQueuedMessage.self, from: Data(#"""
-        {"messageId":"send-1","seq":1,"state":"\#(state)","text":"Run the tests again.","createdAt":1763424000000}
+        {"messageId":"\#(id)","seq":1,"state":"\#(state)","text":"Run the tests again.","createdAt":1763424000000}
         """#.utf8))
     }
     let store = AccountCloudStore()
@@ -4015,6 +4015,26 @@ final class ADETests: XCTestCase {
     let fresh = AccountCloudStore()
     fresh.applyQueuedRead([try held("delivered")], machineKey: "mk-cloud", chatId: "chat-1")
     XCTAssertEqual(drawn(fresh), [], "Delivered before the phone looked: the transcript already has it.")
+
+    // An older computer writes no send id: its message, written after the
+    // hold, matches by text, one transcript message per held message.
+    func unkeyed(_ sequence: Int) -> WorkChatEnvelope {
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2025-11-18T00:00:4\(sequence).000Z",
+        sequence: sequence,
+        event: .userMessage(text: "Run the tests again.", attachments: nil, turnId: "t2", steerId: nil, deliveryState: nil, processed: nil)
+      )
+    }
+    let twins = [try held("delivered", id: "send-2"), try held("sending", id: "send-3")]
+    XCTAssertEqual(cloudHeldMessagesShown([twins[0]], in: [earlier, unkeyed(1)]), ["send-2"])
+    XCTAssertEqual(cloudHeldMessagesShown(twins, in: [earlier, unkeyed(1)]).count, 1, "One transcript message retires one of two identical held messages.")
+    XCTAssertEqual(cloudHeldMessagesShown(twins, in: [earlier, unkeyed(1), unkeyed(2)]), ["send-2", "send-3"])
+    // A message still queued (or waiting for a sign-in) is not in the chat
+    // yet: the same words in the transcript are another message.
+    for state in ["queued", "waiting_for_sign_in"] {
+      XCTAssertTrue(cloudHeldMessagesShown([try held(state, id: "send-4")], in: [unkeyed(1)]).isEmpty, "Never retired by text while \(state).")
+    }
   }
 
   @MainActor

@@ -693,30 +693,36 @@ struct CloudHeldMessageRow: View {
     .adeInspectable("Work.Chat.CloudHeldMessage", metadata: ["state": message.state])
   }
 
-  @ViewBuilder
+  /// The state's line, then a failed Cancel's sentence whatever the state
+  /// is now (the message may have moved on while the Cancel was out).
   private var footer: some View {
+    VStack(alignment: .trailing, spacing: 0) {
+      stateFooter
+      if let cancelError {
+        errorText(cancelError)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var stateFooter: some View {
     switch message.state {
     case "queued":
-      VStack(alignment: .trailing, spacing: 0) {
-        Button {
-          cancel()
-        } label: {
-          Text(cancelling ? "Cancelling…" : "Cancel")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(ADEColor.textMuted)
-            .padding(.horizontal, 4)
-            .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(cancelling)
-        .accessibilityLabel("Cancel this message")
-        .accessibilityHint("ADE Cloud won't send it.")
-        .adeInspectable("CloudLane.Queued.Cancel")
-        if let cancelError {
-          errorText(cancelError)
-        }
+      Button {
+        cancel()
+      } label: {
+        Text(cancelling ? "Cancelling…" : "Cancel")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.horizontal, 4)
+          .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+          .contentShape(Rectangle())
       }
+      .buttonStyle(.plain)
+      .disabled(cancelling)
+      .accessibilityLabel("Cancel this message")
+      .accessibilityHint("ADE Cloud won't send it.")
+      .adeInspectable("CloudLane.Queued.Cancel")
     case "failed":
       VStack(alignment: .trailing, spacing: 0) {
         errorText(message.error ?? "ADE Cloud didn't say why.")

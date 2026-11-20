@@ -1133,10 +1133,12 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   at most 2 minutes), so it never blinks out. The transcript match is the
   `user_message`'s `clientSendId`, which the computer sets to the held
   message's id (`cloudHeldMessagesShown`; a computer that writes no send id
-  matches on text written after the send). A matched message is retired for
+  matches on text written after the send, only for a message sending or
+  delivered, never one still queued). A matched message is retired for
   good (`retireFromThread`): no second copy. One delivered before the phone
-  looked is never drawn. Cancel, Put back and Dismiss go to the chat's own
-  account machine key. `AccountCloudStore.followQueue` reads the queue only
+  looked is never drawn. Cancel goes to the chat's own account machine key;
+  Put back and Dismiss only hide the failed message on this phone
+  (`hideFailedMessage`). `AccountCloudStore.followQueue` reads the queue only
   while the chat is open and the app is in front, from 3 s up to 10 s between
   reads. A CLI copy with a deleted computer keeps the list above its composer
   (`CloudQueuedMessagesView`).
