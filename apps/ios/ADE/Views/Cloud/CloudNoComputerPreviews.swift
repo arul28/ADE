@@ -49,6 +49,8 @@ enum CloudNoComputerPreviews {
       return AnyView(CloudLaunchPageFixture(state: "making"))
     case "duo-cloud-launch-rows":
       return AnyView(CloudLaunchRowsFixture())
+    case "duo-cloud-lane-launch-card":
+      return AnyView(CloudLaneLaunchCardFixture())
     case "duo-cloud-new-chat-refused":
       return AnyView(CloudNewChatFixture(refusal: "This account has no ADE Cloud hours left this period. Your lanes and chats stay readable."))
     case "duo-cloud-models":
@@ -304,6 +306,49 @@ private struct CloudLaunchPageFixture: View {
         entries: [CloudNoComputerFixtureData.launch(state, prompt: "Yo so look at this app, I wanna make a better and free version of photo roulette. Right now the UI is too busy; make the game screen simpler.")]
       )
     }
+  }
+}
+
+/// A kept lane's "New computer" on Lanes: the same setup card as a chat
+/// launch's page, with the lane's steps (one making, one ready).
+private struct CloudLaneLaunchCardFixture: View {
+  @ObservedObject private var launches = AccountCloudLaunchStore.shared
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(spacing: 14) {
+          ForEach(launches.entries) { entry in
+            WorkCloudLaunchSetupCard(entry: entry)
+          }
+        }
+        .padding(16)
+      }
+      .adeScreenBackground()
+      .navigationTitle("Lanes")
+    }
+    .task {
+      AccountCloudLaunchStore.shared.seedPreview(
+        catalog: CloudNoComputerFixtureData.catalog,
+        catalogError: nil,
+        entries: [Self.lane("making"), Self.lane("running")]
+      )
+    }
+  }
+
+  private static func lane(_ state: String) -> AccountCloudLaunchStore.Entry {
+    let stages = state == "making"
+      ? #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"running"}]"#
+      : #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"done"}]"#
+    let record = #"{"launchId":"lane_\#(state)","kind":"lane","state":"\#(state)","projectOrigin":"github.com/octocat/hello-world","laneName":"Fix flaky upload test","instanceId":"i_lane_\#(state)","stages":\#(stages)}"#
+    return AccountCloudLaunchStore.Entry(
+      launchId: "lane_\(state)",
+      origin: "github.com/octocat/hello-world",
+      prompt: "",
+      record: CloudNoComputerFixtureData.decode(record),
+      kind: "lane",
+      laneName: "Fix flaky upload test"
+    )
   }
 }
 

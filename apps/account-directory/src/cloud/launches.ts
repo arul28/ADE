@@ -45,6 +45,8 @@ import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome }
 import { launchChannel, readUpdateChannel, readUpdateTargets } from "./updates";
 import { markKeepLaneStatement } from "./lanesWithoutComputer";
 import type { ServerGitCheck } from "./accountVault";
+// A cycle (chatMessages imports this file); only called at request time.
+import { carryLaunchMessagesToChat } from "./chatMessages";
 import {
   LAUNCH_MESSAGE_ID,
   accountLaunchMessagesStatement,
@@ -1291,6 +1293,15 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
     await firstMessageDeliveredStatement(env, row.launch_id, sessionId, now).run();
     // A chat's message this launch carries reads delivered, even after an earlier try marked it failed.
     await chatMessagesDeliveredStatement(env, row.launch_id, now).run();
+    // The follow-ups queued on the launch join the new chat's queue, so the chat shows a failed one.
+    if (row.session_id !== sessionId) {
+      try {
+        await carryLaunchMessagesToChat(env, row, sessionId, now);
+      } catch (error) {
+        // The report itself stands: only the chat's view of the follow-ups is missing.
+        logCloud("cloud.launch_messages_carry_failed", { userId: row.user_id, launchId: row.launch_id, error: error instanceof Error ? error.name : "unknown" });
+      }
+    }
   }
   // The computer gave up on the sign-in itself: its queued messages fail as with the server's
   // own timeout, and the minute cron deletes the computer (`failUnjoinedLaunches`).

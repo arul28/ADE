@@ -600,12 +600,11 @@ struct WorkCloudLaunchSetupCard: View {
             .lineLimit(1)
             .contentTransition(.opacity)
           Spacer(minLength: 8)
-          WorkChatLaunchDurationText(
-            startedAt: workCloudLaunchStartedAt(entry),
-            endedAt: nil,
-            isLive: !entry.failed && !running
-          )
-          .accessibilityLabel("Elapsed")
+          // Only while it runs: ADE Cloud keeps no end time to measure a finished one to.
+          if !entry.failed && !running {
+            WorkChatLaunchDurationText(startedAt: workCloudLaunchStartedAt(entry), endedAt: nil, isLive: true)
+              .accessibilityLabel("Elapsed")
+          }
         }
         HStack(spacing: 6) {
           if !laneName.isEmpty {

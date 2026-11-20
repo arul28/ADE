@@ -103,6 +103,42 @@ function signInOf(row: ChatMessageRow): CloudLaunchSignIn | null {
   }
 }
 
+/**
+ * A new chat's launch got its chat (the computer reported its session id).
+ * The messages the person queued on the launch after the first one join
+ * that chat's queue as rows the launch carries (`via_launch`), so the chat
+ * shows where each one is, a failed one too, after the launch's own page is
+ * gone. They read their state from the launch's messages and the computer
+ * never claims them (it sends the launch's own). A continue launch's rows
+ * exist already. The same message again changes nothing.
+ */
+export async function carryLaunchMessagesToChat(env: CloudEnv, launch: LaunchRow, sessionId: string, now: number): Promise<void> {
+  if (launch.kind === "lane" || launch.continue_chat_id || !launch.instance_id) return;
+  const messages = (await env.DB.prepare(`
+    select message_id, text, provider, model_id from cloud_launch_messages where launch_id = ? and seq > 1 order by seq
+  `).bind(launch.launch_id).all<{ message_id: string; text: string; provider: string | null; model_id: string | null }>()).results ?? [];
+  if (messages.length === 0) return;
+  const computer = await env.DB.prepare("select machine_key from cloud_computers where instance_id = ? and user_id = ?")
+    .bind(launch.instance_id, launch.user_id).first<{ machine_key: string | null }>();
+  const keys = await userKeys(env, launch.user_id, now);
+  if (!computer?.machine_key || !keys) {
+    logCloud("cloud.launch_messages_not_carried", { userId: launch.user_id, launchId: launch.launch_id, reason: keys ? "no_machine_key" : "no_keys" });
+    return;
+  }
+  const chat = { machine_key: computer.machine_key, chat_id: sessionId };
+  for (const message of messages) {
+    await insertRow(env, keys, launch.user_id, chat, {
+      messageId: message.message_id,
+      text: message.text,
+      attachments: [],
+      provider: message.provider,
+      modelId: message.model_id,
+      settings: null,
+    }, { instanceId: null, launchId: launch.launch_id, viaLaunch: true }, now);
+  }
+  logCloud("cloud.launch_messages_carried", { userId: launch.user_id, launchId: launch.launch_id, count: messages.length });
+}
+
 /** The sentences of a message a continue launch never sent; the launch's own sentence comes first when it has one. */
 const LAUNCH_CANCELLED_SENTENCE = "The new computer for this chat was cancelled, so this message wasn't sent. Send it again.";
 const LAUNCH_FAILED_SENTENCE = "The new computer for this chat didn't start, so this message wasn't sent. Send it again.";
@@ -404,7 +440,7 @@ async function insertRow(
   env: CloudEnv,
   keys: UserKeys,
   userId: string,
-  chat: QueueTarget,
+  chat: Pick<QueueTarget, "machine_key" | "chat_id">,
   input: SendInput,
   where: { instanceId: string | null; launchId: string | null; viaLaunch: boolean },
   now: number,
