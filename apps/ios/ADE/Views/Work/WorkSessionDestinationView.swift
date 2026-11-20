@@ -673,7 +673,7 @@ struct WorkSessionDestinationView: View {
     guard let accountKey = cloudQueueAccountKey else { return nil }
     let held = accountCloud.threadMessages(machineKey: accountKey, chatId: sessionId)
     guard !held.isEmpty else { return nil }
-    let shown = cloudHeldMessagesShown(held, in: frame?.transcript ?? [])
+    let shown = cloudHeldMessagesShown(held, in: frame?.transcript ?? [], textMatchedRows: accountCloud.textMatchedTranscriptRows).messageIds
     // The send's own echo can outlive its removal by a frame (the engine
     // takes overlays off the main actor): the held copy of the same text
     // waits until it is gone, so the bubble never shows twice.
@@ -3831,7 +3831,7 @@ extension WorkSessionDestinationView {
     guard let accountKey = cloudQueueAccountKey else { return }
     let held = accountCloud.threadMessages(machineKey: accountKey, chatId: sessionId)
     guard !held.isEmpty else { return }
-    accountCloud.retireFromThread(cloudHeldMessagesShown(held, in: transcript))
+    accountCloud.retireFromThread(cloudHeldMessagesShown(held, in: transcript, textMatchedRows: accountCloud.textMatchedTranscriptRows))
   }
 
   /// Per-frame bookkeeping that needs the transcript: echo and steer

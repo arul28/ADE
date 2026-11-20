@@ -1815,13 +1815,21 @@ struct WorkChatSessionView: View {
       )
     }
     if timelinePresentation.timelineCount == 0 {
-      var hasher = Hasher()
-      hasher.combine(transcriptLoadState)
+      // A held message drawn below is the chat's first message: no
+      // "No chat messages yet" above it (loading and a failed load still show).
+      let heldIsTheFirstMessage: Bool = {
+        guard case .idle = transcriptLoadState else { return false }
+        return !(cloudHeld?.messages.isEmpty ?? true)
+      }()
+      if !heldIsTheFirstMessage {
+        var hasher = Hasher()
+        hasher.combine(transcriptLoadState)
       hasher.combine(isLive)
-      hasher.combine(ctoLive != nil && ctoStartersEnabled)
-      rows.append(
-        WorkChatTranscriptRow(id: "chat-empty-state", kind: .emptyState, revision: hasher.finalize())
-      )
+        hasher.combine(ctoLive != nil && ctoStartersEnabled)
+        rows.append(
+          WorkChatTranscriptRow(id: "chat-empty-state", kind: .emptyState, revision: hasher.finalize())
+        )
+      }
     } else {
       let entries = visibleTimelineRenderEntries
       let rowRevisions = frame?.rowRevisions ?? [:]

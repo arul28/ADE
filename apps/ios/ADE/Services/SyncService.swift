@@ -29482,7 +29482,7 @@ extension SyncService: ChatThreadTransport {
     request: ChatThreadOlderRequest
   ) async throws -> ChatThreadOlderPageInput {
     if let accountKey = savedCloudChatAccountKey(forThreadKey: key) {
-      return try await AccountCloudStore.shared.olderSavedPage(key: key, accountMachineKey: accountKey, using: self)
+      return try await AccountCloudStore.shared.olderSavedPage(key: key, accountMachineKey: accountKey, request: request, using: self)
     }
     if let connection = fleetConnection(forThreadKey: key) {
       return try await connection.fetchOlderPage(sessionId: key.sessionId, request: request)
