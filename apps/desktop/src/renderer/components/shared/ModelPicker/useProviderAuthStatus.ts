@@ -4,12 +4,13 @@ import type { OpenProjectBinding } from "../../../../shared/types";
 import {
   AI_STATUS_CACHE_INVALIDATED_EVENT,
   AI_STATUS_CACHE_UPDATED_EVENT,
+  aiStatusRootMatches,
+  aiStatusUpdatedRoot,
   getAiStatusCached,
+  statusCachePin,
   peekAiStatusCached,
   type AiStatusCacheInvalidatedEventDetail,
-  type AiStatusCacheUpdatedEventDetail,
 } from "../../../lib/aiDiscoveryCache";
-import { arePathsEqual } from "../../../lib/pathUtils";
 import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import type { AuthStatus } from "./ModelPickerRail";
 
@@ -246,7 +247,7 @@ export function useProviderAuthStatus(options?: {
   // project tab. Auth does not: Settings writes the unpinned `projectRoot`
   // bucket, and a same-as-tab pin used to isolate every Work composer into
   // `root::pin:<key>` so a Cursor unlock never reached the prompt box.
-  const authPin = runtimePin && runtimePin.key !== projectBindingKey ? runtimePin : null;
+  const authPin = statusCachePin(runtimePin, projectBindingKey);
   const runtimePinKey = authPin?.key ?? null;
   const runtimePinRef = useRef<OpenProjectBinding | null>(authPin);
   runtimePinRef.current = authPin;
@@ -263,6 +264,7 @@ export function useProviderAuthStatus(options?: {
     cachedStatus ? familiesWithoutRuntime(cachedStatus) : EMPTY_RUNTIME_MISSING
   ));
   const [loaded, setLoaded] = useState(cachedStatus != null);
+  const statusEffectOff = options?.loadStatus === false;
   const [binary, setBinary] = useState<ProviderBinarySnapshot>(() => (
     typeof cachedStatus?.opencodeBinaryInstalled === "boolean"
       ? {
@@ -271,6 +273,12 @@ export function useProviderAuthStatus(options?: {
         }
       : UNKNOWN_BINARY
   ));
+
+  // Counts the binary answers read from a status. A probe that says "not
+  // installed" after a status answered is dropped: it can predate a download
+  // the status saw. An "installed" answer always applies, because a replayed
+  // cached status (counted too) can be the stale one.
+  const binaryFromStatusRef = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -284,17 +292,38 @@ export function useProviderAuthStatus(options?: {
           }
         : UNKNOWN_BINARY,
     );
+    const statusReadsAtProbe = binaryFromStatusRef.current;
     void probeBinary(binaryScopeKey, pin).then((installed) => {
       if (!active || installed == null) return;
+      if (!installed && binaryFromStatusRef.current !== statusReadsAtProbe) return;
       setBinary({ opencodeBinaryInstalled: installed, binaryProbed: true });
     });
+    // A status re-read can find OpenCode newly downloaded (the Free page's
+    // "Get free models"). The status effect below applies that; a caller that
+    // passes its own auth status turns that effect off, so follow it here.
+    const onUpdated = statusEffectOff
+      ? (event: Event) => {
+          if (!aiStatusRootMatches(aiStatusUpdatedRoot(event), projectRoot)) return;
+          const updated = peekAiStatusCached(projectRoot, runtimePinRef.current);
+          if (!active || typeof updated?.opencodeBinaryInstalled !== "boolean") return;
+          binaryFromStatusRef.current += 1;
+          const installed = opencodeBinaryInstalledFromStatus(updated);
+          setBinary((current) => (
+            current.binaryProbed && current.opencodeBinaryInstalled === installed
+              ? current
+              : { opencodeBinaryInstalled: installed, binaryProbed: true }
+          ));
+        }
+      : null;
+    if (onUpdated) window.addEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
     return () => {
       active = false;
+      if (onUpdated) window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
     };
-  }, [binaryScopeKey, projectRoot, runtimePinKey]);
+  }, [binaryScopeKey, projectRoot, runtimePinKey, statusEffectOff]);
 
   useEffect(() => {
-    if (options?.loadStatus === false) return;
+    if (statusEffectOff) return;
     let active = true;
 
     const applyStatus = (nextStatus: ProviderStatusSnapshot) => {
@@ -305,6 +334,7 @@ export function useProviderAuthStatus(options?: {
       setRuntimeMissing((current) => runtimeMissingMapsEqual(current, nextRuntimeMissing) ? current : nextRuntimeMissing);
       setLoaded(true);
       if (typeof nextStatus.opencodeBinaryInstalled === "boolean") {
+        binaryFromStatusRef.current += 1;
         setBinary({
           opencodeBinaryInstalled: opencodeBinaryInstalledFromStatus(nextStatus),
           binaryProbed: true,
@@ -335,21 +365,13 @@ export function useProviderAuthStatus(options?: {
     }
 
     const onUpdated = (event: Event) => {
-      const detail = (event as CustomEvent<AiStatusCacheUpdatedEventDetail>).detail;
-      const updatedRoot = detail?.projectRoot ?? null;
-      if (
-        updatedRoot !== (projectRoot ?? null)
-        && !(updatedRoot && projectRoot && arePathsEqual(updatedRoot, projectRoot))
-      ) {
-        return;
-      }
+      if (!aiStatusRootMatches(aiStatusUpdatedRoot(event), projectRoot)) return;
       const updated = peekAiStatusCached(projectRoot, runtimePinRef.current);
       if (updated) applyStatus(updated);
     };
     const onInvalidated = (event: Event) => {
       const detail = (event as CustomEvent<AiStatusCacheInvalidatedEventDetail>).detail;
-      if (detail && !detail.allProjects && detail.projectRoot !== projectRoot
-        && !(detail.projectRoot && projectRoot && arePathsEqual(detail.projectRoot, projectRoot))) {
+      if (detail && !detail.allProjects && !aiStatusRootMatches(detail.projectRoot, projectRoot)) {
         return;
       }
       setStatus(EMPTY_AUTH_STATUS);
@@ -365,7 +387,8 @@ export function useProviderAuthStatus(options?: {
         projectRoot,
         pin,
         force: forceUnpinnedRefresh,
-      }).then(applyStatus).catch(() => undefined);
+        // The cache, not this reply: a newer read may have finished first.
+      }).then((reply) => applyStatus(peekAiStatusCached(projectRoot, pin) ?? reply)).catch(() => undefined);
     }
 
     return () => {
@@ -373,7 +396,7 @@ export function useProviderAuthStatus(options?: {
       window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onInvalidated);
     };
-  }, [options?.allowCliOnlyModels, options?.loadStatus, projectBindingKey, projectRoot, runtimePinKey]);
+  }, [options?.allowCliOnlyModels, statusEffectOff, projectBindingKey, projectRoot, runtimePinKey]);
 
   return {
     status,

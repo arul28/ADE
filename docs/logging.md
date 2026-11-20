@@ -2436,6 +2436,17 @@ one-hour minimum interval bounds it to at most 24 accepted events per UTC day,
 inside the existing `ade_feature_used` and shared ceilings. The keystroke-rate
 `chat.listMentionSuggestions` read stays untracked by design.
 
+A chat on a free model (`shared/freeModels.ts`: OpenCode Zen's free tier, no
+account or key) records the existing coarse `ade_feature_used` event at the
+turn-settled boundary (`agentTurnProductAnalytics.ts`) with `feature: "chat"`,
+`action: "free_model_used"`, the turn's `outcome`, `provider: "opencode"` and
+`source: "runtime"`. It carries no model id, prompt or session id (the
+session only keys the local dedupe, hashed). The `free-model-chat:<session>`
+dedupe key holds it to one event per chat each UTC day (the dedupe store
+clears at the day roll), so a long chat on a free model sends one event a
+day, not one per turn. It stays inside the existing `ade_feature_used` and
+shared ceilings; no limit was raised.
+
 Regenerating a chat's visible metadata records the existing coarse
 `ade_feature_used` event at the chat service boundary via
 `captureSessionMetadataRegeneratedAnalytics`, with `feature: "chat"`,

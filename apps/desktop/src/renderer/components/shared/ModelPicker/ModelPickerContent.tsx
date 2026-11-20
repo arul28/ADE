@@ -33,7 +33,15 @@ import { cursorProviderAvailable } from "../../../lib/platform";
 import { ModelListRow } from "./ModelListRow";
 import { isPiRoutedModel, providerLabel, subProviderKey, subProviderLabel } from "./modelFacts";
 import { ModelRowLogo, ProviderLogo } from "../ProviderLogos";
-import { ModelPickerRail, type RailEntry, type RailSelection, type AuthStatus } from "./ModelPickerRail";
+import {
+  ModelPickerRail,
+  railSelectionCatalogFamily,
+  railSelectionFamily,
+  railSelectionLabel,
+  type AuthStatus,
+  type RailEntry,
+  type RailSelection,
+} from "./ModelPickerRail";
 import { ModelPickerEmptyState, ProviderRefreshError } from "./ModelPickerEmptyState";
 import { useModelFavorites } from "./useModelFavorites";
 import { useModelRecents } from "./useModelRecents";
@@ -49,6 +57,9 @@ import {
 import type { AgentChatModelCatalogRefreshProvider, OpenProjectBinding } from "../../../../shared/types";
 import { refreshProviderForFamily } from "./runtimeCatalogCache";
 import { CustomPickerPane } from "./CustomPickerPane";
+import { FreeModelsEmptyState } from "./FreeModelsEmptyState";
+import { useFreeModelsStatus } from "./useFreeModelsStatus";
+import { freeModelEntry, freeModelSourceLabel, isFreeModel } from "../../../../shared/freeModels";
 import { useSmartBalanceProviders } from "../../settings/providers/accounts/useProviderInstances";
 import { isImeComposing } from "../../../lib/imeComposition";
 
@@ -181,7 +192,8 @@ export type ModelPickerContentProps = {
    * so a pinned picker names a runtime-only model instead of printing its slug.
    */
   catalogScopeKey?: string;
-  onProviderRailSelect?: (family: ProviderFamily) => void;
+  /** `force` skips the freshness check (a runtime that just landed on the machine). */
+  onProviderRailSelect?: (family: ProviderFamily, options?: { force?: boolean }) => void;
   /**
    * When true, hide any permission-related rail/picker rows so the user only
    * chooses model + fast-mode + reasoning, because the caller already pins the
@@ -311,6 +323,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     ...(runtimePin ? { runtimePin } : {}),
   });
 
+  const { status: freeModels, refresh: refreshFreeModelsMachine } = useFreeModelsStatus(runtimePin);
   const recentSet = useMemo(() => new Set(recents), [recents]);
   const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
 
@@ -328,6 +341,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   // window.
   const opencodeBinaryInstalled = internalAuth.opencodeBinaryInstalled;
   const opencodeBinaryKnown = internalAuth.binaryProbed;
+  /** The probe answered and OpenCode is not on the machine. */
+  const opencodeMissing = opencodeBinaryKnown && !opencodeBinaryInstalled;
   const isOpencodeRequiredFamily = useCallback(
     (family: ProviderFamily): family is "opencode" | "ollama" | "lmstudio" =>
       family === "opencode" || family === "ollama" || family === "lmstudio",
@@ -414,24 +429,37 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       .concat([...set].filter((family) => !families.includes(family)));
   }, [expandedModels]);
 
+  // A picker narrowed to the caller's own list shows the Free page only when
+  // that list has a free model; the others can always get one.
+  const showsFreeEntry = useMemo(
+    () => allowRegistryExpansion || expandedModels.some(isFreeModel),
+    [allowRegistryExpansion, expandedModels],
+  );
   const railEntries = useMemo<RailEntry[]>(() => {
     const out: RailEntry[] = [
       ...(listsHarnessPresets ? [{ kind: "harnesses" } as RailEntry] : []),
       { kind: "favorites" },
       { kind: "recents" },
+      ...(showsFreeEntry ? [{ kind: "free" } as RailEntry] : []),
     ];
     for (const family of providersPresent) {
       out.push({ kind: "provider", family, label: providerLabel(family) });
     }
     return out;
-  }, [listsHarnessPresets, providersPresent]);
+  }, [listsHarnessPresets, providersPresent, showsFreeEntry]);
 
   const initialSelectionRef = useRef<RailSelection | null>(null);
   if (initialSelectionRef.current == null) {
-    if (recents.length > 0) {
+    const activeModel = expandedModels.find((m) => m.id === (value || openAtValue));
+    // With nothing signed in, the free models are the ones that work, so
+    // the picker opens on them.
+    if (freeModels?.nothingSignedIn && showsFreeEntry) {
+      initialSelectionRef.current = "free";
+    } else if (recents.length > 0) {
       initialSelectionRef.current = "recents";
+    } else if (activeModel && isFreeModel(activeModel)) {
+      initialSelectionRef.current = "free";
     } else {
-      const activeModel = expandedModels.find((m) => m.id === (value || openAtValue));
       initialSelectionRef.current = activeModel
         ? `provider:${pickerFamilyForModel(activeModel)}`
         : providersPresent[0]
@@ -449,10 +477,24 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     return () => cancelAnimationFrame(frame);
   }, []);
 
+  // With the AI status not read yet at open, the picker opens on another
+  // page. When the first status says nothing is signed in, move to the Free
+  // page, unless the person already picked a page.
+  const railPickedRef = useRef(false);
+  const freeStatusSeenRef = useRef(freeModels != null);
+  useEffect(() => {
+    if (freeStatusSeenRef.current || freeModels == null) return;
+    freeStatusSeenRef.current = true;
+    if (railPickedRef.current || !freeModels.nothingSignedIn || !showsFreeEntry) return;
+    onProviderRailSelect?.("opencode");
+    setSelection("free");
+  }, [freeModels, onProviderRailSelect, showsFreeEntry]);
+
   const handleSelectRail = useCallback((next: RailSelection) => {
-    if (next !== "favorites" && next !== "recents" && next !== "harnesses") {
-      onProviderRailSelect?.(next.slice("provider:".length) as ProviderFamily);
-    }
+    railPickedRef.current = true;
+    // Free models come from OpenCode's catalog, so the Free page refreshes it.
+    const family = railSelectionCatalogFamily(next);
+    if (family) onProviderRailSelect?.(family);
     setSelection(next);
     searchRef.current?.focus({ preventScroll: true });
   }, [onProviderRailSelect]);
@@ -467,11 +509,12 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       // While the probe is still in-flight (binaryKnown === false) we don't
       // hide anything — the alternative would flash "OpenCode needed" briefly
       // for users who do have it.
-      if (opencodeBinaryKnown && !opencodeBinaryInstalled && isOpencodeRequiredFamily(pickerFamilyForModel(m))) {
+      if (opencodeMissing && isOpencodeRequiredFamily(pickerFamilyForModel(m))) {
         return false;
       }
       if (!matchesCursorAvailabilityMode(m)) return false;
-      if (!authOnly) return true;
+      // A free model needs no sign-in, so "Only models I can use" keeps it.
+      if (!authOnly || isFreeModel(m)) return true;
       if (modelRequiresConfiguration(m)) return false;
       // Prefer auth-derived gate; fall back to caller-provided `isAvailable` if no auth signal exists.
       if (Object.keys(effectiveAuth).length > 0) {
@@ -479,7 +522,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       }
       return isAvailable(m.id);
     },
-    [authOnly, effectiveAuth, familyIsReady, isAvailable, isOpencodeRequiredFamily, matchesCursorAvailabilityMode, opencodeBinaryInstalled, opencodeBinaryKnown],
+    [authOnly, effectiveAuth, familyIsReady, isAvailable, isOpencodeRequiredFamily, matchesCursorAvailabilityMode, opencodeMissing],
   );
 
   const searchActive = query.trim().length > 0;
@@ -508,7 +551,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     (m: ModelDescriptor) => ({
       name: m.displayName,
       shortName: m.shortId,
-      aliases: m.aliases,
+      // "free" finds every free model from any page.
+      aliases: isFreeModel(m) ? [...(m.aliases ?? []), "free"] : m.aliases,
       subProvider: subProviderLabel(m) ?? undefined,
       family: pickerFamilyForModel(m),
       providerDisplayName: providerLabel(pickerFamilyForModel(m)),
@@ -531,8 +575,12 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         .filter(filterAvailable)
         .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
       return pool;
+    } else if (selection === "free") {
+      // Free models need no sign-in, so "Only models I can use" never hides
+      // them; only a missing OpenCode does.
+      pool = opencodeMissing ? [] : expandedModels.filter(isFreeModel);
     } else {
-      const family = selection.slice("provider:".length) as ProviderFamily;
+      const family = railSelectionFamily(selection);
       pool = expandedModels.filter((m) => pickerFamilyForModel(m) === family).filter(filterAvailable);
     }
 
@@ -563,13 +611,14 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     recents,
     query,
     toSearchItem,
+    opencodeMissing,
   ]);
 
-  const activeProviderFamily = useMemo<ProviderFamily | null>(() => {
-    if (searchActive) return null;
-    if (selection === "favorites" || selection === "recents" || selection === "harnesses") return null;
-    return selection.slice("provider:".length) as ProviderFamily;
-  }, [searchActive, selection]);
+  const activeProviderFamily = searchActive ? null : railSelectionFamily(selection);
+  const freeActive = !searchActive && selection === "free";
+  // The family whose catalog the open page shows: the provider page's own,
+  // or OpenCode's for the Free page.
+  const activeCatalogFamily = searchActive ? null : railSelectionCatalogFamily(selection);
 
   // A fresh picker can open directly on a provider selected by the persisted
   // draft model. Refresh that provider once on mount so the first list is based
@@ -578,14 +627,43 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   useEffect(() => {
     if (initialProviderRefreshRequestedRef.current) return;
     initialProviderRefreshRequestedRef.current = true;
-    if (activeProviderFamily) onProviderRailSelect?.(activeProviderFamily);
-  }, [activeProviderFamily, onProviderRailSelect]);
+    if (activeCatalogFamily) onProviderRailSelect?.(activeCatalogFamily);
+  }, [activeCatalogFamily, onProviderRailSelect]);
 
-  const activeRefreshProvider = activeProviderFamily ? refreshProviderForFamily(activeProviderFamily) : null;
+  const activeRefreshProvider = activeCatalogFamily ? refreshProviderForFamily(activeCatalogFamily) : null;
   const activeProviderRefreshing = activeRefreshProvider != null && refreshingProvider === activeRefreshProvider;
   const activeProviderRefreshFailed = activeRefreshProvider != null && refreshErrorProvider === activeRefreshProvider;
 
+  // However the picker learns OpenCode arrived (its own download, a status
+  // re-read, the chat pane's), the catalog it read without OpenCode is stale:
+  // reload OpenCode's models once, past the freshness check.
+  // A Free or OpenCode page that read its catalog before the probe answered
+  // counts as "read without OpenCode" too.
+  const opencodeWasMissingRef = useRef(opencodeMissing || (!opencodeBinaryKnown && activeCatalogFamily === "opencode"));
+  useEffect(() => {
+    if (opencodeMissing) {
+      opencodeWasMissingRef.current = true;
+      return;
+    }
+    if (!opencodeBinaryInstalled || !opencodeWasMissingRef.current) return;
+    opencodeWasMissingRef.current = false;
+    onProviderRailSelect?.("opencode", { force: true });
+  }, [onProviderRailSelect, opencodeBinaryInstalled, opencodeMissing]);
+
   const providerTabs = useMemo(() => {
+    if (freeActive) {
+      // One tab per source of free models; one source draws no tabs.
+      const bySource = new Map<string, { key: string; label: string; models: ModelDescriptor[]; hasAvailable: boolean }>();
+      for (const model of candidateModels) {
+        const source = freeModelEntry(model)?.source;
+        if (!source) continue;
+        const key = `free:${source}`;
+        const existing = bySource.get(key);
+        if (existing) existing.models.push(model);
+        else bySource.set(key, { key, label: freeModelSourceLabel(source), models: [model], hasAvailable: true });
+      }
+      return [...bySource.values()];
+    }
     if (!activeProviderFamily) return [];
     const byKey = new Map<string, { key: string; label: string; models: ModelDescriptor[]; hasAvailable: boolean }>();
     for (const model of candidateModels) {
@@ -600,7 +678,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       }
     }
     return [...byKey.values()];
-  }, [activeProviderFamily, candidateModels, isAvailable]);
+  }, [activeProviderFamily, candidateModels, freeActive, isAvailable]);
 
   const [activeProviderTabKey, setActiveProviderTabKey] = useState<string | null>(null);
   useEffect(() => {
@@ -691,6 +769,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   // until the person signs in.
   const modelNeedsSignIn = useCallback(
     (m: ModelDescriptor): boolean => {
+      // A free model needs no account (`shared/freeModels.ts`).
+      if (isFreeModel(m)) return false;
       if (Object.keys(effectiveAuth).length === 0) return false;
       const family = pickerFamilyForModel(m);
       return !familyIsReady(family) && !familyRuntimeMissing(family);
@@ -704,6 +784,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   // provider. Those rows stay dimmed.
   const isAvailableForUse = useCallback(
     (m: ModelDescriptor): boolean => {
+      // A free model needs only OpenCode on the machine, no sign-in.
+      if (isFreeModel(m)) return !opencodeMissing;
       if (!matchesCursorAvailabilityMode(m)) return false;
       // A configuration-gated model is never directly selectable — the row
       // dims and its click routes to the connect affordance instead. This
@@ -724,7 +806,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       }
       return isAvailable(m.id);
     },
-    [cursorAvailabilityMode, effectiveAuth, familyIsReady, familySelectable, isAvailable, matchesCursorAvailabilityMode],
+    [cursorAvailabilityMode, effectiveAuth, familyIsReady, familySelectable, isAvailable, matchesCursorAvailabilityMode, opencodeMissing],
   );
 
   // One row with a Sign in button makes every row keep its column, so the
@@ -835,6 +917,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         });
         return;
       }
+      // Enter on a button (an empty page's "Get free models", a row's star)
+      // is that button's own activation.
+      if (event.key === "Enter" && event.target instanceof HTMLElement && event.target.closest("button, a[href]")) return;
       if (event.key === "Enter") {
         event.preventDefault();
         const target = visibleModels[focusedIndex];
@@ -995,13 +1080,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   // never leave you guessing which provider you are looking at.
   const panelLabel = searchActive && !harnessesActive
     ? `${visibleModels.length} ${visibleModels.length === 1 ? "result" : "results"}`
-    : selection === "harnesses"
-      ? "Custom"
-      : selection === "favorites"
-        ? "Favorites"
-        : selection === "recents"
-          ? "Recents"
-          : providerLabel(selection.slice("provider:".length));
+    : railSelectionLabel(selection);
 
   // Show the setup banner only when the active provider rail is unauthed AND
   // the caller has wired a sign-in handler. Auth status of `undefined` (no
@@ -1014,8 +1093,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const activeFamilyNeedsOpencode =
     activeProviderFamily != null
     && isOpencodeRequiredFamily(activeProviderFamily)
-    && opencodeBinaryKnown
-    && !opencodeBinaryInstalled;
+    && opencodeMissing;
   const showSetupBanner =
     activeProviderFamily != null
     && onOpenSignIn != null
@@ -1176,7 +1254,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
 	          {providerTabs.length > 1 ? (
 	            <div
               role="group"
-              aria-label={activeProviderFamily === "pi" ? "Pi providers" : "Provider sources"}
+              aria-label={freeActive ? "Free model sources" : activeProviderFamily === "pi" ? "Pi providers" : "Provider sources"}
 	              className="flex shrink-0 gap-1 overflow-x-auto px-3 pb-1.5 pt-1 [scrollbar-width:none]"
 	            >
 	              {providerTabs.map((tab) => {
@@ -1254,14 +1332,25 @@ export const ModelPickerContent = memo(function ModelPickerContent({
             {activeProviderRefreshFailed && activeRefreshProvider && !isEmpty ? (
               <ProviderRefreshError
                 provider={activeRefreshProvider}
-                onRetry={activeProviderFamily && onProviderRailSelect
-                  ? () => onProviderRailSelect(activeProviderFamily)
+                onRetry={activeCatalogFamily && onProviderRailSelect
+                  ? () => onProviderRailSelect(activeCatalogFamily)
                   : undefined}
                 getProviderLabel={refreshProviderLabel}
               />
             ) : null}
 
-            {isEmpty ? (
+            {isEmpty && freeActive ? (
+              <FreeModelsEmptyState
+                // One instance per machine: its re-read belongs to one machine.
+                key={runtimePin?.key ?? "tab"}
+                runtimePin={runtimePin}
+                opencodeInstalled={opencodeBinaryKnown ? opencodeBinaryInstalled : null}
+                catalogRefreshing={activeProviderRefreshing}
+                catalogRefreshFailed={activeProviderRefreshFailed}
+                onReady={refreshFreeModelsMachine}
+                {...(onProviderRailSelect ? { onRefresh: () => onProviderRailSelect("opencode", { force: true }) } : {})}
+              />
+            ) : isEmpty ? (
               <ModelPickerEmptyState
                 selection={selection}
                 searchActive={searchActive}
@@ -1335,6 +1424,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                           onCopilotContextTierChange: handleCopilotContextTierChange,
                         } : {})}
                         omitProviderInDetail={providerScopedList && m.family === activeProviderFamily}
+                        freeBadge={freeModelEntry(m)?.badge ?? null}
                         {...(onOpenSignIn && !hideSignInFamilies?.includes(pickerFamilyForModel(m))
                           ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) }
                           : {})}
@@ -1367,7 +1457,8 @@ const ProviderTabLogo = memo(function ProviderTabLogo({
   tabKey: string;
   model: ModelDescriptor | undefined;
 }) {
-  if (!model || /(^|[:/])other$/i.test(tabKey)) return null;
+  // A free-model source mixes makers too.
+  if (!model || /(^|[:/])other$/i.test(tabKey) || tabKey.startsWith("free:")) return null;
   if (isPiRoutedModel(model) && model.piProviderId) {
     return <ProviderLogo family={model.piProviderId} size={12} className="shrink-0" />;
   }

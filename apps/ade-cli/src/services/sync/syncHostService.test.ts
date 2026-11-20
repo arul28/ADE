@@ -9065,6 +9065,8 @@ describe("CTO-gated Linear sync commands", () => {
         "ai.antigravitySignInStatus",
         "ai.antigravitySignInComplete",
         "ai.antigravitySignInCancel",
+        // A download writes to the machine's tool cache.
+        "ai.pinnedToolDownload",
         // Making, waking, resizing or deleting a cloud machine spends or
         // deletes: the phone's controller only, never a read-only viewer.
         "cloud.write",
@@ -9126,6 +9128,8 @@ describe("CTO-gated Linear sync commands", () => {
         "ai.antigravitySignInStatus",
         "ai.antigravitySignInComplete",
         "ai.antigravitySignInCancel",
+        // A download writes to the machine's tool cache.
+        "ai.pinnedToolDownload",
       ]);
 
       // Provider-account changes, and a running sign-in's status, are for a
@@ -9180,6 +9184,9 @@ describe("CTO-gated Linear sync commands", () => {
           "ai.antigravitySignInStatus",
           "ai.antigravitySignInComplete",
           "ai.antigravitySignInCancel",
+          // ADE's pinned tool copy lives in the machine's cache, not a project.
+          "ai.pinnedToolStatus",
+          "ai.pinnedToolDownload",
         ]);
         // Provider accounts are machine-wide config homes, never a project's;
         // an update is the machine's.

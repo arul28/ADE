@@ -2417,6 +2417,8 @@ describe("ModelPicker", () => {
         "harnesses",
         "favorites",
         "recents",
+        // Every free model, under Recents (`shared/freeModels.ts`).
+        "free",
         "provider:anthropic",
         "provider:openai",
         "provider:muse",

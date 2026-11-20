@@ -100,7 +100,9 @@ so a merge to `main` reaches running installs in minutes.
 - **What it can do** (`shared/modelManifest.ts`): add a model (all required
   fields, optional `after` anchor), patch whitelisted fields of a row (price,
   context, aliases, efforts, `deprecated: true`), and set the app default
-  (`defaults.app`) and provider defaults (`defaults.providers`). One invalid
+  (`defaults.app`), provider defaults (`defaults.providers`) and the free
+  models a computer with nothing signed in starts on, in order
+  (`defaults.free`, see [Free models](composer-and-ui.md#free-models)). One invalid
   field rejects the file; an id or alias collision rolls back to the previous
   manifest.
 - **Trust boundary.** The file is unsigned, so it can use only values ADE

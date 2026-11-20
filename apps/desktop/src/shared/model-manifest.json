@@ -1,7 +1,12 @@
 {
   "version": 1,
-  "updatedAt": "2026-11-17T19:51:12Z",
+  "updatedAt": "2026-11-20T08:00:00Z",
   "defaults": {
+    "free": [
+      {
+        "model": "opencode/opencode/big-pickle"
+      }
+    ],
     "app": [
       {
         "model": "anthropic/claude-opus-5-5"

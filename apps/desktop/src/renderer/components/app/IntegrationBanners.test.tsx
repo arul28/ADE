@@ -116,6 +116,7 @@ function baseProps(overrides: Partial<IntegrationBannersProps> = {}): Integratio
     currentProjectRoot: "/project/a",
     githubStatus: null,
     hasAnyAiProvider: true,
+    freeModelsReady: false,
     aiStatusLoaded: true,
     relayHealth: null,
     navigate: vi.fn() as unknown as IntegrationBannersProps["navigate"],

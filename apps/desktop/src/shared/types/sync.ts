@@ -3385,6 +3385,8 @@ export type SyncRemoteCommandAction =
   | "ai.antigravitySignInStart"
   | "ai.antigravitySignInComplete"
   | "ai.antigravitySignInCancel"
+  | "ai.pinnedToolStatus"
+  | "ai.pinnedToolDownload"
   | "ai.listCursorCloudRepositories"
   | "ai.listCursorCloudAgents"
   | "ai.listCursorCloudRuns"

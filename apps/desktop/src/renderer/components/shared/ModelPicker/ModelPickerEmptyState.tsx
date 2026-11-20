@@ -1,6 +1,6 @@
 import type { AuthType, ProviderFamily } from "../../../../shared/modelRegistry";
 import type { AgentChatModelCatalogRefreshProvider } from "../../../../shared/types";
-import type { AuthStatus, RailSelection } from "./ModelPickerRail";
+import { railSelectionFamily, type AuthStatus, type RailSelection } from "./ModelPickerRail";
 import { ProviderEmptyState } from "./providerEmptyState";
 
 export type ModelPickerEmptyStateProps = {
@@ -30,10 +30,10 @@ export function ModelPickerEmptyState({
   getProviderLabel,
   isProviderReady,
 }: ModelPickerEmptyStateProps) {
-  // The harnesses tab draws its own empty state (it has its own call to
-  // action), so it never reaches here.
-  if (!searchActive && selection !== "favorites" && selection !== "recents" && selection !== "harnesses") {
-    const family = selection.slice("provider:".length) as ProviderFamily;
+  // The provider pages. The harnesses tab and the Free page draw their own
+  // empty states, so they never reach here.
+  const family = searchActive ? null : railSelectionFamily(selection);
+  if (family) {
     if (refreshErrorProvider) {
       return (
         <ProviderRefreshError

@@ -357,8 +357,9 @@ export const ModelPicker = memo(function ModelPicker({
     void loadRuntimeCatalog({ mode: "cached" });
   }, [loadRuntimeCatalog, open]);
 
-  const handleProviderRailSelect = useCallback((family: ProviderFamily) => {
+  const handleProviderRailSelect = useCallback((family: ProviderFamily, options?: { force?: boolean }) => {
     const refreshProvider = refreshProviderForFamily(family);
+    const force = options?.force === true;
     if (refreshProvider) {
       void (async () => {
         const scopeAtRefresh = catalogScopeKey;
@@ -367,7 +368,7 @@ export const ModelPicker = memo(function ModelPicker({
         const shared = getSharedRuntimeCatalog(catalogScopeKey);
         if (shared) {
           setRuntimeCatalog(shared);
-          if (runtimeCatalogProviderIsFresh(refreshProvider, cursorFlavor, catalogScopeKey)) {
+          if (!force && runtimeCatalogProviderIsFresh(refreshProvider, cursorFlavor, catalogScopeKey)) {
             setRefreshErrorProvider((current) => current === refreshProvider ? null : current);
             setRefreshingProvider((current) => (
               providerRefreshTokenRef.current === refreshToken ? null : current
@@ -378,9 +379,9 @@ export const ModelPicker = memo(function ModelPicker({
         setRefreshErrorProvider((current) => current === refreshProvider ? null : current);
         setRefreshingProvider(refreshProvider);
         try {
-          const immediate = await loadRuntimeCatalog({ mode: "refresh-stale", refreshProvider });
+          const immediate = await loadRuntimeCatalog({ mode: force ? "force" : "refresh-stale", refreshProvider });
           if (!immediate) return;
-          if (immediate.stale === true) {
+          if (!force && immediate.stale === true) {
             const forced = await loadRuntimeCatalog({ mode: "force", refreshProvider });
             if (!forced) return;
           }

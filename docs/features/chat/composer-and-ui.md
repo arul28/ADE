@@ -1068,7 +1068,7 @@ written, and ranks below the machine key.
 |---|---|
 | `ModelPicker.tsx` | Trigger and popover; runtime catalogs through `sharedCatalogFetch`; favorites and recents. With `fastMode` + `onFastModeChange` it owns the row Fast chips and the `<Model> Fast` trigger (`composeModelPickerTriggerLabel`); `effectiveFastTier` adds the reported-tier badge; `fastTier` enables Ultrafast. Without them (and no `onFastModeLocked`) there is no Fast control; the deprecated `fastModeActive` / `onFastModeToggle` / `fastModeSupported` render the old chip. |
 | `ModelPickerContent.tsx` | The popover body: search, rail, virtualized list (`@tanstack/react-virtual`), empty state. The rail and search share one recessed L; the list panel has a section label (provider, `Favorites`, `Recents`, `Custom`, `N results`). Sub-provider tabs show the maker's logo. Rows are a fixed 50 px (`MODEL_ROW_HEIGHT`), `overscan` 4, ten rows before the scroller has a height. Search focuses after first paint. Props: `hidePermissionRail`, `allowCliOnlyModels`, `allowRegistryExpansion`, `registryFilter` (fork handoffs), `fastTier` + `ultrafastEnabled`, `runtimePin`. A provider's own rail drops its name from row details (`omitProviderInDetail`). With the auth filter on, signed-in CLI providers (Claude, Codex, Droid, Qwen, Kimi, Grok, Copilot) may expand from the registry. |
-| `ModelPickerRail.tsx` | Icon-only tabs: Favorites, Recents, Anthropic, OpenAI, Muse, Cursor, Devin, OpenCode, Pi, GitHub Copilot, Grok, Droid, Kimi, Qwen, Ollama, LM Studio (the same order on desktop, web and iOS; no Cursor on Windows ARM). Auth gates and the "Install OpenCode" CTA come from `providerEmptyState`. |
+| `ModelPickerRail.tsx` | Icon-only tabs: Favorites, Recents, Free models (see [Free models](#free-models)), Anthropic, OpenAI, Muse, Cursor, Devin, OpenCode, Pi, GitHub Copilot, Grok, Droid, Kimi, Qwen, Ollama, LM Studio (the same order on desktop, web and iOS; no Cursor on Windows ARM). Auth gates and the "Install OpenCode" CTA come from `providerEmptyState`. |
 | `ModelListRow.tsx` | A 48 px two-line row: logo, name, check, local mark, then fixed columns: **Sign in** (or a blank of the same width; a "Not signed in" tag when the surface has no sign-in), a two-slot capability pill (faint when absent), a Fast/Ultrafast slot, and the star (on hover/focus, or when starred). On a narrow row Fast goes first, then capabilities, then Sign in becomes an icon. Toggling Fast changes neither the selection nor the popover. Context menu via `Z_LAYERS.contextMenu`. |
 | `ReasoningEffortPicker.tsx` | The effort control (beside the model and in parallel slots); see [Model, effort and Fast](#model-effort-and-fast). `reasoningEffortTrackLabel` gives the short labels. `resolveDisplayedReasoningEffort` falls back to the family's last effort; `AgentChatPane` resolves the same function, so trigger and launch agree. |
 | `modelCatalog.ts` | `descriptorsFromAgentChatModelCatalog`, `mergeSelectorModels`, `resolveModelDescriptorWithRuntimeCatalog`, `createUnknownModelPlaceholder`: flatten the catalog and merge it with the registry, keeping `serviceTiers` and `cursorAvailability`. All take the machine's scope key, with **no fallback to another machine's bucket**: a miss goes to the registry, then the placeholder. |
@@ -1094,6 +1094,70 @@ written, and ranks below the machine key.
   `getAiStatusCached`. Otherwise Settings shows Connected while the picker
   stays Off.
 - Fork handoffs add a same-provider descriptor filter.
+
+### Free models
+
+A person with no paid plan, account or key can still chat: OpenCode Zen's
+free tier runs in ADE's pinned OpenCode with nothing signed in.
+`shared/freeModels.ts` holds the rule (`modelOnlyRunsInOpenCode`: a
+`-free` id or `big-pickle`); iOS mirrors it in `WorkFreeModels.swift`.
+
+- **Free page.** The picker rail's gift tab, under Recents, lists every free
+  model of the picker's machine. A picker narrowed to its caller's own list
+  shows the tab only when that list has a free model. It needs no sign-in, so "Only models I can
+  use" never hides it. Each row carries a `source` (one tab per source; one
+  source draws no tabs) and a `badge` (`free` or `ad-supported`), shown by
+  `FreeModelBadge.tsx` on that row everywhere in the picker. Searching
+  "free" finds them from any page.
+- **No OpenCode yet.** `FreeModelsEmptyState.tsx` offers **Get free models**
+  (`pinnedToolDownload` on the picker's machine), shows the download's
+  progress, then re-reads that machine's status and force-refreshes
+  OpenCode's catalog. It mounts only while the page is empty, so a page with
+  rows reads nothing extra. It shares `PickerEmptyMessage` with the provider
+  pages.
+- **Nothing signed in.** The status of the composer's machine carries
+  `freeModels` (`main/services/ai/freeModelsStatus.ts`): `nothingSignedIn`
+  (no provider, key, custom provider or local model), `everSignedIn` and
+  `preferredDefaultModelIds` (the manifest's `defaults.free`).
+  `everSignedIn` reads a record in ADE's cache: the first check writes it,
+  counting an agent that ran there before (older ADE versions), and the
+  first sign-in seen marks it. Later agent runs do not count, because a
+  runtime start is noted even with no sign-in. A local model is not a
+  sign-in: it clears `nothingSignedIn` but never marks the record. Pi
+  counts only with a stored key or login, because its settings list models
+  that have no sign-in.
+  With nothing signed in:
+  - the picker opens on the Free page (also when the status arrives after
+    the picker opened, unless the person picked a page);
+  - a fresh chat draft starts on the preferred free model, else the first
+    listed one (`chat/useFreeModelsDraft.ts`). It loads OpenCode's catalog
+    for that machine, and a load that found no free model runs again on a
+    later status read, at most once in 30 s. ADE set it, so it is not
+    remembered as the launch default or "last used", also after a launch or
+    a reload, until a person picks a model; another chat or draft starts
+    without the mark. A model someone chose
+    wins, also one chosen before the status arrived, the tour's pick and a
+    restored saved draft. A sign-in on that
+    machine puts the draft back on the model it opened on;
+  - a person who never signed in there gets **Use a free model** on the
+    sign-in strip, on a draft or an open chat (iOS: on the chat's sign-in
+    card, which also re-sends a turn that stopped on the sign-in, once the
+    model change succeeded);
+  - the app banner says **Free models are ready** (accent) instead of the
+    missing-provider warning, once OpenCode is on the machine.
+- **Download at launch.** A computer with no sign of any agent downloads
+  OpenCode at launch (`agentToolDemand.ts`, `signals` policy
+  only). The banner, the first-run OpenCode tile and a waiting draft follow
+  the tools cache's push (`renderer/lib/toolsCacheEvents.ts`), this computer
+  only.
+- **Other machines.** Every read and download goes to the composer's
+  machine: the status through the pinned status cache, the download through
+  `pinnedToolDownload` with the picker's pin. The phone and the web client
+  reach the same calls as `ai.pinnedToolStatus` / `ai.pinnedToolDownload`
+  remote commands.
+- **Analytics.** One `ade_feature_used` (`feature: chat`, `action:
+  free_model_used`, `provider: opencode`) per chat, on its first settled
+  turn on a free model. The model id goes only to `$ai_generation`.
 
 ### Attachment handling
 

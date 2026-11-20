@@ -599,7 +599,7 @@ func workPreviewChatSessionView(
     onDispatchSteerInline: nil,
     onDispatchSteerInterrupt: nil,
     onMoveSteer: nil,
-    onSelectModel: { _ in },
+    onSelectModel: { _ in true },
     onSelectRuntimeMode: { _ in true },
     onSelectEffort: { _ in },
     onSelectCodexFastMode: { _ in true },
@@ -1503,6 +1503,18 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The real model picker with fixture Custom harnesses. See
   /// `WorkModelPickerPreviewHost`.
   case modelPicker = "model-picker"
+  /// The picker on a machine with nothing signed in: it opens on the Free
+  /// page listing OpenCode Zen's free models. See `WorkFreeModelsPreviewHost`.
+  case modelPickerFree = "model-picker-free"
+  /// The Free page on a machine without OpenCode: "Get free models".
+  case modelPickerFreeSetup = "model-picker-free-setup"
+  /// The Free page while OpenCode downloads: "Getting free models…".
+  case modelPickerFreeDownloading = "model-picker-free-downloading"
+  /// New Chat on a machine with nothing signed in: it starts on the free
+  /// default.
+  case newChatFree = "new-chat-free"
+  /// A new person's sign-in card before a send, with "Use a free model".
+  case chatSignInFree = "chat-signin-free"
   /// The Hub's glass composer over a scrolling list; `-adePreviewFocusComposer`
   /// opens it. See `HubComposerPreviewHost` in `WorkNewChatScreen.swift`.
   case hubComposer = "hub-composer"
@@ -1859,6 +1871,16 @@ struct ADEPreviewScreenHost: View {
       WorkNewChatPreviewHost(usesGatewayModelFixture: true)
     case .modelPicker:
       WorkModelPickerPreviewHost()
+    case .modelPickerFree:
+      WorkFreeModelsPickerPreviewHost(opencode: .ready)
+    case .modelPickerFreeSetup:
+      WorkFreeModelsPickerPreviewHost(opencode: .missing)
+    case .modelPickerFreeDownloading:
+      WorkFreeModelsPickerPreviewHost(opencode: .downloading)
+    case .newChatFree:
+      WorkNewChatPreviewHost(freeModelsFixture: true)
+    case .chatSignInFree:
+      WorkFreeModelsSignInPreviewHost()
     case .hubComposer:
       HubComposerPreviewHost()
     case .handoffSheet:
@@ -3258,4 +3280,191 @@ private final class WorkProviderSignInPreviewMachine: ObservableObject, Provider
     ]
   }
 }
+
+// MARK: - Free models fixtures
+
+/// A machine with nothing signed in, as a new person's first computer:
+/// `ai.getStatus` carries the free-models block, the catalog lists OpenCode
+/// Zen's free models, and OpenCode is ready, missing or downloading.
+@MainActor
+final class WorkFreeModelsPreviewMachine: ObservableObject, ProviderAccountsHost {
+  enum OpenCode { case ready, missing, downloading }
+
+  private var opencode: OpenCode
+  private var received: Double = 18_400_000
+  private let total: Double = 52_600_000
+
+  init(opencode: OpenCode) { self.opencode = opencode }
+
+  var supportsProviderAccounts: Bool { true }
+  var canChangeProviderAccounts: Bool { true }
+  var providerAccountsConnected: Bool { true }
+
+  func runProviderAccountsCommand(_ action: String, args: [String: Any]) async throws -> Any {
+    switch action {
+    case "ai.getStatus":
+      return [
+        "providerConnections": [
+          "claude": ["runtimeDetected": true, "authAvailable": false, "runtimeAvailable": false],
+          "muse": ["runtimeDetected": true, "authAvailable": false, "runtimeAvailable": false],
+        ],
+        "freeModels": WorkFreeModelsPreviewData.statusBlock,
+      ]
+    case "ai.pinnedToolDownload":
+      if opencode == .missing { opencode = .downloading }
+      return pinnedStatus()
+    case "ai.pinnedToolStatus":
+      if opencode == .downloading { received = min(received + 1_900_000, total - 1) }
+      return pinnedStatus()
+    case "personalChats.modelCatalog":
+      // As the seed: free models only once OpenCode is on the machine.
+      return WorkFreeModelsPreviewData.catalogJSON(includeFree: opencode == .ready)
+    default:
+      return [String: Any]()
+    }
+  }
+
+  private func pinnedStatus() -> [String: Any] {
+    var status: [String: Any] = [
+      "provider": "opencode", "tool": "opencode", "label": "OpenCode",
+      "version": "1.4.2", "fetchAllowed": true,
+    ]
+    switch opencode {
+    case .ready:
+      status["state"] = "ready"
+      status["downloading"] = false
+    case .missing:
+      status["state"] = "missing"
+      status["downloading"] = false
+    case .downloading:
+      status["state"] = "downloading"
+      status["downloading"] = true
+      status["receivedBytes"] = received
+      status["totalBytes"] = total
+    }
+    return status
+  }
+}
+
+@MainActor
+enum WorkFreeModelsPreviewData {
+  static let defaultFreeModelId = "opencode/opencode/big-pickle"
+
+  static var statusBlock: [String: Any] {
+    ["nothingSignedIn": true, "everSignedIn": false, "preferredDefaultModelIds": [defaultFreeModelId]]
+  }
+
+  static let status = WorkFreeModelsStatus(
+    nothingSignedIn: true,
+    everSignedIn: false,
+    preferredDefaultModelIds: [defaultFreeModelId]
+  )
+
+  static let freeModelIds = [
+    "opencode/opencode/big-pickle",
+    "opencode/opencode/nemotron-3-ultra-free",
+    "opencode/opencode/minimax-m3-free",
+    "opencode/opencode/grok-code-fast-free",
+  ]
+
+  /// The host's `chat.modelCatalog` for that machine, in the wire's JSON
+  /// shape: Claude and Codex not signed in, OpenCode's Zen and Go providers.
+  static func catalogJSON(includeFree: Bool) -> Any {
+    func model(_ id: String, _ name: String, provider: String, providerKey: String, group: String, available: Bool) -> [String: Any] {
+      [
+        "id": id, "runtimeModelId": id.split(separator: "/").last.map(String.init) ?? id,
+        "provider": provider, "providerKey": providerKey, "groupKey": group,
+        "displayName": name, "isDefault": false, "family": provider,
+        "supportsTools": true, "isAvailable": available,
+      ]
+    }
+    let free: [[String: Any]] = includeFree ? [
+      model("opencode/opencode/big-pickle", "Big Pickle", provider: "opencode", providerKey: "opencode", group: "opencode", available: true),
+      model("opencode/opencode/nemotron-3-ultra-free", "Nemotron 3 Ultra", provider: "opencode", providerKey: "opencode", group: "opencode", available: true),
+      model("opencode/opencode/minimax-m3-free", "MiniMax M3", provider: "opencode", providerKey: "opencode", group: "opencode", available: true),
+      model("opencode/opencode/grok-code-fast-free", "Grok Code Fast", provider: "opencode", providerKey: "opencode", group: "opencode", available: true),
+    ] : []
+    var opencodeProviders: [[String: Any]] = []
+    if !free.isEmpty {
+      opencodeProviders.append([
+        "key": "opencode", "displayName": "OpenCode Zen", "badgeColor": "#22C55E", "modelCount": free.count,
+        "subsections": [["key": "opencode", "label": "OpenCode Zen", "models": free]],
+      ])
+    }
+    opencodeProviders.append([
+      "key": "opencode-go", "displayName": "OpenCode Go", "badgeColor": "#4D6BFE", "modelCount": 1,
+      "subsections": [["key": "opencode-go", "label": "OpenCode Go", "models": [
+        model("opencode/opencode-go/deepseek-v4.1-flash", "DeepSeek V4.1 Flash", provider: "opencode", providerKey: "opencode-go", group: "opencode", available: false),
+      ]]],
+    ])
+    return [
+      "fetchedAt": "2026-11-20T00:00:00.000Z",
+      "groups": [
+        ["key": "claude", "displayName": "Claude", "providers": [[
+          "key": "anthropic", "displayName": "Anthropic", "badgeColor": "#D97757", "modelCount": 2,
+          "subsections": [["key": "anthropic", "label": "Anthropic", "models": [
+            model("claude-sonnet-5", "Claude Sonnet 5", provider: "claude", providerKey: "anthropic", group: "claude", available: false),
+            model("claude-opus-5-5", "Claude Opus 5.5", provider: "claude", providerKey: "anthropic", group: "claude", available: false),
+          ]]],
+        ]]],
+        ["key": "opencode", "displayName": "OpenCode", "providers": opencodeProviders],
+      ],
+    ]
+  }
+
+  static func catalog(includeFree: Bool) -> AgentChatModelCatalog? {
+    do {
+      let data = try JSONSerialization.data(withJSONObject: catalogJSON(includeFree: includeFree))
+      return try JSONDecoder().decode(AgentChatModelCatalog.self, from: data)
+    } catch {
+      // A fixture that no longer decodes would show empty previews.
+      assertionFailure("The free-models preview catalog does not decode: \(error)")
+      return nil
+    }
+  }
+}
+
+/// The real picker on the fixture machine. `.ready` lists the free models;
+/// `.missing` and `.downloading` list none, so the Free page shows its setup.
+private struct WorkFreeModelsPickerPreviewHost: View {
+  @StateObject private var machine: WorkFreeModelsPreviewMachine
+
+  init(opencode: WorkFreeModelsPreviewMachine.OpenCode) {
+    _machine = StateObject(wrappedValue: WorkFreeModelsPreviewMachine(opencode: opencode))
+    if let catalog = WorkFreeModelsPreviewData.catalog(includeFree: opencode == .ready) {
+      SyncMenuSafePublisher.shared.service.seedPreviewChatModelCatalog(catalog)
+    }
+  }
+
+  var body: some View {
+    NavigationStack {
+      WorkModelPickerSheet(
+        currentModelId: "claude-sonnet-5",
+        currentProvider: "claude",
+        isBusy: false,
+        freeModelsMachine: .host(machine),
+        onSelect: { _, _, _, _ in }
+      )
+      .environmentObject(WorkPreviewData.syncService)
+    }
+  }
+}
+
+/// A Claude chat on a new person's machine before anything is sent: Claude
+/// has no login there, so the sign-in card shows, with the free model offer.
+private struct WorkFreeModelsSignInPreviewHost: View {
+  @StateObject private var machine = WorkFreeModelsPreviewMachine(opencode: .ready)
+
+  var body: some View {
+    NavigationStack {
+      workPreviewChatSessionView(
+        transcript: [],
+        provider: "muse",
+        providerSignInHost: machine,
+        providerSignInMachineName: "MacBook Air"
+      )
+    }
+  }
+}
+
 #endif

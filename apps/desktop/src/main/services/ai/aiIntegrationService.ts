@@ -9,6 +9,7 @@ import type { AgentModelDescriptor, AgentProvider, ExecutorOpts } from "./agentE
 import type {
   AiApiKeyVerificationResult,
   AiClaudeAvailability,
+  AiFreeModelsStatus,
   AiHarnessPresetSummary,
   AiProviderAccountSummary,
   AiCustomProviderConfig,
@@ -150,6 +151,7 @@ import { copilotConfigHome } from "../shared/providerConfigHomes";
 import { acquireCopilotSdkConnection, releaseCopilotSdkConnection } from "../chat/copilotSdkPool";
 import { COPILOT_MODELS_TTL_MS, readCopilotModelCatalogCache, refreshCopilotModelCatalog, type CopilotModelCatalogCache } from "../chat/copilotModelsDiscovery";
 import { resolveAdeCacheFile } from "../shared/adeCacheFile";
+import { buildFreeModelsStatus } from "./freeModelsStatus";
 import { writeTextAtomic } from "../shared/utils";
 import {
   cursorUsageCostUsd,
@@ -257,6 +259,8 @@ export type AiIntegrationStatus = {
   opencodeProviders?: OpenCodeProviderSummary[];
   /** True when opencodeProviders came from the persisted disk cache rather than a live/warm probe. */
   opencodeProvidersStale?: boolean;
+  /** Free models on this machine (`freeModelsStatus.ts`). */
+  freeModels?: AiFreeModelsStatus;
   /** Epoch ms of the last successful models.dev fetch (or cache mtime on fallback); null if never fetched. */
   modelsDevLastFetchedAt?: number | null;
   /** Effective ai.customProviders — surfaced so the settings UI can do authoritative full-list writes. */
@@ -2625,6 +2629,15 @@ export function createAiIntegrationService(args: {
             piInstallation: piProfileInventory,
             apiKeyStore: timeSyncPhase("api_key_store_status", () => getApiKeyStoreStatus()),
             ...timeSyncPhase("harness_brains", () => readHarnessBrains()),
+            freeModels: timeSyncPhase("free_models", () => buildFreeModelsStatus({
+              claude: availability.claude,
+              providerConnections,
+              auth,
+              piProviders: piProfileInventory.providers,
+              opencodeProviders: opencodeInventory.providers,
+              localModelCount: discoveredLocalModels.length,
+              customProviderCount: effectiveConfig?.ai?.customProviders?.length ?? 0,
+            })),
           };
           // An older read that a key or sign-in change outran must not become
           // the cache, nor the fallback a later slow read answers with. A read
