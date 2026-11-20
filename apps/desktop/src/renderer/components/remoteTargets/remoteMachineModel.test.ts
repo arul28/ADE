@@ -5,6 +5,7 @@ import type {
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeTarget,
+  RemoteRuntimeUpdateBlock,
 } from "../../../shared/types";
 import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../shared/accountDirectory";
 import {
@@ -14,20 +15,23 @@ import {
   assignMachineSections,
   autoConnectOffReason,
   connectedMachinesFromSnapshot,
-  describeMachineUpdateAttempt,
   describePublishHealth,
   formatLastSeen,
   formatRemoteTargetError,
   isMachineVersionCurrent,
   isVersionSkewWarning,
-  MACHINE_UPDATE_DOWNLOAD_GRACE_MS,
-  MACHINE_UPDATE_INSTALL_GRACE_MS,
-  machineUpdateAttemptFromResult,
   knownAdeVersions,
   machineUpdateTargetVersion,
   machinesBehindOnTheirTrack,
   type LocalPublishHealth,
 } from "./remoteMachineModel";
+import {
+  describeMachineUpdateAttempt,
+  MACHINE_UPDATE_DOWNLOAD_GRACE_MS,
+  MACHINE_UPDATE_INSTALL_GRACE_MS,
+  MACHINE_UPDATE_OLD_BRAIN_SETTLE_MS,
+  machineUpdateAttemptFromResult,
+} from "./machineUpdateStatus";
 
 function accountMachine(overrides: Partial<AdeAccountMachine> = {}): AdeAccountMachine {
   const machine: AdeAccountMachine = {
@@ -580,6 +584,11 @@ describe("describeMachineUpdateAttempt", () => {
     "fallback",
     startedAtMs,
   );
+  const blockReport = (at: number): RemoteRuntimeUpdateBlock => ({
+    at,
+    targetVersion: "1.2.91",
+    holders: [{ pid: 7292, name: "node.exe", path: null }],
+  });
   // A host from before `pendingVersion`: its reply on 2026-10-05 said
   // "Updating to 1.2.91 — reconnecting…" while the machine stayed on 1.2.90.
   const olderHost = machineUpdateAttemptFromResult(
@@ -597,6 +606,12 @@ describe("describeMachineUpdateAttempt", () => {
     ["failed: never came back", installing, { connected: false, version: null }, MACHINE_UPDATE_INSTALL_GRACE_MS + 1, { ok: false, inFlight: false, landed: false }],
     ["waiting: a download gets longer than an install", downloading, { connected: true, version: "1.2.90" }, MACHINE_UPDATE_INSTALL_GRACE_MS + 1, { ok: true, inFlight: true, landed: false }],
     ["failed: a download that never landed", downloading, { connected: true, version: "1.2.90" }, MACHINE_UPDATE_DOWNLOAD_GRACE_MS + 1, { ok: false, inFlight: false, landed: false }],
+    // The far brain's own facts (its handshake's `startedAgoMs` and `lastUpdateBlock`).
+    ["failed early: its brain restarted and stayed up on the old version", installing, { connected: true, version: "1.2.90", hostStartedAt: startedAtMs + 30_000 }, 30_000 + MACHINE_UPDATE_OLD_BRAIN_SETTLE_MS, { ok: false, inFlight: false, landed: false }],
+    ["waiting: its brain restarted and is still inside the settle", installing, { connected: true, version: "1.2.90", hostStartedAt: startedAtMs + 30_000 }, 30_000 + MACHINE_UPDATE_OLD_BRAIN_SETTLE_MS - 1, { ok: true, inFlight: true, landed: false }],
+    ["waiting: a dropped link keeps the brain from before the update", installing, { connected: true, version: "1.2.90", hostStartedAt: startedAtMs - 600_000 }, 120_000, { ok: true, inFlight: true, landed: false }],
+    ["failed early: the installer named what held its files", installing, { connected: true, version: "1.2.90", hostStartedAt: startedAtMs + 40_000, hostUpdateBlock: blockReport(startedAtMs + 35_000) }, 45_000, { ok: false, inFlight: false, landed: false, names: "node.exe (PID 7292)" }],
+    ["waiting: a retry still carries the last attempt's report", installing, { connected: true, version: "1.2.90", hostStartedAt: startedAtMs - 600_000, hostUpdateBlock: blockReport(startedAtMs - 10_000) }, 5_000, { ok: true, inFlight: true, landed: false }],
   ] as const)("%s", (_label, attempt, machine, elapsedMs, expected) => {
     const status = describeMachineUpdateAttempt(attempt, machine, startedAtMs + elapsedMs);
     expect(status.ok).toBe(expected.ok);
@@ -604,6 +619,7 @@ describe("describeMachineUpdateAttempt", () => {
     // Landed is the one settled-ok state that replaces the host's own line.
     expect(status.ok && !status.inFlight && status.message !== attempt.message).toBe(expected.landed);
     if (!expected.ok && machine.connected) expect(status.message).toContain(machine.version);
+    if ("names" in expected) expect(status.message).toContain(expected.names);
   });
 
   it("shows a refusal as-is, with nothing in flight", () => {

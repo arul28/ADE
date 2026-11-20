@@ -50,16 +50,14 @@ import {
   discoveredPairingInput,
   discoveredTargetInput,
   formatRemoteTargetError,
-  describeMachineUpdateAttempt,
   isMachineVersionOutdated,
-  machineUpdateGraceMs,
-  machineUpdatePhase,
   machinesBehindOnTheirTrack,
   machineUpdateTargetVersion,
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
   type MachineSection,
 } from "./remoteMachineModel";
+import { describeMachineUpdateAttempt, machineUpdateGraceMs, machineUpdatePhase } from "./machineUpdateStatus";
 import {
   accountMachinePresence,
   connectedMachineIds,
@@ -655,6 +653,8 @@ export function RemoteTargetList({
             arch: result.arch,
             version: result.version,
             appVersion: result.appVersion ?? null,
+            hostStartedAt: result.hostStartedAt ?? null,
+            hostUpdateBlock: result.hostUpdateBlock ?? null,
             updateInstallMode: result.updateInstallMode,
             downloadUrl: result.downloadUrl,
             route: result.route,
@@ -1230,7 +1230,11 @@ export function RemoteTargetList({
         busyById[accountRowKey(pairedMachineKey)] === "stopping";
       const updateAttempt = updateResultByTargetId[row.target.id] ?? null;
       const updateStatus = updateAttempt
-        ? describeMachineUpdateAttempt(updateAttempt, row, updateClockMs)
+        ? describeMachineUpdateAttempt(
+          updateAttempt,
+          { connected: row.connected, version: row.version, hostStartedAt: row.status?.hostStartedAt ?? null, hostUpdateBlock: row.status?.hostUpdateBlock ?? null },
+          updateClockMs,
+        )
         : null;
       const updatePhase = machineUpdatePhase({
         checking: machineUpdates.checkingIds.has(row.target.id),

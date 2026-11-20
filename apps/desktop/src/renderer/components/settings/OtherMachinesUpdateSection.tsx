@@ -13,13 +13,13 @@ import {
 } from "../remoteTargets/machineUpdates";
 import {
   connectedMachinesFromSnapshot,
-  describeMachineUpdateAttempt,
   machineBehindVersion,
   machineUpdateTrack,
   machinesBehindOnTheirTrack,
   newestKnownVersionOnTrack,
   type ConnectedMachine,
 } from "../remoteTargets/remoteMachineModel";
+import { describeMachineUpdateAttempt } from "../remoteTargets/machineUpdateStatus";
 import { MachineAvatar, machineFormFactor, machinePlatform } from "../remoteTargets/MachineIdentity";
 import { useCloudSelfUpdates } from "../remoteTargets/useCloudSelfUpdates";
 import type { CloudMachine } from "../../../shared/adeCloud";
@@ -146,7 +146,7 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
         ) : [...ownMachines.map((machine) => {
           const attempt = machineUpdates.attempts[machine.id] ?? null;
           const status = attempt
-            ? describeMachineUpdateAttempt(attempt, { connected: true, version: machine.version }, machineUpdates.nowMs)
+            ? describeMachineUpdateAttempt(attempt, { ...machine, connected: true }, machineUpdates.nowMs)
             : null;
           const updating = machineUpdates.updatingIds.has(machine.id) || status?.inFlight === true;
           const checking = machineUpdates.checkingIds.has(machine.id);

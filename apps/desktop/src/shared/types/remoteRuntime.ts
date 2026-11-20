@@ -1,5 +1,5 @@
 import type { ProjectIcon } from "./core";
-import type { SyncPairingHostIdentity } from "./sync";
+import type { SyncPairingHostIdentity, UpdateBlockHolder } from "./sync";
 
 import type { SlowLinkPreference, SlowLinkStatus } from "../slowLinkMode";
 
@@ -144,6 +144,14 @@ export type RemoteRuntimeConnectResult = {
    * Null with no app (a headless server); absent from brains before v1.2.126.
    */
   appVersion?: string | null;
+  /**
+   * When the machine's brain started, on this computer's clock (its reported
+   * `startedAgoMs` taken from the time of the handshake). A later value means
+   * the brain restarted. Absent from brains before it (`hostUpdateFacts.ts`).
+   */
+  hostStartedAt?: number | null;
+  /** What kept the machine's last update from installing (from its handshake). */
+  hostUpdateBlock?: RemoteRuntimeUpdateBlock | null;
   updateInstallMode?: RemoteRuntimeUpdateInstallMode;
   downloadUrl?: string | null;
   route?: RemoteRuntimeConnectionRoute;
@@ -154,6 +162,18 @@ export type RemoteRuntimeConnectResult = {
   hostStall?: RemoteRuntimeHostStall | null;
   /** A project folder on the machine was not answering at connect (from its handshake). */
   hostStorageWait?: RemoteRuntimeHostStorageWait | null;
+};
+
+/**
+ * The processes that kept a Windows update from installing: they held files in
+ * the install folder open, so the old version could not be moved aside
+ * (`apps/desktop/build/ade-update-holders.ps1`). `at` is this computer's clock
+ * (the machine sends only an age).
+ */
+export type RemoteRuntimeUpdateBlock = {
+  at: number;
+  targetVersion: string | null;
+  holders: UpdateBlockHolder[];
 };
 
 /**
@@ -365,6 +385,10 @@ export type RemoteRuntimeConnectionStatus = {
   version: string | null;
   /** See `RemoteRuntimeConnectResult.appVersion`. Live while connected; not persisted. */
   appVersion?: string | null;
+  /** See `RemoteRuntimeConnectResult.hostStartedAt`. Live while connected; not persisted. */
+  hostStartedAt?: number | null;
+  /** See `RemoteRuntimeConnectResult.hostUpdateBlock`. Live while connected; not persisted. */
+  hostUpdateBlock?: RemoteRuntimeUpdateBlock | null;
   updateInstallMode?: RemoteRuntimeUpdateInstallMode;
   downloadUrl?: string | null;
   route?: RemoteRuntimeConnectionRoute;

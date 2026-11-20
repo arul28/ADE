@@ -391,6 +391,7 @@ import {
 import { tryRouteAppleStreamSocket } from "./appleStreamListenerRoute";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import { readInstalledDesktopAppVersion } from "../../../../desktop/src/main/services/native/nativeHelperPaths";
+import { hostUpdateFacts } from "../../lib/hostUpdateFacts";
 export { selectChangesetBatchChunk } from "./changesetPump";
 // Existing importers of the wire adapters keep this path.
 export { compactChatEventEnvelopeForMobileSync, compactChatEventEnvelopeForSync } from "./syncChatWire";
@@ -2706,6 +2707,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // The brain's own ADE version. A phone reads its update track from it
       // (the "Beta" chip). Additive: older phones ignore it.
       ...(brainVersion ? { appVersion: brainVersion } : {}),
+      ...hostUpdateFacts(),
     };
   };
 

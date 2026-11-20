@@ -14,6 +14,7 @@ function bucketLabels(table: BucketTable, ...extra: string[]): Set<string> {
 }
 import { isMeaningfulUsageAction } from "../usage/usageStatsStore";
 import { ACCOUNT_MACHINE_REFUSAL_CODES } from "../../../shared/accountMachineRefusal";
+import { UPDATE_BLOCK_CAUSES } from "../../../shared/updateBlock";
 import { ACCOUNT_PUBLISH_FAILURE_CAUSES, AUTO_UPDATE_INSTALL_ABORT_REASONS, PENDING_INSTALL_HANDOFF_STEPS } from "../../../shared/types";
 import {
   RENDERER_GONE_ANALYTICS_REASONS,
@@ -174,7 +175,7 @@ const STRING_PROPERTIES = new Set([
   "screen", "feature", "action", "outcome", "app_version", "runtime_mode", "provider", "model_family",
   "duration_bucket", "error_kind", "route_kind", "connection_state", "drop_reason", "source", "mode",
   "entry_point", "release_channel", "summary_kind", "reason", "last_command", "leg", "code",
-  "escalation_reason", "handoff_step", "install_source", "trigger", "from_version", "to_version", "user_action",
+  "escalation_reason", "handoff_step", "blocked_by", "install_source", "trigger", "from_version", "to_version", "user_action",
   "tool_error_kind", "crash_reason", "count_bucket",
   "action_domain", "error_code", "refusal_code", "brain_action", "expected_kind", "cause", "brain_frame",
   "kind", "severity", "emulator_count", "top_table", "ram_gb_bucket",
@@ -587,7 +588,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_analytics_budget: new Set(["sent_count", "dropped_count", "drop_reason"]),
   ade_update_install_aborted: new Set(["reason"]),
   ade_update_quit_escalated: new Set(["blocked_ms", "escalation_reason", "native_staging_completed"]),
-  ade_update_install_did_not_land: new Set(["attempt", "handoff_step"]),
+  ade_update_install_did_not_land: new Set(["attempt", "handoff_step", "blocked_by"]),
   ade_update_auto_applied: new Set(),
   ade_update_auto_apply_cancelled: new Set(),
   ade_update_prompted: new Set(["from_version", "to_version", "user_action", "resume_chats"]),
@@ -908,6 +909,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   escalation_reason: new Set(["hard_deadline", "post_staging"]),
   // How far a failed update's quit got (`PendingInstallUpdate.handoffStep`).
   handoff_step: new Set(["none", ...PENDING_INSTALL_HANDOFF_STEPS]),
+  // What held a failed Windows install's files (`updateBlockCause`).
+  blocked_by: new Set(UPDATE_BLOCK_CAUSES),
   install_source: new Set(["direct_download", "homebrew", "install_script", "development", "unknown"]),
   trigger: new Set(["work_session_completed", "cli_session_started"]),
   user_action: new Set(["accepted", "deferred", "dismissed"]),
