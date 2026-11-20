@@ -1,5 +1,5 @@
 import type { ProjectIcon } from "./core";
-import type { SyncPairingHostIdentity } from "./sync";
+import type { SyncPairingHostIdentity, UpdateBlockHolder } from "./sync";
 
 import type { SlowLinkPreference, SlowLinkStatus } from "../slowLinkMode";
 
@@ -145,9 +145,9 @@ export type RemoteRuntimeConnectResult = {
    */
   appVersion?: string | null;
   /**
-   * When the machine's brain process started, on this computer's clock (its
-   * reported uptime taken from the time of the handshake). A later value means
-   * the brain restarted. Absent from brains that do not report uptime.
+   * When the machine's brain started, on this computer's clock (its reported
+   * `startedAgoMs` taken from the time of the handshake). A later value means
+   * the brain restarted. Absent from brains before it (`hostUpdateFacts.ts`).
    */
   hostStartedAt?: number | null;
   /** What kept the machine's last update from installing (from its handshake). */
@@ -173,7 +173,7 @@ export type RemoteRuntimeConnectResult = {
 export type RemoteRuntimeUpdateBlock = {
   at: number;
   targetVersion: string | null;
-  holders: Array<{ pid: number; name: string; path: string | null }>;
+  holders: UpdateBlockHolder[];
 };
 
 /**

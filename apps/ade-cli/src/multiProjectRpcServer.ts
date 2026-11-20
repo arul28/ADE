@@ -209,7 +209,7 @@ import {
 import { gitRemoteIdentity, peerGitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
 import { readInstalledDesktopAppVersion } from "../../desktop/src/main/services/native/nativeHelperPaths";
-import { readMachineUpdateBlock } from "./lib/updateBlockedReport";
+import { brainStartedAgoMs, readMachineUpdateBlock } from "./lib/hostUpdateFacts";
 import { readDesktopUpdateInstallMode } from "../../desktop/src/main/services/native/desktopUpdateInstallMode";
 
 type HandlerEntry = {
@@ -3117,6 +3117,8 @@ export function createMultiProjectRpcRequestHandler(
           multiProject: true,
           pid: process.pid,
           uptimeMs: Math.max(0, Math.round(process.uptime() * 1_000)),
+          // Wall-clock age; `uptimeMs` stops while the computer sleeps (`hostUpdateFacts.ts`).
+          startedAgoMs: brainStartedAgoMs(),
         },
         capabilities: {
           actions: {
@@ -3232,6 +3234,8 @@ export function createMultiProjectRpcRequestHandler(
           multiProject: true,
           pid: process.pid,
           uptimeMs: Math.max(0, Math.round(process.uptime() * 1_000)),
+          // Wall-clock age; `uptimeMs` stops while the computer sleeps (`hostUpdateFacts.ts`).
+          startedAgoMs: brainStartedAgoMs(),
         },
         adeDir: layout.adeDir,
         socketPath: layout.socketPath,

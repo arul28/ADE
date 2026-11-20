@@ -14,20 +14,22 @@ import {
   assignMachineSections,
   autoConnectOffReason,
   connectedMachinesFromSnapshot,
-  describeMachineUpdateAttempt,
   describePublishHealth,
   formatLastSeen,
   formatRemoteTargetError,
   isMachineVersionCurrent,
   isVersionSkewWarning,
-  MACHINE_UPDATE_DOWNLOAD_GRACE_MS,
-  MACHINE_UPDATE_INSTALL_GRACE_MS,
-  machineUpdateAttemptFromResult,
   knownAdeVersions,
   machineUpdateTargetVersion,
   machinesBehindOnTheirTrack,
   type LocalPublishHealth,
 } from "./remoteMachineModel";
+import {
+  describeMachineUpdateAttempt,
+  MACHINE_UPDATE_DOWNLOAD_GRACE_MS,
+  MACHINE_UPDATE_INSTALL_GRACE_MS,
+  machineUpdateAttemptFromResult,
+} from "./machineUpdateStatus";
 
 function accountMachine(overrides: Partial<AdeAccountMachine> = {}): AdeAccountMachine {
   const machine: AdeAccountMachine = {

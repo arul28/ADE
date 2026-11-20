@@ -50,16 +50,14 @@ import {
   discoveredPairingInput,
   discoveredTargetInput,
   formatRemoteTargetError,
-  describeMachineUpdateAttempt,
   isMachineVersionOutdated,
-  machineUpdateGraceMs,
-  machineUpdatePhase,
   machinesBehindOnTheirTrack,
   machineUpdateTargetVersion,
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
   type MachineSection,
 } from "./remoteMachineModel";
+import { describeMachineUpdateAttempt, machineUpdateGraceMs, machineUpdatePhase } from "./machineUpdateStatus";
 import {
   accountMachinePresence,
   connectedMachineIds,

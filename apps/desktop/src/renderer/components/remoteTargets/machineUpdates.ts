@@ -6,16 +6,19 @@ import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { confirmMachineUpdates, type MachineWithImpact } from "./MachineUpdateImpact";
 import {
   connectedMachinesFromSnapshot,
-  describeMachineUpdateAttempt,
-  machineUpdateAttemptFromResult,
-  machineUpdateGraceMs,
   isMachineVersionCurrent,
   knownAdeVersions,
   machinesBehindOnTheirTrack,
   type ConnectedMachine,
-  type MachineUpdateAttempt,
   type MachineUpdateTarget,
 } from "./remoteMachineModel";
+import {
+  describeMachineUpdateAttempt,
+  machineUpdateAttemptFromResult,
+  machineUpdateGraceMs,
+  MACHINE_UPDATE_RECHECK_MS,
+  type MachineUpdateAttempt,
+} from "./machineUpdateStatus";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { adeCloudEnabled } from "../../state/cloudAccess";
 import { selfUpdatingCloudMachineKeys } from "../../../shared/adeCloud";
@@ -97,7 +100,7 @@ export function isMachineUpdateBusy(
   if (current.updatingIds.has(machine.id) || current.checkingIds.has(machine.id)) return true;
   const attempt = current.attempts[machine.id];
   return attempt != null
-    && describeMachineUpdateAttempt(attempt, { connected: true, version: machine.version, hostStartedAt: machine.hostStartedAt, hostUpdateBlock: machine.hostUpdateBlock }, nowMs).inFlight;
+    && describeMachineUpdateAttempt(attempt, { ...machine, connected: true }, nowMs).inFlight;
 }
 
 /**
@@ -276,8 +279,12 @@ export function useMachineUpdates(): MachineUpdatesState & { nowMs: number } {
     let nextDeadlineMs: number | null = null;
     for (const attempt of Object.values(current.attempts)) {
       if (!attempt.pendingVersion) continue;
-      const deadlineMs = attempt.startedAtMs + machineUpdateGraceMs(attempt);
-      if (deadlineMs <= clockMs) continue;
+      const graceEndMs = attempt.startedAtMs + machineUpdateGraceMs(attempt);
+      if (graceEndMs <= clockMs) continue;
+      // Before the grace ends, look again every so often: a brain that came
+      // back on the old version fails the attempt a minute after it started
+      // (`MACHINE_UPDATE_OLD_BRAIN_SETTLE_MS`), and nothing else redraws then.
+      const deadlineMs = Math.min(graceEndMs, clockMs + MACHINE_UPDATE_RECHECK_MS);
       nextDeadlineMs = nextDeadlineMs == null ? deadlineMs : Math.min(nextDeadlineMs, deadlineMs);
     }
     if (nextDeadlineMs == null) return;

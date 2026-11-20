@@ -789,6 +789,7 @@ import {
   resolveBrainLoopWatchdogThresholdMs,
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
+import { primeMachineUpdateBlock } from "./lib/hostUpdateFacts";
 import { createBrainStallProfiler, type BrainStallProfiler } from "./services/runtime/brainStallProfiler";
 import { recordHostStall } from "./services/runtime/hostStallRecord";
 import { installSyncFsCallTracker, isStallCapablePath } from "./services/runtime/syncFsCallTracker";
@@ -30451,6 +30452,8 @@ async function runServe(
     log: (event, meta) => headlessProjectLogger.warn(event, meta),
   });
   const stallProfiler = brainStallProfiler;
+  // After a failed Windows update, the handshakes that follow name what blocked it.
+  primeMachineUpdateBlock((event, meta) => headlessProjectLogger.warn(event, meta));
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     thresholdMs: freezeThresholdMs,

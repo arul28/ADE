@@ -16,12 +16,12 @@ import {
   machineUpdateIsManual,
 } from "../../remoteTargets/machineUpdates";
 import {
-  describeMachineUpdateAttempt,
   machineBehindVersion,
   machineUpdateTargetVersion,
   machinesBehindOnTheirTrack,
   newestKnownVersionOnTrack,
 } from "../../remoteTargets/remoteMachineModel";
+import { describeMachineUpdateAttempt } from "../../remoteTargets/machineUpdateStatus";
 import { Banner } from "../../ui/notice";
 import { useCloudSelfUpdates } from "../../remoteTargets/useCloudSelfUpdates";
 import { useMachineFacts, type MachineFacts } from "../machines/machineFacts";
@@ -186,7 +186,7 @@ function MachineUpdateRow({
     const connected = fact.connected;
     const attempt = updates.attempts[machine.machineId] ?? null;
     const described = attempt
-      ? describeMachineUpdateAttempt(attempt, { connected: true, version: connected.version, hostStartedAt: connected.hostStartedAt, hostUpdateBlock: connected.hostUpdateBlock }, updates.nowMs)
+      ? describeMachineUpdateAttempt(attempt, { ...connected, connected: true }, updates.nowMs)
       : null;
     status = described ? { ok: described.ok, message: described.message } : null;
     const updating = updates.updatingIds.has(machine.machineId) || described?.inFlight === true;

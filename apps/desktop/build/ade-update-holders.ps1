@@ -66,14 +66,19 @@ public static class AdeRestartManager {
     try {
       if (RmRegisterResources(handle, (uint)files.Length, files, 0, null, 0, null) != 0) return new int[0];
       uint needed = 0, count = 0, reasons = 0;
-      int result = RmGetList(handle, out needed, ref count, null, ref reasons);
-      if (result == 0 || needed == 0) return new int[0];
-      if (result != 234) return new int[0];
-      RM_PROCESS_INFO[] infos = new RM_PROCESS_INFO[needed];
-      count = needed;
-      if (RmGetList(handle, out needed, ref count, infos, ref reasons) != 0) return new int[0];
+      RM_PROCESS_INFO[] infos = null;
+      // 234 (ERROR_MORE_DATA): the list grew between the size query and the
+      // read, so size it again.
+      for (int attempt = 0; attempt < 4; attempt++) {
+        int result = RmGetList(handle, out needed, ref count, infos, ref reasons);
+        if (result == 0) break;
+        if (result != 234) return new int[0];
+        infos = new RM_PROCESS_INFO[needed];
+        count = needed;
+      }
+      if (infos == null) return new int[0];
       List<int> ids = new List<int>();
-      for (int i = 0; i < count; i++) ids.Add(infos[i].Process.dwProcessId);
+      for (int i = 0; i < count && i < infos.Length; i++) ids.Add(infos[i].Process.dwProcessId);
       return ids.ToArray();
     } finally {
       RmEndSession(handle);
@@ -85,6 +90,8 @@ public static class AdeRestartManager {
 # pid -> how it was found: "open_file" (Restart Manager) or "command_line".
 $holderIds = @{}
 $selfId = $PID
+# Why a pass found nothing, for the steps log line.
+$problems = @()
 try {
   Add-Type -TypeDefinition $rmSource -Language CSharp -ErrorAction Stop
   # The files a process keeps open: programs, libraries, native modules and the
@@ -99,22 +106,31 @@ try {
     }
   }
 } catch {
-  # Restart Manager unavailable: the command-line pass below still runs.
+  # The command-line pass below still runs; the steps line says why this failed.
+  $problems += "restart_manager: $($_.Exception.Message)"
 }
 
 $processes = @{}
 try {
-  foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
+  # The folder name must end where the match ends: "...\Programs\ADE" is also
+  # the start of "...\Programs\ADE Beta" and "...\Programs\ADE Alpha", whose
+  # processes are not in the way. An unquoted path ends at a space, so a space
+  # ends the name too, unless the other channels' folder name follows it.
+  $rootPattern = [regex]::Escape($installRoot.TrimEnd('\')) + '(?!\s+(?:Beta|Alpha)\b)(?=[\\"\s]|$)'
+  # A stuck WMI service must not hold the silent update (the installer also
+  # bounds this whole script).
+  foreach ($process in @(Get-CimInstance Win32_Process -OperationTimeoutSec 15 -ErrorAction Stop)) {
     $processes[[int]$process.ProcessId] = $process
     if ([int]$process.ProcessId -eq $selfId) { continue }
     $commandLine = [string]$process.CommandLine
     if ($commandLine -and -not $holderIds.ContainsKey([int]$process.ProcessId) -and
-      $commandLine.IndexOf($installRoot.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      [regex]::IsMatch($commandLine, $rootPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
       $holderIds[[int]$process.ProcessId] = "command_line"
     }
   }
 } catch {
   # Names fall back to Get-Process below.
+  $problems += "processes: $($_.Exception.Message)"
 }
 
 $holders = @()
@@ -123,17 +139,17 @@ foreach ($id in $holderIds.Keys) {
   $name = if ($process) { [string]$process.Name } else { try { (Get-Process -Id $id -ErrorAction Stop).ProcessName + ".exe" } catch { "" } }
   if (-not $name) { continue }
   $path = if ($process) { [string]$process.ExecutablePath } else { "" }
-  $commandLine = if ($process) { [string]$process.CommandLine } else { "" }
-  if ($commandLine.Length -gt 300) { $commandLine = $commandLine.Substring(0, 300) }
   # A program from the install folder is ADE itself, which the install check
   # already stopped; one still here is listed, after the outsiders that are
   # the usual cause. An open file is a firmer answer than a command line.
   $inside = $path -and $path.StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase)
   $rank = $(if ($inside) { 2 } else { 0 }) + $(if ($holderIds[$id] -eq "open_file") { 0 } else { 1 })
-  $holders += [pscustomobject]@{ rank = $rank; pid = $id; name = $name; path = $path; via = $holderIds[$id]; commandLine = $commandLine }
+  $holders += [pscustomobject]@{ rank = $rank; pid = $id; name = $name; path = $path; via = $holderIds[$id] }
 }
+# No command lines: they can carry another program's tokens, and the name,
+# path and pid are what the person needs to find it.
 $holders = @($holders | Sort-Object rank, pid | Select-Object -First 8 | ForEach-Object {
-  [ordered]@{ pid = $_.pid; name = $_.name; path = $_.path; via = $_.via; commandLine = $_.commandLine }
+  [ordered]@{ pid = $_.pid; name = $_.name; path = $_.path; via = $_.via }
 })
 
 try {
@@ -152,12 +168,14 @@ try {
   Move-Item -LiteralPath $tempFile -Destination $outFile -Force
 } catch {
   # The steps log line below still records it.
+  $problems += "report: $($_.Exception.Message)"
 }
 
 try {
   $names = if ($holders.Count) { ($holders | ForEach-Object { "$($_.name)($($_.pid))" }) -join "," } else { "unknown" }
-  $line = "{0} install update_blocked {1:N2}s fail target={2} holders={3}" -f `
-    ([DateTime]::UtcNow.ToString("o")), ((Get-Date) - $started).TotalSeconds, $TargetVersion, $names
+  $why = if ($problems.Count) { " problems=" + (($problems -join "; ") -replace "[\r\n]+", " ") } else { "" }
+  $line = "{0} install update_blocked {1:N2}s fail target={2} holders={3}{4}" -f `
+    ([DateTime]::UtcNow.ToString("o")), ((Get-Date) - $started).TotalSeconds, $TargetVersion, $names, $why
   Add-Content -LiteralPath (Join-Path $runtimeDir "install-steps.log") -Value $line -Encoding UTF8
 } catch {
   # Best effort only.

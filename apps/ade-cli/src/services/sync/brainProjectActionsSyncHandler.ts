@@ -178,7 +178,7 @@ import {
   verifyClerkAccountAttestation,
   type VerifiedAccountAttestation,
 } from "../account/accountAttestationVerifier";
-import { hostUpdateFacts } from "../../lib/updateBlockedReport";
+import { hostUpdateFacts } from "../../lib/hostUpdateFacts";
 
 type BrainProjectActionsSyncHandlerArgs = {
   logger: Logger;

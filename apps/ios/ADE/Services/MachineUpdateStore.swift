@@ -226,12 +226,14 @@ struct HostUpdateFacts: Equatable {
   var brainStartedAt: Date?
   var block: HostUpdateBlock?
 
-  /// Read from a hello's `brain` record (`SyncPeerMetadata.uptimeMs` and
+  /// Read from a hello's `brain` record (`SyncPeerMetadata.startedAgoMs` and
   /// `lastUpdateBlock`) when it arrives at `now`.
   static func fromHello(_ brain: [String: Any]?, now: Date) -> HostUpdateFacts {
     guard let brain else { return HostUpdateFacts() }
-    let uptimeMs = (brain["uptimeMs"] as? NSNumber)?.doubleValue
-    let startedAt = uptimeMs.flatMap { $0.isFinite && $0 >= 0 ? now.addingTimeInterval(-$0 / 1000) : nil }
+    // Wall-clock time since the brain started; `uptimeMs` stops while the
+    // machine sleeps, so it cannot place the start before or after an attempt.
+    let startedAgoMs = (brain["startedAgoMs"] as? NSNumber)?.doubleValue
+    let startedAt = startedAgoMs.flatMap { $0.isFinite && $0 >= 0 ? now.addingTimeInterval(-$0 / 1000) : nil }
     var block: HostUpdateBlock?
     if let raw = brain["lastUpdateBlock"] as? [String: Any],
        let ageMs = (raw["ageMs"] as? NSNumber)?.doubleValue, ageMs.isFinite, ageMs >= 0 {
@@ -255,11 +257,15 @@ struct HostUpdateFacts: Equatable {
 /// the old version before the update counts as failed: an install restarts it
 /// more than once, and a minute is past every step of one that works.
 let machineUpdateOldBrainSettle: TimeInterval = 60
+/// How often an in-flight update's row looks again, so the rule above lands on time.
+private let machineUpdateRecheck: TimeInterval = 15
 /// A block's `at` is rebuilt from an age, so it can land a little before the
 /// attempt it belongs to.
 private let machineUpdateBlockClockSlack: TimeInterval = 30
 
 /// "node.exe (PID 7292) had ADE’s files open." Follows "didn’t install: ".
+/// The desktop says the same (`describeUpdateBlock` in
+/// `machineUpdateStatus.ts`); change both together.
 func describeHostUpdateBlock(_ block: HostUpdateBlock) -> String {
   var names = block.holders.prefix(3).map { "\($0.name) (PID \($0.pid))" }
   guard !names.isEmpty else { return "something on it kept ADE’s old files in use." }
@@ -292,10 +298,13 @@ func describeMachineUpdateAttempt(
   }
   // Its brain restarted after the update was sent and has stayed up on the old
   // version: the install ran and failed. Say so now, not after the wait.
-  let restartedOnOldVersion = live
-    && (facts?.brainStartedAt).map { $0 > attempt.startedAt && now.timeIntervalSince($0) >= machineUpdateOldBrainSettle } == true
+  let restartedAt = live ? facts?.brainStartedAt.flatMap { $0 > attempt.startedAt ? $0 : nil } : nil
+  let restartedOnOldVersion = restartedAt.map { now.timeIntervalSince($0) >= machineUpdateOldBrainSettle } == true
   // The installer said why this attempt failed (Windows: what held its files).
-  let block = live
+  // Only once the brain is back after the attempt: the installer writes the
+  // report before it reopens the old ADE, so a brain that never restarted is
+  // still reading the report of an earlier try.
+  let block = restartedAt != nil
     ? facts?.block.flatMap { $0.at >= attempt.startedAt.addingTimeInterval(-machineUpdateBlockClockSlack) ? $0 : nil }
     : nil
   if block == nil, !restartedOnOldVersion, now.timeIntervalSince(attempt.startedAt) < attempt.grace {
@@ -720,7 +729,10 @@ final class MachineUpdateStore: ObservableObject {
   )
 
   /// One wake-up at the earliest in-flight attempt's deadline, so its row
-  /// stops reading "reconnecting…" once the wait is over.
+  /// stops reading "reconnecting…" once the wait is over. Before then it looks
+  /// again every so often: a brain that came back on the old version fails
+  /// the attempt a minute after it started (`machineUpdateOldBrainSettle`),
+  /// and nothing else redraws the row then.
   private func scheduleClock() {
     clockTask?.cancel()
     let now = Date()
@@ -728,6 +740,7 @@ final class MachineUpdateStore: ObservableObject {
       .filter { $0.pendingVersion != nil }
       .map { $0.startedAt.addingTimeInterval($0.grace) }
       .filter { $0 > now }
+      .map { min($0, now.addingTimeInterval(machineUpdateRecheck)) }
     guard let next = deadlines.min() else { return }
     clockTask = Task { @MainActor [weak self] in
       let seconds = max(0, next.timeIntervalSinceNow) + 0.25

@@ -19,6 +19,7 @@ import type {
 } from "../../../shared/types/remoteRuntime";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
+import { readUpdateBlockHolders } from "../../../shared/updateBlock";
 import {
   runtimeBinaryAssetName,
   runtimeNativeArchiveAssetName,
@@ -211,13 +212,15 @@ export function validateRemoteRuntimeInitializeResult(args: {
   const updateInstallMode = runtimeInfo.updateInstallMode === "in_place" || runtimeInfo.updateInstallMode === "manual_download" || runtimeInfo.updateInstallMode === "runtime_only"
     ? runtimeInfo.updateInstallMode : undefined;
   const downloadUrl = typeof runtimeInfo.downloadUrl === "string" ? runtimeInfo.downloadUrl : null;
-  const uptimeMs = typeof runtimeInfo.uptimeMs === "number" && Number.isFinite(runtimeInfo.uptimeMs) && runtimeInfo.uptimeMs >= 0
-    ? runtimeInfo.uptimeMs
+  // Wall-clock age only: `uptimeMs` stops while the computer sleeps, so an older
+  // brain's start cannot be told from a restart (`hostUpdateFacts.ts`).
+  const startedAgoMs = typeof runtimeInfo.startedAgoMs === "number" && Number.isFinite(runtimeInfo.startedAgoMs) && runtimeInfo.startedAgoMs >= 0
+    ? runtimeInfo.startedAgoMs
     : null;
   return {
     version,
     desktopAppVersion,
-    hostStartedAt: uptimeMs == null ? null : Date.now() - uptimeMs,
+    hostStartedAt: startedAgoMs == null ? null : Date.now() - startedAgoMs,
     hostUpdateBlock: readHostUpdateBlock(runtimeInfo.lastUpdateBlock),
     updateInstallMode,
     downloadUrl,
@@ -241,22 +244,15 @@ export function validateRemoteRuntimeInitializeResult(args: {
   };
 }
 
-/** `runtimeInfo.lastUpdateBlock` (ade-cli `UpdateBlockedReport`), or null when absent or malformed. */
+/** `runtimeInfo.lastUpdateBlock` (`SyncHostUpdateBlock`), or null when absent or malformed. */
 function readHostUpdateBlock(value: unknown): RemoteRuntimeUpdateBlock | null {
   if (!isRecord(value)) return null;
   const ageMs = typeof value.ageMs === "number" && Number.isFinite(value.ageMs) && value.ageMs >= 0 ? value.ageMs : null;
   if (ageMs == null) return null;
-  const holders = (Array.isArray(value.holders) ? value.holders : []).flatMap((entry) => {
-    if (!isRecord(entry)) return [];
-    const pid = typeof entry.pid === "number" && Number.isInteger(entry.pid) ? entry.pid : null;
-    const name = typeof entry.name === "string" ? entry.name.trim() : "";
-    if (pid == null || !name) return [];
-    return [{ pid, name, path: typeof entry.path === "string" && entry.path.trim() ? entry.path.trim() : null }];
-  });
   return {
     at: Date.now() - ageMs,
     targetVersion: typeof value.targetVersion === "string" && value.targetVersion.trim() ? value.targetVersion.trim() : null,
-    holders: holders.slice(0, 8),
+    holders: readUpdateBlockHolders(value.holders),
   };
 }
 

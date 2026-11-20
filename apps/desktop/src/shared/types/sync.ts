@@ -229,11 +229,12 @@ export type SyncPeerMetadata = {
   appBuild?: string;
   bundleIdentifier?: string;
   /**
-   * Host only: how long its brain process had run when it answered this hello.
-   * A later start than the update a phone sent means the brain restarted (an
-   * age, so the phone's clock needs no sync). Additive: older phones ignore it.
+   * Host only: how long ago its brain started, by the wall clock, when it
+   * answered this hello. A start after the update a phone sent means the brain
+   * restarted (an age, so the phone's clock needs no sync). Additive: older
+   * phones ignore it. See `ade-cli/src/lib/hostUpdateFacts.ts`.
    */
-  uptimeMs?: number;
+  startedAgoMs?: number;
   /** Host only: what kept its last update from installing (Windows). */
   lastUpdateBlock?: SyncHostUpdateBlock;
   /**
@@ -249,14 +250,17 @@ export type SyncPeerMetadata = {
 /**
  * The processes that held files in a Windows install folder open when an
  * update could not replace it (`apps/desktop/build/ade-update-holders.ps1`,
- * read by `ade-cli/src/lib/updateBlockedReport.ts`). `ageMs`, not a time: the
+ * read by `ade-cli/src/lib/hostUpdateFacts.ts`). `ageMs`, not a time: the
  * reader's clock is another machine's.
  */
 export type SyncHostUpdateBlock = {
   ageMs: number;
   targetVersion: string | null;
-  holders: Array<{ pid: number; name: string; path: string | null }>;
+  holders: UpdateBlockHolder[];
 };
+
+/** One process that held a file in the install folder open (`readUpdateBlockHolders`). */
+export type UpdateBlockHolder = { pid: number; name: string; path: string | null };
 
 export type SyncPeerConnectionState = SyncPeerMetadata & {
   connectedAt: string;

@@ -15,7 +15,8 @@ import {
   requestMachineUpdates,
   useMachineUpdates,
 } from "./machineUpdates";
-import { connectedMachinesFromSnapshot, describeMachineUpdateAttempt, type ConnectedMachine } from "./remoteMachineModel";
+import { connectedMachinesFromSnapshot, type ConnectedMachine } from "./remoteMachineModel";
+import { describeMachineUpdateAttempt } from "./machineUpdateStatus";
 import { cloudBoxContext, useCloudBoxActions } from "./useCloudBoxActions";
 import { useCloudMachines } from "./useCloudMachines";
 
@@ -108,7 +109,7 @@ function DesktopUpdateBanner({ name, block }: { name: string; block: RemoteMachi
   const updates = useMachineUpdates();
   const { machine, requirement } = block;
   const attempt = updates.attempts[machine.id];
-  const status = attempt ? describeMachineUpdateAttempt(attempt, { connected: true, version: machine.version, hostStartedAt: machine.hostStartedAt, hostUpdateBlock: machine.hostUpdateBlock }, updates.nowMs) : null;
+  const status = attempt ? describeMachineUpdateAttempt(attempt, { ...machine, connected: true }, updates.nowMs) : null;
   const busy = isMachineUpdateBusy(updates, machine, updates.nowMs);
   const manual = machineUpdateIsManual(machine, attempt);
   // A brain too old to take `machine.updateAndRestart`, a build whose app
