@@ -734,6 +734,7 @@ vi.mock("../opencode/openCodeInventory", () => ({
   clearOpenCodeInventoryCache: vi.fn(),
   shutdownInventoryServer: vi.fn(),
   peekOpenCodeInventoryCache: vi.fn(() => null),
+  openCodeInventoryGeneration: vi.fn(() => "0:0"),
   probeOpenCodeProviderInventory: vi.fn(async () => ({
     modelIds: ["opencode/openai/gpt-5.4"],
     providers: [],

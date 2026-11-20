@@ -10,6 +10,7 @@ import type { ModelConfig, ThinkingLevel } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
 import type { LocalProviderFamily } from "../modelRegistry";
 import type { CloudTierId } from "../cloudTiers";
+import { LANE_SETUP_PLATFORM_FIELDS } from "../laneSetupPlatform";
 
 export type TestRunStatus = "running" | "passed" | "failed" | "canceled" | "timed_out";
 export type TestSuiteTag = "unit" | "lint" | "integration" | "e2e" | "custom";
@@ -168,12 +169,20 @@ export type LaneSetupScriptConfig = {
   commands?: string[];
   /** Unix-specific setup commands (takes precedence on macOS/Linux) */
   unixCommands?: string[];
+  /** macOS-only setup commands (take precedence over `unixCommands` on macOS) */
+  macosCommands?: string[];
+  /** Linux-only setup commands (take precedence over `unixCommands` on Linux, e.g. ADE Cloud) */
+  linuxCommands?: string[];
   /** Windows-specific setup commands (takes precedence on Windows) */
   windowsCommands?: string[];
   /** Path to a script file relative to project root (fallback) */
   scriptPath?: string;
   /** Path to a Unix-specific script file (takes precedence on macOS/Linux) */
   unixScriptPath?: string;
+  /** Path to a macOS-only script file (takes precedence over `unixScriptPath` on macOS) */
+  macosScriptPath?: string;
+  /** Path to a Linux-only script file (takes precedence over `unixScriptPath` on Linux) */
+  linuxScriptPath?: string;
   /** Path to a Windows-specific script file (takes precedence on Windows) */
   windowsScriptPath?: string;
   /**
@@ -204,13 +213,25 @@ export function laneSetupScriptHasWork(
     Array.isArray(list) && list.some((entry) => typeof entry === "string" && entry.trim().length > 0);
   const hasPath = (value: string | undefined): boolean =>
     typeof value === "string" && value.trim().length > 0;
-  return (
-    hasCommand(script.commands)
-    || hasCommand(script.unixCommands)
-    || hasCommand(script.windowsCommands)
-    || hasPath(script.scriptPath)
-    || hasPath(script.unixScriptPath)
-    || hasPath(script.windowsScriptPath)
+  return LANE_SETUP_PLATFORM_FIELDS.some(
+    (field) => hasCommand(script[field.commandsKey]) || hasPath(script[field.scriptKey]),
+  );
+}
+
+/**
+ * Is this setup script worth keeping in a config layer? True when it has work
+ * (`laneSetupScriptHasWork`) or an explicit per-OS command list, even an empty
+ * one: `linuxCommands: []` means "run nothing on Linux", and dropping it while
+ * parsing or normalizing would let that layer's setup fall back to another.
+ * `injectPrimaryPath` alone still keeps nothing. The resolver still runs an
+ * empty list as nothing.
+ */
+export function laneSetupScriptIsConfigured(
+  script: LaneSetupScriptConfig | undefined | null,
+): script is LaneSetupScriptConfig {
+  if (laneSetupScriptHasWork(script)) return true;
+  return Boolean(script) && LANE_SETUP_PLATFORM_FIELDS.some(
+    (field) => field.key !== "shared" && Array.isArray(script![field.commandsKey]),
   );
 }
 

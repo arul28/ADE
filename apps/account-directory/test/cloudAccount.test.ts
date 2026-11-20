@@ -10,7 +10,8 @@ import { deleteAllAccountChats } from "../src/cloud/chats";
 import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
 import { runIdleCleanup } from "../src/cloud/idleCleanup";
 import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
-import { createCloudProvider } from "../src/cloud/provider";
+import { CloudProviderError, createCloudProvider } from "../src/cloud/provider";
+import { startCloudUpdate } from "../src/cloud/updates";
 import { failUnjoinedLaunches, MACHINE_LAUNCH_MIN_VERSION_SETTING } from "../src/cloud/launches";
 import { runCloudMoves } from "../src/cloud/moves";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
@@ -19,7 +20,7 @@ import { runLinearRenewalCron } from "../src/cloud/linearRenewal";
 import { nextFireAt } from "../src/cloud/automationSchedule";
 import { createComputer, forkComputer, handleCloudRequest } from "../src/cloud/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
-import { applyCloudPlanChange, type CloudEnv } from "../src/cloud/store";
+import { applyCloudPlanChange, type CloudEnv, type ComputerRow } from "../src/cloud/store";
 import { runDailyCostReport } from "../src/cloud/costReport";
 import { grantAad, seal, tokenKey } from "../src/githubApp/seal";
 import { ISSUER, jwksEndpoint, mintToken, OAUTH_CLIENT_ID } from "./jwks";
@@ -681,6 +682,9 @@ describe("ADE Cloud account", () => {
       seedComputer(harness);
       provide(harness);
       harness.insert("cloud_user_keys", { user_id: OWNER, sealed_key: "v1.x.y", created_at: NOW });
+      // Its status menu's facts carry no user id: they go with the computer.
+      harness.insert("cloud_instance_events", { delivery_id: "evt_1", instance_id: INSTANCE, status: "running", at: NOW - DAY, received_at: NOW - DAY });
+      harness.insert("cloud_computer_activity", { instance_id: INSTANCE, busy: 0, running_agents: 0, reported_at: NOW - DAY });
       harness.net.subscriptions.set("sub_1", activeSubscription);
       const response = await deleteAccountOverClerk();
 
@@ -690,6 +694,7 @@ describe("ADE Cloud account", () => {
       expect(harness.row("select plan, stripe_subscription_id from cloud_accounts where user_id = ?", OWNER)).toEqual(expect.objectContaining({ plan: "free", stripe_subscription_id: null }));
       expect(computer(harness).deleted_at).toBe(NOW);
       expect(harness.rows("select user_id from cloud_user_keys where user_id = ?", OWNER)).toEqual([]);
+      expect([...harness.rows("select instance_id from cloud_instance_events"), ...harness.rows("select instance_id from cloud_computer_activity")]).toEqual([]);
       // Its vault and settings live in the push relay's D1, so the relay is asked to remove them.
       expect(harness.relayCalls).toEqual([
         { method: "DELETE", url: `https://relay.test/directory/accounts/${OWNER}`, directoryAuth: "directory-secret" },
@@ -1344,6 +1349,26 @@ describe("ADE Cloud automatic updates", () => {
     await harness.tick();
     expect(computer(harness).status).toBe("sleeping");
     expect(usedMilli(harness) > 0).toBe(charged);
+  });
+
+  // An idle update of an awake computer opens its free window before the provider answers, which can take minutes.
+  it.each<[string, boolean]>([
+    ["a provider that refuses the idle update takes back its free window and power log", false],
+    ["the same refusal after a tick saw the computer running meanwhile still takes them back", true],
+  ])("%s", async (_label, tickDuring) => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { awake_since: NOW - HOUR, last_awake_at: NOW - HOUR });
+    provide(harness, INSTANCE, "running");
+    const row = computer(harness) as unknown as ComputerRow;
+    const provider = {
+      updateInstance: async () => {
+        if (tickDuring) await harness.tick();
+        throw new CloudProviderError("no", "provider_error", 500);
+      },
+    };
+    await expect(startCloudUpdate(harness.env, provider, row, { reason: "idle", target: "tmpl_new", expectsReport: true, now: NOW })).rejects.toThrow("no");
+    expect(computer(harness)).toMatchObject({ status: "running", awake_since: NOW, free_wake_started_at: null, free_wake_until: null, update_state: null });
+    expect(harness.rows("select action from cloud_power_log where instance_id = ? and action = 'update'", INSTANCE)).toEqual([]);
   });
 });
 
@@ -4407,3 +4432,100 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
   });
 });
 
+
+describe("ADE Cloud computer status (the provider's webhook and the brain's activity)", () => {
+  const SECRET_BYTES = Buffer.from("status-webhook-test-key-32-bytes");
+  const SECRET = `whsec_${SECRET_BYTES.toString("base64")}`;
+  const MIN = 60_000;
+
+  const event = (status: string, previous: string | null, at: number, id = INSTANCE) => JSON.stringify({
+    type: "instance.status.updated",
+    timestamp: new Date(at).toISOString(),
+    data: { id, status, previous_status: previous, status_reason: null, name: "ADE · lane", metadata: {} },
+  });
+  const signature = (deliveryId: string, timestamp: number, body: string, key: Buffer = SECRET_BYTES) =>
+    `v1,${createHmac("sha256", key).update(`${deliveryId}.${timestamp}.${body}`).digest("base64")}`;
+  const deliver = (deliveryId: string, body: string, options: { timestamp?: number; sign?: string } = {}) => {
+    const timestamp = options.timestamp ?? Math.floor(clock / 1000);
+    return handleCloudRequest(new Request("https://directory.test/cloud/agent37/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "webhook-id": deliveryId,
+        "webhook-timestamp": String(timestamp),
+        "webhook-signature": options.sign ?? signature(deliveryId, timestamp, body),
+      },
+      body,
+    }), harness.env);
+  };
+  const health = (restartCount: number, memory = "healthy") => harness.net.reply({
+    logs: "",
+    truncated: false,
+    health: { running: true, restart_count: restartCount, exit_code: null, oom_suspected: false, resource_verdict: { memory, cpu: "healthy", disk: "healthy", overall: memory } },
+    fetched_at: Math.floor(clock / 1000),
+  });
+  const events = () => harness.rows("select delivery_id, status, at, restart_count from cloud_instance_events order by at");
+  const status = async () => (await (await harness.send(OWNER, "GET", `/cloud/instances/${INSTANCE}/status`)).json()) as Record<string, unknown>;
+
+  beforeEach(() => {
+    harness.env.AGENT37_WEBHOOK_SECRET = SECRET;
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { status: "running", status_changed_at: NOW - 2 * HOUR, awake_since: NOW - 2 * HOUR });
+    provide(harness);
+  });
+
+  it("keeps a signed change once, for the account's computers only, and refuses a forged, tampered or stale one", async () => {
+    const woke = event("running", "starting", NOW - 10 * MIN);
+    harness.net.once.push({ match: new RegExp(`GET ${SANDBOX}/instances/${INSTANCE}/logs`), reply: health(3) });
+    expect((await deliver("evt_1", woke)).status).toBe(200);
+    // The same delivery again is taken once.
+    expect(await (await deliver("evt_1", woke)).json()).toEqual({ ok: true, kept: false });
+    expect(events()).toEqual([{ delivery_id: "evt_1", status: "running", at: NOW - 10 * MIN, restart_count: 3 }]);
+
+    const asleep = event("sleeping", "running", NOW - MIN);
+    expect((await deliver("evt_forged", asleep, { sign: signature("evt_forged", Math.floor(NOW / 1000), asleep, Buffer.from("another-key")) })).status).toBe(401);
+    expect((await deliver("evt_tampered", asleep, { sign: signature("evt_tampered", Math.floor(NOW / 1000), woke) })).status).toBe(401);
+    const stale = Math.floor(NOW / 1000) - 600;
+    expect((await deliver("evt_stale", asleep, { timestamp: stale, sign: signature("evt_stale", stale, asleep) })).status).toBe(401);
+    expect((await deliver("evt_unsigned", asleep, { sign: "" })).status).toBe(401);
+    // Another workspace instance (not one of ADE's computers) is answered and not kept.
+    expect((await deliver("evt_other", event("running", null, NOW - MIN, "zzzzz99999"))).status).toBe(200);
+    // Nor is a late one for a computer already deleted (its facts went with it).
+    seedComputer(harness, { instance_id: "gone0000001", status: "deleted", awake_since: null, deleted_at: NOW - MIN });
+    expect((await deliver("evt_gone", event("sleeping", "running", NOW - MIN, "gone0000001"))).status).toBe(200);
+    expect(events().map((row) => row.delivery_id)).toEqual(["evt_1"]);
+
+    // Out of order: an older change arriving late never wins over the newer one.
+    expect((await deliver("evt_old", event("sleeping", "running", NOW - 30 * MIN))).status).toBe(200);
+    harness.net.once.push({ match: new RegExp(`GET ${SANDBOX}/instances/${INSTANCE}/logs`), reply: health(5, "pressure") });
+    expect(await status()).toEqual(expect.objectContaining({
+      status: "running",
+      awakeSince: NOW - 10 * MIN,
+      restarts: 2,
+      memory: "pressure",
+      outOfMemory: false,
+    }));
+
+    // Deliveries missed since (a sleep, then a wake the tick saw): the row is
+    // newer, so that older running event no longer dates this stretch awake
+    // nor counts its restarts.
+    harness.exec("update cloud_computers set status_changed_at = ? where instance_id = ?", NOW - 2 * MIN, INSTANCE);
+    harness.net.once.push({ match: new RegExp(`GET ${SANDBOX}/instances/${INSTANCE}/logs`), reply: health(6) });
+    expect(await status()).toEqual(expect.objectContaining({ status: "running", awakeSince: NOW - 2 * MIN, restarts: null }));
+  });
+
+  it("shows the brain's activity of this stretch awake, never an older report", async () => {
+    harness.net.once.push({ match: new RegExp(`GET ${SANDBOX}/instances/${INSTANCE}/logs`), reply: health(1) });
+    await deliver("evt_1", event("running", "sleeping", NOW - 10 * MIN));
+    const report = (body: Row) => harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/activity`, body);
+    const idle = { busy: false, idleSince: NOW - 2 * MIN, sleepsAt: NOW + MIN, runningAgents: 0, reportedAt: NOW - MIN };
+    expect((await report(idle)).status).toBe(200);
+    // Sent late: an older report doesn't replace the newer one.
+    expect((await report({ busy: true, idleSince: null, sleepsAt: null, runningAgents: 2, reportedAt: NOW - 5 * MIN })).status).toBe(200);
+    expect((await report({ busy: "yes", runningAgents: 1, reportedAt: NOW })).status).toBe(400);
+    expect((await status()).activity).toEqual(idle);
+    // A report from before the computer woke says nothing about now.
+    harness.exec("update cloud_computer_activity set reported_at = ? where instance_id = ?", NOW - 20 * MIN, INSTANCE);
+    expect((await status()).activity).toBeNull();
+  });
+});

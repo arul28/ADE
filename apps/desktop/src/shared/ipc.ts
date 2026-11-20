@@ -1037,6 +1037,7 @@ export const IPC = {
    * provider's settings page opens — never on a status refresh.
    */
   aiAcpProviderDiagnostics: "ade.ai.acpProviderDiagnostics",
+  aiRunAcpProviderDoctor: "ade.ai.runAcpProviderDoctor",
   aiOpencodeAuthMethods: "ade.ai.opencodeAuthMethods",
   aiOpencodeOAuthStart: "ade.ai.opencodeOAuthStart",
   aiOpencodeOAuthCancel: "ade.ai.opencodeOAuthCancel",
@@ -1243,6 +1244,7 @@ export const IPC = {
   cloudLaneBackupToBranch: "ade.cloud.laneBackupToBranch",
   cloudLaneBackupForget: "ade.cloud.laneBackupForget",
   cloudKeepIdleComputer: "ade.cloud.keepIdleComputer",
+  cloudComputerStatus: "ade.cloud.computerStatus",
   /** Delete lane, keep a lane on a fresh computer, lanes without a computer, tier changes (`cloudLaneLife.ts`). Account level. */
   cloudLaneLifeCall: "ade.cloud.laneLife.call",
   /** A tier change's steps (`CloudLaneJobSnapshot`), to every window. */

@@ -40,6 +40,13 @@
   // secret above. Only this Worker holds it: the desktop and brains never do.
   // Without it every /cloud route refuses with 503 and the cron does nothing.
   //
+  // SECRET — AGENT37_WEBHOOK_SECRET (ADE Cloud status webhook)
+  // The `whsec_…` signing secret of the provider's `instance.status.updated`
+  // webhook (src/cloud/computerStatus.ts), returned once when the webhook is
+  // registered (`node scripts/register-agent37-webhook.mjs <worker-origin>`).
+  // Set out of band, here and with `--env production`. Unset, the webhook
+  // answers 503 and the status menu reads the minute tick's record only.
+  //
   // OPTIONAL SECRET — RESEND_API_KEY (ADE Cloud)
   // Sends hours warnings, deletion warnings and owner alerts. Unset, those log
   // `cloud.email_skipped` (reason `no_resend_key`) and carry on. Recipients

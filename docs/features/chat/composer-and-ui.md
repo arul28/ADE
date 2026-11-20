@@ -602,7 +602,14 @@ dismissal in a ref and has three close calls:
 ### Attachments
 
 - Drag-drop anywhere on the chat, paste, or the picker; images show a pending
-  thumbnail. Electron clipboard images use
+  thumbnail. A pending image also holds its place in the prompt as an
+  uploading token at the caret (`composerPendingAttachmentChip.ts`,
+  `data-composer-pending-id`, the id of the same pending record the tray
+  tile draws); it serializes to nothing and the real chip replaces it in
+  place when the save lands. A failed save keeps tile and token, marked
+  failed, with **Retry** (the same bytes, the same token, a fresh staged
+  copy) and **Remove** (tile and token together) until the user chooses;
+  a retry that cannot start stays failed with the reason. Electron clipboard images use
   `ade.app.saveClipboardImageAttachment` (main saves and returns a preview);
   `ade.agentChat.saveTempAttachment` is the fallback.
 - **Clipboard images are re-encoded bitmaps**, often over the 10 MB paste
@@ -659,7 +666,21 @@ dismissal in a ref and has three close calls:
   inventories load only when their rail opens and the TTL lapsed
   (`agentChat.modelCatalog({ mode: "cached" | "refresh-stale" | "force",
   refreshProvider? })`; `runtimeCatalogCache.ts`: 30 min for Cursor / Droid /
-  OpenCode, 30 s for `lmstudio` / `ollama`). Chat hides CLI-only Cursor rows;
+  OpenCode, 30 s for `lmstudio` / `ollama`). A change on a machine (a
+  provider installed, signed in, given a key, or set up in Settings ›
+  Providers) marks that machine's cached buckets out of date
+  (`invalidateRuntimeCatalogScope`, `refreshRuntimeCatalogsForMachine`;
+  Settings re-reads only the changed provider through
+  `MODEL_CATALOG_REFRESH_PROVIDERS` / `refreshProvider`, since a full
+  refresh starts several provider processes). The old list stays on screen,
+  and every surface that shows models (the "@" menu, the picker, the effort
+  control) follows the bucket's change version
+  (`useRuntimeCatalogVersion`). The "@" menu shows a quiet **Loading
+  models…** row, and a query with no match yet is not called empty, while
+  its machine's list is being read (`modelsLoading`). On the host the chat
+  catalog goes stale when the OpenCode inventory or a provider's model list
+  really changed (`openCodeInventoryGeneration`, `providerModelsGeneration`),
+  not on a re-check that kept them. Chat hides CLI-only Cursor rows;
   Work CLI hides SDK-only ones.
 - **Everything a prompt box offers is scoped to its machine.** `AgentChatPane`
   always passes `activeComposerRuntimeBinding` (the chat's `chatRuntimePin` or
@@ -693,6 +714,10 @@ dismissal in a ref and has three close calls:
   short labels (`Min` / `Med` / `XHigh` / `Ultra`). A pick does not close the
   popover. GPT-5.6 shows Light / Medium / High / Extra High / Ultra (no Max);
   Ultra warns that it can delegate and use limits faster.
+  A chat's saved level always shows: when the ladder in view does not
+  list it (the machine's catalog is not loaded, its computer is asleep, or the
+  list is partial) the control shows that level on a common ladder instead of
+  "Auto", read-only until the catalog arrives, and nothing writes it back.
 - **Fast mode** lives on the model row inside `ModelPicker`.
   - **Account gate first.** With `fastModeAllowed === false` the toolbar shows
     no Fast control. Row chips stay but a press selects nothing, closes the

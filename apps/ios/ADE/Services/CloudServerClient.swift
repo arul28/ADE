@@ -359,6 +359,31 @@ struct CloudChatQueueResult: Decodable {
   let wake: Wake?
 }
 
+/// One lane computer's live facts (`GET /cloud/instances/:id/status`,
+/// `CloudComputerStatus` in `cloud/contract.ts`). Reading it never wakes the
+/// computer. Every field is optional, so a partial answer still reads.
+struct CloudComputerLiveStatus: Decodable, Equatable {
+  struct Activity: Decodable, Equatable {
+    let busy: Bool?
+    let sleepsAt: Double?
+    let runningAgents: Int?
+  }
+  struct Disk: Decodable, Equatable {
+    let usedBytes: Double?
+    let limitBytes: Double?
+  }
+  let status: String?
+  /// When this stretch awake began (ms); nil while it rests.
+  let awakeSince: Double?
+  let activity: Activity?
+  /// Restarts by itself since `awakeSince`; nil when ADE can't tell.
+  let restarts: Int?
+  /// `healthy`, `pressure` or `critical`; nil when the provider has no verdict.
+  let memory: String?
+  let outOfMemory: Bool?
+  let disk: Disk?
+}
+
 /// The account server's ADE Cloud routes: one bearer, a 12-second timeout
 /// (a wake waits longer), one retry after a 401 with a fresh token.
 struct CloudServerClient {
@@ -489,6 +514,12 @@ struct CloudServerClient {
   /// One computer of the account (`GET /cloud/instances/:id`); `.noAccess` once it is gone.
   func instance(_ instanceId: String) async throws -> CloudServerInstance {
     try decode(CloudServerInstance.self, from: try await send("GET", "cloud/instances/\(segment(instanceId))"))
+  }
+
+  /// `GET /cloud/instances/:id/status`: the computer's live facts, without
+  /// waking it. `.noAccess` (404) on a server older than the route.
+  func computerStatus(instanceId: String) async throws -> CloudComputerLiveStatus {
+    try decode(CloudComputerLiveStatus.self, from: try await send("GET", "cloud/instances/\(segment(instanceId))/status"))
   }
 
   /// `POST /cloud/instances/:id/sleep`: it uses no hours until it wakes. Answers its status.

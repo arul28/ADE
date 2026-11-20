@@ -8,7 +8,7 @@
  * already one plain sentence; that sentence is the error the person sees.
  */
 
-import { readCloudPlanCleanup, readCloudReferralSummary, type CloudAccountState, type CloudDiskLaneUse, type CloudFreeUnlockResult } from "../../../shared/adeCloud";
+import { readCloudPlanCleanup, readCloudReferralSummary, type CloudAccountState, type CloudComputerStatus, type CloudDiskLaneUse, type CloudFreeUnlockResult } from "../../../shared/adeCloud";
 import {
   CLOUD_COMPUTER_FEATURES,
   CLOUD_COMPUTER_HEADER,
@@ -310,6 +310,17 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async keepIdleComputer(id: string): Promise<void> {
       await request("POST", instancePath(id, "keep"), { body: {} });
+    },
+
+    async computerStatus(id: string): Promise<CloudComputerStatus | null> {
+      try {
+        const body = record(await request("GET", instancePath(id, "status")));
+        return body && body.instanceId === id ? body as unknown as CloudComputerStatus : null;
+      } catch (error) {
+        // An older server has no status read; nor does a computer it no longer knows.
+        if (error instanceof CloudProviderError && error.status === 404) return null;
+        throw error;
+      }
     },
 
     async requestIdleSleep(id: string, options?: { backupReportId?: string | null }): Promise<string> {

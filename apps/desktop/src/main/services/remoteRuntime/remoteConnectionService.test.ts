@@ -2060,6 +2060,10 @@ describe("RemoteConnectionService", () => {
     expect(pool.disconnect).toHaveBeenCalledWith(computer.id);
     const sent = vi.mocked(pool.callActionForTarget).mock.calls.length;
     await expect(read()).rejects.toThrow(/asleep/i);
+    // Nor do the writes a composer or Settings sends on its own while a person types or looks.
+    for (const [domain, action] of [["chat", "warmupModel"], ["chat", "prewarmDraft"], ["ai", "acpProviderDiagnostics"]] as const) {
+      await expect(service.callAction(computer.id, "project-1", { domain, action })).rejects.toThrow(/asleep/i);
+    }
     expect(vi.mocked(pool.callActionForTarget).mock.calls.length).toBe(sent);
     expect(wakeForUse).not.toHaveBeenCalled();
 

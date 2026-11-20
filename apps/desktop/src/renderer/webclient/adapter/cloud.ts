@@ -310,6 +310,17 @@ export function createWebCloudNamespace(
     getStatus,
     listMachines,
     machineAction,
+    // A lane computer's status menu: the account server reads it (never a wake), no computer of the person's needed.
+    computerStatus: async (instanceId: string) => {
+      const api = accountClient.cloudApi();
+      if (!api || !isCloudInstanceId(instanceId)) return null;
+      try {
+        return await api.computerStatus(instanceId);
+      } catch (error) {
+        forwardSignalToSentry("web.cloud_computer_status_failed", { code: error instanceof CloudApiError ? error.code : null }, "cloud_computer_status_failed", "info");
+        return null;
+      }
+    },
     // The account server runs the code on that computer; no machine connection needed.
     sendLaunchSignInCode: async ({ instanceId, jobId, code }) => {
       const api = accountClient.cloudApi();

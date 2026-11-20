@@ -27,10 +27,15 @@ import {
   ThreadCommentEditor,
   ThreadCommentListItem,
   threadCommentErrorText,
+  type ThreadCommentError,
   useThreadCommentActions,
 } from "./ThreadCommentControls";
 import {
   addLocalThreadComment,
+  captureThreadCommentBaseline,
+  refreshThreadComments,
+  threadCommentListLoaded,
+  trackThreadCommentSave,
   THREAD_COMMENT_FOCUS_EVENT,
   threadCommentsApi,
   discardUnsavedDraftBody,
@@ -154,15 +159,13 @@ export function ThreadCommentLayer({
   onCreateIssue?: (text: string) => void;
 }) {
   const actions = useThreadCommentActions(sessionId, pin);
-  const sessionIdRef = useRef(sessionId);
-  sessionIdRef.current = sessionId;
   const [draft, setDraft] = useState<Draft | null>(null);
-  // Read after an await, so a failed save can tell whether a newer box is open.
+  // Read from callbacks that outlive a render (closing the box keeps its text).
   const draftRef = useRef(draft);
   draftRef.current = draft;
   // What the open box holds right now, kept when the box closes because the user left.
   const draftBodyRef = useRef("");
-  const [draftError, setDraftError] = useState<string | null>(null);
+  const [draftError, setDraftError] = useState<ThreadCommentError | null>(null);
   const [openCommentId, setOpenCommentId] = useState<string | null>(null);
   const { editingId, stopEditing } = actions;
   const [resolved, setResolved] = useState<Resolved[]>([]);
@@ -501,11 +504,13 @@ export function ThreadCommentLayer({
     if (!draft) return;
     const api = threadCommentsApi();
     if (!api) {
-      setDraftError("This version of ADE cannot save comments.");
+      setDraftError({ text: "This version of ADE cannot save comments.", connection: false });
       return;
     }
     // The comment shows (highlight, margin card, send badge) the moment it is
-    // saved; the host's answer only confirms it. A refusal puts the box back.
+    // saved; the host's answer only confirms it. A failed save keeps the
+    // comment in the list, marked "Couldn't save." with Retry and Discard (and
+    // a "!" on the composer's comments button); it rides no send meanwhile.
     const saving = draft;
     const fields = {
       messageKey: saving.messageKey,
@@ -513,23 +518,26 @@ export function ThreadCommentLayer({
       anchor: saving.anchor,
       body,
     };
+    const loaded = threadCommentListLoaded(sessionId);
     const settle = addLocalThreadComment(sessionId, fields);
     discardDraft();
-    try {
-      settle(await withChatPin(pin ?? null, (chatPin) => api.create({ sessionId, ...fields }, chatPin)));
-    } catch (error) {
-      settle(null);
-      // Reopen the box with the text and the reason, unless another comment
-      // was started since (that box is the user's now) or the user left this
-      // chat; then the text waits for the next box on the same words.
-      if (draftRef.current || saving.sessionId !== sessionIdRef.current) {
-        keepUnsavedDraftBody(saving, body);
-        return;
+    // Tracked until the host answers: a send made meanwhile waits for it, so
+    // the comment reaches the host before the message does.
+    await trackThreadCommentSave(sessionId, settle.localId, async () => {
+      try {
+        // The client id names this comment on the host, so a retry or a
+        // discard after a lost answer finds it. An older host drops the id;
+        // for it, read the list first when it never loaded, so a retry can
+        // tell the saved copy from an older identical comment.
+        if (!loaded) {
+          await refreshThreadComments(sessionId, pin ?? null);
+          captureThreadCommentBaseline(sessionId, settle.localId);
+        }
+        settle(await withChatPin(pin ?? null, (chatPin) => api.create({ sessionId, ...fields, clientId: settle.clientId }, chatPin)));
+      } catch (error) {
+        settle(null, threadCommentErrorText(error));
       }
-      draftBodyRef.current = body;
-      setDraft({ ...saving, body });
-      setDraftError(threadCommentErrorText(error));
-    }
+    });
   };
 
   // ── Margin card layout: each card at its anchor's height, pushed down past the one above ──

@@ -150,6 +150,17 @@ let workComposerAttachmentUploadTimeoutNanoseconds: UInt64 = SyncRequestTimeout.
 /// cannot say two different things about one message.
 let workChatAttachmentUploadTimedOutMessage = "Couldn't send. Tap to retry."
 
+/// What a tray tile says when its background upload failed. The tile turns
+/// `.uploadFailed` the moment the upload does, and a tap uploads it again.
+let workChatAttachmentUploadFailedMessage = "Couldn't upload. Tap to retry."
+
+extension Notification.Name {
+  /// Posted on the main actor when a background upload fails;
+  /// `userInfo["id"]` is the attachment's `UUID`. The input tray marks that
+  /// attachment failed at once instead of letting it look fine until send.
+  static let workComposerAttachmentUploadFailed = Notification.Name("com.ade.ios.workComposerAttachmentUploadFailed")
+}
+
 func workChatAttachmentUploadTimedOutError(_ filename: String) -> NSError {
   NSError(
     domain: "ADE",
@@ -219,6 +230,9 @@ private final class WorkDeadlineBox<T> {
 
 /// Writes one composer's staged attachments under a draft key: host refs for
 /// everything already uploaded, purgeable cached bytes for everything else.
+/// A tile whose background upload failed keeps its bytes too, so leaving the
+/// chat does not lose it; it comes back failed, with its retry, and still
+/// rides no send until that retry lands.
 ///
 /// Shared by the in-chat composer's autosave and by its send path, which has to
 /// write the outgoing set BEFORE it clears the tray — a send that never
@@ -232,7 +246,7 @@ func workChatPersistComposerAttachments(
   let uploads = WorkComposerAttachmentUploads.shared
   var refs: [AgentChatFileRef] = []
   var unsaved: [WorkChatInputAttachment] = []
-  for attachment in attachments where attachment.isReady {
+  for attachment in attachments where attachment.isReady || attachment.isUploadFailed {
     if let ref = attachment.hostRef ?? uploads.ref(for: attachment.id) {
       refs.append(ref)
     } else {
@@ -362,8 +376,23 @@ final class WorkComposerAttachmentUploads {
         entries[id]?.abandoned = false
         entries[id]?.settled = true
         entries[id]?.failure = error.localizedDescription
+        NotificationCenter.default.post(
+          name: .workComposerAttachmentUploadFailed,
+          object: nil,
+          userInfo: ["id": id]
+        )
       }
     }
+  }
+
+  /// Forgets a failed upload so the next `begin` for this id starts a fresh
+  /// one. The tray's Retry calls this before putting the attachment back to
+  /// `.ready`. A first try that landed unseen leaves only an unused temp file
+  /// on the host; the send references the new one.
+  func retry(_ id: UUID) {
+    guard let entry = entries[id], entry.settled, entry.ref == nil else { return }
+    entries[id] = nil
+    order.removeAll { $0 == id }
   }
 
   /// The ref for an attachment, waiting for an in-flight upload — for at most
@@ -460,19 +489,24 @@ enum WorkComposerDraftAttachmentCache {
     var filename: String
     var mimeType: String
     var kind: String
+    /// Its background upload had failed: restored as `.uploadFailed` (Retry),
+    /// never as ready to send. Nil on files written before this field existed.
+    var uploadFailed: Bool?
 
     init(
       id: UUID? = nil,
       name: String,
       filename: String,
       mimeType: String,
-      kind: String
+      kind: String,
+      uploadFailed: Bool? = nil
     ) {
       self.id = id
       self.name = name
       self.filename = filename
       self.mimeType = mimeType
       self.kind = kind
+      self.uploadFailed = uploadFailed
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -481,6 +515,7 @@ enum WorkComposerDraftAttachmentCache {
       case filename
       case mimeType
       case kind
+      case uploadFailed
     }
 
     init(from decoder: Decoder) throws {
@@ -490,6 +525,7 @@ enum WorkComposerDraftAttachmentCache {
       filename = try container.decode(String.self, forKey: .filename)
       mimeType = try container.decode(String.self, forKey: .mimeType)
       kind = try container.decode(String.self, forKey: .kind)
+      uploadFailed = try container.decodeIfPresent(Bool.self, forKey: .uploadFailed)
     }
   }
 
@@ -558,7 +594,8 @@ enum WorkComposerDraftAttachmentCache {
         name: name,
         filename: attachment.filename,
         mimeType: attachment.mimeType,
-        kind: attachment.kind.rawValue
+        kind: attachment.kind.rawValue,
+        uploadFailed: attachment.isUploadFailed ? true : nil
       ))
     }
     return stored
@@ -577,7 +614,7 @@ enum WorkComposerDraftAttachmentCache {
         filename: file.filename,
         mimeType: file.mimeType,
         kind: kind,
-        state: .ready
+        state: file.uploadFailed == true ? .uploadFailed : .ready
       )
     }
   }

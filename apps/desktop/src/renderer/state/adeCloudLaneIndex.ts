@@ -172,6 +172,16 @@ export function useAdeCloudLaneComputers(): IndexState {
   return useSyncExternalStore(subscribeAdeCloudLaneComputers, readState, readState);
 }
 
+/**
+ * The ADE Cloud computer of one lane, or null for a lane that isn't on ADE
+ * Cloud (or no lane). The chat header's cloud button and the chat's wake line
+ * read the same answer, so one shows exactly when the other stands down.
+ */
+export function useCloudLaneComputer(laneId: string | null | undefined): AdeCloudLaneComputer | null {
+  const { computers } = useAdeCloudLaneComputers();
+  return laneId ? computers.find((entry) => entry.laneId === laneId) ?? null : null;
+}
+
 /** A chat's ADE Cloud lane, and its computer's ADE Cloud id once known. */
 export type AdeCloudLaneOfBinding = { laneId: string; laneName: string; instanceId: string | null };
 

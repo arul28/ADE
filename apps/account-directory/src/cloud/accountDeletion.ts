@@ -59,6 +59,9 @@ export async function deleteCloudAccount(
   await env.DB.batch([
     env.DB.prepare("delete from cloud_event_wakes where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_event_wake_state where user_id = ?").bind(userId),
+    // Status-menu facts of any computer whose close above left them (they carry no user id).
+    env.DB.prepare("delete from cloud_instance_events where instance_id in (select instance_id from cloud_computers where user_id = ?)").bind(userId),
+    env.DB.prepare("delete from cloud_computer_activity where instance_id in (select instance_id from cloud_computers where user_id = ?)").bind(userId),
     env.DB.prepare("delete from cloud_request_windows where user_id = ?").bind(userId),
     // Sealed Linear grants that wait for their publish.
     env.DB.prepare("delete from cloud_linear_renewals where user_id = ?").bind(userId),

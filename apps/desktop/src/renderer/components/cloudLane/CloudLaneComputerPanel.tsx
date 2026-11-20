@@ -13,8 +13,10 @@ import { CloudTierChangeDialog } from "./CloudTierChangeDialog";
 import { keepLaneComputer, sleepLaneComputer } from "./CloudLaneHeaderButton";
 import { cloudLaneChangesAvailable, cloudLaneComputerOfLane, cloudLaneMovesAvailable } from "./cloudLaneActions";
 import { CLOUD_MACHINE_STATE_TEXT } from "./CloudLaneConnectionRow";
+import { cloudLanePowerOfState } from "./cloudLaneStatus";
 import { freeCloudLaneWithConfirm } from "./deleteCloudLane";
 import "./cloudLane.css";
+import "./cloudLaneStatus.css";
 
 /**
  * Manage lane's Computer tab for an ADE Cloud lane: what a person can do with
@@ -70,7 +72,8 @@ export function CloudLaneComputerPanel({
       <div className="adecl-manage-head">
         <CloudMark size={16} brand />
         <span>ADE Cloud computer</span>
-        <span className="adecl-cx-state" data-awake={awake ? "true" : undefined}>
+        {/* "Deleting" is on its way out, not in trouble: the going-to-sleep mark. */}
+        <span className="adecl-status-state" data-power={computer.state === "deleting" ? "stopping" : cloudLanePowerOfState(computer.state)}>
           <i aria-hidden />
           {CLOUD_MACHINE_STATE_TEXT[computer.state]}
         </span>

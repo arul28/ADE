@@ -6168,6 +6168,15 @@ export function registerIpc({
     },
   );
 
+  handle(
+    IPC.aiRunAcpProviderDoctor,
+    async (_event, arg: { provider: AcpChatProvider }): Promise<AcpProviderDiagnostics> => {
+      const ctx = getCtx();
+      // Same directory as the diagnostics read above, so both share its probe cache.
+      return await collectAcpProviderDiagnostics({ provider: arg.provider, cwd: ctx.project.rootPath, runDoctor: true });
+    },
+  );
+
   // "Continue chats after restarts" for This computer: one value per machine,
   // in ~/.ade, which this computer's brain reads when it decides a resume.
   handle(IPC.aiGetContinueAfterRestart, async (): Promise<{ enabled: boolean }> => ({

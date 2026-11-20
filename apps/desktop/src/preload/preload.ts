@@ -153,7 +153,7 @@ import type {
   CtoCloudHomeEvent,
   CtoCloudHomeMethod,
 } from "../shared/ctoCloudHome";
-import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
@@ -6650,6 +6650,13 @@ const adeBridge = {
       pin
         ? callPinnedRuntimeAction<AcpProviderDiagnostics>(pin, "ai", "acpProviderDiagnostics", { args })
         : ipcRenderer.invoke(IPC.aiAcpProviderDiagnostics, args),
+    // The person's "Run doctor", routed like the read above.
+    runAcpProviderDoctor: async (args: {
+      provider: "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity";
+    }, pin?: OpenProjectBinding | null): Promise<AcpProviderDiagnostics> =>
+      pin
+        ? callPinnedRuntimeAction<AcpProviderDiagnostics>(pin, "ai", "runAcpProviderDoctor", { args })
+        : ipcRenderer.invoke(IPC.aiRunAcpProviderDoctor, args),
     opencodeAuthMethods: async (pin?: OpenProjectBinding | null): Promise<{ methods: OpenCodeProviderAuthMethods }> =>
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "opencodeAuthMethods", {}, () =>
         ipcRenderer.invoke(IPC.aiOpencodeAuthMethods),
@@ -14440,6 +14447,9 @@ const adeBridge = {
     /** "Keep it" on an idle cleanup warning: restarts the computer's idle clock, no wake. Account level, by its ADE Cloud id. */
     keepIdleComputer: (instanceId: string): Promise<{ ok: boolean; message?: string }> =>
       ipcRenderer.invoke(IPC.cloudKeepIdleComputer, { instanceId }),
+    /** A lane computer's live status for its status menu; never wakes it. Account level, by its ADE Cloud id. */
+    computerStatus: (instanceId: string): Promise<CloudComputerStatus | null> =>
+      ipcRenderer.invoke(IPC.cloudComputerStatus, { instanceId }),
     /** The life of a lane's computer (`CloudLaneLifeCallRequest`): account level, so no pin. */
     laneLife: <M extends CloudLaneLifeMethod>(request: CloudLaneLifeCallRequest<M>): Promise<CloudLaneLifeResults[M]> =>
       ipcRenderer.invoke(IPC.cloudLaneLifeCall, request),

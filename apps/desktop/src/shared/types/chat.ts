@@ -4192,20 +4192,24 @@ export type AgentChatModelCatalog = {
   modelManifest?: { manifest: ModelManifest; adeVersion: string | null };
 };
 
-export type AgentChatModelCatalogRefreshProvider =
-  | "opencode"
-  | "pi"
-  | "muse"
-  | "cursor"
-  | "droid"
-  | "lmstudio"
-  | "ollama"
-  | "qwen"
-  | "kimi"
-  | "grok"
-  | "copilot"
-  | "devin"
-  | "antigravity";
+/** The providers a chat model catalog can re-read on their own (`refreshProvider`); the rest come with any rebuild. */
+export const MODEL_CATALOG_REFRESH_PROVIDERS = [
+  "opencode",
+  "pi",
+  "muse",
+  "cursor",
+  "droid",
+  "lmstudio",
+  "ollama",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+  "devin",
+  "antigravity",
+] as const;
+
+export type AgentChatModelCatalogRefreshProvider = (typeof MODEL_CATALOG_REFRESH_PROVIDERS)[number];
 
 export type AgentChatModelCatalogMode = "cached" | "refresh-stale" | "force";
 
@@ -5832,6 +5836,14 @@ export type AgentChatSendArgs = {
    */
   includeGuestComments?: ChatThreadCommentSelection[];
   /**
+   * Client ids (`ChatThreadComment.clientId`) of comments this send must leave
+   * pending: the sender shows them as failed, still saving or being discarded,
+   * so a copy whose save landed after all stays on the host (for a later Retry
+   * or Discard) instead of riding a send the person did not see it in. Only
+   * read with `includeThreadComments`. An older host ignores it.
+   */
+  excludeThreadCommentClientIds?: string[];
+  /**
    * One id per user send, made by the client (desktop composer, phone, web,
    * CLI) or by the host for a launch's queued message. Every retry of that
    * send carries the same id. Once the first copy wrote the message into the
@@ -6165,6 +6177,8 @@ export type AgentChatSteerArgs = {
   includeThreadComments?: boolean;
   /** See `AgentChatSendArgs.includeGuestComments`. */
   includeGuestComments?: ChatThreadCommentSelection[];
+  /** See `AgentChatSendArgs.excludeThreadCommentClientIds`. */
+  excludeThreadCommentClientIds?: string[];
 };
 
 export type AgentChatSteerResult = {

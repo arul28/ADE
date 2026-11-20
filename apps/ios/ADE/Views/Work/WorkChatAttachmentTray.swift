@@ -243,6 +243,10 @@ enum WorkChatInputAttachmentState: Equatable {
   case loading
   case ready
   case failed(String)
+  /// The bytes are here but the background upload failed: a tap uploads them
+  /// again. Its own case, so retry never depends on the message's wording;
+  /// the tile shows `workChatAttachmentUploadFailedMessage`.
+  case uploadFailed
 }
 
 struct WorkChatInputAttachment: Identifiable {
@@ -290,9 +294,19 @@ struct WorkChatInputAttachment: Identifiable {
     return false
   }
 
+  /// A background upload that failed, with the bytes still here to try again.
+  var isUploadFailed: Bool {
+    if case .uploadFailed = state { return uploadData != nil }
+    return false
+  }
+
+  /// What the tile says went wrong; display only.
   var errorMessage: String? {
-    if case .failed(let message) = state { return message }
-    return nil
+    switch state {
+    case .failed(let message): return message
+    case .uploadFailed: return workChatAttachmentUploadFailedMessage
+    case .loading, .ready: return nil
+    }
   }
 }
 
@@ -821,6 +835,21 @@ struct WorkChatInputAttachmentTray: View {
 
   var body: some View {
     trayContent
+      // A background upload that failed shows on its tile right away, not at send.
+      .onReceive(NotificationCenter.default.publisher(for: .workComposerAttachmentUploadFailed)) { note in
+        guard let id = note.userInfo?["id"] as? UUID,
+              let index = attachments.firstIndex(where: { $0.id == id }),
+              attachments[index].isReady,
+              attachments[index].hostRef == nil
+        else { return }
+        attachments[index].state = .uploadFailed
+      }
+      // An upload that failed while this chat was not on screen posted a
+      // notification nobody heard, and the draft kept the tile `.ready`. The
+      // tracker still holds that failure, so a restored tile shows it with Retry.
+      .onChange(of: attachments.map(\.id), initial: true) { _, _ in
+        markStoredUploadFailures()
+      }
       .onChange(of: openRequest?.wrappedValue) { _, requested in
         guard let requested else { return }
         openRequest?.wrappedValue = nil
@@ -885,7 +914,11 @@ struct WorkChatInputAttachmentTray: View {
         HStack(spacing: 8) {
           ForEach(attachments) { attachment in
             WorkChatInputAttachmentThumb(attachment: attachment) {
-              open(attachment)
+              if canRetryUpload(attachment) {
+                retryUpload(attachment)
+              } else {
+                open(attachment)
+              }
             } onRemove: {
               attachments.removeAll { $0.id == attachment.id }
             }
@@ -899,6 +932,28 @@ struct WorkChatInputAttachmentTray: View {
       .accessibilityElement(children: .contain)
       .accessibilityLabel(attachmentCountLabel)
     }
+  }
+
+  /// A tile whose background upload failed still holds its bytes: a tap
+  /// uploads it again (the composer's upload task starts once it is `.ready`).
+  private func canRetryUpload(_ attachment: WorkChatInputAttachment) -> Bool {
+    attachment.isUploadFailed
+  }
+
+  private func markStoredUploadFailures() {
+    let uploads = WorkComposerAttachmentUploads.shared
+    for index in attachments.indices
+    where attachments[index].isReady
+      && attachments[index].hostRef == nil
+      && uploads.failure(for: attachments[index].id) != nil {
+      attachments[index].state = .uploadFailed
+    }
+  }
+
+  private func retryUpload(_ attachment: WorkChatInputAttachment) {
+    guard let index = attachments.firstIndex(where: { $0.id == attachment.id }) else { return }
+    WorkComposerAttachmentUploads.shared.retry(attachment.id)
+    attachments[index].state = .ready
   }
 
   /// Images keep the existing full-screen image sheet; documents and videos get
@@ -991,6 +1046,12 @@ private struct WorkChatInputAttachmentThumb: View {
               .scaledToFill()
               .frame(width: side, height: side)
               .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+              .opacity(attachment.errorMessage == nil ? 1 : 0.45)
+            if attachment.errorMessage != nil {
+              Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(ADEColor.warning)
+            }
           } else if attachment.kind != .image, attachment.errorMessage == nil, !attachment.isLoading {
             documentFace
           } else {
@@ -1051,7 +1112,7 @@ private struct WorkChatInputAttachmentThumb: View {
       Image(systemName: "photo")
         .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.textSecondary)
-    case .failed:
+    case .failed, .uploadFailed:
       Image(systemName: "photo.badge.exclamationmark")
         .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.warning)
@@ -1066,6 +1127,8 @@ private struct WorkChatInputAttachmentThumb: View {
       return "Open attached image"
     case .failed(let message):
       return "Image failed. \(message)"
+    case .uploadFailed:
+      return "Image failed. \(workChatAttachmentUploadFailedMessage)"
     }
   }
 }

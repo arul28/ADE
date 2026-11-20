@@ -16,7 +16,7 @@ import {
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { formatContinuityConversation } from "./continuityConversation";
 import { probeClaudeKeychainLogin } from "../ai/providerCredentialSources";
-import { providerLoginGeneration } from "../ai/providerLoginChanged";
+import { providerLoginGeneration, providerModelsGeneration } from "../ai/providerLoginChanged";
 import { providerLoginGate, type ProviderLoginRestartOptions } from "../providerLogins/providerLoginHooks";
 import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { claudeCompactionSettings, claudeCompactWindow, claudeEstimatedCompactAt, compactionIdleModeDefault, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
@@ -872,9 +872,10 @@ import type {
   DeletedChatListArgs,
   DeletedChatRemoveArgs,
   DeletedChatReopenArgs,
+  EffectiveProjectConfig,
   TerminalSessionSummary,
 } from "../../../shared/types";
-import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
+import { MODEL_CATALOG_REFRESH_PROVIDERS, PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
 import {
   isPlainPromptMessage,
   LANE_SHARE_PLAIN_TEXT_ONLY,
@@ -1507,7 +1508,7 @@ import {
   openCodeEventSessionId,
   type OpenCodeTurnMapper,
 } from "./openCodeEventMapper";
-import { lastOpenCodeDiscoveredLocalModels, peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
+import { lastOpenCodeDiscoveredLocalModels, openCodeInventoryGeneration, peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
 import { launchModelRequiredMessage, unknownModelHint } from "../../../shared/launchModelRule";
 import { inspectLocalProvider } from "../ai/localModelDiscovery";
 import { resolveDroidExecutable } from "../ai/droidExecutable";
@@ -1610,7 +1611,7 @@ import { classifyCopilotError, createCopilotSdkEventMapperState, mapCopilotSdkEv
 import { copilotSessionApproval, copilotSessionApprovalLabel } from "./copilotSdkPermissions";
 import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, refreshCopilotModelCatalog } from "./copilotModelsDiscovery";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
-import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { pinnedToolDownload, pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { holdToolInstallsWhileRunning } from "../../../../../ade-cli/src/services/tools/inUse";
 import {
   acquirePiSdkConnection,
@@ -66818,7 +66819,7 @@ export function createAgentChatService(args: {
   };
 
   type ThreadReviewIntake<T> = {
-    args: Omit<T, "includeThreadComments" | "includeGuestComments">;
+    args: Omit<T, "includeThreadComments" | "includeGuestComments" | "excludeThreadCommentClientIds">;
     block: string | null;
     restore: () => void;
   };
@@ -66842,10 +66843,11 @@ export function createAgentChatService(args: {
     displayText?: string;
     includeThreadComments?: boolean;
     includeGuestComments?: ChatThreadCommentSelection[];
+    excludeThreadCommentClientIds?: string[];
   }>(
     args: T,
   ): ThreadReviewIntake<T> => {
-    const { includeThreadComments, includeGuestComments, ...rest } = args;
+    const { includeThreadComments, includeGuestComments, excludeThreadCommentClientIds, ...rest } = args;
     const untouched: ThreadReviewIntake<T> = { args: rest, block: null, restore: () => {} };
     if (!includeThreadComments) return untouched;
     const typed = args.text.trim();
@@ -66862,7 +66864,10 @@ export function createAgentChatService(args: {
     // with it, and a message without them would read as an unrelated reply.
     let taken: ReturnType<ThreadCommentService["takeForSend"]>;
     try {
-      taken = threadComments.takeForSend(args.sessionId, { guestComments: includeGuestComments ?? null });
+      taken = threadComments.takeForSend(args.sessionId, {
+        guestComments: includeGuestComments ?? null,
+        excludeClientIds: excludeThreadCommentClientIds ?? null,
+      });
     } catch (error) {
       logger.warn("agent_chat.thread_comments_take_failed", {
         sessionId: args.sessionId,
@@ -68911,7 +68916,8 @@ export function createAgentChatService(args: {
     const routableMessage = args.text.trim().length > 0
       || (args.attachments?.length ?? 0) > 0
       || (args.contextAttachments?.length ?? 0) > 0
-      || (args.includeThreadComments === true && threadComments.hasCommentsForSend(args.sessionId));
+      || (args.includeThreadComments === true
+        && threadComments.hasCommentsForSend(args.sessionId, args.excludeThreadCommentClientIds));
     const waitsForProviderDispatch =
       (
         managed.session.provider === "opencode"
@@ -76613,23 +76619,6 @@ export function createAgentChatService(args: {
   const modelCatalogProviderRefreshedAt = new Map<AgentChatModelCatalogRefreshProvider, number>();
   const MODEL_CATALOG_REFRESH_TTL_MS = 30 * 60_000;
   const MODEL_CATALOG_LOCAL_REFRESH_TTL_MS = 30_000;
-  const MODEL_CATALOG_REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
-    "opencode",
-    "pi",
-    "cursor",
-    "droid",
-    "muse",
-    "lmstudio",
-    "ollama",
-    // ACP providers refresh on the same TTL. Without an entry here
-    // `shouldRefreshProvider` has no bookkeeping for them and a force refresh
-    // could re-probe on every catalog read.
-    "qwen",
-    "kimi",
-    "grok",
-    "copilot",
-    "antigravity",
-  ];
   let modelCatalogCache: AgentChatModelCatalog | null = null;
   // A newly applied model manifest can add, hide, or re-default models, so the
   // cached catalog is stale until the next rebuild — served once more while a
@@ -76640,6 +76629,45 @@ export function createAgentChatService(args: {
     modelManifestGeneration += 1;
     modelCatalogManifestStale = true;
   });
+  // What else the cached catalog was built from: whose models a sign-in may
+  // have changed (the models generation: a Re-check that kept the lists
+  // doesn't move it), this project's OpenCode inventory and whether OpenCode
+  // is installed, and the providers switched off. Any of them moving makes the
+  // cache stale, so a provider set up after the catalog was read shows on the
+  // next read instead of after the TTL. No process starts here.
+  // OpenCode's install, from its binary lookup (fs probes): read again after
+  // a few seconds, or at once when a pinned tool install finishes.
+  const OPENCODE_INSTALLED_MEMO_MS = 5_000;
+  let openCodeInstalledMemo: { at: number; installGeneration: number; installed: boolean } | null = null;
+  const openCodeInstalledForCatalog = (): boolean => {
+    const at = Date.now();
+    const installGeneration = pinnedToolInstallGeneration();
+    if (openCodeInstalledMemo && openCodeInstalledMemo.installGeneration === installGeneration && at - openCodeInstalledMemo.at < OPENCODE_INSTALLED_MEMO_MS) {
+      return openCodeInstalledMemo.installed;
+    }
+    const installed = Boolean(resolveOpenCodeBinaryPath());
+    openCodeInstalledMemo = { at, installGeneration, installed };
+    return installed;
+  };
+  const modelCatalogInputsKey = (modelsGeneration: number, effectiveConfig: EffectiveProjectConfig): string => [
+    modelsGeneration,
+    openCodeInventoryGeneration(projectRoot),
+    openCodeInstalledForCatalog() ? "oc" : "-",
+    [...(effectiveConfig.ai?.disabledProviders ?? [])].sort().join(","),
+  ].join("|");
+  let modelCatalogBuiltInputsKey: string | null = null;
+  // One answer per microtask: a picker opening reads the catalog for several rows at once.
+  let modelCatalogInputsChangedMemo: boolean | null = null;
+  const modelCatalogInputsChanged = (): boolean => {
+    if (modelCatalogBuiltInputsKey === null) return false;
+    if (modelCatalogInputsChangedMemo !== null) return modelCatalogInputsChangedMemo;
+    const changed = modelCatalogBuiltInputsKey !== modelCatalogInputsKey(providerModelsGeneration(), projectConfigService.get().effective);
+    modelCatalogInputsChangedMemo = changed;
+    queueMicrotask(() => {
+      modelCatalogInputsChangedMemo = null;
+    });
+    return changed;
+  };
 
   const managedSessionSupportsFastMode = (managed: ManagedChatSession): boolean =>
     sessionSupportsFastMode(managed.session, modelCatalogCache);
@@ -76705,7 +76733,7 @@ export function createAgentChatService(args: {
     refreshProvider?: AgentChatModelCatalogRefreshProvider,
     cursorSource?: AgentChatCursorModelSource,
   ): boolean => {
-    if (!modelCatalogCache || modelCatalogManifestStale) return true;
+    if (!modelCatalogCache || modelCatalogManifestStale || modelCatalogInputsChanged()) return true;
     if (refreshProvider === "cursor") {
       if (!modelCatalogContainsRefreshProvider(modelCatalogCache, refreshProvider, cursorSource)) return true;
       // Stale unless every source the request covers was itself refreshed
@@ -77226,6 +77254,8 @@ export function createAgentChatService(args: {
   const buildModelCatalog = async (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
     // A manifest that lands mid-build must leave the result stale, not fresh.
     const manifestGenerationAtStart = modelManifestGeneration;
+    // Likewise a sign-in that lands mid-build.
+    const modelsGenerationAtStart = providerModelsGeneration();
     const mode = catalogArgs?.mode ?? "refresh-stale";
     const refreshProvider = catalogArgs?.refreshProvider;
     if (mode === "cached" && modelCatalogCache) {
@@ -77294,6 +77324,10 @@ export function createAgentChatService(args: {
         descriptors: [] as ModelDescriptor[],
       };
     })();
+
+    // Read after the inventory step, so this build's own probe of OpenCode
+    // does not mark the catalog it is building stale.
+    const inputsKeyAtBuild = modelCatalogInputsKey(modelsGenerationAtStart, effectiveConfig);
 
     const descriptorInfo = new Map<string, { provider: ModelProviderGroup; info: AgentChatModelInfo }>();
     const descriptors: ModelDescriptor[] = [];
@@ -77556,6 +77590,8 @@ export function createAgentChatService(args: {
       })),
     };
     modelCatalogCache = catalog;
+    modelCatalogBuiltInputsKey = inputsKeyAtBuild;
+    modelCatalogInputsChangedMemo = null;
     if (modelManifestGeneration === manifestGenerationAtStart) modelCatalogManifestStale = false;
     if (mode !== "cached" && shouldMarkModelCatalogProviderFresh(catalog, refreshProvider, catalogArgs?.cursorSource)) {
       markModelCatalogProviderFresh(refreshProvider, Date.now(), catalogArgs?.cursorSource);

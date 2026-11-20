@@ -30887,6 +30887,10 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
+  // The computer's own word on its work, for a lane's status menu
+  // (`cloudActivityReporter.ts`): its agents from each busy read, its idle
+  // clock from the keep-awake's checks; made once the account client exists below.
+  let cloudActivityReporter: import("./services/account/cloudActivityReporter").CloudActivityReporter | null = null;
   const readCloudBusy = cloudKeepAwakeModule && isAdeCloudComputer()
     ? async () => {
         const sources = { projectRegistry, scopeRegistry };
@@ -30899,6 +30903,7 @@ async function runServe(
           setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
           holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
         }, Date.now());
+        cloudActivityReporter?.noteAgents(facts);
         // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
         // one goes to the account server, which wakes the machine for it.
         return { busy, reasons, nextWakeAt, waitingOnPerson, laneSetups: facts.laneSetups ?? 0 };
@@ -31081,6 +31086,22 @@ async function runServe(
         : null),
     });
   };
+  if (readCloudBusy && cloudInstanceId) {
+    const { createCloudActivityReporter } = await import("./services/account/cloudActivityReporter");
+    cloudActivityReporter = createCloudActivityReporter({
+      instanceId: cloudInstanceId,
+      send: async (instanceId, report) => {
+        const api = await accountCloudApi();
+        if (!api) throw new Error("not signed in to an ADE account");
+        // Null is a 404: a server with no activity route yet. Not stored, so
+        // it is tried again (the reporter spaces the tries out and logs once).
+        if (await api.reportActivity(instanceId, report) == null) {
+          throw new Error("the account server does not take activity reports yet");
+        }
+      },
+      logger: headlessProjectLogger,
+    });
+  }
   // ADE Cloud: the rest save, the queue of messages for its chats, and the
   // person's use during the idle cleanup (cloudComputerRest.ts). The save and
   // the queue are attached below, once the registries and sign-in runners exist.
@@ -31113,6 +31134,8 @@ async function runServe(
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
         reportBooted: async () => await cloudComputerReports?.reportBooted() ?? { sleepWhenIdle: false },
         sampleCpu: cloudCpuWatch ? (at, reasons) => cloudCpuWatch.sample(at, reasons) : undefined,
+        // The status menu's idle clock is the keep-awake's own.
+        onIdleFacts: cloudActivityReporter ? (idle) => cloudActivityReporter?.noteIdle(idle) : undefined,
         sendTimedWake: async (wake) => {
           const auth = brainAccountAuthService;
           if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");
@@ -32944,6 +32967,14 @@ async function runServe(
     // A person watching a tool (Linux Desktop, a preview): a read, so it never
     // wakes a sleeping computer, but it does keep an awake one awake.
     if (domain === "work_tools" && action === "noteWatching") return true;
+    // Someone typing warms the chat's model: a draft's first keystroke
+    // (`prewarmDraft`) or a keystroke in an open chat (`warmupModel` with
+    // `sdkOnly`). Background writes (BACKGROUND_WRITES), so typing never wakes
+    // a sleeping computer, but an awake one stays awake while the person is
+    // about to send. Any other warmup (Cursor's, when its tile is only viewed)
+    // is not use.
+    if (domain === "chat" && action === "prewarmDraft") return true;
+    if (domain === "chat" && action === "warmupModel") return isRecord(params.arguments.args) && params.arguments.args.sdkOnly === true;
     return Boolean(domain && action && adeActionAccess(domain, action) === "write" && !isBackgroundAdeWrite(domain, action));
   };
   const withRemoteUseNoted = <H extends JsonRpcHandler>(peerDeviceId: string | null, handler: H): H => {

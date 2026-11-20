@@ -109,6 +109,8 @@ type ChatCommandMenuProps = {
    * with the whole catalog. A query that starts with "model" lists them all.
    */
   modelOptions?: ComposerModelSuggestion[];
+  /** This machine's model list is being read; the @ menu says so in a quiet row. */
+  modelsLoading?: boolean;
   /** Model ids picked recently, newest first; matching ones lead the Models section. */
   recentModelIds?: readonly string[];
   /** Anchor position in viewport coordinates. */
@@ -453,7 +455,7 @@ function getViewportMenuStyle(anchor: NonNullable<ChatCommandMenuProps["anchor"]
 
 export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenuProps>(
   function ChatCommandMenu(
-    { trigger, slashCommands, onFileSearch, onMentionSearch, onPrSearch, modelOptions, recentModelIds, anchor, onSelect, onClose, onNoMatches },
+    { trigger, slashCommands, onFileSearch, onMentionSearch, onPrSearch, modelOptions, modelsLoading = false, recentModelIds, anchor, onSelect, onClose, onNoMatches },
     ref,
   ) {
     const [selectedIndex, setSelectedIndex] = useState(0);
@@ -705,6 +707,8 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
     const isHashTrigger = trigger?.type === "hash";
     const canSearchAt = Boolean(onFileSearch) || Boolean(onMentionSearch);
     const loading = fileLoading || mentionLoading || prLoading;
+    // Models are part of a plain @ search only (a kind word narrows them out).
+    const atModelsLoading = isAtTrigger && !atFilter.kind && modelsLoading;
 
     // ---- Dead-query dismissal ----
     // An @ query that settles with zero rows is reported once so the owner can
@@ -723,14 +727,15 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
         return;
       }
       // A failed file search shows its sentence; it is not a dead query.
-      if (!trigger.query.trim() || loading || items.length > 0 || (trigger.type === "at" && fileError)) return;
+      // A model list still being read can still match: not a dead query yet.
+      if (!trigger.query.trim() || loading || atModelsLoading || items.length > 0 || (trigger.type === "at" && fileError)) return;
       if (reportedEmptyQueryRef.current === trigger.query) return;
       reportedEmptyQueryRef.current = trigger.query;
       onNoMatches?.(trigger);
-    }, [trigger, canSearchAt, loading, items.length, onNoMatches, onPrSearch, fileError]);
+    }, [trigger, canSearchAt, loading, atModelsLoading, items.length, onNoMatches, onPrSearch, fileError]);
 
     // One empty-state message; the branches are mutually exclusive by construction.
-    const emptyMessage = !trigger || loading
+    const emptyMessage = !trigger || loading || (atModelsLoading && items.length === 0)
       ? null
       : isAtTrigger && !canSearchAt
         ? "Search unavailable for this session"
@@ -806,6 +811,14 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                 <div className="flex items-center gap-2 px-3 py-2">
                   <SpinnerGap size={12} weight="bold" className="animate-spin text-violet-400/50" />
                   <span className="text-[11px] text-fg/30">Searching...</span>
+                </div>
+              )}
+
+              {/* This machine's models are still being read */}
+              {atModelsLoading && !(loading && items.length === 0) && (
+                <div className="flex items-center gap-2 px-3 py-2">
+                  <SpinnerGap size={12} weight="bold" className="animate-spin text-violet-400/50" />
+                  <span className="text-[11px] text-fg/30">Loading models…</span>
                 </div>
               )}
 

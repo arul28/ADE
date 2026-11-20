@@ -40,6 +40,7 @@ import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
 } from "./runtimeCatalogCache";
 import { fetchSharedRuntimeCatalog } from "./sharedCatalogFetch";
+import { useRuntimeCatalogVersion } from "./useRuntimeCatalogVersion";
 
 /** The saved preset (or ad-hoc route) a surface is running on, for the trigger. */
 export type ModelPickerActivePreset = {
@@ -281,6 +282,18 @@ export const ModelPicker = memo(function ModelPicker({
   const setRuntimeCatalog = useCallback((catalog: AgentChatModelCatalog | null) => {
     setRuntimeCatalogState({ scopeKey: catalogScopeKey, catalog });
   }, [catalogScopeKey]);
+  // Another surface (the "@" menu, Settings › Providers) can load or refresh
+  // this machine's bucket while the picker is mounted: follow it.
+  const sharedCatalogVersion = useRuntimeCatalogVersion(catalogScopeKey);
+  useEffect(() => {
+    const shared = getSharedRuntimeCatalog(catalogScopeKey);
+    if (!shared) return;
+    setRuntimeCatalogState((current) => (
+      current.scopeKey === catalogScopeKey && current.catalog === shared
+        ? current
+        : { scopeKey: catalogScopeKey, catalog: shared }
+    ));
+  }, [catalogScopeKey, sharedCatalogVersion]);
   const [refreshingProvider, setRefreshingProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
   const [refreshErrorProvider, setRefreshErrorProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
   const { recents } = useModelRecents({ hydrate: open });
@@ -447,11 +460,13 @@ export const ModelPicker = memo(function ModelPicker({
     return firstModel ? firstModel.id : "";
   }, [value, recents, modelList]);
 
+  // `runtimeCatalog`: a refresh of this machine's catalog (Settings, another
+  // surface) can change the selected model's label and Fast/tier support.
   const selectedModel = useMemo<ModelDescriptor | undefined>(() => {
     if (!value) return undefined;
     return resolveModelDescriptorWithRuntimeCatalog(value, catalogScopeKey)
       ?? createUnknownModelPlaceholder(value);
-  }, [catalogScopeKey, value]);
+  }, [catalogScopeKey, runtimeCatalog, value]);
 
   const availableSet = useMemo(() => {
     const ids = constrainToAvailableModelIds || !runtimeCatalog

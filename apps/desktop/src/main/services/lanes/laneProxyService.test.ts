@@ -232,7 +232,7 @@ describe("laneProxyService", () => {
     });
 
     it("stopping when not running is a no-op", async () => {
-      await svc.stop(); // Should not throw
+      await expect(svc.stop()).resolves.toBeUndefined();
     });
 
     it("getStatus returns correct state when not running", () => {

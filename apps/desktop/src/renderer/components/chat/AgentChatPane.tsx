@@ -194,11 +194,14 @@ import {
   type ParallelComposerControlSlot,
 } from "./AgentChatComposer";
 import {
-  countCommentsForNextSend,
+  countThreadCommentsReadyToSend,
   guestCommentsForNextSend,
   requestThreadCommentFocus,
   setThreadComments,
+  threadCommentClientIdsToExclude,
+  threadCommentSavesInFlight,
   useThreadComments,
+  waitForThreadCommentSaves,
 } from "./threadCommentsStore";
 import { ClaudeModUi } from "./ClaudeModUi";
 import { registerDraftModelSetter } from "./draftModelSeam";
@@ -227,6 +230,7 @@ import { manualCompactDependsOnChat, resolveContextCompactControl } from "../../
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
 } from "../shared/ModelPicker/runtimeCatalogCache";
+import { useRuntimeCatalogVersion } from "../shared/ModelPicker/useRuntimeCatalogVersion";
 import { runtimeCatalogModelIds, useCursorCloudModelEligibility } from "./useCursorCloudModelEligibility";
 import { reconcileDraftModelControls } from "./draftModelControls";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
@@ -712,6 +716,8 @@ const CHAT_ACTIONS_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 const CHAT_ACTIONS_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const workCliStartupDelayMs = 180;
 const REMOTE_PARALLEL_LAUNCH_RECOVERY_DELAY_MS = 15_000;
+/** How long a send waits for a just-saved thread comment to reach its host. */
+const THREAD_COMMENT_SAVE_SEND_WAIT_MS = 10_000;
 /**
  * When a combined create-and-send call lost its answer, the checks of the
  * chat's machine: at once, then 3 s, 10 s and 20 s after the first (20 s in all). The
@@ -4884,7 +4890,6 @@ export function AgentChatPane({
   const handleModelPickerOpenRequestHandled = useCallback(() => {
     setModelPickerOpenRequest(undefined);
   }, []);
-  const [runtimeCatalogVersion, setRuntimeCatalogVersion] = useState(0);
   /**
    * Runtime-catalog bucket for this pane's composer — the binding key of the
    * machine that will run the turn (prompt-box picker or the chat's owner).
@@ -4901,6 +4906,10 @@ export function AgentChatPane({
   const [modelCatalogScopeKey, setModelCatalogScopeKey] = useState(
     () => chatScope?.modelCatalogScopeKey ?? projectBinding?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE,
   );
+  // Moves whenever ANY surface loads or invalidates this machine's catalog
+  // (the picker, the "@" menu, Settings › Providers), so the id memos below
+  // re-read it however it arrived.
+  const runtimeCatalogVersion = useRuntimeCatalogVersion(modelCatalogScopeKey);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const { getReasoningForFamily } = useReasoningByFamily();
   const [fastMode, setFastMode] = useState(false);
@@ -6161,9 +6170,6 @@ export function AgentChatPane({
   // The offer reads the setting and the plugins of this tab's own project, so a
   // chat pinned to another runtime (another machine, another open project) gets none.
   useClaudeModsPrompt(chatForeignPin ? null : claudeModUiSessionId, chatRuntimePin);
-  const threadCommentSendCount = countCommentsForNextSend(threadComments);
-  const threadCommentSendCountRef = useRef(threadCommentSendCount);
-  threadCommentSendCountRef.current = threadCommentSendCount;
   // A guest's comment goes only when the owner ticked it: the send names it.
   const threadCommentsRef = useRef(threadComments);
   threadCommentsRef.current = threadComments;
@@ -17119,8 +17125,39 @@ export function AgentChatPane({
       : { ...visualContext, prefix: `${readAmbientPrefix()}${visualContext.prefix}` });
     // Pending thread comments ride this send: the host adds them to the
     // message. They can go on their own, with nothing typed.
-    const threadCommentCountForSend = selectedSessionId && selectedSessionId === threadCommentsSessionIdRef.current
-      ? threadCommentSendCountRef.current
+    const threadCommentsSessionAtSend = selectedSessionId && selectedSessionId === threadCommentsSessionIdRef.current
+      ? selectedSessionId
+      : null;
+    // A comment saved a moment ago may still be on its way to the host. Wait
+    // for it (bounded, showing the sending state), so the host has it when the
+    // message lands. One shown as failed, still saving or being discarded is
+    // named in the send's exclusion list instead, so the host leaves its copy
+    // (if a save landed after all) out of this send. A chat with no save in
+    // flight skips the wait.
+    if (
+      threadCommentsSessionAtSend
+      && !isWorkCliLaunchDraft
+      && !isProviderSlashCommandInput(text)
+      && threadCommentSavesInFlight(threadCommentsSessionAtSend)
+    ) {
+      submitInFlightRef.current = true;
+      setBusy(true);
+      try {
+        await waitForThreadCommentSaves(threadCommentsSessionAtSend, THREAD_COMMENT_SAVE_SEND_WAIT_MS);
+      } finally {
+        submitInFlightRef.current = false;
+        setBusy(false);
+      }
+      if (renderSelectedSessionIdRef.current !== selectedSessionId) return;
+      if (liveDraftRef.current !== draft || attachmentsRef.current !== attachments) {
+        setError({ message: "Your message changed while a comment was saving, so nothing was sent. Send it again.", kind: "status" });
+        return;
+      }
+    }
+    // Read from the store, not the last render: a save that settled during the
+    // wait above counts now, one that failed or is still saving does not.
+    const threadCommentCountForSend = threadCommentsSessionAtSend
+      ? countThreadCommentsReadyToSend(threadCommentsSessionAtSend)
       : 0;
     // A slash command must reach the provider as typed, so comments wait.
     const includeThreadComments = threadCommentCountForSend > 0 && !isWorkCliLaunchDraft && !isProviderSlashCommandInput(text);
@@ -17352,8 +17389,15 @@ export function AgentChatPane({
             ? "Attached issue context"
             : "");
       const guestCommentsForSend = includeThreadComments ? guestCommentsForNextSend(threadCommentsRef.current) : [];
+      const excludedThreadComments = includeThreadComments && threadCommentsSessionAtSend
+        ? threadCommentClientIdsToExclude(threadCommentsSessionAtSend)
+        : [];
       const threadCommentSendFields = includeThreadComments
-        ? { includeThreadComments: true as const, ...(guestCommentsForSend.length ? { includeGuestComments: guestCommentsForSend } : {}) }
+        ? {
+            includeThreadComments: true as const,
+            ...(guestCommentsForSend.length ? { includeGuestComments: guestCommentsForSend } : {}),
+            ...(excludedThreadComments.length ? { excludeThreadCommentClientIds: excludedThreadComments } : {}),
+          }
         : {};
 
       let sessionId = selectedSessionId;
@@ -19674,7 +19718,6 @@ export function AgentChatPane({
   }, [activeComposerRuntimeBinding?.key, chatComputerDeleted, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, chatScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
   // Free models (`shared/freeModels.ts`), from the composer machine's status
   // like the sign-in check above.
-  const onFreeCatalogLoaded = useCallback(() => setRuntimeCatalogVersion((version) => version + 1), []);
   const { offerFreeModel, handleUseFreeModel } = useFreeModelsDraft({
     aiStatus,
     availableModelIds: effectiveAvailableModelIds,
@@ -19696,7 +19739,6 @@ export function AgentChatPane({
     draftKeepsMachineDefaultsRef,
     draftModelChosenRef,
     refreshAvailableModels,
-    onCatalogLoaded: onFreeCatalogLoaded,
   });
 
   // The connection of the provider the card signs in to.
@@ -21139,8 +21181,14 @@ export function AgentChatPane({
           ) : null}
     </>
   ));
+  // The chat header shows unless the shell is compact or the surface hides it;
+  // its cloud button and the wake line below agree on which lane it is for.
+  const showsSurfaceHeader = !(compactShell || hideSurfaceHeader);
+  // A chat whose computer was deleted has its own banner and no computer to wake: no cloud button.
+  const headerCloudLaneId = showsSurfaceHeader && !chatComputerDeleted ? selectedSession?.laneId ?? laneId ?? null : null;
   const chatActionsToggle = cachedForRender(headerSlotCacheRef.current, "actions", [
     selectedSessionId,
+    headerCloudLaneId,
     workSidebar.setTool,
     selectedSession?.sideChatParentSessionId,
     selectedSession?.sideChatSessionId,
@@ -21178,7 +21226,7 @@ export function AgentChatPane({
         onClick={() => workSidebar.setTool("side-chat")}
       />
       <LaneDesktopHeaderButton laneId={laneId} onOpen={(tool) => workSidebar.setTool(tool)} />
-      <CloudLaneHeaderButton laneId={selectedSession?.laneId ?? laneId ?? null} turnRunning={turnActive} />
+      <CloudLaneHeaderButton laneId={headerCloudLaneId} turnRunning={turnActive} />
       {hasAttachedTerminal ? (
         <button
           type="button"
@@ -21803,9 +21851,6 @@ export function AgentChatPane({
                 ...(restingModelPicker || !modelPickerProviderAuthStatus ? {} : { providerAuthStatus: modelPickerProviderAuthStatus }),
                 ...(modelPickerProviderRuntimeMissing && !restingModelPicker ? { providerRuntimeMissing: modelPickerProviderRuntimeMissing } : {}),
               })}
-            onRuntimeCatalogRefreshed={() => {
-              setRuntimeCatalogVersion((version) => version + 1);
-            }}
             allowCliOnlyModels={workDraftKind === "cli" && !cursorCloudSessionActive}
             reasoningEffort={subagentComposerModel ? subagentComposerModel.effort : reasoningEffort}
             effectiveReasoningEffort={subagentComposerModel ? subagentComposerModel.effort : effectiveReasoningEffort}
@@ -22580,7 +22625,7 @@ export function AgentChatPane({
         shellGeometry={chatShellGeometry}
         className={compactShell ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
         canvasFill={embedDraft ? "transparent" : canvasFill}
-        header={compactShell || hideSurfaceHeader ? undefined : shellHeader}
+        header={showsSurfaceHeader ? shellHeader : undefined}
         footer={isEmptyState || appPanelOpen
           ? undefined
           : composerWithTypographyRoot}
@@ -22620,7 +22665,11 @@ export function AgentChatPane({
             }}
           />
         ) : null}
-        <ChatMachineWakeBanner style={RUNTIME_BANNER_STYLE} />
+        {/* Asleep and waking show on the header's cloud button; this is the failed wake (or asleep with no such button). */}
+        <ChatMachineWakeBanner
+          style={RUNTIME_BANNER_STYLE}
+          headerLaneId={headerCloudLaneId}
+        />
         {deletedComputerFacts && cloudQueueSend?.chatId !== selectedSessionId ? (
           <CloudLaneComputerDeletedBanner
             facts={deletedComputerFacts}

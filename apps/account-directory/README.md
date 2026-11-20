@@ -516,6 +516,24 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   answers 409 `billing_busy`; it goes through once that period is settled.
   An ended period is billed to the Stripe customer, dated inside that period,
   so a cancelled plan's last minutes reach its final invoice.
+- `GET /cloud/instances/:id/status` (`src/cloud/computerStatus.ts`,
+  migration `0050_cloud_computer_status.sql`): a lane computer's status menu,
+  read when it opens and kept 15 seconds. Up since (the provider webhook's
+  change to running, else the tick's), the brain's last word on its work
+  (`POST /cloud/instances/:id/activity`: working or idle, when it sleeps,
+  running agents; sent when that changes, never on a timer), restarts since
+  then, the memory verdict and the disk, from the provider's logs and
+  metrics. Nothing here wakes the computer.
+- `POST /cloud/agent37/webhook`: the provider's signed `instance.status.updated`
+  deliveries (Standard Webhooks: `webhook-id`, `webhook-timestamp`,
+  `webhook-signature`, refused past 5 minutes), checked against
+  `AGENT37_WEBHOOK_SECRET`. Each `webhook-id` is kept once, for the account's
+  computers only, in `cloud_instance_events` (14 days per computer); readers
+  order by the change's own time, so out-of-order deliveries are fine. A
+  change to running also keeps the provider's restart count. Register it once
+  with `node scripts/register-agent37-webhook.mjs https://<worker-origin>`
+  (needs `AGENT37_API_KEY` in the shell; prints the secret once), then
+  `npx wrangler secret put AGENT37_WEBHOOK_SECRET [--env production]`.
 - `POST /cloud/nomac/webhook`: NoMac's deliveries, checked against
   `NOMAC_WEBHOOK_SECRET` (`nomac-signature`, refused past 5 minutes), each id
   taken once. `phone.*` settle a phone; `credit.low` emails the owner.
@@ -1082,6 +1100,8 @@ To set up either one:
 6. Set the ADE Cloud secrets (`npx wrangler secret put <NAME> [--env production]`;
    `wrangler.jsonc` explains each):
    - `AGENT37_API_KEY` (required for ADE Cloud).
+   - `AGENT37_WEBHOOK_SECRET` (the status webhook; from
+     `scripts/register-agent37-webhook.mjs`).
    - `CLOUD_CHAT_MASTER_KEY` (saved copies, the queue, the per-computer free
      plan key) and `CLOUD_LAUNCH_JOIN_KEY` (the server launcher).
    - `RESEND_API_KEY` and `CLOUD_ALERT_EMAIL` (else `cloud.email_skipped`).

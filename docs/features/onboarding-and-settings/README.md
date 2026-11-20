@@ -918,6 +918,15 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   5.5 `low` for Claude, GPT-6 Luna `low` for Codex, Composer 2.5 for Cursor,
   else the session's model; there is no picker.
 - `settings/ProvidersSection.tsx`: AI Connections, one page per provider.
+  A forced status read after a setup, key or sign-in also re-reads that
+  machine's chat model lists in the background, only the changed provider's
+  (`refreshRuntimeCatalogsForMachine`, `refreshProvider`; an OpenCode
+  inventory read re-probes OpenCode). For Qwen, Kimi, Grok and Devin the
+  page-open diagnostics read (`ai.getAcpProviderDiagnostics`) is a background
+  write and never wakes a sleeping cloud computer; **Run doctor** is the
+  person's own action (`ai.runAcpProviderDoctor`) and does wake it. A machine
+  on an older ADE that lacks that action falls back to the old doctor run
+  with a console warning.
   Cursor offers browser sign-in when disconnected and Sign out when connected;
   keys live in the shared panel.
   - **OpenCode — Universal Model Access**, with a models.dev "catalog synced …

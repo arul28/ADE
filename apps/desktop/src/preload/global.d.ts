@@ -13,7 +13,7 @@ import type {
   ProjectRemovalRequest,
   RemoteProjectRemovalInspection,
 } from "../shared/projectRemoval";
-import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
 import type { AdeCloudBridge } from "../shared/adeCloud/chatQueue";
@@ -1912,6 +1912,10 @@ declare global {
         acpProviderDiagnostics?: (args: {
           provider: "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity";
           runDoctor?: boolean;
+        }, pin?: OpenProjectBinding | null) => Promise<AcpProviderDiagnostics>;
+        /** "Run doctor": the diagnostics plus the provider CLI's own doctor. A person's action, so it wakes a sleeping cloud computer. Optional like the read above. */
+        runAcpProviderDoctor?: (args: {
+          provider: "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity";
         }, pin?: OpenProjectBinding | null) => Promise<AcpProviderDiagnostics>;
         opencodeAuthMethods: (pin?: OpenProjectBinding | null) => Promise<{ methods: OpenCodeProviderAuthMethods }>;
         opencodeOAuthStart: (args: {
@@ -5236,6 +5240,8 @@ declare global {
         forgetLaneBackup?: (machineKey: string, laneId: string) => Promise<{ deleted: number }>;
         /** "Keep it" on an idle cleanup warning: the server restarts the computer's idle clock with no wake. Account level, no pin. */
         keepIdleComputer?: (instanceId: string) => Promise<{ ok: boolean; message?: string }>;
+        /** A lane computer's live status for its status menu; never wakes it. Account level, no pin. Null when it can't be read. */
+        computerStatus?: (instanceId: string) => Promise<CloudComputerStatus | null>;
         /**
          * The life of a lane's computer: work check, delete lane, keep the
          * lane on a fresh computer, lanes without a computer, tier changes

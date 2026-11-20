@@ -1,6 +1,7 @@
 import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { isIanaTimeZone, parseAutomationCloudTarget } from "../../../shared/automationCloud";
 import { ADE_CLOUD_HOME_DEVICE_ID, ADE_CLOUD_HOME_NAME, isAdeCloudHome } from "../../../shared/automationHome";
+import { LANE_SETUP_PLATFORM_FIELDS } from "../../../shared/laneSetupPlatform";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -70,7 +71,7 @@ import type {
 } from "../../../shared/types";
 import { AUTOMATION_TRIGGER_TYPES, NO_DEFAULT_LANE_TEMPLATE, isPullRequestTriggerType } from "../../../shared/types";
 import {
-  laneSetupScriptHasWork,
+  laneSetupScriptIsConfigured,
   PROJECT_CONFIG_CHANGED_ON_DISK,
 } from "../../../shared/types/config";
 import { mergeLaneEnvInitConfig } from "../lanes/laneEnvInitMerge";
@@ -1131,37 +1132,34 @@ function coerceLaneCopyPath(value: unknown): LaneCopyPathConfig | null {
  */
 function coerceLaneSetupScript(value: unknown): LaneSetupScriptConfig | undefined {
   if (!isRecord(value)) return undefined;
+  // An explicit list is kept even when empty: `linuxCommands: []` means "run
+  // nothing on Linux", not "fall back to the macOS/Linux commands".
   const readCommands = (candidate: unknown): string[] | undefined => {
     if (!Array.isArray(candidate)) return undefined;
-    const commands = candidate
+    return candidate
       .map((entry) => asString(entry)?.trim() ?? "")
       .filter((entry) => entry.length > 0);
-    return commands.length ? commands : undefined;
   };
   const readPath = (candidate: unknown): string | undefined => asString(candidate)?.trim() || undefined;
 
-  const commands = readCommands(value.commands);
-  const unixCommands = readCommands(value.unixCommands);
-  const windowsCommands = readCommands(value.windowsCommands);
-  const scriptPath = readPath(value.scriptPath);
-  const unixScriptPath = readPath(value.unixScriptPath);
-  const windowsScriptPath = readPath(value.windowsScriptPath);
-
-  const parsed: LaneSetupScriptConfig = {
-    ...(commands ? { commands } : {}),
-    ...(unixCommands ? { unixCommands } : {}),
-    ...(windowsCommands ? { windowsCommands } : {}),
-    ...(scriptPath ? { scriptPath } : {}),
-    ...(unixScriptPath ? { unixScriptPath } : {}),
-    ...(windowsScriptPath ? { windowsScriptPath } : {}),
-    ...(asBool(value.injectPrimaryPath) === true ? { injectPrimaryPath: true } : {}),
-  };
+  // Every commands list first, then every script path: the stored key order.
+  const parsed: LaneSetupScriptConfig = {};
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    const commands = readCommands(value[field.commandsKey]);
+    if (commands) parsed[field.commandsKey] = commands;
+  }
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    const scriptPath = readPath(value[field.scriptKey]);
+    if (scriptPath) parsed[field.scriptKey] = scriptPath;
+  }
+  if (asBool(value.injectPrimaryPath) === true) parsed.injectPrimaryPath = true;
 
   // `injectPrimaryPath` on its own configures nothing to run, so a config with
   // only that key is not a setup script — returning one would emit an empty
-  // init step that always "succeeds". Shared with the resolver and the template
-  // editor so all three agree on what counts as a script.
-  return laneSetupScriptHasWork(parsed) ? parsed : undefined;
+  // init step that always "succeeds". An explicit per-OS list (even empty) is
+  // kept, so a layer that says "run nothing on Linux" survives the merge; the
+  // resolver runs nothing for it.
+  return laneSetupScriptIsConfigured(parsed) ? parsed : undefined;
 }
 
 function coerceLaneEnvInitConfig(value: unknown): LaneEnvInitConfig | undefined {

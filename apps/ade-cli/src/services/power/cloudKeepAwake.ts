@@ -90,7 +90,7 @@ export type CloudBusyFacts = {
 };
 
 /** Names an agent CLI runs under when someone starts it by hand in a shell. */
-const AGENT_CLI_PROCESS_NAMES = new Set(["claude", "codex", "cursor-agent", "agent", "droid", "opencode", "muse"]);
+export const AGENT_CLI_PROCESS_NAMES: ReadonlySet<string> = new Set(["claude", "codex", "cursor-agent", "agent", "droid", "opencode", "muse"]);
 
 /**
  * An `ade` command that grows the disk itself and waits on it: `ade cloud
@@ -163,6 +163,18 @@ export type CloudKeepAwakeBusy = {
 /** What the account server is asked to do: wake this machine at `at`, or nothing. */
 export type CloudTimedWake = { instanceId: string; url: string; at: number } | { instanceId: string; clear: true };
 
+/** The keep-awake's own idle clock after a check, for the status menu (`cloudActivityReporter.ts`). */
+export type CloudIdleFacts = {
+  /** What this check counted as work: the busy list, someone's use, a timer due soon. */
+  busy: boolean;
+  /** When the machine last had work, while it is idle; null while busy. */
+  idleSince: number | null;
+  /** The check that will ask the server to sleep it, unless work comes first; null while busy or with no sleep ask. */
+  sleepsAt: number | null;
+  /** The first check of this stretch awake (the brain's start, or the check after a wake). */
+  awakeSince: number;
+};
+
 export type CloudKeepAwakeOptions = {
   env?: NodeJS.ProcessEnv;
   adeHome: string;
@@ -217,6 +229,8 @@ export type CloudKeepAwakeOptions = {
    * again at the next check.
    */
   reportBooted?: () => Promise<{ sleepWhenIdle: boolean }>;
+  /** The idle clock after each check (and after a boot report moves it). Never throws. */
+  onIdleFacts?: (facts: CloudIdleFacts) => void;
   /** Each check's moment and busy reasons, for the sustained-CPU watch (`cloudSustainedCpu.ts`). Never throws. */
   sampleCpu?: (at: number, reasons: readonly string[]) => void;
   fetch?: (url: string, init: { method: string; signal: AbortSignal }) => Promise<{ status: number }>;
@@ -286,10 +300,14 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   /** The last moment real work ran (never the boot itself), for `reportUse`. */
   let lastWorkAt: number | null = null;
   let lastTickAt: number | null = null;
+  /** The first check of this stretch awake, for `onIdleFacts`. */
+  let awakeSince = lastBusyAt;
   /** The last check found work. */
   let wasBusy = false;
   /** Asked the server to sleep this machine; the next check runs after a wake, or a failed ask. */
   let askedToSleep = false;
+  /** When the open idle-sleep ask went out; a wake long after it means the ask worked. */
+  let sleepAskedAt: number | null = null;
   /** The boot report reached the server (or there is none to send); one in flight at a time. */
   let bootReported = !options.reportBooted;
   let bootReporting = false;
@@ -306,7 +324,10 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         bootReported = true;
         options.logger?.info("cloud.boot_reported", { sleepWhenIdle });
         // Woken only for an update: the next idle check may sleep it at once.
-        if (sleepWhenIdle && !wasBusy) lastBusyAt = Math.min(lastBusyAt, now() - CLOUD_IDLE_SLEEP_AFTER_MS);
+        if (sleepWhenIdle && !wasBusy) {
+          lastBusyAt = Math.min(lastBusyAt, now() - CLOUD_IDLE_SLEEP_AFTER_MS);
+          emitIdleFacts();
+        }
       },
       (error: unknown) => {
         // A server without the boot report (404) never gets one: stop for this brain's life.
@@ -324,6 +345,30 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
     ).finally(() => {
       bootReporting = false;
     });
+  };
+
+  /**
+   * The idle clock as `sleepIfIdleLongEnough` reads it: it asks for the sleep
+   * at the first check (one every interval after the last) at least
+   * {@link CLOUD_IDLE_SLEEP_AFTER_MS} (less its 5 s slack) after the last work.
+   */
+  const emitIdleFacts = (): void => {
+    if (!options.onIdleFacts || lastTickAt == null) return;
+    const idleSince = wasBusy ? null : lastBusyAt;
+    let sleepsAt: number | null = null;
+    if (idleSince != null && options.requestIdleSleep) {
+      const due = idleSince + CLOUD_IDLE_SLEEP_AFTER_MS - 5_000;
+      sleepsAt = lastTickAt + Math.max(0, Math.ceil((due - lastTickAt) / intervalMs)) * intervalMs;
+      // Sent between checks (a boot report after one): a check that already
+      // passed asks nothing more, so the next one is when it sleeps.
+      const at = now();
+      if (sleepsAt < at - 1_000) sleepsAt += Math.ceil((at - sleepsAt) / intervalMs) * intervalMs;
+    }
+    try {
+      options.onIdleFacts({ busy: wasBusy, idleSince, sleepsAt, awakeSince });
+    } catch (error) {
+      options.logger?.warn("cloud.idle_facts_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
   };
 
   /** Sends the next timer when it changed; true when the server holds it. */
@@ -418,11 +463,22 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         return;
       }
       // The report counts only for a sleep with no use since it: `usedSinceTick` is false here.
+      sleepAskedAt = now();
       await options.requestIdleSleep(instanceId, { backupReportId });
       options.logger?.info("cloud.idle_sleep_requested", { idleMs: at - lastBusyAt });
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // The server sleeps the machine while this ask is still open, so its
+      // answer is lost and the ask times out seconds after the next wake. A
+      // gap that long means the machine slept: the ask worked.
+      if (sleepAskedAt != null && now() - sleepAskedAt > intervalMs * SLEEP_GAP_INTERVALS) {
+        options.logger?.info("cloud.idle_sleep_answer_lost_to_sleep", { askedMsAgo: now() - sleepAskedAt });
+        return;
+      }
       // The provider's own timer still sleeps it a couple of minutes later.
-      options.logger?.warn("cloud.idle_sleep_failed", { error: error instanceof Error ? error.message : String(error) });
+      options.logger?.warn("cloud.idle_sleep_failed", { error: message });
+    } finally {
+      sleepAskedAt = null;
     }
   };
 
@@ -498,6 +554,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       // minutes. A short sleep leaves no gap, so a check after an ask counts too.
       if (askedToSleep || (lastTickAt != null && at - lastTickAt > intervalMs * SLEEP_GAP_INTERVALS)) {
         lastBusyAt = at;
+        awakeSince = at;
         askedToSleep = false;
         // A wake: messages queued while it slept go now (`cloudChatMessageQueue.ts`).
         try {
@@ -517,8 +574,10 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       } catch (error) {
         options.logger?.warn("cloud.cpu_sample_failed", { error: error instanceof Error ? error.message : String(error) });
       }
+      emitIdleFacts();
       if (await growDiskEarlyIfDue(state)) {
         lastBusyAt = now();
+        emitIdleFacts();
       } else if (!state.busy) {
         await sleepIfIdleLongEnough(at, state.waitingOnPerson === true);
       }

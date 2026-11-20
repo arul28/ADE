@@ -10,6 +10,7 @@ import {
   CLOUD_PATHS,
   type CloudChatTranscriptPage,
   type CloudComputerDeleteReason,
+  CLOUD_INSTANCE_ID,
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
 import { rewardAfterCloudChat } from "./referrals";
@@ -629,7 +630,7 @@ async function handleMove(request: Request, env: CloudEnv, userId: string, machi
   const body = await readJson(request);
   const toMachineKey = typeof body?.toMachineKey === "string" ? body.toMachineKey.trim() : "";
   const instanceId = typeof body?.instanceId === "string" ? body.instanceId.trim() : "";
-  if (!ROW_ID.test(toMachineKey) || !/^[a-z0-9]{4,40}$/.test(instanceId)) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
+  if (!ROW_ID.test(toMachineKey) || !CLOUD_INSTANCE_ID.test(instanceId)) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   const computer = await ownedComputer(env, userId, instanceId);
   // Only the caller's own computer, and only to its own machine key.
   if (!computer || computer.deleted_at != null) return fail("not_found", "ADE Cloud has no such computer.", 404);

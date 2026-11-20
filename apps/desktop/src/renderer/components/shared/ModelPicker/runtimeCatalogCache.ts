@@ -1,4 +1,9 @@
-import type { AgentChatModelCatalog, AgentChatModelCatalogRefreshProvider } from "../../../../shared/types";
+import {
+  MODEL_CATALOG_REFRESH_PROVIDERS,
+  type AgentChatModelCatalog,
+  type AgentChatModelCatalogRefreshProvider,
+  type OpenProjectBinding,
+} from "../../../../shared/types";
 import type { ModelDescriptor, ProviderFamily } from "../../../../shared/modelRegistry";
 import type { RuntimeCatalogModelDescriptor } from "./modelCatalog";
 
@@ -24,21 +29,6 @@ export function refreshProviderForFamily(family: ProviderFamily): AgentChatModel
 
 const RUNTIME_CATALOG_REFRESH_TTL_MS = 30 * 60_000;
 const RUNTIME_CATALOG_LOCAL_REFRESH_TTL_MS = 30_000;
-const REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
-  "opencode",
-  "pi",
-  "muse",
-  "cursor",
-  "droid",
-  "lmstudio",
-  "ollama",
-  "qwen",
-  "kimi",
-  "grok",
-  "copilot",
-  "devin",
-  "antigravity",
-];
 
 /**
  * A runtime model catalog is a MACHINE fact, not a process fact: the ollama and
@@ -106,6 +96,20 @@ type RuntimeCatalogScopeState = {
   // evicted or reset finds a different serial (or none) and is dropped instead
   // of resurrecting a machine the window has stopped tracking.
   serial: number;
+  // The machine this bucket describes and the pin that reached it, so a
+  // change on that machine (a provider set up in Settings) can find and
+  // re-read every bucket for it. Null until a fetch names one.
+  machine: string | null;
+  pin: OpenProjectBinding | null;
+  // Set when something on the machine changed after `catalog` was read. The
+  // catalog stays visible; the next reader re-reads it.
+  invalidated: boolean;
+  // Goes up on every invalidation. A read remembers the value it started
+  // under; one that started before an invalidation (a forced read in flight
+  // when a sign-in lands) describes the machine as it was, so it neither
+  // replaces the catalog nor clears `invalidated`, and later reads never
+  // join it.
+  invalidationGeneration: number;
 };
 
 // Scopes are bounded by the project bindings a window has open, so this cap is
@@ -114,6 +118,111 @@ const MAX_RUNTIME_CATALOG_SCOPES = 8;
 const runtimeCatalogScopes = new Map<string, RuntimeCatalogScopeState>();
 const sharedRuntimeCatalogRequests = new Map<string, Promise<SharedCatalogFetchResult>>();
 let nextRuntimeCatalogScopeSerial = 1;
+
+// ── Change signal ──────────────────────────────────────────────────────────
+//
+// Every surface that derives model rows from a bucket (the "@" menu, the
+// picker, the effort control) re-reads when that bucket's version moves, so
+// ANY load or invalidation for a machine reaches all of them, not only the
+// surface that started it. Versions come from one counter and outlive their
+// bucket, so an evicted-then-recreated bucket never repeats a version.
+let runtimeCatalogVersionCounter = 0;
+const runtimeCatalogVersions = new Map<string, number>();
+const runtimeCatalogListeners = new Set<(scopeKey: string) => void>();
+
+function notifyRuntimeCatalogChanged(scopeKey: string): void {
+  runtimeCatalogVersions.set(scopeKey, ++runtimeCatalogVersionCounter);
+  for (const listener of runtimeCatalogListeners) {
+    try {
+      listener(scopeKey);
+    } catch (error) {
+      // A listener's failure is its own; the other surfaces still hear the change.
+      console.warn("[model-catalog] a catalog change listener threw", error);
+    }
+  }
+}
+
+/** This bucket's change version; moves on every catalog write or invalidation. */
+export function runtimeCatalogScopeVersion(scopeKey: string): number {
+  return runtimeCatalogVersions.get(scopeKey) ?? 0;
+}
+
+/** Hear every bucket change (the key that changed). Returns the unsubscribe. */
+export function subscribeRuntimeCatalog(listener: (scopeKey: string) => void): () => void {
+  runtimeCatalogListeners.add(listener);
+  return () => {
+    runtimeCatalogListeners.delete(listener);
+  };
+}
+
+/**
+ * Which machine a pin reaches. A remote pin names its computer; a local pin and
+ * no pin are This computer (a Work composer always passes a pin, so a null pin
+ * here is a Settings page or a picker with no machine).
+ */
+export function runtimeCatalogMachineForPin(pin: OpenProjectBinding | null | undefined): string {
+  return pin?.kind === "remote" ? `remote:${pin.targetId}` : "this";
+}
+
+/** Remember which machine a bucket describes (and the pin that reaches it). */
+export function noteRuntimeCatalogScopePin(scopeKey: string, pin: OpenProjectBinding | null | undefined): void {
+  const scope = peekRuntimeCatalogScope(scopeKey);
+  if (!scope) return;
+  scope.machine = runtimeCatalogMachineForPin(pin);
+  scope.pin = pin ?? null;
+}
+
+/**
+ * Mark one bucket as out of date: something on its machine changed (a provider
+ * installed, signed in, or got a key). The catalog stays on screen, every
+ * provider's freshness is dropped so the next rail open re-reads it, and the
+ * change signal tells every surface to look again.
+ */
+export function invalidateRuntimeCatalogScope(scopeKey: string): void {
+  const scope = peekRuntimeCatalogScope(scopeKey);
+  if (!scope) return;
+  scope.invalidated = true;
+  scope.invalidationGeneration += 1;
+  scope.providerRefreshedAt.clear();
+  scope.cursorSourceRefreshedAt.clear();
+  notifyRuntimeCatalogChanged(scopeKey);
+}
+
+/** How many times this bucket was invalidated; a read passes it back to {@link rememberRuntimeCatalog}. */
+export function runtimeCatalogScopeInvalidationGeneration(scopeKey: string): number {
+  return peekRuntimeCatalogScope(scopeKey)?.invalidationGeneration ?? 0;
+}
+
+/**
+ * True when a reader should fetch this bucket again before trusting it: it has
+ * no catalog, its machine changed since the catalog was read, or the host
+ * itself marked the catalog stale (a provider set up from another window or
+ * the CLI, which this window never heard about).
+ */
+export function runtimeCatalogScopeNeedsRefresh(scopeKey: string): boolean {
+  const scope = peekRuntimeCatalogScope(scopeKey);
+  return !scope?.catalog || scope.invalidated || scope.catalog.stale === true;
+}
+
+/**
+ * The buckets this window holds for one machine, with the pin each was read
+ * through. A bucket whose first read is still out (no catalog yet, but a read
+ * named its machine) counts: that read may predate the change.
+ */
+export function runtimeCatalogScopesForMachine(
+  pin: OpenProjectBinding | null | undefined,
+): Array<{ scopeKey: string; pin: OpenProjectBinding | null }> {
+  const machine = runtimeCatalogMachineForPin(pin);
+  const matches: Array<{ scopeKey: string; pin: OpenProjectBinding | null }> = [];
+  for (const [scopeKey, scope] of runtimeCatalogScopes) {
+    if (!scope.catalog && scope.machine === null) continue;
+    const sameKey = pin ? scopeKey === pin.key : scopeKey === DEFAULT_RUNTIME_CATALOG_SCOPE;
+    if (sameKey || scope.machine === machine) {
+      matches.push({ scopeKey, pin: scope.pin ?? (sameKey ? pin ?? null : null) });
+    }
+  }
+  return matches;
+}
 
 function peekRuntimeCatalogScope(scopeKey: string): RuntimeCatalogScopeState | undefined {
   return runtimeCatalogScopes.get(scopeKey);
@@ -128,6 +237,9 @@ function runtimeCatalogScope(scopeKey: string): RuntimeCatalogScopeState {
     // unpinned surface reads, so dropping it would refetch the common case.
     if (key === DEFAULT_RUNTIME_CATALOG_SCOPE) continue;
     runtimeCatalogScopes.delete(key);
+    // A bucket can be created during a render (a descriptor lookup), so the
+    // eviction is announced after it rather than inside it.
+    queueMicrotask(() => notifyRuntimeCatalogChanged(key));
   }
   const created: RuntimeCatalogScopeState = {
     catalog: null,
@@ -136,6 +248,10 @@ function runtimeCatalogScope(scopeKey: string): RuntimeCatalogScopeState {
     cursorSourceRefreshedAt: new Map(),
     descriptorsById: new Map(),
     serial: nextRuntimeCatalogScopeSerial++,
+    machine: null,
+    pin: null,
+    invalidated: false,
+    invalidationGeneration: 0,
   };
   runtimeCatalogScopes.set(scopeKey, created);
   return created;
@@ -190,6 +306,7 @@ export function rememberRuntimeCatalogScopeParse(
 export function resetModelPickerRuntimeCatalogForTests(): void {
   runtimeCatalogScopes.clear();
   sharedRuntimeCatalogRequests.clear();
+  runtimeCatalogVersions.clear();
 }
 
 export function getSharedRuntimeCatalog(
@@ -288,6 +405,8 @@ export function rememberRuntimeCatalog(
     scopeKey?: string;
     /** Token from {@link reserveRuntimeCatalogScope}; omit to skip the check. */
     scopeSerial?: number;
+    /** {@link runtimeCatalogScopeInvalidationGeneration} when the read started; omit to skip the check. */
+    invalidationGeneration?: number;
   },
 ): AgentChatModelCatalog {
   const scopeKey = args.scopeKey ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
@@ -299,8 +418,14 @@ export function rememberRuntimeCatalog(
     return catalog;
   }
   const scope = runtimeCatalogScope(scopeKey);
+  if (args.invalidationGeneration !== undefined && scope.invalidationGeneration !== args.invalidationGeneration) {
+    // Read before the machine changed: it may be the very list the change
+    // made out of date, and a newer read may already have landed. Keep the
+    // bucket (and its `invalidated` mark) as it is.
+    return scope.catalog ?? catalog;
+  }
   if (args.mode === "cached" && scope.catalog) {
-    for (const provider of REFRESH_PROVIDERS) {
+    for (const provider of MODEL_CATALOG_REFRESH_PROVIDERS) {
       if (
         runtimeCatalogProviderIsFresh(provider, undefined, scopeKey)
         && catalogContainsRefreshProvider(scope.catalog, provider)
@@ -312,6 +437,10 @@ export function rememberRuntimeCatalog(
   }
 
   scope.catalog = catalog;
+  // A cached read, or a host answer it flags stale, can be the very list the
+  // invalidation was about, so only a fresh answer clears the mark.
+  if (args.mode !== "cached" && catalog.stale !== true) scope.invalidated = false;
+  notifyRuntimeCatalogChanged(scopeKey);
   const cursorFlavor = args.refreshProvider === "cursor" ? args.cursorSource : undefined;
   // Cached catalogs can include ADE's static OpenCode rows without a live
   // probe. Only a force, or a refresh-stale the host already marked not-stale,

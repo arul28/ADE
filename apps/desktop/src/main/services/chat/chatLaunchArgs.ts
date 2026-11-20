@@ -16,7 +16,7 @@ import { parseLaneGitHubIssueValue } from "../../../shared/laneGitHubIssue";
 import { parseLaneJiraIssueValue } from "../../../shared/laneJiraIssue";
 import { parseLaneLinearIssueValue } from "../../../shared/laneLinearIssue";
 import { normalizeLaneStart } from "../../../shared/laneStart";
-import { parseGuestCommentSelections, type ChatThreadCommentSelection } from "../../../shared/threadComments";
+import { parseGuestCommentSelections, parseThreadCommentClientIds, type ChatThreadCommentSelection } from "../../../shared/threadComments";
 import { isRecord } from "../shared/utils";
 import { normalizeClientSendId } from "./chatClientSendLedger";
 
@@ -175,6 +175,12 @@ export function guestCommentsField(includeThreadComments: boolean, value: unknow
   return selections ? { includeGuestComments: selections } : {};
 }
 
+/** The comments a send must leave pending (`excludeThreadCommentClientIds`); only with the chat's own comments. */
+export function excludedThreadCommentsField(includeThreadComments: boolean, value: unknown): { excludeThreadCommentClientIds?: string[] } {
+  const clientIds = includeThreadComments ? parseThreadCommentClientIds(value) : undefined;
+  return clientIds ? { excludeThreadCommentClientIds: clientIds } : {};
+}
+
 export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentChatSendArgs {
   const messageFields = parseAgentChatMessageFields(value);
   const text = typeof value.text === "string" ? asTrimmedString(value.text) ?? "" : null;
@@ -191,6 +197,7 @@ export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentCha
     ...(typeof value.compactFirst === "boolean" ? { compactFirst: value.compactFirst } : {}),
     ...(includeThreadComments ? { includeThreadComments: true } : {}),
     ...guestCommentsField(includeThreadComments, value.includeGuestComments),
+    ...excludedThreadCommentsField(includeThreadComments, value.excludeThreadCommentClientIds),
     // A phone's offline queue or a web retry resends with the same id.
     ...clientSendIdField(value.clientSendId),
   };

@@ -825,21 +825,23 @@ struct WorkSessionDestinationView: View {
   /// shortcuts when the session is lane-backed.
   @ViewBuilder
   var sessionHeaderTrailingControls: some View {
-    if let session, isChatSession(session) {
-      HStack(spacing: 8) {
+    HStack(spacing: 8) {
+      // An ADE Cloud chat's computer: asleep, waking or awake. Shown before
+      // the chat's row loads too (an asleep chat with nothing cached).
+      CloudLaneHeaderStateButton(fleetKey: sessionCloudMachineKey)
+      if let session, isChatSession(session) {
         if currentSideChatSessionId != nil {
           WorkSideChatHeaderButton { openSideChatPanel() }
         }
         sessionHeaderMenu(session, toolbarLabel: false)
       }
-    } else {
-      EmptyView()
     }
   }
 
   /// The same three parts as the ⋯, as rail buttons (the Duo's outer display).
   @ViewBuilder
   var sessionRailControls: some View {
+    CloudLaneHeaderStateButton(fleetKey: sessionCloudMachineKey, inToolbar: true)
     if let session, isChatSession(session) {
       WorkChatRailButtons(
         model: headerMenuModel(session),
@@ -1594,6 +1596,11 @@ struct WorkSessionDestinationView: View {
     transitionNamespace == nil ? nil : "work-container-\(sessionId)"
   }
 
+  /// The chrome this destination draws: the wide column's is the rail around the split.
+  private var sessionChromeMode: WorkSessionNavigationChrome {
+    duoUsesPane || isFullScreenTerminalSession ? .embedded : navigationChrome
+  }
+
   /// Terminal sessions render `TerminalSessionScreen`, which brings its own
   /// slim full-bleed top bar — the shared pushed-detail chrome would stack a
   /// second header on top of it.
@@ -1725,6 +1732,10 @@ struct WorkSessionDestinationView: View {
       // computer; a send does.
       .showsCloudLaneState(
         fleetKey: sessionCloudMachineKey,
+        // Asleep and waking show on the header's cloud button. Embedded
+        // chrome (the Duo's split rail, a side chat, a full-screen terminal)
+        // has no header here, so it keeps the lines.
+        restingStateInHeader: sessionChromeMode != .embedded,
         // A chat with no cached row loaded nothing while the computer slept:
         // read it now that the computer answers.
         onAwake: { await loadMissingSessionWhenLive() }
@@ -1740,7 +1751,7 @@ struct WorkSessionDestinationView: View {
       }
       .workSessionNavigationChrome(
         // The wide column's chrome is the rail around the split (`body`).
-        mode: duoUsesPane || isFullScreenTerminalSession ? .embedded : navigationChrome,
+        mode: sessionChromeMode,
         title: sessionDestinationNavigationTitle,
         subtitle: sessionDestinationNavigationSubtitle,
         leadingSymbol: "sidebar.left",

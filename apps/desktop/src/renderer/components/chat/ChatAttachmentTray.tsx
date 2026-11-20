@@ -1,5 +1,5 @@
 import { Suspense, forwardRef, lazy, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
-import { Check, Copy, GithubLogo, Globe, Image, X } from "@phosphor-icons/react";
+import { ArrowClockwise, Check, Copy, GithubLogo, Globe, Image, WarningCircle, X } from "@phosphor-icons/react";
 import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
@@ -133,6 +133,14 @@ export type ChatAttachmentPendingImage = {
   id: string;
   name: string;
   previewUrl?: string | null;
+  /**
+   * Why the save failed, as a person reads it. Set: the tile (and its inline
+   * token in the prompt) shows the failure with Retry and Remove instead of
+   * "Saving".
+   */
+  error?: string | null;
+  /** The failure was the link to the chat's machine: Retry, but nothing for ADE to hear about. */
+  connectionTrouble?: boolean;
 };
 
 export const CHAT_IMAGE_ATTACHMENT_FOCUS_SELECTOR = "[data-chat-image-attachment-focus-target='true']";
@@ -566,21 +574,27 @@ function PendingImageAttachmentPreview({
   attachment,
   toneClassName,
   onRemove,
+  onRetry,
   onFocusPrompt,
 }: {
   attachment: ChatAttachmentPendingImage;
   toneClassName: string;
   onRemove?: (id: string) => void;
+  onRetry?: (id: string) => void;
   onFocusPrompt?: () => void;
 }) {
+  const failed = Boolean(attachment.error);
   return (
     <div
       className={cn(
         "group/image relative h-14 w-14 shrink-0 overflow-hidden rounded-md border p-0 text-left transition-colors focus:outline-none focus:ring-1 focus:ring-white/25",
         toneClassName,
+        failed && "border-amber-400/45",
       )}
-      title={`Attaching ${attachment.name}`}
-      aria-label={`Attaching ${attachment.name}`}
+      title={failed ? attachment.error ?? undefined : `Attaching ${attachment.name}`}
+      aria-label={failed ? `${attachment.name} didn't attach` : `Attaching ${attachment.name}`}
+      data-chat-pending-attachment-id={attachment.id}
+      data-chat-pending-attachment-failed={failed ? "true" : undefined}
       role="status"
       tabIndex={0}
       data-chat-image-attachment-focus-target="true"
@@ -593,7 +607,7 @@ function PendingImageAttachmentPreview({
         <img
           src={attachment.previewUrl}
           alt={`${attachment.name} preview`}
-          className="h-full w-full object-cover opacity-80"
+          className={cn("h-full w-full object-cover", failed ? "opacity-45" : "opacity-80")}
           draggable={false}
         />
       ) : (
@@ -601,15 +615,35 @@ function PendingImageAttachmentPreview({
           <Image size={18} weight="bold" />
         </span>
       )}
-      <span className="pointer-events-none absolute inset-x-1 bottom-1 truncate rounded bg-black/65 px-1 py-0.5 text-center text-[8px] text-white/75">
-        Saving
-      </span>
+      {failed ? (
+        onRetry ? (
+          <button
+            type="button"
+            className="absolute inset-x-1 bottom-1 inline-flex items-center justify-center gap-0.5 rounded bg-black/75 px-1 py-0.5 text-[8px] font-medium text-amber-100 transition-colors hover:bg-black"
+            title={`Try attaching ${attachment.name} again`}
+            aria-label={`Try attaching ${attachment.name} again`}
+            onClick={() => onRetry(attachment.id)}
+          >
+            <ArrowClockwise size={8} weight="bold" />
+            Retry
+          </button>
+        ) : null
+      ) : (
+        <span className="pointer-events-none absolute inset-x-1 bottom-1 truncate rounded bg-black/65 px-1 py-0.5 text-center text-[8px] text-white/75">
+          Saving
+        </span>
+      )}
+      {failed ? (
+        <span className="pointer-events-none absolute left-1 top-1 inline-flex text-amber-300 drop-shadow" aria-hidden>
+          <WarningCircle size={13} weight="fill" />
+        </span>
+      ) : null}
       {onRemove ? (
         <button
           type="button"
           className="absolute right-1 top-1 inline-flex h-5 w-5 items-center justify-center rounded border border-fg/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
-          title={`Cancel ${attachment.name}`}
-          aria-label={`Cancel ${attachment.name}`}
+          title={failed ? `Remove ${attachment.name}` : `Cancel ${attachment.name}`}
+          aria-label={failed ? `Remove ${attachment.name}` : `Cancel ${attachment.name}`}
           onClick={() => onRemove(attachment.id)}
         >
           <X size={11} weight="bold" />
@@ -817,6 +851,8 @@ type ChatAttachmentTrayProps = {
   onRemoveContext?: (key: string) => void;
   onOpenContext?: (attachment: AgentChatContextAttachment) => void;
   onRemovePendingImageAttachment?: (id: string) => void;
+  /** Tries a pending image whose save failed again. */
+  onRetryPendingImageAttachment?: (id: string) => void;
   onFocusPrompt?: () => void;
   /** Path whose inline composer chip is hovered; that tray item lights up. */
   highlightedPath?: string | null;
@@ -838,6 +874,7 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
   onRemoveContext,
   onOpenContext,
   onRemovePendingImageAttachment,
+  onRetryPendingImageAttachment,
   onFocusPrompt,
   highlightedPath = null,
   onHoverAttachment,
@@ -875,6 +912,7 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
           attachment={attachment}
           toneClassName={chipTone}
           onRemove={onRemovePendingImageAttachment}
+          onRetry={onRetryPendingImageAttachment}
           onFocusPrompt={onFocusPrompt}
         />
       ))}

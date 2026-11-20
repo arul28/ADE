@@ -1340,7 +1340,8 @@ export class RemoteConnectionService {
     try {
       // Asked even with a pool entry: a sleeping box's relay tunnel can look
       // open until a call times out. Only cloud boxes cost a lookup.
-      const woke = explicit && !unattended && this.options.wakeForUse ? await this.options.wakeForUse(target) : false;
+      // No await without a wake hook: a pending connect's timing is part of the disconnect race.
+      const woke = explicit && !unattended && this.options.wakeForUse ? await this.wakeForUse(target, { via: "connect" }) : false;
       // An explicit connect counts as the person asking for this machine
       // (Connect, Test, Try again, and opening or switching to one of its
       // projects), so it may start the machine's brain. Unattended
@@ -2057,7 +2058,7 @@ export class RemoteConnectionService {
         }
         if (this.isManuallyDisconnected(sleeping)) throw new Error(REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE);
       }
-      if (sleeping && await this.wakeForUse(sleeping)) {
+      if (sleeping && await this.wakeForUse(sleeping, { via: "action", action: `${request.domain}.${request.action}` })) {
         this.clearAutomaticReconnectState(targetId);
         wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(sleeping));
       } else if (sleeping && this.asleepChecks.isResting(targetId)) {
@@ -2079,7 +2080,7 @@ export class RemoteConnectionService {
         // call is sent once more only when sending it twice is safe, or when
         // it never went out; otherwise its unknown outcome stands, and the
         // person's retry reaches the woken machine.
-        if (!wakes || !(await this.wakeForUse(target))) throw error;
+        if (!wakes || !(await this.wakeForUse(target, { via: "action_retry", action: `${request.domain}.${request.action}` }))) throw error;
         this.clearAutomaticReconnectState(targetId);
         wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(target));
         if (error instanceof RemoteActionOutcomeUnknownError
@@ -2831,10 +2832,19 @@ export class RemoteConnectionService {
     return this.statusById.get(targetId)?.recovery === "waiting_for_user" ? "waiting_for_user" : null;
   }
 
-  /** Whether a sleeping cloud machine was woken for this use (see the option). */
-  private async wakeForUse(target: RemoteRuntimeTarget): Promise<boolean> {
+  /**
+   * Wakes a sleeping cloud box for a use, and logs what asked for it: the
+   * server records a person's wake with no cause, so this line is the only
+   * answer to "what woke my computer".
+   */
+  private async wakeForUse(
+    target: RemoteRuntimeTarget,
+    cause: { via: "connect" | "action" | "action_retry"; action?: string },
+  ): Promise<boolean> {
     if (!this.options.wakeForUse) return false;
-    return await this.options.wakeForUse(target);
+    const woke = await this.options.wakeForUse(target);
+    if (woke) this.options.logger?.info("remote.cloud_woken_for_use", { targetId: target.id, via: cause.via, action: cause.action ?? null });
+    return woke;
   }
 
   /** Connects a machine that is waking: its relay route comes back a few seconds after the wake. */

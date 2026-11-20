@@ -191,6 +191,8 @@ struct CloudLaneStateLines: View {
   let fleetKey: String?
   /// A chat says what its next message does; a lane page what New computer does.
   var context: CloudLaneLineContext = .chat
+  /// False where the header shows asleep and waking instead.
+  var showsRestingState = true
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @ObservedObject private var store = AccountCloudStore.shared
   private var syncService: SyncService { syncPublishes.service }
@@ -209,6 +211,7 @@ struct CloudLaneStateLines: View {
       : nil
     CloudLaneStateLinesContent(
       state: state,
+      showsRestingState: showsRestingState,
       deletingDays: deleting.map { cloudDeletingSoonDays(deletesAt: $0.deletesAt) },
       deletingSizeLabel: cloudQueueSizeLabel(account: store.account),
       deleted: state == .deleted
@@ -241,9 +244,92 @@ struct CloudLaneStateLines: View {
   }
 }
 
+/// A cloud chat's computer in its header: asleep, waking or awake, as the
+/// desktop chat header's cloud button shows it. Its menu says the state and,
+/// while asleep, offers Wake now. Reading it never wakes anything; a failed
+/// wake, a refusal or a deleted computer stay lines at the top
+/// (`CloudLaneStateLines`), so this shows nothing for those.
+struct CloudLaneHeaderStateButton: View {
+  let fleetKey: String?
+  /// On the side rail's toolbar (a labelled item), not the glass header.
+  var inToolbar = false
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  @ObservedObject private var store = AccountCloudStore.shared
+  private var syncService: SyncService { syncPublishes.service }
+
+  private struct Shown {
+    let word: String
+    let symbol: String
+    let asleep: Bool
+  }
+
+  private var shown: Shown? {
+    switch cloudLaneState(fleetKey: fleetKey, sync: syncService, store: store) {
+    case .asleep?: return Shown(word: "Asleep", symbol: "moon.zzz", asleep: true)
+    case .waking?: return Shown(word: "Waking", symbol: "sun.horizon", asleep: false)
+    case .awake?: return Shown(word: "Awake", symbol: "icloud", asleep: false)
+    default: return nil
+    }
+  }
+
+  var body: some View {
+    if let shown, let fleetKey {
+      if inToolbar {
+        menu(shown, fleetKey: fleetKey)
+      } else {
+        menu(shown, fleetKey: fleetKey).buttonStyle(.plain)
+      }
+    }
+  }
+
+  private func menu(_ shown: Shown, fleetKey: String) -> some View {
+    Menu {
+      if shown.asleep {
+        Section("Asleep · you're reading the saved copy. Sending a message wakes it too.") {
+          Button {
+            ADEHaptics.light()
+            wake(fleetKey)
+          } label: {
+            Label("Wake now", systemImage: "sun.max")
+          }
+        }
+      } else {
+        Section("\(shown.word) on ADE Cloud") {
+          Label(shown.word == "Waking" ? "Waking this chat's computer…" : "This chat's computer is up", systemImage: shown.symbol)
+        }
+      }
+    } label: {
+      if inToolbar {
+        Label("ADE Cloud: \(shown.word)", systemImage: shown.symbol)
+      } else {
+        WorkChatGlassCircleLabel(systemName: shown.symbol, glyphSize: 16, tint: shown.asleep ? ADEColor.textSecondary : ADEColor.textPrimary)
+      }
+    }
+    .accessibilityLabel("ADE Cloud computer, \(shown.word.lowercased())")
+    .accessibilityHint(shown.asleep ? "Shows Wake now" : "Shows the computer's state")
+    .accessibilityIdentifier("Work.Chat.Header.CloudState")
+  }
+
+  /// A doing action: wakes the chat's computer. A failure shows as the
+  /// wake-failed line (`cloudWakeFailure`), the only banner left in a chat.
+  private func wake(_ fleetKey: String) {
+    let sync = syncService
+    Task { @MainActor in
+      if fleetKey == sync.focusedMachineKey {
+        // The phone's own link wakes and comes back through its own path; the fleet never dials it.
+        _ = await sync.wakeFocusedCloudMachineIfAsleep()
+      } else {
+        _ = await sync.machineFleet?.connect(machineKey: fleetKey, timeout: .seconds(150))
+      }
+    }
+  }
+}
+
 /// The drawn part of `CloudLaneStateLines`, from plain values.
 struct CloudLaneStateLinesContent: View {
   let state: CloudLaneState?
+  /// Asleep and waking take a line; false where the header shows them.
+  var showsRestingState = true
   /// Days until the idle cleanup deletes the computer; nil when none is due.
   let deletingDays: Int?
   /// The size a message after that delete starts the new computer at ("Small").
@@ -264,13 +350,13 @@ struct CloudLaneStateLinesContent: View {
   var body: some View {
     VStack(spacing: 6) {
       switch state {
-      case .waking?:
+      case .waking? where showsRestingState:
         CloudComputerWakeBanner(machineName: "your ADE Cloud computer")
       case .wakeFailed(let message)?:
         CloudComputerWakeFailedBanner(message: message, action: .dismiss(onDismissFailure))
       case .refused(let message)?:
         CloudComputerWakeFailedBanner(message: message, action: .none)
-      case .asleep?:
+      case .asleep? where showsRestingState:
         line(
           symbol: "moon.zzz",
           title: "Asleep on ADE Cloud",
@@ -278,7 +364,7 @@ struct CloudLaneStateLinesContent: View {
         )
       case .deleted?:
         deletedLine
-      case .awake?, nil:
+      case .awake?, .asleep?, .waking?, nil:
         EmptyView()
       }
       if let deletingDays {

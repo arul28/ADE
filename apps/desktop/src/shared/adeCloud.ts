@@ -1,6 +1,8 @@
 import type {
   CloudAccountState,
   CloudCatalog,
+  CloudComputerActivityReport,
+  CloudComputerStatus,
   CloudDiskRefusalReason,
   CloudDiskUsage,
   CloudDiskUsageItem,
@@ -488,6 +490,8 @@ export type CloudMachine = {
   update?: CloudMachineUpdate | null;
   /** When it last did work (its own report), else when it was last awake; null when unknown. */
   lastActiveAtMs?: number | null;
+  /** While it runs: when this stretch awake began (the server's record); null while it rests or unknown. */
+  awakeSinceMs?: number | null;
   /** What uses its disk, as it last measured itself while awake; null before its first measure. */
   diskUsage?: CloudDiskUsage | null;
   /** Its lane's work as it last read it while awake (unpushed, the pull request); null before its first report. */
@@ -722,6 +726,8 @@ export function cloudShapeWithin(shape: CloudShapeId, max: CloudShapeId): boolea
 export type { CloudAccountState, CloudCatalog, CloudHoursState, CloudPaidPlanId, CloudPlanChangeTiming, CloudPlanFacts, CloudPlanId };
 export type { CloudPlanCleanup, CloudPlanCleanupComputer, CloudPlanCleanupDone, CloudPlanCleanupPick, CloudTimedWakesCancelled };
 export type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageKind, CloudDiskUsageReport, CloudIdleCleanupEntry, CloudIgnoredFiles, CloudLaneWork };
+/** A lane computer's live status (its status menu) and its brain's work report. */
+export type { CloudComputerActivityReport, CloudComputerStatus };
 
 /**
  * What opening checkout did: a browser page opened, or the plan changed

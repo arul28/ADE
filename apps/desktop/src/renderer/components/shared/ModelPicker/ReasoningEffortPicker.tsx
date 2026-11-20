@@ -8,6 +8,7 @@ import { toneText } from "../../lanes/laneDesignTokens";
 import { usePortalContainer } from "../../ui/portalContainer";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { resolveModelDescriptorWithRuntimeCatalog } from "./modelCatalog";
+import { DEFAULT_RUNTIME_CATALOG_SCOPE, getSharedRuntimeCatalog } from "./runtimeCatalogCache";
 import { capitalizeWord } from "./modelFacts";
 import { useReasoningByFamily } from "./useReasoningByFamily";
 
@@ -159,6 +160,28 @@ const REASONING_TONE_STYLES: Record<
   },
 };
 
+/**
+ * A ladder to place an effort on when the model's own is unknown (its
+ * machine's catalog has not been read) or does not list it, so a chat's saved
+ * level still reads as a level, in a tone, instead of "Auto".
+ */
+const COMMON_EFFORT_LADDER: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
+const EFFORT_RANK: Readonly<Record<string, number>> = {
+  none: 0, minimal: 1, low: 2, medium: 3, high: 4, xhigh: 5, max: 6, ultra: 7, ultracode: 7,
+};
+
+/** Where `effort` sits on `ladder`: the highest rung at or below it, or -1. */
+function nearestLadderIndex(ladder: readonly string[], effort: string): number {
+  const rank = EFFORT_RANK[effort];
+  if (rank === undefined) return -1;
+  let index = -1;
+  ladder.forEach((tier, at) => {
+    const tierRank = EFFORT_RANK[tier];
+    if (tierRank !== undefined && tierRank <= rank) index = at;
+  });
+  return index;
+}
+
 function reasoningToneKeyForIndex(index: number, total: number): ReasoningToneKey {
   if (index < 0) return "auto";
   if (total <= 1) return "max";
@@ -303,6 +326,21 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   }), [descriptor?.defaultReasoningEffort, family, getReasoningForFamily, reasoningEffort, showFamilyDefault, tiers, useFamilyDefaults]);
 
   const activeIndex = displayedEffort ? tiers.findIndex((tier) => tier === displayedEffort) : -1;
+  // An open chat sends its own saved level as is. When the ladder shown here
+  // does not list it (the machine's catalog is not loaded yet, its computer
+  // is asleep, or the list is partial), say that level rather than "Auto":
+  // the chat did not lose it, and nothing here writes it back.
+  const savedEffort = !showFamilyDefault && reasoningEffort?.trim() ? reasoningEffort.trim() : null;
+  const savedEffortOffLadder = savedEffort && !tiers.includes(savedEffort) ? savedEffort : null;
+  // With no ladder at all, the control shows only while the catalog that
+  // would supply one is still missing; a loaded model with no levels has none.
+  const ladderUnknown = useMemo(
+    () => !getSharedRuntimeCatalog(catalogScopeKey ?? DEFAULT_RUNTIME_CATALOG_SCOPE),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the revision is the catalog's arrival
+    [catalogScopeKey, catalogRevision],
+  );
+  const meterTiers = tiers.length === 0 && savedEffortOffLadder ? COMMON_EFFORT_LADDER : tiers;
+  const meterIndex = savedEffortOffLadder ? nearestLadderIndex(meterTiers, savedEffortOffLadder) : activeIndex;
   const previousActiveIndexRef = useRef(activeIndex);
   const effortTransitionDirection = activeIndex > previousActiveIndexRef.current
     ? "up"
@@ -313,9 +351,17 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
     previousActiveIndexRef.current = activeIndex;
   }, [activeIndex]);
   const activeTone = REASONING_TONE_STYLES[
-    reasoningToneKeyForTier(displayedEffort, activeIndex, tiers.length)
+    savedEffortOffLadder
+      ? reasoningToneKeyForTier(
+        savedEffortOffLadder,
+        nearestLadderIndex(COMMON_EFFORT_LADDER, savedEffortOffLadder),
+        COMMON_EFFORT_LADDER.length,
+      )
+      : reasoningToneKeyForTier(displayedEffort, activeIndex, tiers.length)
   ];
-  const activeLabel = activeIndex >= 0 ? tierLabel(tiers[activeIndex]!, useCodex56Labels) : "Auto";
+  const activeLabel = savedEffortOffLadder
+    ? tierLabel(savedEffortOffLadder, useCodex56Labels)
+    : activeIndex >= 0 ? tierLabel(tiers[activeIndex]!, useCodex56Labels) : "Auto";
   const isUltraActive = displayedEffort === "ultra" || displayedEffort === "ultracode";
   const thumbLeft = segmentOffset(segmentFraction(Math.max(0, activeIndex), tiers.length), tiers.length);
 
@@ -593,9 +639,29 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
       </Popover.Root>
     );
   }
-  if (tiers.length === 0) return null;
+  if (tiers.length === 0) {
+    if (!savedEffortOffLadder || !ladderUnknown) return null;
+    // The saved level, shown until this machine's catalog brings the ladder.
+    // There is nothing to pick from yet, so it does not open.
+    return (
+      <ReasoningEffortTrigger
+        label={activeLabel}
+        shortLabel={reasoningChipLabel(savedEffortOffLadder, useCodex56Labels) ?? activeLabel}
+        tone={activeTone}
+        tiers={meterTiers}
+        activeIndex={meterIndex}
+        compact={compact}
+        disabled={false}
+        open={false}
+        ultra={false}
+        squeezed={squeezed}
+        aria-disabled
+        className={cn(triggerClassName, className, "cursor-default")}
+      />
+    );
+  }
 
-  const shortLabel = reasoningChipLabel(displayedEffort, useCodex56Labels) ?? "AUTO";
+  const shortLabel = reasoningChipLabel(savedEffortOffLadder ?? displayedEffort, useCodex56Labels) ?? "AUTO";
 
   return (
     <Popover.Root
@@ -613,8 +679,8 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
           label={activeLabel}
           shortLabel={shortLabel}
           tone={activeTone}
-          tiers={tiers}
-          activeIndex={activeIndex}
+          tiers={meterTiers}
+          activeIndex={meterIndex}
           compact={compact}
           disabled={disabled}
           open={open}
@@ -655,7 +721,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
           >
             <div className="flex items-center justify-between gap-3 px-1 pb-2.5 pt-0.5">
               <div className="flex min-w-0 items-center gap-2 font-sans text-[12px] leading-none text-muted-fg/72">
-                <EffortMeter tiers={tiers} activeIndex={activeIndex} color={activeTone.color} />
+                <EffortMeter tiers={meterTiers} activeIndex={meterIndex} color={activeTone.color} />
                 <span>Effort</span>
                 <span
                   key={displayedEffort ?? "auto"}

@@ -12,7 +12,9 @@ import {
   collapseWhitespace,
   formatThreadReviewBlock,
   normalizeThreadCommentAnchor,
+  normalizeThreadCommentClientId,
   parseGuestCommentSelections,
+  parseThreadCommentClientIds,
   threadCommentRevision,
   type ChatThreadComment,
   type ChatThreadCommentCreateArgs,
@@ -31,7 +33,12 @@ import {
  */
 export type ThreadCommentService = ReturnType<typeof createThreadCommentService>;
 
-type ThreadCommentFile = { version: 1; comments: ChatThreadComment[] };
+/**
+ * `goneClientIds`: client ids of comments that left the list (sent or
+ * deleted), oldest first, so a retry after a restart cannot bring one back.
+ * An older build reads only `comments`.
+ */
+type ThreadCommentFile = { version: 1; comments: ChatThreadComment[]; goneClientIds?: string[] };
 
 /** The one rule for a chat id that may name a comment file. */
 export function isThreadCommentSessionId(sessionId: string): boolean {
@@ -60,8 +67,23 @@ function normalizeStoredComment(entry: unknown, sessionId: string): ChatThreadCo
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : at,
     ...(threadCommentRevision(value) > 0 ? { revision: threadCommentRevision(value) } : {}),
     ...withStoredAuthor(value.author),
+    ...withClientId(value.clientId),
   };
 }
+
+function withClientId(value: unknown): { clientId?: string } {
+  const clientId = normalizeThreadCommentClientId(value);
+  return clientId ? { clientId } : {};
+}
+
+/** Same author: both the host's own user, or the same user of the same kind. */
+function sameAuthor(a: AdeMessageAuthor | null | undefined, b: AdeMessageAuthor | null | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  return a.kind === b.kind && a.userId === b.userId;
+}
+
+/** Client ids of comments a send took or a delete removed, remembered per chat so a late retry cannot bring one back. */
+const MAX_GONE_CLIENT_IDS_PER_SESSION = 200;
 
 /**
  * Old comments have no author and read as the host's own user. The stored
@@ -94,6 +116,30 @@ export function createThreadCommentService({
    * read or write, so a transient disk failure cannot lose them.
    */
   const pendingPersist = new Set<string>();
+  /**
+   * Client ids of comments that left the list (sent or deleted), the last
+   * `MAX_GONE_CLIENT_IDS_PER_SESSION` per chat. A create that repeats one is a
+   * retry whose first attempt landed and is already gone, so it must not make
+   * the comment again. Saved in the chat's comment file with the removal, and
+   * read back with it, so a host restart keeps them.
+   */
+  const goneClientIds = new Map<string, Set<string>>();
+  const rememberGone = (sessionId: string, comments: readonly ChatThreadComment[]): void => {
+    let gone = goneClientIds.get(sessionId);
+    for (const comment of comments) {
+      if (!comment.clientId) continue;
+      if (!gone) {
+        gone = new Set();
+        goneClientIds.set(sessionId, gone);
+      }
+      gone.delete(comment.clientId);
+      gone.add(comment.clientId);
+      for (const oldest of gone) {
+        if (gone.size <= MAX_GONE_CLIENT_IDS_PER_SESSION) break;
+        gone.delete(oldest);
+      }
+    }
+  };
 
   /**
    * Whether a comment goes with the next send. A lane-sharing guest's
@@ -105,7 +151,14 @@ export function createThreadCommentService({
    * A guest's comment goes only when the owner picked it at the body revision
    * it still has: an edit after the pick keeps it out (and `update` unticks it).
    */
-  const goesWithSend = (comment: ChatThreadComment, guestPicks: ReadonlyMap<string, number>): boolean => {
+  const goesWithSend = (
+    comment: ChatThreadComment,
+    guestPicks: ReadonlyMap<string, number>,
+    excluded: ReadonlySet<string>,
+  ): boolean => {
+    // The sender shows it as not saved (failed, still saving, being
+    // discarded): it stays here for that client's Retry or Discard.
+    if (comment.clientId && excluded.has(comment.clientId)) return false;
     if (comment.author?.kind === "guest") return guestPicks.get(comment.id) === threadCommentRevision(comment);
     return comment.includeInNextSend;
   };
@@ -136,6 +189,15 @@ export function createThreadCommentService({
           return comment ? [comment] : [];
         });
       }
+      const storedGone = parsed && typeof parsed === "object" ? (parsed as { goneClientIds?: unknown }).goneClientIds : null;
+      if (Array.isArray(storedGone)) {
+        const gone = new Set<string>();
+        for (const entry of storedGone.slice(-MAX_GONE_CLIENT_IDS_PER_SESSION)) {
+          const clientId = normalizeThreadCommentClientId(entry);
+          if (clientId) gone.add(clientId);
+        }
+        if (gone.size) goneClientIds.set(sessionId, gone);
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
         logger.warn("agent_chat.thread_comments_read_failed", {
@@ -154,11 +216,12 @@ export function createThreadCommentService({
 
   const persist = (sessionId: string, comments: ChatThreadComment[]): void => {
     const filePath = fileFor(sessionId);
-    if (comments.length === 0) {
+    const gone = [...(goneClientIds.get(sessionId) ?? [])];
+    if (comments.length === 0 && gone.length === 0) {
       fs.rmSync(filePath, { force: true });
     } else {
       fs.mkdirSync(dir, { recursive: true });
-      const file: ThreadCommentFile = { version: 1, comments };
+      const file: ThreadCommentFile = { version: 1, comments, ...(gone.length ? { goneClientIds: gone } : {}) };
       writeFileAtomic(filePath, JSON.stringify(file));
     }
   };
@@ -186,6 +249,22 @@ export function createThreadCommentService({
     onChanged(sessionId, comments);
   };
 
+  /** A write that removes `removed`: their client ids are saved as gone with it, and stay unmarked when it fails. */
+  const writeRemoving = (sessionId: string, comments: ChatThreadComment[], removed: readonly ChatThreadComment[]): void => {
+    // The whole previous set: at the cap, `rememberGone` also evicts the oldest
+    // ids, and a failed write must not lose those either.
+    const previous = goneClientIds.get(sessionId);
+    const before = previous ? new Set(previous) : null;
+    rememberGone(sessionId, removed);
+    try {
+      write(sessionId, comments);
+    } catch (error) {
+      if (before) goneClientIds.set(sessionId, before);
+      else goneClientIds.delete(sessionId);
+      throw error;
+    }
+  };
+
   const cleanBody = (body: unknown): string => {
     if (typeof body !== "string") return "";
     return body.replace(/\r\n?/g, "\n").trim().slice(0, MAX_THREAD_COMMENT_BODY_CHARS);
@@ -208,6 +287,17 @@ export function createThreadCommentService({
     const body = cleanBody(args.body);
     if (!body) throw new Error("Write a comment first.");
     const current = read(args.sessionId);
+    // Idempotent by (chat, client id, author): a retry whose first attempt
+    // landed gets that comment back. Another author's id never matches, so a
+    // guest cannot reach (or claim) someone else's comment by guessing it.
+    const clientId = normalizeThreadCommentClientId(args.clientId);
+    if (clientId) {
+      const existing = current.find((comment) => comment.clientId === clientId && sameAuthor(comment.author, options.author));
+      if (existing) return existing;
+      if (goneClientIds.get(args.sessionId)?.has(clientId)) {
+        throw new Error("This comment was already sent or deleted.");
+      }
+    }
     if (current.length >= MAX_THREAD_COMMENTS_PER_SESSION) {
       throw new Error(`A chat can hold ${MAX_THREAD_COMMENTS_PER_SESSION} comments. Send or delete some first.`);
     }
@@ -224,6 +314,7 @@ export function createThreadCommentService({
       createdAt: at,
       updatedAt: at,
       ...withStoredAuthor(options.author),
+      ...(clientId && !current.some((entry) => entry.clientId === clientId) ? { clientId } : {}),
     };
     write(args.sessionId, [...current, comment]);
     return comment;
@@ -258,7 +349,7 @@ export function createThreadCommentService({
     const current = read(args.sessionId);
     const comments = current.filter((comment) => comment.id !== args.commentId);
     if (comments.length === current.length) return { deleted: false };
-    write(args.sessionId, comments);
+    writeRemoving(args.sessionId, comments, current.filter((comment) => comment.id === args.commentId));
     return { deleted: true };
   };
 
@@ -270,16 +361,17 @@ export function createThreadCommentService({
    */
   const takeForSend = (
     sessionId: string,
-    options: { guestComments?: unknown } = {},
+    options: { guestComments?: unknown; excludeClientIds?: unknown } = {},
   ): { block: string | null; count: number; restore: () => void } => {
     const current = read(sessionId);
     const picks = parseGuestCommentSelections(options.guestComments) ?? [];
     const guestPicks = new Map(picks.map((pick) => [pick.id, pick.revision] as const));
-    const goes = (comment: ChatThreadComment) => goesWithSend(comment, guestPicks);
+    const excluded = new Set(parseThreadCommentClientIds(options.excludeClientIds) ?? []);
+    const goes = (comment: ChatThreadComment) => goesWithSend(comment, guestPicks, excluded);
     const taken = current.filter(goes);
     if (!taken.length) return { block: null, count: 0, restore: () => {} };
     const block = formatThreadReviewBlock(taken);
-    write(sessionId, current.filter((comment) => !goes(comment)));
+    writeRemoving(sessionId, current.filter((comment) => !goes(comment)), taken);
     let restored = false;
     return {
       block,
@@ -291,6 +383,9 @@ export function createThreadCommentService({
           const latest = read(sessionId);
           const present = new Set(latest.map((comment) => comment.id));
           const merged = [...taken.filter((comment) => !present.has(comment.id)), ...latest];
+          // Back in the list: a retry finds them again instead of being refused.
+          const goneIds = goneClientIds.get(sessionId);
+          for (const comment of taken) if (comment.clientId) goneIds?.delete(comment.clientId);
           try {
             write(sessionId, merged);
           } catch (error) {
@@ -314,12 +409,16 @@ export function createThreadCommentService({
   };
 
   /** True when a send with `includeThreadComments` would carry at least one comment. */
-  const hasCommentsForSend = (sessionId: string): boolean =>
-    isThreadCommentSessionId(sessionId) && read(sessionId).some((comment) => goesWithSend(comment, new Map()));
+  const hasCommentsForSend = (sessionId: string, excludeClientIds?: unknown): boolean => {
+    if (!isThreadCommentSessionId(sessionId)) return false;
+    const excluded = new Set(parseThreadCommentClientIds(excludeClientIds) ?? []);
+    return read(sessionId).some((comment) => goesWithSend(comment, new Map(), excluded));
+  };
 
   /** Drops a deleted chat's comments without telling clients (the chat is gone). */
   const forgetSession = (sessionId: string): void => {
     cache.delete(sessionId);
+    goneClientIds.delete(sessionId);
     try {
       fs.rmSync(fileFor(sessionId), { force: true });
     } catch {

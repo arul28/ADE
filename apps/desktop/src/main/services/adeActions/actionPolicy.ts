@@ -177,7 +177,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // automation scheduled, so it is operator-only like the webhook lifecycle.
   automations: { only: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"] },
   // Writing or destroying a provider credential is operator work.
-  // `acpProviderDiagnostics` can run a provider CLI's doctor, and
+  // `acpProviderDiagnostics` and `runAcpProviderDoctor` can run a provider CLI's doctor, and
   // `verifyProviderSignIn` starts the provider's CLI or agent, so both are
   // operator-only.
   // `harnessLaunchEnv` returns a routed launch's environment WITH its tokens
@@ -186,7 +186,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // Both are operator work, like `project_secret.get`. `museSettings`
   // opens a Muse host on the user's credential to read or change Muse's own
   // settings, the same tier.
-  ai: { only: ["setContinueAfterRestart", "harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "verifyProviderSignIn", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "antigravitySignInStart", "antigravitySignInComplete", "antigravitySignInCancel", ...USER_SETTING_WRITES.ai.actions] },
+  ai: { only: ["setContinueAfterRestart", "harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "runAcpProviderDoctor", "verifyProviderSignIn", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "antigravitySignInStart", "antigravitySignInComplete", "antigravitySignInCancel", ...USER_SETTING_WRITES.ai.actions] },
   budget: { only: USER_SETTING_WRITES.budget.actions },
   // `applyAccountRollups` writes another machine's history into a
   // CRR-replicated table. The desktop app pushes it over the local socket
@@ -1104,6 +1104,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "museSettings",
     "museSettingsClose",
     "acpProviderDiagnostics",
+    "runAcpProviderDoctor",
     "listApiCredentials",
     "getApiCredential",
     "storeApiCredential",

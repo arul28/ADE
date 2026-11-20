@@ -109,7 +109,7 @@ describe("createThreadCommentService", () => {
     expect(reopened.list({ sessionId: "s1" })[0]?.author).toEqual(expected);
   });
 
-  it("takes only included comments and restore puts them back ahead of later ones", () => {
+  it("takes only included comments, leaves the ones a send excludes, and restore puts them back ahead of later ones", () => {
     const service = makeService();
     const takenComment = service.create({
       sessionId: "s1",
@@ -126,12 +126,25 @@ describe("createThreadCommentService", () => {
       body: "held back",
     });
     service.update({ sessionId: "s1", commentId: held.id, includeInNextSend: false });
+    // A save the client shows as failed (its answer was lost): the send names
+    // it as excluded, so it stays here for that client's Retry or Discard.
+    const failedCopy = service.create({
+      sessionId: "s1",
+      messageKey: "message:1",
+      messageExcerpt: "reply",
+      anchor: anchor("shown-as-failed"),
+      body: "not seen going",
+      clientId: "client-failed",
+    });
 
-    const taken = service.takeForSend("s1");
+    const taken = service.takeForSend("s1", { excludeClientIds: ["client-failed"] });
     expect(taken.count).toBe(1);
     expect(taken.block).toContain("sent-with-next");
     expect(taken.block).not.toContain("stays-pending");
-    expect(service.list({ sessionId: "s1" }).map((comment) => comment.id)).toEqual([held.id]);
+    expect(taken.block).not.toContain("shown-as-failed");
+    expect(service.list({ sessionId: "s1" }).map((comment) => comment.id)).toEqual([held.id, failedCopy.id]);
+    expect(service.hasCommentsForSend("s1", ["client-failed"])).toBe(false);
+    expect(service.hasCommentsForSend("s1")).toBe(true);
 
     // A comment created after the take must survive the restore.
     const later = service.create({
@@ -143,8 +156,64 @@ describe("createThreadCommentService", () => {
     });
     taken.restore();
     expect(service.list({ sessionId: "s1" }).map((comment) => comment.id).sort()).toEqual(
-      [takenComment.id, held.id, later.id].sort(),
+      [takenComment.id, held.id, failedCopy.id, later.id].sort(),
     );
+  });
+
+  // A client whose create answer was lost retries with the same client id:
+  // it must get its comment back, not a second copy that would go to the
+  // agent twice, and never another author's comment that shares the id.
+  it("makes create idempotent by client id and author, and refuses one that was sent or deleted", () => {
+    const onChanged = vi.fn();
+    const service = makeService(onChanged);
+    const args = { sessionId: "s1", messageKey: "message:1", messageExcerpt: "reply", anchor: anchor("same"), body: "same note" };
+    const first = service.create({ ...args, clientId: "client-a" });
+    expect(first.clientId).toBe("client-a");
+    onChanged.mockClear();
+
+    expect(service.create({ ...args, clientId: "client-a" })).toEqual(first);
+    expect(onChanged).not.toHaveBeenCalled();
+    // A twin with the same text but its own client id is its own comment.
+    const twin = service.create({ ...args, clientId: "client-b" });
+    expect(twin.id).not.toBe(first.id);
+    // Another author repeating the id gets a new comment that does not claim it.
+    const guest = service.create({ ...args, clientId: "client-a" }, { author: { kind: "guest", userId: "user_guest", name: "Pat" } });
+    expect(guest.id).not.toBe(first.id);
+    expect(guest.clientId).toBeUndefined();
+    // The client id survives a reread from disk.
+    const reopened = createThreadCommentService({ chatSessionsDir: root!, logger: { warn: vi.fn() }, onChanged: vi.fn() });
+    expect(reopened.list({ sessionId: "s1" }).find((comment) => comment.id === first.id)?.clientId).toBe("client-a");
+
+    // Gone (sent, or deleted): a late retry does not bring it back.
+    service.delete({ sessionId: "s1", commentId: twin.id });
+    expect(() => service.create({ ...args, clientId: "client-b" })).toThrow("already sent or deleted");
+    const taken = service.takeForSend("s1");
+    expect(() => service.create({ ...args, clientId: "client-a" })).toThrow("already sent or deleted");
+    // A host restart (a new service over the same files) still refuses both.
+    const restarted = () => createThreadCommentService({ chatSessionsDir: root!, logger: { warn: vi.fn() }, onChanged: vi.fn() });
+    const afterRestart = restarted();
+    expect(() => afterRestart.create({ ...args, clientId: "client-b" })).toThrow("already sent or deleted");
+    expect(() => afterRestart.create({ ...args, clientId: "client-a" })).toThrow("already sent or deleted");
+    // A failed send puts it back, and the retry finds it again, after a restart too.
+    taken.restore();
+    expect(service.create({ ...args, clientId: "client-a" }).id).toBe(first.id);
+    expect(restarted().create({ ...args, clientId: "client-a" }).id).toBe(first.id);
+
+    // At the cap of remembered ids, a removal whose write fails keeps every
+    // id it had, the oldest too: none of those can be made again.
+    const capped = makeService();
+    const chat = { ...args, sessionId: "s2" };
+    for (let i = 0; i < 200; i += 1) {
+      capped.delete({ sessionId: "s2", commentId: capped.create({ ...chat, clientId: `old-${i}` }).id });
+    }
+    const pending = capped.create({ ...chat, clientId: "client-new" });
+    const fault = injectFsFault({ op: "renameSync", matchPath: (value) => value.includes("thread-comments") });
+    try {
+      expect(() => capped.delete({ sessionId: "s2", commentId: pending.id })).toThrow(/no space left/i);
+    } finally {
+      fault.restore();
+    }
+    expect(() => capped.create({ ...chat, clientId: "old-0" })).toThrow("already sent or deleted");
   });
 
   // A guest's comment never rides the owner's next send on its own (its text

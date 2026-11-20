@@ -266,8 +266,32 @@ function writePersistedInventoryFile(file: PersistedInventoryFile): void {
   }
 }
 
+// ── Change generation ─────────────────────────────────────────────────────
+//
+// A chat's model catalog is built from this inventory and cached beside it.
+// It compares this generation to the one it was built under, so a probe that
+// found new models (another runtime's, Settings') or a cleared cache (a key or
+// login changed) marks the catalog stale instead of leaving the old list up.
+let inventoryGlobalGeneration = 0;
+const inventoryRootGenerations = new Map<string, number>();
+
+/** Moves when this project's inventory changes, or every project's is cleared. */
+export function openCodeInventoryGeneration(projectRoot: string): string {
+  return `${inventoryGlobalGeneration}:${inventoryRootGenerations.get(projectRoot) ?? 0}`;
+}
+
+// A stale entry (a routine clear) with the same models is no change: the catalog built from it lists them already.
+function sameInventory(previous: PersistedInventoryEntry | undefined, entry: CacheEntry): boolean {
+  if (!previous) return false;
+  return JSON.stringify(previous.modelIds) === JSON.stringify(entry.modelIds)
+    && JSON.stringify(previous.providers) === JSON.stringify(entry.providers.map(stripEphemeralCredentialSource));
+}
+
 function persistEntry(entry: CacheEntry): void {
   const file = readPersistedInventoryFile();
+  if (!sameInventory(file.entries[entry.projectRoot], entry)) {
+    inventoryRootGenerations.set(entry.projectRoot, (inventoryRootGenerations.get(entry.projectRoot) ?? 0) + 1);
+  }
   writePersistedInventoryFile({
     version: PERSISTED_INVENTORY_VERSION,
     entries: {
@@ -348,11 +372,23 @@ function hydrateFromPersisted(projectRoot: string, entry: PersistedInventoryEntr
  * Drop the in-memory inventory and mark every persisted one stale: a config or
  * key changed, so the next probe must ask the server. The persisted models
  * still draw the picker until then.
+ *
+ * `modelsMayHaveChanged: false`: a routine clear (every forced status read)
+ * that knows of no change. The generation then stays, and the next probe
+ * moves it only if it finds other models (`persistEntry`).
  */
-export function clearOpenCodeInventoryCache(): void {
+export function clearOpenCodeInventoryCache(options?: { modelsMayHaveChanged?: boolean }): void {
+  const hadMemory = inventoryCache != null;
+  const bump = options?.modelsMayHaveChanged !== false;
   inventoryCache = null;
   const file = readPersistedInventoryFile();
-  if (!Object.values(file.entries).some((entry) => !entry.stale)) return;
+  if (!Object.values(file.entries).some((entry) => !entry.stale)) {
+    // Only a real drop moves the generation: a status read with no OpenCode
+    // installed clears an already empty cache on every read.
+    if (hadMemory && bump) inventoryGlobalGeneration += 1;
+    return;
+  }
+  if (bump) inventoryGlobalGeneration += 1;
   writePersistedInventoryFile({
     version: PERSISTED_INVENTORY_VERSION,
     entries: Object.fromEntries(

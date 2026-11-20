@@ -623,7 +623,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input:
         "object { template: { id: string, name: string, description?, envFiles?: [{ source, dest, vars? }], dependencies?: [{ command: string[], cwd? }], "
         + "copyPaths?: [{ source, dest? }], envVars?: Record<string,string>, portRange?: { start, end }, "
-        + "setupScript?: { commands?: string[], unixCommands?: string[], windowsCommands?: string[], scriptPath?, unixScriptPath?, windowsScriptPath?, injectPrimaryPath?: boolean } } }",
+        + "setupScript?: { commands?: string[], unixCommands?: string[], macosCommands?: string[], linuxCommands?: string[], windowsCommands?: string[], scriptPath?, unixScriptPath?, macosScriptPath?, linuxScriptPath?, windowsScriptPath?, injectPrimaryPath?: boolean } } }",
       example: "ade lanes templates save --json '{\"id\":\"web\",\"name\":\"Web\",\"dependencies\":[{\"command\":[\"npm\",\"install\"],\"cwd\":\"apps/web\"}]}'",
     },
     applyTemplate: {
@@ -835,7 +835,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     createThreadComment: {
       description: "Pin a pending comment to part of an agent reply. It goes with the user's next send. User clients only.",
-      input: "object { sessionId: string, messageKey: string, messageExcerpt: string, anchor: { kind: \"text\", quote, prefix, suffix } | { kind: \"table_row\", tableIndex, rowIndex, headers, cells } | { kind: \"media\", mediaKind: \"image\" | \"video\", source, label, mediaIndex }, body: string }",
+      input: "object { sessionId: string, messageKey: string, messageExcerpt: string, anchor: { kind: \"text\", quote, prefix, suffix } | { kind: \"table_row\", tableIndex, rowIndex, headers, cells } | { kind: \"media\", mediaKind: \"image\" | \"video\", source, label, mediaIndex }, body: string, clientId?: string (a repeat returns the comment it made) }",
       example: "ade actions run chat.createThreadComment --input-json '{\"sessionId\":\"chat-123\",\"messageKey\":\"message:m1\",\"messageExcerpt\":\"Here is the plan\",\"anchor\":{\"kind\":\"text\",\"quote\":\"step two\",\"prefix\":\"\",\"suffix\":\"\"},\"body\":\"skip this\"}'",
     },
     updateThreadComment: {

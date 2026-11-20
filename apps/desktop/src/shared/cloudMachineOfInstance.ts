@@ -60,6 +60,7 @@ export function cloudMachineOfInstance(instance: CloudInstance, catalog: CloudCa
     update: updateOf(instance),
     // Use facts the computer reported while awake: read with the list, no wake.
     lastActiveAtMs: instance.lastActiveAt ?? null,
+    awakeSinceMs: instance.awakeSince ?? null,
     diskUsage: instance.diskUsage ?? null,
     laneWork: instance.laneWork ?? null,
     ...(lane ? { lane } : {}),

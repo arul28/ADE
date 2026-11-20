@@ -22,6 +22,9 @@
  *   POST   /cloud/instances/:id/booted         CloudBootReportResult   (from the computer)
  *   POST   /cloud/instances/:id/disk-usage     { ok: true }   (from the computer: CloudDiskUsageReport)
  *   POST   /cloud/instances/:id/cpu-report     { ok: true }   (from the computer: CloudSustainedCpuReport)
+ *   POST   /cloud/instances/:id/activity       { ok: true }   (from the computer: CloudComputerActivityReport, sent when its work starts or stops)
+ *   GET    /cloud/instances/:id/status         CloudComputerStatus   (the lane's status menu; never wakes it)
+ *   POST   /cloud/agent37/webhook              { ok: true }   NO account token: the provider's signed status change (Standard Webhooks)
  *   POST   /cloud/instances/:id/keep           { ok: true }   "Keep it": restarts the idle cleanup clock with no wake
  *   POST   /cloud/instances/:id/resize         { status }
  *   POST   /cloud/instances/:id/backups        { id, created, sizeBytes }
@@ -231,6 +234,8 @@ export const CLOUD_PATHS = {
   billingExtraPhone: "/cloud/billing/extra-phone",
   /** NoMac's signed webhook (`phones.ts`): phone ready and ended, credit low. Not an account route. */
   nomacWebhook: "/cloud/nomac/webhook",
+  /** The provider's signed status-change webhook (`computerStatus.ts`). Not an account route. */
+  agent37Webhook: "/cloud/agent37/webhook",
 } as const;
 
 /** `/cloud/chats/:machine/:chat/messages[/:msg]`: the person's queue for an existing cloud chat. */
@@ -269,6 +274,8 @@ export const CLOUD_COMPUTER_PLATFORM_HEADER = "x-ade-computer-platform";
 /** The fixed, ADE-wide salt of the computer id. Not per account: one computer is one id for every account. */
 export const CLOUD_COMPUTER_ID_DOMAIN = "ade-cloud-free-plan-computer-v1";
 export const CLOUD_COMPUTER_UNREADABLE = "unreadable";
+/** A provider instance id, as every `/cloud/instances/:id` route and the provider webhook accept it. */
+export const CLOUD_INSTANCE_ID = /^[a-z0-9]{4,40}$/;
 
 /**
  * The metadata that links a computer to the one lane it was made for. The
@@ -362,6 +369,8 @@ export type CloudInstance = {
    */
   /** When it last did work (its own report), else when it was last awake (ms); null if never. */
   lastActiveAt?: number | null;
+  /** While it runs: when this stretch awake began (ms), the server's record of the change; null while it rests or unknown. */
+  awakeSince?: number | null;
   /** What uses its disk, as it last measured while awake; null before its first measure. */
   diskUsage?: CloudDiskUsage | null;
   /** Its lane's work as it last read it while awake (for "Safe to delete"); null before its first report. */
@@ -415,6 +424,52 @@ export type CloudDiskUsageReport = {
   ignored?: CloudIgnoredFiles | null;
 };
 export const CLOUD_DISK_USAGE_MAX_ITEMS = 12;
+
+/**
+ * The computer's brain on its own work (`POST .../activity`), sent when it
+ * starts or stops working or the count of agents changes, never on a timer.
+ * `idleSince`: when its last work stopped (null while busy); `sleepsAt`: when
+ * ADE puts it to sleep if nothing starts before then.
+ */
+export type CloudComputerActivityReport = {
+  busy: boolean;
+  idleSince: number | null;
+  sleepsAt: number | null;
+  runningAgents: number;
+  reportedAt: number;
+};
+
+/** How hard a computer pushes one of its limits, as the provider reads it. */
+export type CloudResourcePressure = "healthy" | "pressure" | "critical";
+
+/**
+ * One lane computer's live facts for its status menu (`GET .../status`),
+ * read when the menu opens and kept a few seconds on the server. Reading it
+ * never wakes the computer: the provider's logs and metrics answer for a
+ * sleeping one, and the rest is ADE's own record.
+ */
+export type CloudComputerStatus = {
+  instanceId: string;
+  /** The provider's status as ADE last heard it (its webhook, else the tick). */
+  status: string;
+  /** While it runs: when this stretch awake began (ms); null while it rests. */
+  awakeSince: number | null;
+  /** The brain's last word on its work in this stretch awake; null when it sent none since it woke. */
+  activity: CloudComputerActivityReport | null;
+  /**
+   * Times it restarted by itself (a crash, a memory kill) since `awakeSince`;
+   * a wake never counts. Null when ADE can't tell (no webhook event for this
+   * stretch, or the provider didn't answer).
+   */
+  restarts: number | null;
+  /** Memory: the provider's verdict, null when it has none (asleep, an older provider answer). */
+  memory: CloudResourcePressure | null;
+  /** The provider thinks it was killed for using too much memory. */
+  outOfMemory: boolean;
+  /** Its disk as the provider last measured it (bytes), or null. */
+  disk: { usedBytes: number; limitBytes: number | null; at: number } | null;
+  readAt: number;
+};
 
 /**
  * Files git ignores in the computer's lanes (`.env`, a local database): the

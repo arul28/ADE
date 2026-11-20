@@ -9,6 +9,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  AgentChatModelCatalogRefreshProvider,
   AiConfig,
   AiApiKeyVerificationResult,
   AiProviderSignInCheck,
@@ -21,6 +22,8 @@ import type {
   AcpProviderDiagnostics,
   OpenCodeProviderAuthMethods,
 } from "../../../shared/types/config";
+import { MODEL_CATALOG_REFRESH_PROVIDERS } from "../../../shared/types/chat";
+import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import { openCodeProviderDisplayName } from "../../../shared/opencodeProviders";
 import { toggleDisabledProvider } from "../../../shared/providerEnablement";
 import {
@@ -33,6 +36,7 @@ import { providerBrand } from "./providers/providerBrand";
 import { ProviderTileView, providerListMark } from "./providers/ProviderTileView";
 import { connectionKeyFor, providerSignIn } from "./providers/providerSignInCommands";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import { refreshRuntimeCatalogsForMachine } from "../shared/ModelPicker/sharedCatalogFetch";
 import { checkProviderSignIn } from "../../lib/providerSignInCheck";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
@@ -344,6 +348,12 @@ type ProvidersSectionProps = {
   harnessesParam?: boolean;
 };
 
+const CATALOG_REFRESH_PROVIDERS: ReadonlySet<string> = new Set<AgentChatModelCatalogRefreshProvider>(MODEL_CATALOG_REFRESH_PROVIDERS);
+
+function catalogRefreshProviderOf(provider: SettingsProviderId | undefined): AgentChatModelCatalogRefreshProvider | undefined {
+  return provider && CATALOG_REFRESH_PROVIDERS.has(provider) ? provider as AgentChatModelCatalogRefreshProvider : undefined;
+}
+
 function toastActionError(title: string, err: unknown): void {
   showToast({ tone: "error", title, message: err instanceof Error ? err.message : String(err) });
 }
@@ -454,7 +464,12 @@ function MachineProvidersSection({
     onProviderChange?.(next);
   }, [onProviderChange]);
 
-  const refreshStatus = useCallback(async (options?: { force?: boolean; silent?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus | null> => {
+  /**
+   * `refreshProvider`: the one provider whose sign-in changed. The chat model
+   * lists then re-read only that provider's, not every provider's (a full
+   * refresh starts several provider processes).
+   */
+  const refreshStatus = useCallback(async (options?: { force?: boolean; silent?: boolean; refreshOpenCodeInventory?: boolean; refreshProvider?: SettingsProviderId }): Promise<AiSettingsStatus | null> => {
     if (!options?.silent) {
       setLoading(true);
       if (!statusKnownRef.current) setStatusLoadError(null);
@@ -513,6 +528,14 @@ function MachineProvidersSection({
     if (nextStatus && nextProjectConfig && editingLocalProvider == null && savingLocalProvider == null) {
       setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus));
     }
+    // A forced read follows a change on this machine (a setup, a key, a
+    // sign-in, a refresh). The chat's "@" menu and model picker hold their own
+    // copy of this machine's model list, so read those again too, in the
+    // background. An OpenCode inventory read re-probes OpenCode there as well.
+    if (nextStatus && (options?.force || options?.refreshOpenCodeInventory)) {
+      const catalogProvider = options.refreshOpenCodeInventory ? "opencode" : catalogRefreshProviderOf(options.refreshProvider);
+      void refreshRuntimeCatalogsForMachine(pin, catalogProvider ? { refreshProvider: catalogProvider } : undefined);
+    }
     return nextStatus;
   }, [editingLocalProvider, pin, projectCall, projectConfigEditable, projectPin, savingLocalProvider]);
 
@@ -564,8 +587,9 @@ function MachineProvidersSection({
           setCursorLoginUrl(null);
         }
         // Cursor's sign-in says nothing about OpenCode's providers, so this
-        // reads the saved logins again and leaves OpenCode's server alone.
-        void refreshStatusRef.current({ force: true, silent: true });
+        // reads the saved logins again and leaves OpenCode's server alone;
+        // only Cursor's rows in the chat model lists are read again.
+        void refreshStatusRef.current({ force: true, silent: true, refreshProvider: "cursor" });
       }
       if (event.state === "error" && event.error) showToast({ tone: "error", title: "Cursor sign-in failed", message: event.error });
       if (event.state === "success") {
@@ -884,7 +908,7 @@ function MachineProvidersSection({
       // The key check is Cursor's sign-in check: it asks Cursor itself.
       const verification = await window.ade.ai.verifyApiKey("cursor", pin);
       invalidateAiDiscoveryCache();
-      await refreshStatus({ force: true });
+      await refreshStatus({ force: true, refreshProvider: "cursor" });
       setVerificationByProvider((prev) => ({ ...prev, cursor: verification }));
       setSignInChecks((prev) => ({
         ...prev,
@@ -921,7 +945,7 @@ function MachineProvidersSection({
         return;
       }
       invalidateAiDiscoveryCache();
-      await refreshStatus({ force: true });
+      await refreshStatus({ force: true, refreshProvider: "cursor" });
       setVerificationByProvider((prev) => {
         const next = { ...prev };
         delete next.cursor;
@@ -1070,6 +1094,9 @@ function MachineProvidersSection({
       invalidateAiDiscoveryCache();
       showToast({ tone: "success", title: `${descriptor?.label ?? provider} ${disabled ? "disabled" : "enabled"}` });
       await refreshStatus({ force: false, silent: true });
+      // The project's copy owns the switch, and its chats' model lists drop or
+      // regain the provider.
+      void refreshRuntimeCatalogsForMachine(projectPin);
     } catch (err) {
       toastActionError("Couldn't update the provider", err);
     } finally {
@@ -1100,14 +1127,35 @@ function MachineProvidersSection({
   }, [pin]);
 
   const runAcpDoctor = useCallback(async (provider: AcpSettingsProviderId) => {
+    // The person's own action (`ai.runAcpProviderDoctor`): it wakes a sleeping
+    // cloud computer, which the page-open read (a background write) never does.
+    const runDoctor = window.ade.ai.runAcpProviderDoctor;
     const read = window.ade.ai.acpProviderDiagnostics;
-    if (!isAdeAvailable(read)) {
+    if (!isAdeAvailable(runDoctor) && !isAdeAvailable(read)) {
       setAcpDiagnosticsError((prev) => ({ ...prev, [provider]: "This window cannot run provider diagnostics." }));
       return;
     }
     setAcpDoctorBusy(provider);
     try {
-      const result = await read({ provider, runDoctor: true }, pin);
+      let result;
+      if (isAdeAvailable(runDoctor)) {
+        try {
+          result = await runDoctor({ provider }, pin);
+        } catch (error) {
+          // A machine on an older ADE has no `runAcpProviderDoctor`: the old
+          // doctor run still works there (it just doesn't wake a sleeping one).
+          // Only the runtime's own "no such action" answer for this one action
+          // (`Action 'ai.runAcpProviderDoctor' is not callable.`, `Unknown ADE action: …`).
+          const message = error instanceof Error ? error.message : String(error);
+          const unknownAction = message.includes("ai.runAcpProviderDoctor")
+            && (isUnsupportedAdeActionError(error) || message.includes("Unknown ADE action: ai.runAcpProviderDoctor"));
+          if (!isAdeAvailable(read) || !unknownAction) throw error;
+          console.warn("[providers] doctor fell back to the older diagnostics action", { provider, message });
+          result = await read({ provider, runDoctor: true }, pin);
+        }
+      } else {
+        result = await read!({ provider, runDoctor: true }, pin);
+      }
       setAcpDiagnostics((prev) => ({ ...prev, [provider]: result }));
       setAcpDiagnosticsError((prev) => {
         const next = { ...prev };
@@ -1144,7 +1192,7 @@ function MachineProvidersSection({
     try {
       const check = await checkProviderSignIn(provider, pin);
       setSignInChecks((prev) => ({ ...prev, [provider]: check }));
-      await refreshStatus({ force: true, silent: true });
+      await refreshStatus({ force: true, silent: true, refreshProvider: provider });
       return check;
     } finally {
       setSignInCheckBusy((current) => (current === provider ? null : current));
@@ -1333,7 +1381,7 @@ function MachineProvidersSection({
             setSignInRequest(null);
             if (!changed) return;
             // The "login changed" path and the provider's own check, or only a fresh read.
-            void (signedIn ? verifySignIn(provider) : refreshStatus({ force: true, silent: true }));
+            void (signedIn ? verifySignIn(provider) : refreshStatus({ force: true, silent: true, refreshProvider: provider }));
           }}
         />
       ) : null}

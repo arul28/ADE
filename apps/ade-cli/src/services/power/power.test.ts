@@ -917,6 +917,66 @@ describe("cloud keep awake", () => {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
+
+  // The status menu says when an idle computer sleeps; it must be the check
+  // that really asks. The server sleeps the machine while that ask is still
+  // open, so its answer is lost and times out after the wake: that is a sleep
+  // that worked, not a failed one (a failure would read as a billing leak).
+  it("reports the check that asks to sleep, and tells an ask cut off by the sleep from a failed one", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-idle-sleep-"));
+    const minute = 60_000;
+    let clock = 1_000_000;
+    const facts: Array<{ sleepsAt: number | null; awakeSince: number }> = [];
+    const askedAt: number[] = [];
+    const logged: string[] = [];
+    const keepAwake = createCloudKeepAwake({
+      env: { ADE_CLOUD_INSTANCE_ID: "thisbox001" },
+      adeHome: home,
+      intervalMs: minute,
+      now: () => clock,
+      readBusy: async () => ({ busy: false, reasons: [] }),
+      onIdleFacts: (idle) => facts.push(idle),
+      requestIdleSleep: async () => {
+        askedAt.push(clock);
+        if (askedAt.length === 1) {
+          // The machine sleeps half an hour under the open ask, then the ask times out.
+          clock += 30 * minute;
+          throw new Error("The operation was aborted due to timeout");
+        }
+        throw new Error("502 Bad Gateway");
+      },
+      logger: { info: (event) => logged.push(event), warn: (event) => logged.push(event) },
+    });
+    const tickUntilAsked = async (asks: number) => {
+      for (let i = 0; i < 10 && askedAt.length < asks; i += 1) {
+        await keepAwake.tick();
+        if (askedAt.length < asks) clock += minute;
+      }
+    };
+    try {
+      await keepAwake.tick();
+      const firstPromise = facts.at(-1)?.sleepsAt;
+      clock += minute;
+      await tickUntilAsked(1);
+      expect(askedAt).toEqual([firstPromise]);
+      expect(logged).toContain("cloud.idle_sleep_answer_lost_to_sleep");
+      expect(logged).not.toContain("cloud.idle_sleep_failed");
+
+      // Woken: a fresh stretch awake, and a fresh three minutes.
+      await keepAwake.tick();
+      const woke = facts.at(-1);
+      expect(woke?.awakeSince).toBe(clock);
+      clock += minute;
+      await tickUntilAsked(2);
+      expect(askedAt[1]).toBe(woke?.sleepsAt);
+      expect(askedAt[1]! - askedAt[0]!).toBeGreaterThan(30 * minute);
+      // This ask failed while the machine stayed up: a real failure.
+      expect(logged.filter((event) => event === "cloud.idle_sleep_failed")).toHaveLength(1);
+    } finally {
+      keepAwake.dispose();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("cloud busy terminals", () => {

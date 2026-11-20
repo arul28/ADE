@@ -87,6 +87,13 @@ export type ChatThreadComment = {
   revision?: number;
   /** Set only by the host (lane sharing). Absent: the host's own user. */
   author?: AdeMessageAuthor;
+  /**
+   * The id the creating client picked (`ChatThreadCommentCreateArgs.clientId`).
+   * A create that repeats it returns this comment instead of a second one, so
+   * a client whose answer was lost can retry, find, or delete its comment.
+   * Absent on comments from an older client or host.
+   */
+  clientId?: string;
 };
 
 /** One guest comment the owner picked for a send: its id and the body revision the owner saw. */
@@ -105,7 +112,31 @@ export type ChatThreadCommentCreateArgs = {
   messageExcerpt: string;
   anchor: ChatThreadCommentAnchor;
   body: string;
+  /** A client-made id ({@link normalizeThreadCommentClientId}); a repeat returns the comment it made. */
+  clientId?: string;
 };
+
+/** A create's client id, cleaned: short, path-safe characters only. Undefined when it is not one. */
+export function normalizeThreadCommentClientId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return /^[A-Za-z0-9_.:-]{1,128}$/.test(trimmed) ? trimmed : undefined;
+}
+
+/**
+ * A send's `excludeThreadCommentClientIds`, cleaned: valid client ids only,
+ * each once, at most 200. Undefined when it names none.
+ */
+export function parseThreadCommentClientIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids = new Set<string>();
+  for (const entry of value) {
+    if (ids.size >= 200) break;
+    const clientId = normalizeThreadCommentClientId(entry);
+    if (clientId) ids.add(clientId);
+  }
+  return ids.size ? [...ids] : undefined;
+}
 
 export type ChatThreadCommentUpdateArgs = {
   sessionId: string;

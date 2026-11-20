@@ -342,18 +342,23 @@ extension View {
   /// `onAwake` runs once it answers. Any other machine changes nothing.
   /// `context` says what a deleted computer's line offers: a chat's next
   /// message, or a lane page's New computer.
+  /// `restingStateInHeader`: the screen's header shows asleep and waking
+  /// (`CloudLaneHeaderStateButton`), so only a failed wake, a refusal, a
+  /// deleted computer and the deleting-soon notice take a line here.
   func showsCloudLaneState(
     fleetKey: String?,
     context: CloudLaneLineContext = .chat,
+    restingStateInHeader: Bool = false,
     onAwake: (() async -> Void)? = nil
   ) -> some View {
-    modifier(CloudLaneStateModifier(fleetKey: fleetKey, context: context, onAwake: onAwake))
+    modifier(CloudLaneStateModifier(fleetKey: fleetKey, context: context, restingStateInHeader: restingStateInHeader, onAwake: onAwake))
   }
 }
 
 private struct CloudLaneStateModifier: ViewModifier {
   let fleetKey: String?
   let context: CloudLaneLineContext
+  let restingStateInHeader: Bool
   let onAwake: (() async -> Void)?
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
 
@@ -366,7 +371,7 @@ private struct CloudLaneStateModifier: ViewModifier {
     content
       .safeAreaInset(edge: .top, spacing: 0) {
         if syncPublishes.service.isCloudFleetKey(fleetKey) {
-          CloudLaneStateLines(fleetKey: fleetKey, context: context)
+          CloudLaneStateLines(fleetKey: fleetKey, context: context, showsRestingState: !restingStateInHeader)
         }
       }
       .task(id: "\(fleetKey ?? "")#\(serverStatus)") {
@@ -4206,6 +4211,18 @@ private struct WorkChatComposerDraftInput: View {
     }
     if restored.isEmpty {
       restored = WorkComposerDraftAttachmentCache.read(entry.localFiles, for: key)
+    } else {
+      // Refs resolved, but a tile with no ref yet lives only in the cache: one
+      // whose upload had failed (back with its retry) or was still running when
+      // the person left (back ready, reusing that upload by its id).
+      let restoredIds = Set(restored.map(\.id))
+      let cachedOnly = entry.localFiles.filter { file in
+        guard let id = file.id else { return true }
+        return !restoredIds.contains(id)
+      }
+      if !cachedOnly.isEmpty {
+        restored += WorkComposerDraftAttachmentCache.read(cachedOnly, for: key)
+      }
     }
     guard !restored.isEmpty, inputAttachments.isEmpty, draftPersistenceKey == key else { return }
     inputAttachments = Array(restored.prefix(workChatInputAttachmentLimit))

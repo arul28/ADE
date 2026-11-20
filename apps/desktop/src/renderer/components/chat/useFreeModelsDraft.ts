@@ -58,7 +58,6 @@ export function useFreeModelsDraft(args: {
   /** True once a person, a caller or a restored draft chose the model. The pane resets it per draft. */
   draftModelChosenRef: MutableRefObject<boolean>;
   refreshAvailableModels: (options?: { revalidate?: boolean }) => Promise<unknown>;
-  onCatalogLoaded: () => void;
 }): { offerFreeModel: boolean; handleUseFreeModel: () => void } {
   const {
     aiStatus,
@@ -75,7 +74,6 @@ export function useFreeModelsDraft(args: {
     draftKeepsMachineDefaultsRef,
     draftModelChosenRef,
     refreshAvailableModels,
-    onCatalogLoaded,
   } = args;
   const status = aiStatus?.freeModels ?? null;
   const nothingSignedIn = status?.nothingSignedIn === true;
@@ -88,8 +86,8 @@ export function useFreeModelsDraft(args: {
     () => (status ? pickFreeDefaultModelId(freeModelIds, status.preferredDefaultModelIds) : null),
     [freeModelIds, status],
   );
-  const latestRef = useRef({ onCatalogLoaded, runtimeBinding });
-  latestRef.current = { onCatalogLoaded, runtimeBinding };
+  const latestRef = useRef({ runtimeBinding });
+  latestRef.current = { runtimeBinding };
   const runtimeBindingKey = runtimeBinding?.key ?? null;
 
   // Free models come from OpenCode's catalog, which loads when a picker opens
@@ -130,9 +128,9 @@ export function useFreeModelsDraft(args: {
       mode: retry ? "force" : "refresh-stale",
       refreshProvider: "opencode",
       pin: latestRef.current.runtimeBinding,
-    }).then((result) => {
-      if (result.status === "ok") latestRef.current.onCatalogLoaded();
     });
+    // The shared catalog store moves this scope's version when the read
+    // lands, so the pane's model memos re-derive without a callback.
   }, [aiStatus, catalogScopeKey, runtimeBindingKey, statusReads, waitingForFreeModels]);
 
   // OpenCode is still downloading on this computer (it downloads at launch
