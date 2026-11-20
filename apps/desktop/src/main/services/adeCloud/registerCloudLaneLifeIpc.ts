@@ -13,6 +13,7 @@ import type { CloudCopyDeps } from "./cloudMachineCopy";
 import type { createCloudMachines } from "./cloudMachines";
 import type { CloudProvider } from "./cloudProvider";
 import type { MachineConnector } from "../machines/machineConnector";
+import type { CloudLaneBackup } from "../../../../../account-directory/src/cloud/contract";
 
 function textArg(args: Record<string, unknown>, key: string): string {
   const value = args[key];
@@ -34,6 +35,8 @@ export function registerCloudLaneLifeIpc(args: {
   /** Contract C2: reaches the lane's computer by its machine key. */
   machineConnector: MachineConnector;
   remote: RuntimeBridgeRegistration["remoteForMain"];
+  /** The account's lane backups of one computer: an asleep computer's work check reads them with no wake. */
+  laneBackups?: (machineKey: string) => Promise<CloudLaneBackup[]>;
   /** One coarse outcome per freed lane (cloudLaneAnalytics.ts). */
   analytics?: CloudLaneAnalyticsCapture;
   logger: Logger;
@@ -56,6 +59,7 @@ export function registerCloudLaneLifeIpc(args: {
     listProjects: (targetId) => remote.projects(targetId),
     emit: (job) => sendToAllWindows(IPC.cloudLaneJobEvent, job),
     changed: () => sendToAllWindows(IPC.cloudStatusChanged),
+    laneBackups: args.laneBackups ?? null,
     logger: { info: (event, meta) => logger.info(event, meta), warn: (event, meta) => logger.warn(event, meta) },
   });
   life.load();

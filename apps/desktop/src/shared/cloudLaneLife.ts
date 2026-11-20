@@ -24,6 +24,8 @@ export type CloudLaneWorkLane = {
   primary: boolean;
   dirty: boolean;
   ahead: number;
+  /** Files changed and not committed, when the lane's backup counted them; unset from the computer's own check. */
+  files?: number;
   state: "clean" | "pushed" | "failed" | "unpushed";
 };
 
@@ -44,6 +46,12 @@ export type CloudLaneWorkState = {
   unpushedLanes: CloudLaneWorkLane[];
   /** Why the check couldn't run, or null. */
   message: string | null;
+  /**
+   * How it was read: on the computer (`computer`, which wakes an asleep one),
+   * or from the lane backups of an asleep computer saved at rest (`backups`,
+   * no wake). Unset when the check couldn't run.
+   */
+  checkedBy?: "computer" | "backups";
 };
 
 /** What a person picked when they deleted a cloud lane. */
@@ -289,3 +297,89 @@ export function cloudJoinApprovalWaitText(): string {
 export function cloudLaneJobGrowsDiskOnly(job: CloudLaneJobSnapshot): job is CloudLaneJobSnapshot & { diskGb: number } {
   return job.kind === "resize" && job.fromSizeId === job.toSizeId && typeof job.diskGb === "number" && job.diskGb > 0;
 }
+
+// ---------------------------------------------------------------------------
+// The account's ADE Cloud lanes, one list (`cloud.lanes`, `ade cloud lanes`)
+// ---------------------------------------------------------------------------
+
+/** Why a lane's computer is gone: a saved chat's `computer.reason`, or a kept lane's (`inactive` is the old 30-day rule). */
+export type CloudComputerFate = "you" | "freed" | "idle" | "plan" | "automation" | "project" | "launch" | "other" | "inactive";
+
+/** A kept lane's server reason as the fate people read. */
+export const CLOUD_KEPT_LANE_FATE: Record<CloudLaneWithoutComputer["reason"], CloudComputerFate> = {
+  freed: "freed",
+  idle_cleanup: "idle",
+  plan_limit: "plan",
+  inactive: "inactive",
+};
+
+/** What happened to a lane's computer, in one sentence; `when` is " on Nov 18" or "". */
+export function cloudComputerFateSentence(fate: CloudComputerFate | null | undefined, when: string): string {
+  switch (fate) {
+    case "you":
+      return `You deleted its computer${when}.`;
+    case "freed":
+      return `You freed its computer${when}.`;
+    case "idle":
+      return `ADE deleted its computer${when} because it wasn't used.`;
+    case "plan":
+      return `ADE deleted its computer${when} to fit your plan.`;
+    case "inactive":
+      return `ADE deleted its computer${when} after 30 days without use.`;
+    case "automation":
+      return `Its automation finished${when}, and ADE deleted its computer.`;
+    case "project":
+      return `Its project's computers were deleted${when}.`;
+    case "launch":
+      return `Its launch didn't finish, so ADE deleted its computer${when}.`;
+    default:
+      return `Its computer was deleted${when}.`;
+  }
+}
+
+/**
+ * Where a lane is: on a computer (`awake`, `asleep`, `starting`, `stopping`,
+ * `deleting`, `error`), or `computer_deleted`: the lane and its chats stay,
+ * and the next message makes a new computer on its branch.
+ */
+export type CloudLaneEntryState = "awake" | "asleep" | "starting" | "stopping" | "deleting" | "error" | "computer_deleted";
+
+export type CloudLaneEntry = {
+  laneId: string;
+  name: string;
+  /** The branch, as the lane's computer or its kept record named it; null when ADE never learned it. */
+  branch: string | null;
+  /** `github.com/owner/repo`, or null. */
+  projectOrigin: string | null;
+  state: CloudLaneEntryState;
+  /** The computer the lane lives on; null when it was deleted. */
+  computer: {
+    instanceId: string;
+    machineKey: string | null;
+    name: string | null;
+    sizeLabel: string;
+    hoursRate: number | null;
+    lastUsedAt: string | null;
+    /** The idle cleanup's planned delete (ISO); "Keep it" (`ade cloud lanes keep`) stops it. */
+    deletesAt: string | null;
+    diskGb: number | null;
+  } | null;
+  /** Why and when its computer went, for `computer_deleted`; `sentence` is the one line people read. */
+  deleted: { at: string | null; fate: CloudComputerFate; sentence: string } | null;
+  /** Saved chats of this lane on ADE Cloud (the account's newest, so a large account may count fewer). */
+  chats: number;
+  /** Its newest lane backup: the work not on GitHub that ADE saved at rest. */
+  backup: { commits: number; files: number; savedAt: string; bytes: number } | null;
+  /** The account machine keys its saved chats and backups are kept under (a delete clears them). */
+  machineKeys: string[];
+  /** Opens the lane in ADE on any device (`ade://` and `https://ade-app.dev/open/lane`). */
+  link: string;
+};
+
+export type CloudLanesAnswer = {
+  lanes: CloudLaneEntry[];
+  /** Parts ADE couldn't read (the computers, the kept lanes, the chats, the backups), each as a sentence. */
+  unread: string[];
+  /** A filter picked these (a project, --deleted, --stale): an empty list means none matched. */
+  filtered?: boolean;
+};

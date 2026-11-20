@@ -16,7 +16,7 @@ describe("ADE Cloud agent actions: approvals", () => {
     level?: PermissionLevel | null;
     automation?: boolean;
     madeBy?: string;
-    answer?: "yes" | "no";
+    answer?: "yes" | "no" | "alternative";
     unattendedSpend?: boolean;
     madeToday?: number;
     spendUnreadable?: boolean;
@@ -34,6 +34,8 @@ describe("ADE Cloud agent actions: approvals", () => {
   } = {}) {
     const ran: string[] = [];
     const cards: string[] = [];
+    /** Lane work checks: each may wake an asleep computer, which uses hours. */
+    const checks: string[] = [];
     const starts: Array<{ args: { cloud?: unknown } }> = [];
     let limits: CloudAgentLimits = {
       unattendedSpend: options.unattendedSpend ?? true,
@@ -43,7 +45,7 @@ describe("ADE Cloud agent actions: approvals", () => {
     };
     /** What `grow_disk`'s approval answered the grower for paid extra disk. */
     const extraAnswers: unknown[] = [];
-    const box = { instanceId: "inst_1", name: "lane box", machineKey: "mk_1", type: "box", hoursRate: 1 };
+    const box = { instanceId: "inst_1", name: "lane box", machineKey: "mk_1", type: "box", hoursRate: 1, state: "asleep", lane: { laneId: "lane_1", laneName: "Fix login", projectOrigin: "github.com/acme/widgets" } };
     const deps = {
       machines: {
         list: async () => ({ state: "ok", machines: [box], account: null }),
@@ -56,6 +58,7 @@ describe("ADE Cloud agent actions: approvals", () => {
           return { ok: true };
         },
         instanceMetadata: async () => (options.madeBy ? { ade_made_by_chat: options.madeBy } : {}),
+        recentInstances: () => [],
         agentMadeToday: async () => options.madeToday ?? 0,
       },
       limits: {
@@ -100,6 +103,27 @@ describe("ADE Cloud agent actions: approvals", () => {
           return { state: "growing", fromGb: 8, toGb: 16, message: "growing" };
         },
       }),
+      // A lane's account side: its computer, its work (all on GitHub), its delete and its free.
+      lanes: {
+        account: () => ({
+          readInstance: async () => ({ id: "inst_1", metadata: options.madeBy ? { ade_made_by_chat: options.madeBy } : {} }),
+          workState: async ({ instanceId }: { instanceId: string }) => {
+            checks.push(instanceId);
+            return { unpushed: false, unpushedLanes: [], message: null };
+          },
+          deleteLane: async () => {
+            ran.push("lane_delete");
+            return { ok: true, message: "Deleted.", chatsKept: false };
+          },
+          freeLane: async () => {
+            ran.push("lane_free");
+            return { ok: true, message: "Kept for later.", lane: null };
+          },
+          lanesWithoutComputer: async () => [],
+        }),
+        client: async () => ({ listSavedChats: async () => ({ chats: [], nextCursor: null }) }),
+        api: () => null,
+      },
       approvals: {
         requestChatInput: async (card: { title: string }) => {
           cards.push(card.title);
@@ -110,7 +134,7 @@ describe("ADE Cloud agent actions: approvals", () => {
         notice: () => undefined,
       },
     } as unknown as CloudAgentActionDeps;
-    return { actions: buildCloudAgentActions(deps), ran, cards, starts, extraAnswers };
+    return { actions: buildCloudAgentActions(deps), ran, cards, starts, extraAnswers, checks };
   }
 
   const person: CloudApproval = { by: "person" };
@@ -165,8 +189,14 @@ describe("ADE Cloud agent actions: approvals", () => {
     ["a full-auto chat asks the person on a card to loosen the limits", agent, { level: "full-auto" }, "set_limits", { preset: "hands_off" }, null, 1],
     ["an automation run may not loosen the limits", { by: "agent", chatSessionId: null, automation: true }, {}, "set_limits", { preset: "hands_off" }, null, 0],
     ["any agent may tighten the limits", agent, { level: "full-auto" }, "set_limits", { preset: "ask" }, "limits", 0],
+    // Deleting a lane (`ade cloud lanes delete`): a delete like any other. One card offers Delete lane, Keep for later and Cancel.
+    ["a full-auto chat asks the person on a card to delete a lane whose computer it didn't make", agent, { level: "full-auto", madeBy: "chat_other" }, "lane_delete", { lane: "Fix login" }, null, 1],
+    ["the person's Keep for later on that card frees the computer and deletes nothing", agent, { level: "ask", answer: "alternative" }, "lane_delete", { lane: "Fix login" }, "lane_free", 1],
+    ["a full-auto agent deletes the lane whose computer its chat made", agent, { level: "full-auto", madeBy: "chat_1" }, "lane_delete", { lane: "Fix login" }, "lane_delete", 0],
+    ["an automation run may not delete a lane whose computer it didn't make", { by: "agent", chatSessionId: null, automation: true }, { madeBy: "chat_other" }, "lane_delete", { lane: "Fix login" }, null, 0],
+    ["a shell with no chat may not delete a lane", shell, {}, "lane_delete", { lane: "Fix login" }, null, 0],
   ] as const)("%s", async (_label, approval, options, verb, args, expectedRun, expectedCards) => {
-    const { actions, ran, cards } = setup(options);
+    const { actions, ran, cards, checks } = setup(options);
     const call = (actions as unknown as Record<string, (args: unknown) => Promise<unknown>>)[verb]!({ ...args, approval });
     if (expectedRun) {
       await expect(call).resolves.toBeTruthy();
@@ -176,6 +206,8 @@ describe("ADE Cloud agent actions: approvals", () => {
       expect(ran).toEqual([]);
     }
     expect(cards).toHaveLength(expectedCards);
+    // A lane's work check runs only for the card a person reads: never for a caller ADE refuses or answers alone.
+    expect(checks).toHaveLength(verb === "lane_delete" ? expectedCards : 0);
   });
 
   // Paid extra disk for a disk grow (`cloud.grow_disk`): a person on a card decides for a watched chat; for an

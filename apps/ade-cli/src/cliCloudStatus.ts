@@ -163,6 +163,15 @@ export function formatCloudStatus(value: unknown): string {
     const size = typeof boxDisk.sizeGb === "number" ? ` (${boxDisk.sizeGb} GB disk)` : "";
     lines.push(`  ${boxName(box)}${size}: ${boxDisk.full.trim()}`);
   }
+  // Lanes whose computer was deleted: the lane and its chats stay; the next message makes a new computer.
+  const gone = Array.isArray(status.lanesComputerDeleted) ? status.lanesComputerDeleted.filter(isRecord) : [];
+  if (gone.length) {
+    lines.push("", "Lanes whose computer was deleted (their next message makes a new one; ade cloud lanes)", ...table(gone.map((lane) => [
+      String(lane.name ?? lane.laneId ?? "lane"),
+      typeof lane.projectOrigin === "string" ? lane.projectOrigin : "",
+      typeof lane.why === "string" ? lane.why : "",
+    ])));
+  }
   if (sizeRows.length) lines.push("", "Sizes (ade chat create --machine cloud --size <id>)", ...table(sizeRows));
   const plans = Array.isArray(status.plans) ? status.plans.filter(isRecord) : [];
   if (plans.length) {
