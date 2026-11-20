@@ -1133,7 +1133,9 @@ free tier runs in ADE's pinned OpenCode with nothing signed in.
     listed one (`chat/useFreeModelsDraft.ts`). It loads OpenCode's catalog
     for that machine, and a load that found no free model runs again on a
     later status read, at most once in 30 s. ADE set it, so it is not
-    remembered as the launch default or "last used". A model someone chose
+    remembered as the launch default or "last used", also after a launch or
+    a reload, until a person picks a model; another chat or draft starts
+    without the mark. A model someone chose
     wins, also one chosen before the status arrived, the tour's pick and a
     restored saved draft. A sign-in on that
     machine puts the draft back on the model it opened on;

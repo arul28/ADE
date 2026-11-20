@@ -1154,6 +1154,14 @@ struct WorkChatSessionView: View {
 
   /// A brand-new person's sign-in card also offers the chat machine's free
   /// default. Read for the card on screen, on the chat's own machine.
+  /// The card, its machine and that machine's connection: a reconnect reads
+  /// the offer again.
+  var signInFreeModelOfferKey: String? {
+    guard let signIn = shownProviderSignIn else { return nil }
+    let machine = providerSignInHost.map { WorkFreeModelsStatusStore.key(for: $0) } ?? ""
+    return "\(signIn.key)|\(machine)|\(providerSignInHost?.providerAccountsConnected == true)"
+  }
+
   func refreshSignInFreeModelOffer() async {
     guard shownProviderSignIn != nil, let host = providerSignInHost, host.providerAccountsConnected,
           let status = await WorkFreeModelsStatusStore.shared.status(for: host), status.isNewPerson else {
@@ -2424,7 +2432,7 @@ struct WorkChatSessionView: View {
     .task(id: providerSignInStatusKey) {
       await refreshProviderSignedOutBeforeSend()
     }
-    .task(id: shownProviderSignIn?.key) {
+    .task(id: signInFreeModelOfferKey) {
       await refreshSignInFreeModelOffer()
     }
     // A prompt left open when the chat goes away would strand its send

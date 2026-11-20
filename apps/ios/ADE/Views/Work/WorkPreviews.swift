@@ -3317,7 +3317,8 @@ final class WorkFreeModelsPreviewMachine: ObservableObject, ProviderAccountsHost
       if opencode == .downloading { received = min(received + 1_900_000, total - 1) }
       return pinnedStatus()
     case "personalChats.modelCatalog":
-      return WorkFreeModelsPreviewData.catalogJSON(includeFree: true)
+      // As the seed: free models only once OpenCode is on the machine.
+      return WorkFreeModelsPreviewData.catalogJSON(includeFree: opencode == .ready)
     default:
       return [String: Any]()
     }
@@ -3386,12 +3387,12 @@ enum WorkFreeModelsPreviewData {
     var opencodeProviders: [[String: Any]] = []
     if !free.isEmpty {
       opencodeProviders.append([
-        "key": "opencode", "displayName": "OpenCode Zen", "modelCount": free.count,
+        "key": "opencode", "displayName": "OpenCode Zen", "badgeColor": "#22C55E", "modelCount": free.count,
         "subsections": [["key": "opencode", "label": "OpenCode Zen", "models": free]],
       ])
     }
     opencodeProviders.append([
-      "key": "opencode-go", "displayName": "OpenCode Go", "modelCount": 1,
+      "key": "opencode-go", "displayName": "OpenCode Go", "badgeColor": "#4D6BFE", "modelCount": 1,
       "subsections": [["key": "opencode-go", "label": "OpenCode Go", "models": [
         model("opencode/opencode-go/deepseek-v4.1-flash", "DeepSeek V4.1 Flash", provider: "opencode", providerKey: "opencode-go", group: "opencode", available: false),
       ]]],
@@ -3400,7 +3401,7 @@ enum WorkFreeModelsPreviewData {
       "fetchedAt": "2026-11-20T00:00:00.000Z",
       "groups": [
         ["key": "claude", "displayName": "Claude", "providers": [[
-          "key": "anthropic", "displayName": "Anthropic", "modelCount": 2,
+          "key": "anthropic", "displayName": "Anthropic", "badgeColor": "#D97757", "modelCount": 2,
           "subsections": [["key": "anthropic", "label": "Anthropic", "models": [
             model("claude-sonnet-5", "Claude Sonnet 5", provider: "claude", providerKey: "anthropic", group: "claude", available: false),
             model("claude-opus-5-5", "Claude Opus 5.5", provider: "claude", providerKey: "anthropic", group: "claude", available: false),
@@ -3412,8 +3413,14 @@ enum WorkFreeModelsPreviewData {
   }
 
   static func catalog(includeFree: Bool) -> AgentChatModelCatalog? {
-    guard let data = try? JSONSerialization.data(withJSONObject: catalogJSON(includeFree: includeFree)) else { return nil }
-    return try? JSONDecoder().decode(AgentChatModelCatalog.self, from: data)
+    do {
+      let data = try JSONSerialization.data(withJSONObject: catalogJSON(includeFree: includeFree))
+      return try JSONDecoder().decode(AgentChatModelCatalog.self, from: data)
+    } catch {
+      // A fixture that no longer decodes would show empty previews.
+      assertionFailure("The free-models preview catalog does not decode: \(error)")
+      return nil
+    }
   }
 }
 

@@ -13,7 +13,8 @@ function isFreeInScope(modelId: string, scopeKey: string): boolean {
 /** The least time between two loads of the free models for one machine. */
 const FREE_CATALOG_RETRY_MS = 30_000;
 
-type ModelChangeRef = MutableRefObject<((modelId: string) => void) | null>;
+/** False when the composer refuses the model. */
+type ModelChangeRef = MutableRefObject<((modelId: string) => boolean) | null>;
 
 /**
  * Free models (`shared/freeModels.ts`) in a chat pane's draft, from the
@@ -164,9 +165,10 @@ export function useFreeModelsDraft(args: {
       return;
     }
     if (!freeDefaultModelId || !adeModelChangeRef.current) return;
+    // A refused change leaves the draft to decide again on its next inputs.
+    if (!adeModelChangeRef.current(freeDefaultModelId)) return;
     state.settled = true;
     state.appliedId = freeDefaultModelId;
-    adeModelChangeRef.current(freeDefaultModelId);
     // After the change, which clears the flag as a person's pick would.
     draftKeepsMachineDefaultsRef.current = true;
     // `draftKey`: another draft on the same model decides again.
@@ -185,8 +187,7 @@ export function useFreeModelsDraft(args: {
       return;
     }
     if (!availableModelIds.includes(state.baseModelId)) return;
-    state.appliedId = null;
-    adeModelChangeRef.current?.(state.baseModelId);
+    if (adeModelChangeRef.current?.(state.baseModelId)) state.appliedId = null;
   }, [adeModelChangeRef, availableModelIds, draftModelChosenRef, freshDraft, modelId, signedInNow]);
 
   const handleUseFreeModel = useCallback(() => {

@@ -255,6 +255,7 @@ own machine (`Views/Work/WorkFreeModels.swift`).
   free models** (`ai.pinnedToolDownload`) and shows the progress
   (`ai.pinnedToolStatus`). The page's catalog reads, the download and the
   refresh after it all go to that one machine (`workModelCatalog(on:)`).
+  The page shows also when the machine lists no other model.
 - **New chat.** With nothing signed in there, a new chat starts on the free
   default. It is ADE's pick: it is not saved as the remembered model, an
   access-mode change keeps it ADE's pick, and nothing changes while a launch
@@ -262,7 +263,9 @@ own machine (`Views/Work/WorkFreeModels.swift`).
   screen opened on. The default tries again after a download
   and after a sign-in on that machine (`WorkFreeModelsStatusStore.generation(for:)`).
 - **Sign-in card.** A person who never signed in on that machine gets **Use a
-  free model**, which also re-sends a turn that stopped on the sign-in.
+  free model**, which also re-sends a turn that stopped on the sign-in. A
+  failed model change keeps the card and sends nothing. The offer is read
+  again when the machine reconnects.
 - **Older machines.** A machine without the block, or without the actions,
   behaves as before: no Free page setup and no free default.
 

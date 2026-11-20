@@ -12420,15 +12420,17 @@ export function AgentChatPane({
   /**
    * The draft's model was set by ADE, not picked: neither the machine's
    * remembered launch defaults nor this composer's own "last used" keys
-   * (`ade.chat.last*`) take it. A model the person picks clears this.
+   * (`ade.chat.last*`) take it. A model the person picks clears this, and so
+   * does another chat or draft.
    */
   const draftKeepsMachineDefaultsRef = useRef(false);
   // A draft's model, set from outside (the onboarding tour picks a cheap one
   // for the first chat; `draftModelSeam.ts`). Routed through the composer's
   // own handler, so the usual checks apply, and counted as a choice.
-  const personModelChangeRef = useRef<((modelId: string) => void) | null>(null);
+  // Each returns false when the composer refuses the model.
+  const personModelChangeRef = useRef<((modelId: string) => boolean) | null>(null);
   // The same handler for ADE's own pick (the free default): not a choice.
-  const adeModelChangeRef = useRef<((modelId: string) => void) | null>(null);
+  const adeModelChangeRef = useRef<((modelId: string) => boolean) | null>(null);
   /**
    * The draft's model came from a person or a caller (the picker, the strip,
    * a draft request), not from ADE's own free default. Set only by
@@ -12437,17 +12439,18 @@ export function AgentChatPane({
    */
   const draftModelChosenRef = useRef(false);
   // Another chat or draft (a lane's draft, the Work draft): a choice made
-  // before does not carry over. Declared before the effects that set the flag
-  // (the tour's queued pick, a restored draft), so it runs before them in one
-  // commit.
+  // before, and ADE's own pick, do not carry over. Declared before the effects
+  // that set the flags (the tour's queued pick, a restored draft, the free
+  // default), so it runs before them in one commit.
   useEffect(() => {
     draftModelChosenRef.current = false;
+    draftKeepsMachineDefaultsRef.current = false;
   }, [companionStateKey]);
   useEffect(() => {
     if (!forceDraft) return undefined;
     return registerDraftModelSetter((pick) => {
       if (!personModelChangeRef.current) return false;
-      personModelChangeRef.current(pick.modelId);
+      if (!personModelChangeRef.current(pick.modelId)) return false;
       // After the pick above, which clears the flag as a person's pick would.
       draftKeepsMachineDefaultsRef.current = !pick.rememberLaunchDefaults;
       return true;
@@ -12955,8 +12958,9 @@ export function AgentChatPane({
           controls: saved.controls,
           updatedAt: saved.updatedAt,
         }, { preserveFast: true });
-        // ADE's own pick stays out of the launch defaults after a reload.
-        if (saved.keepsMachineDefaults) draftKeepsMachineDefaultsRef.current = true;
+        // ADE's own pick stays out of the launch defaults after a reload; a
+        // person's pick is remembered.
+        draftKeepsMachineDefaultsRef.current = saved.keepsMachineDefaults === true;
       }
       setHydratedComposerDraftStorageKey(composerDraftStorageKeyValue);
       return;
@@ -13442,10 +13446,9 @@ export function AgentChatPane({
       throw new Error("The chat was not created: this ADE runtime returned a session with no id.");
     }
     invalidateAgentChatSessionListCache({ laneId: targetLaneId });
-    if (draftKeepsMachineDefaultsRef.current) {
-      // ADE's pick launched once; the next draft here remembers again.
-      draftKeepsMachineDefaultsRef.current = false;
-    } else {
+    // ADE's pick stays its own until a person picks a model; the next chat or
+    // draft remembers again.
+    if (!draftKeepsMachineDefaultsRef.current) {
       rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls);
     }
     loadedHistoryRef.current.delete(created.id);
@@ -14638,10 +14641,7 @@ export function AgentChatPane({
   const buildDraftChatLaunch = useCallback((prepared: Parameters<typeof buildChatCreateArgs>[0]) => {
     if (constrainedModelSelectionError) throw new Error(constrainedModelSelectionError);
     const built = buildChatCreateArgs(prepared);
-    if (draftKeepsMachineDefaultsRef.current) {
-      // ADE's pick launched once; the next draft here remembers again.
-      draftKeepsMachineDefaultsRef.current = false;
-    } else {
+    if (!draftKeepsMachineDefaultsRef.current) {
       rememberLaunchConfig(lastLaunchConfigStorageKey, built, { model: built.createArgs.model }, initialNativeControls);
     }
     return built;
@@ -14738,14 +14738,6 @@ export function AgentChatPane({
     /** Send-time mark: a foreground CLI opens its tab only if it still holds. */
     newDraftMarkAtSend?: NewDraftRequestMark,
   ): boolean => {
-    // ADE's own pick (the free default) stays out of the launch defaults also
-    // on the renderer chain that an older runtime falls back to; building the
-    // launch below clears the flag.
-    const keepsMachineDefaults = draftKeepsMachineDefaultsRef.current;
-    const handleUnsupported = () => {
-      if (keepsMachineDefaults) draftKeepsMachineDefaultsRef.current = true;
-      onUnsupported();
-    };
     const prepared = prepareDraftLaunch(snapshot);
     let cli: ChatLaunchCliParams | null = null;
     let chat: ChatLaunchChatArgs | undefined;
@@ -14819,7 +14811,7 @@ export function AgentChatPane({
         draftSnapshot: snapshot,
         cli,
         ...(newDraftMarkAtSend ? { newDraftMarkAtSend } : {}),
-        onUnsupported: handleUnsupported,
+        onUnsupported,
       });
     } else {
       registerChatLaunchLocalRecord(launchId, {
@@ -14856,7 +14848,7 @@ export function AgentChatPane({
     pendingRendererRef.current = configuredLane;
     // Read now: the draft machine is the one this launch runs on.
     const startedOn = draftStartedOnRef.current;
-    void startChatLaunch(launchId, { onUnsupported: handleUnsupported }).then((outcome) => {
+    void startChatLaunch(launchId, { onUnsupported }).then((outcome) => {
       if (outcome !== "unsupported") pendingRendererRef.current = null;
       if (outcome === "started") recordStartOnLastMachine(startedOn.tabId, startedOn.machineKey);
     });
@@ -21607,8 +21599,7 @@ export function AgentChatPane({
     : null;
   // The composer's model pick, also reachable from outside for a draft
   // (`draftModelSeam.ts`, the onboarding tour's first chat).
-  const handleComposerModelChange = (nextModelId: string, options?: ModelPickerSelection) => {
-    draftKeepsMachineDefaultsRef.current = false;
+  const handleComposerModelChange = (nextModelId: string, options?: ModelPickerSelection): boolean => {
     // A Custom pick is validated by the picker against what its
     // harness can reach; its model is often not in this provider
     // list at all (a DeepSeek model run in Claude Code).
@@ -21637,6 +21628,8 @@ export function AgentChatPane({
     if (isPersistentIdentitySurface && sessionMutationKind) {
       return false;
     }
+    // A model change is the person's; ADE sets the flag again after its own.
+    draftKeepsMachineDefaultsRef.current = false;
     const previousFastMode = fastModeRef.current;
     draftLaunchBrainRef.current = options?.presetId
       ? { presetId: options.presetId }
@@ -21721,7 +21714,7 @@ export function AgentChatPane({
   const handlePersonModelChange = (nextModelId: string, options?: ModelPickerSelection) => {
     const applied = handleComposerModelChange(nextModelId, options);
     // A refused pick (models still loading) is not a choice.
-    if (applied !== false) draftModelChosenRef.current = true;
+    if (applied) draftModelChosenRef.current = true;
     return applied;
   };
   personModelChangeRef.current = handlePersonModelChange;
