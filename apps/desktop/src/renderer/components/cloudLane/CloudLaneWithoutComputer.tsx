@@ -143,7 +143,7 @@ export function CloudLaneWithoutComputerNotice({
       <span className="adecl-nocomp-mark" aria-hidden><CloudMark size={14} brand /></span>
       <div className="adecl-nocomp-text">
         <span>{keptLaneFateSentence(lane)}</span>
-        {problem ? <span id={problemId} className="adecl-muted">{problem}</span> : null}
+        {problem ? <span id={problemId} role="status" className="adecl-muted">{problem}</span> : null}
         <CloudLaneSavedWork laneId={lane.laneId} laneName={lane.laneName} />
       </div>
       <div className="adecl-nocomp-actions">

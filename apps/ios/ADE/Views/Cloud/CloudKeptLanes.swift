@@ -245,7 +245,7 @@ enum KeptCloudLane {
 
   static func deleteMessage(chatCount: Int) -> String {
     let what = chatCount == 0 ? "any saved chats it has" : chatCount == 1 ? "its chat" : "its \(chatCount) chats"
-    return "ADE stops listing the lane and deletes \(what) and its saved work that isn't on GitHub. Its branch stays on GitHub."
+    return "ADE stops listing the lane and deletes \(what) and its saved work that isn't on GitHub. Download that work first if you need it. Its branch stays on GitHub."
   }
 
   /// New computer: a lane launch on the same branch, at the old size.

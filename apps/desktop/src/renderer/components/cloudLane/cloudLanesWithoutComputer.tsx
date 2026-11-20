@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { cloudCatalogOf, type CloudAccountState } from "../../../shared/adeCloud";
-import type { CloudChatComputer } from "../../../shared/cloudSavedChats";
+import { savedChatsMachineKey, type CloudChatComputer } from "../../../shared/cloudSavedChats";
 import { CLOUD_KEPT_LANE_FATE, cloudComputerFateSentence, type CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import { cloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
@@ -323,24 +323,32 @@ function dropFromStore(row: CloudLaneWithoutComputerRow, removed: ReadonlySet<st
 const SAVED_CHAT_PAGE = 200;
 const SAVED_CHAT_PAGES = 20;
 
-/** Deletes the row's saved chats from ADE Cloud. Resolves how many it couldn't find. */
-async function deleteRowChats(row: CloudLaneWithoutComputerRow, removed: Set<string>): Promise<number> {
+/**
+ * Deletes the row's saved chats from ADE Cloud: each chat where its saved copy
+ * is, then every chat of the lane on its old computers, page by page.
+ * Resolves how many of the row's chats are still there (none found where they
+ * should be), and whether the page limit cut a computer's scan short.
+ */
+async function deleteRowChats(row: CloudLaneWithoutComputerRow, removed: Set<string>): Promise<{ missing: number; cut: boolean }> {
   const savedChats = window.ade?.cloud?.savedChats;
   if (!savedChats?.delete) throw new Error(CLOUD_LANE_LIFE_UNAVAILABLE);
-  let skipped = 0;
+  // The lane's old computers: the kept record's, and those of the slices that list it.
   const machineKeys = new Set<string>(row.kept?.formerMachineKey ? [row.kept.formerMachineKey] : []);
+  for (const machineId of row.machineIds) {
+    const machineKey = savedChatsMachineKey(machineId);
+    if (machineKey) machineKeys.add(machineKey);
+  }
   for (const session of row.sessions) {
     const location = savedChatLocationForSession(session.id);
-    const machineKey = location?.readMachineKey ?? location?.machineKey ?? row.kept?.formerMachineKey ?? null;
-    if (!machineKey) {
-      skipped += 1;
-      continue;
-    }
+    const machineKey = location?.readMachineKey ?? location?.machineKey ?? null;
+    // A chat with no known copy is found by the scan of its lane's computers below.
+    if (!machineKey) continue;
     machineKeys.add(machineKey);
     await savedChats.delete({ machineKey, chatId: session.id });
     removed.add(session.id);
   }
   // The window reads only a project's newest saved chats: the lane's older ones, on the same computers, go too.
+  let cut = false;
   for (const machineKey of machineKeys) {
     let cursor: string | null = null;
     for (let page = 0; page < SAVED_CHAT_PAGES; page += 1) {
@@ -353,8 +361,9 @@ async function deleteRowChats(row: CloudLaneWithoutComputerRow, removed: Set<str
       cursor = listed?.nextCursor ?? null;
       if (!cursor) break;
     }
+    if (cursor) cut = true;
   }
-  return skipped;
+  return { missing: row.sessions.filter((session) => !removed.has(session.id)).length, cut };
 }
 
 /** Whether this window can delete the row: the kept lane's record, or its saved chats. */
@@ -377,7 +386,7 @@ export async function deleteCloudLaneWithoutComputer(row: CloudLaneWithoutComput
   const ok = await confirmDialog({
     title: `Delete ${row.laneName}?`,
     message: row.kept
-      ? `ADE stops listing the lane and deletes ${chats ?? "any saved chats it has"} and its saved work that isn't on GitHub. Its branch stays on GitHub.`
+      ? `ADE stops listing the lane and deletes ${chats ?? "any saved chats it has"} and its saved work that isn't on GitHub. Download that work first if you need it. Its branch stays on GitHub.`
       : `ADE deletes ${chats ?? "its saved chats"} from ADE Cloud. Work it pushed stays on GitHub.`,
     icon: <CloudMark size={16} brand />,
     confirmLabel: cloudLaneWithoutComputerDeleteLabel(row),
@@ -393,14 +402,16 @@ export async function deleteCloudLaneWithoutComputer(row: CloudLaneWithoutComput
       await forgetCloudLaneWithoutComputer(row.laneId);
       refreshCloudLanesWithoutComputer();
     }
-    const skipped = await deleteRowChats(row, removed);
-    if (skipped > 0) {
-      console.warn("[cloud] a lane's delete skipped saved chats with no known location", { laneId: row.laneId, skipped });
+    const { missing, cut } = await deleteRowChats(row, removed);
+    if (missing > 0 || cut) {
+      console.warn("[cloud] a lane's delete left saved chats", { laneId: row.laneId, missing, cut });
       dropFromStore(row, removed);
       showToast({
         tone: "error",
         title: row.kept ? `Deleted ${row.laneName}, not all its chats` : `Kept ${row.laneName}`,
-        message: `ADE couldn't find where ${skipped === 1 ? "1 of its chats is" : `${skipped} of its chats are`} kept on ADE Cloud. Try again in a moment.`,
+        message: missing > 0
+          ? `ADE couldn't find where ${missing === 1 ? "1 of its chats is" : `${missing} of its chats are`} kept on ADE Cloud. Try again in a moment.`
+          : "ADE Cloud has more chats than ADE could read at once. Delete again to remove the rest.",
         replayMask: { title: true },
       });
       return;

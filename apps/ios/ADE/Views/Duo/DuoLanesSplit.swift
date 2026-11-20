@@ -222,7 +222,8 @@ extension LanesTabView {
       || remoteLanes.machines.contains { machine in
         machine.snapshots.contains { $0.lane.id == laneId }
       }
-      || inputs.keptCloudLanes.contains { $0.laneId == laneId }
+      // A kept lane opens under its namespaced id (`fleet|<machine>|<lane>`); its record has the plain one.
+      || inputs.keptCloudLanes.contains { $0.laneId == (workParseRemoteLaneId(laneId)?.laneId ?? laneId) }
   }
 }
 

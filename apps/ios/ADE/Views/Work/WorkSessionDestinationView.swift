@@ -261,6 +261,8 @@ struct WorkSessionDestinationView: View {
   /// Observed so a mute toggled anywhere (Work-list row menu, settings) flows
   /// into `headerMenuModel` and re-renders the equatable-gated header menu.
   @ObservedObject private var pushNotificationService = PushNotificationService.shared
+  // The send gate reads the account's access and kept lanes (`cloudNewComputerBlockedReason`).
+  @ObservedObject private var accountCloud = AccountCloudStore.shared
   @Environment(\.dismiss) var dismiss
   @Environment(\.scenePhase) private var scenePhase
   @Environment(\.duoLayout) private var duoLayout
@@ -739,7 +741,7 @@ struct WorkSessionDestinationView: View {
   /// chat's state line shows the same sentence.
   var cloudNewComputerBlockedReason: String? {
     guard !personalChat else { return nil }
-    return cloudLaneNewComputerProblem(fleetKey: sessionCloudMachineKey, sync: syncService, store: AccountCloudStore.shared)
+    return cloudLaneNewComputerProblem(fleetKey: sessionCloudMachineKey, sync: syncService, store: accountCloud)
   }
 
   var canSendChatMessages: Bool {
