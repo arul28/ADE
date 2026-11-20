@@ -360,19 +360,31 @@ function restoredMeter(before: ComputerRow, now: number): Pick<ComputerRow, "awa
   };
 }
 
-/** Takes back an early free window and its power log (`startCloudUpdate`), only while the row still holds them. */
+/**
+ * Takes back an early free window and its power log (`startCloudUpdate`), only
+ * while the row still holds the window the early write set. The minute tick may
+ * have moved the status on meanwhile (metered to metered, the meter untouched),
+ * so the guard is the meter's values; the status goes back only while it still
+ * reads the placeholder. A boot report that came first moved the meter, so
+ * neither the window nor its log is taken back. The log goes first: the guard
+ * reads the meter before the undo moves it.
+ */
 function undoEarlyStartStatements(env: CloudEnv, before: ComputerRow, early: ComputerRow, reason: CloudUpdateReason, now: number): D1PreparedStatement[] {
   const meter = restoredMeter(before, now);
   return [
     env.DB.prepare(`
-      update cloud_computers set status = ?, status_changed_at = ?, awake_since = ?, free_wake_started_at = ?, free_wake_until = ?, last_awake_at = ?
-      where instance_id = ? and update_state = 'updating' and update_started_at = ? and status = ? and awake_since = ?
+      delete from cloud_power_log where instance_id = ? and action = 'update' and reason = ? and created_at = ?
+        and exists (select 1 from cloud_computers where instance_id = ? and awake_since = ? and free_wake_until = ?)
+    `).bind(before.instance_id, `update_${reason}`, now, before.instance_id, early.awake_since, early.free_wake_until),
+    env.DB.prepare(`
+      update cloud_computers set status = case when status = 'updating' then ? else status end,
+        status_changed_at = case when status = 'updating' then ? else status_changed_at end,
+        awake_since = ?, free_wake_started_at = ?, free_wake_until = ?, last_awake_at = ?
+      where instance_id = ? and update_state = 'updating' and update_started_at = ? and awake_since = ? and free_wake_until = ?
     `).bind(
       before.status, before.status_changed_at, meter.awake_since, meter.free_wake_started_at, meter.free_wake_until, meter.last_awake_at,
-      before.instance_id, now, early.status, early.awake_since,
+      before.instance_id, now, early.awake_since, early.free_wake_until,
     ),
-    env.DB.prepare("delete from cloud_power_log where instance_id = ? and action = 'update' and reason = ? and created_at = ?")
-      .bind(before.instance_id, `update_${reason}`, now),
   ];
 }
 

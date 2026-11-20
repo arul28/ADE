@@ -10,7 +10,8 @@ import { deleteAllAccountChats } from "../src/cloud/chats";
 import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
 import { runIdleCleanup } from "../src/cloud/idleCleanup";
 import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
-import { createCloudProvider } from "../src/cloud/provider";
+import { CloudProviderError, createCloudProvider } from "../src/cloud/provider";
+import { startCloudUpdate } from "../src/cloud/updates";
 import { failUnjoinedLaunches, MACHINE_LAUNCH_MIN_VERSION_SETTING } from "../src/cloud/launches";
 import { runCloudMoves } from "../src/cloud/moves";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
@@ -19,7 +20,7 @@ import { runLinearRenewalCron } from "../src/cloud/linearRenewal";
 import { nextFireAt } from "../src/cloud/automationSchedule";
 import { createComputer, forkComputer, handleCloudRequest } from "../src/cloud/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
-import { applyCloudPlanChange, type CloudEnv } from "../src/cloud/store";
+import { applyCloudPlanChange, type CloudEnv, type ComputerRow } from "../src/cloud/store";
 import { runDailyCostReport } from "../src/cloud/costReport";
 import { grantAad, seal, tokenKey } from "../src/githubApp/seal";
 import { ISSUER, jwksEndpoint, mintToken, OAUTH_CLIENT_ID } from "./jwks";
@@ -1344,6 +1345,26 @@ describe("ADE Cloud automatic updates", () => {
     await harness.tick();
     expect(computer(harness).status).toBe("sleeping");
     expect(usedMilli(harness) > 0).toBe(charged);
+  });
+
+  // An idle update of an awake computer opens its free window before the provider answers, which can take minutes.
+  it.each<[string, boolean]>([
+    ["a provider that refuses the idle update takes back its free window and power log", false],
+    ["the same refusal after a tick saw the computer running meanwhile still takes them back", true],
+  ])("%s", async (_label, tickDuring) => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { awake_since: NOW - HOUR, last_awake_at: NOW - HOUR });
+    provide(harness, INSTANCE, "running");
+    const row = computer(harness) as unknown as ComputerRow;
+    const provider = {
+      updateInstance: async () => {
+        if (tickDuring) await harness.tick();
+        throw new CloudProviderError("no", "provider_error", 500);
+      },
+    };
+    await expect(startCloudUpdate(harness.env, provider, row, { reason: "idle", target: "tmpl_new", expectsReport: true, now: NOW })).rejects.toThrow("no");
+    expect(computer(harness)).toMatchObject({ status: "running", awake_since: NOW, free_wake_started_at: null, free_wake_until: null, update_state: null });
+    expect(harness.rows("select action from cloud_power_log where instance_id = ? and action = 'update'", INSTANCE)).toEqual([]);
   });
 });
 

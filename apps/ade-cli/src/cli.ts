@@ -32960,10 +32960,14 @@ async function runServe(
     // A person watching a tool (Linux Desktop, a preview): a read, so it never
     // wakes a sleeping computer, but it does keep an awake one awake.
     if (domain === "work_tools" && action === "noteWatching") return true;
-    // Someone typing in a chat's composer warms its model: background writes
-    // (BACKGROUND_WRITES), so typing never wakes a sleeping computer, but an
-    // awake one stays awake while the person is about to send.
-    if (domain === "chat" && (action === "warmupModel" || action === "prewarmDraft")) return true;
+    // Someone typing warms the chat's model: a draft's first keystroke
+    // (`prewarmDraft`) or a keystroke in an open chat (`warmupModel` with
+    // `sdkOnly`). Background writes (BACKGROUND_WRITES), so typing never wakes
+    // a sleeping computer, but an awake one stays awake while the person is
+    // about to send. Any other warmup (Cursor's, when its tile is only viewed)
+    // is not use.
+    if (domain === "chat" && action === "prewarmDraft") return true;
+    if (domain === "chat" && action === "warmupModel") return isRecord(params.arguments.args) && params.arguments.args.sdkOnly === true;
     return Boolean(domain && action && adeActionAccess(domain, action) === "write" && !isBackgroundAdeWrite(domain, action));
   };
   const withRemoteUseNoted = <H extends JsonRpcHandler>(peerDeviceId: string | null, handler: H): H => {

@@ -4192,20 +4192,24 @@ export type AgentChatModelCatalog = {
   modelManifest?: { manifest: ModelManifest; adeVersion: string | null };
 };
 
-export type AgentChatModelCatalogRefreshProvider =
-  | "opencode"
-  | "pi"
-  | "muse"
-  | "cursor"
-  | "droid"
-  | "lmstudio"
-  | "ollama"
-  | "qwen"
-  | "kimi"
-  | "grok"
-  | "copilot"
-  | "devin"
-  | "antigravity";
+/** The providers a chat model catalog can re-read on their own (`refreshProvider`); the rest come with any rebuild. */
+export const MODEL_CATALOG_REFRESH_PROVIDERS = [
+  "opencode",
+  "pi",
+  "muse",
+  "cursor",
+  "droid",
+  "lmstudio",
+  "ollama",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+  "devin",
+  "antigravity",
+] as const;
+
+export type AgentChatModelCatalogRefreshProvider = (typeof MODEL_CATALOG_REFRESH_PROVIDERS)[number];
 
 export type AgentChatModelCatalogMode = "cached" | "refresh-stale" | "force";
 

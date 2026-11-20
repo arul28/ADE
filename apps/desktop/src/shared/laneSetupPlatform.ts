@@ -40,7 +40,7 @@ export const LANE_SETUP_PLATFORM_FIELDS: readonly LaneSetupPlatformField[] = [
 const MACOS_ONLY_TOOL = /(^|[\s;&|(`$"'])(cp\s+-[a-zA-Z]*c[a-zA-Z]*\b|clonefile\b|xcode-select\b|xcrun\b|ditto\b|defaults\s+(read|write)\b|launchctl\b|pbcopy\b|pbpaste\b)/;
 
 /** The first macOS-only tool a command list calls, or null. */
-export function macosOnlyToolIn(commands: readonly string[]): string | null {
+function macosOnlyToolIn(commands: readonly string[]): string | null {
   for (const command of commands) {
     const match = MACOS_ONLY_TOOL.exec(command);
     if (match) return match[2]!.trim();
@@ -54,7 +54,8 @@ export function macosOnlyToolIn(commands: readonly string[]): string | null {
  * once Linux has its own commands nothing macOS-only reaches it.
  */
 export function macosOnlyToolOnLinux(cfg: LaneSetupScriptConfig): string | null {
-  if (cfg.linuxCommands?.length) return null;
-  const commands = cfg.linuxCommands ?? cfg.unixCommands ?? cfg.commands ?? [];
+  // Any list of its own (even an empty one) is what Linux runs, as in `setupScriptConfig.ts`.
+  if (cfg.linuxCommands) return null;
+  const commands = cfg.unixCommands ?? cfg.commands ?? [];
   return macosOnlyToolIn(commands.map((command) => command.trim()).filter((command) => command.length > 0));
 }

@@ -144,8 +144,7 @@ import type {
   DraftUpdateArgs,
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
-import { isAcpChatProvider } from "../../../shared/types/chat";
-import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
+import { collectAcpProviderDiagnostics, requireAcpProvider } from "../ai/acpProviderDiagnostics";
 import { stripHostOnlyChatMetadata } from "../../../shared/chatAutoResume";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import type { LinearIngressStatus } from "../automations/linearIngressService";
@@ -2982,10 +2981,8 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     // through that machine's own runtime, rather than reading This
     // computer's answer and labelling it theirs.
     acpProviderDiagnostics: (args?: { provider?: string; runDoctor?: boolean }) => {
-      const provider = args?.provider;
-      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, devin.");
       return collectAcpProviderDiagnostics({
-        provider,
+        provider: requireAcpProvider(args?.provider),
         cwd: runtime.projectRoot,
         ...(args?.runDoctor === true ? { runDoctor: true } : {}),
       });
@@ -2993,9 +2990,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     // "Run doctor": the person asked, so unlike the page-open read above it
     // counts as use and wakes a sleeping cloud computer.
     runAcpProviderDoctor: (args?: { provider?: string }) => {
-      const provider = args?.provider;
-      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, devin.");
-      return collectAcpProviderDiagnostics({ provider, cwd: runtime.projectRoot, runDoctor: true });
+      return collectAcpProviderDiagnostics({ provider: requireAcpProvider(args?.provider), cwd: runtime.projectRoot, runDoctor: true });
     },
     piLoginProviders: () => listPiLoginProviders(),
     piLoginStart: async (args?: { providerId?: string; method?: "oauth" | "api_key" }) => {

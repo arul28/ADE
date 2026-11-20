@@ -875,7 +875,7 @@ import type {
   EffectiveProjectConfig,
   TerminalSessionSummary,
 } from "../../../shared/types";
-import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
+import { MODEL_CATALOG_REFRESH_PROVIDERS, PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
 import {
   isPlainPromptMessage,
   LANE_SHARE_PLAIN_TEXT_ONLY,
@@ -76614,23 +76614,6 @@ export function createAgentChatService(args: {
   const modelCatalogProviderRefreshedAt = new Map<AgentChatModelCatalogRefreshProvider, number>();
   const MODEL_CATALOG_REFRESH_TTL_MS = 30 * 60_000;
   const MODEL_CATALOG_LOCAL_REFRESH_TTL_MS = 30_000;
-  const MODEL_CATALOG_REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
-    "opencode",
-    "pi",
-    "cursor",
-    "droid",
-    "muse",
-    "lmstudio",
-    "ollama",
-    // ACP providers refresh on the same TTL. Without an entry here
-    // `shouldRefreshProvider` has no bookkeeping for them and a force refresh
-    // could re-probe on every catalog read.
-    "qwen",
-    "kimi",
-    "grok",
-    "copilot",
-    "antigravity",
-  ];
   let modelCatalogCache: AgentChatModelCatalog | null = null;
   // A newly applied model manifest can add, hide, or re-default models, so the
   // cached catalog is stale until the next rebuild — served once more while a

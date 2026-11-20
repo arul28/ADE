@@ -326,7 +326,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         // Woken only for an update: the next idle check may sleep it at once.
         if (sleepWhenIdle && !wasBusy) {
           lastBusyAt = Math.min(lastBusyAt, now() - CLOUD_IDLE_SLEEP_AFTER_MS);
-          if (lastTickAt != null) emitIdleFacts();
+          emitIdleFacts();
         }
       },
       (error: unknown) => {

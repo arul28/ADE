@@ -1,7 +1,8 @@
-import type {
-  AgentChatModelCatalog,
-  AgentChatModelCatalogRefreshProvider,
-  OpenProjectBinding,
+import {
+  MODEL_CATALOG_REFRESH_PROVIDERS,
+  type AgentChatModelCatalog,
+  type AgentChatModelCatalogRefreshProvider,
+  type OpenProjectBinding,
 } from "../../../../shared/types";
 import type { ModelDescriptor, ProviderFamily } from "../../../../shared/modelRegistry";
 import type { RuntimeCatalogModelDescriptor } from "./modelCatalog";
@@ -28,21 +29,6 @@ export function refreshProviderForFamily(family: ProviderFamily): AgentChatModel
 
 const RUNTIME_CATALOG_REFRESH_TTL_MS = 30 * 60_000;
 const RUNTIME_CATALOG_LOCAL_REFRESH_TTL_MS = 30_000;
-const REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
-  "opencode",
-  "pi",
-  "muse",
-  "cursor",
-  "droid",
-  "lmstudio",
-  "ollama",
-  "qwen",
-  "kimi",
-  "grok",
-  "copilot",
-  "devin",
-  "antigravity",
-];
 
 /**
  * A runtime model catalog is a MACHINE fact, not a process fact: the ollama and
@@ -414,7 +400,7 @@ export function rememberRuntimeCatalog(
   }
   const scope = runtimeCatalogScope(scopeKey);
   if (args.mode === "cached" && scope.catalog) {
-    for (const provider of REFRESH_PROVIDERS) {
+    for (const provider of MODEL_CATALOG_REFRESH_PROVIDERS) {
       if (
         runtimeCatalogProviderIsFresh(provider, undefined, scopeKey)
         && catalogContainsRefreshProvider(scope.catalog, provider)

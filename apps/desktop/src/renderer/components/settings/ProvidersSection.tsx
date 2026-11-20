@@ -22,6 +22,8 @@ import type {
   AcpProviderDiagnostics,
   OpenCodeProviderAuthMethods,
 } from "../../../shared/types/config";
+import { MODEL_CATALOG_REFRESH_PROVIDERS } from "../../../shared/types/chat";
+import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import { openCodeProviderDisplayName } from "../../../shared/opencodeProviders";
 import { toggleDisabledProvider } from "../../../shared/providerEnablement";
 import {
@@ -346,10 +348,7 @@ type ProvidersSectionProps = {
   harnessesParam?: boolean;
 };
 
-/** The providers a chat model catalog can re-read on their own (`refreshProvider`); the rest come with any rebuild. */
-const CATALOG_REFRESH_PROVIDERS: ReadonlySet<string> = new Set<AgentChatModelCatalogRefreshProvider>([
-  "opencode", "pi", "muse", "cursor", "droid", "lmstudio", "ollama", "qwen", "kimi", "grok", "copilot", "devin", "antigravity",
-]);
+const CATALOG_REFRESH_PROVIDERS: ReadonlySet<string> = new Set<AgentChatModelCatalogRefreshProvider>(MODEL_CATALOG_REFRESH_PROVIDERS);
 
 function catalogRefreshProviderOf(provider: SettingsProviderId | undefined): AgentChatModelCatalogRefreshProvider | undefined {
   return provider && CATALOG_REFRESH_PROVIDERS.has(provider) ? provider as AgentChatModelCatalogRefreshProvider : undefined;
@@ -1144,8 +1143,12 @@ function MachineProvidersSection({
         } catch (error) {
           // A machine on an older ADE has no `runAcpProviderDoctor`: the old
           // doctor run still works there (it just doesn't wake a sleeping one).
+          // Only the runtime's own "no such action" answer for this one action
+          // (`Action 'ai.runAcpProviderDoctor' is not callable.`, `Unknown ADE action: …`).
           const message = error instanceof Error ? error.message : String(error);
-          if (!isAdeAvailable(read) || !/runAcpProviderDoctor|unknown|not (found|allowed|supported)/i.test(message)) throw error;
+          const unknownAction = message.includes("ai.runAcpProviderDoctor")
+            && (isUnsupportedAdeActionError(error) || message.includes("Unknown ADE action: ai.runAcpProviderDoctor"));
+          if (!isAdeAvailable(read) || !unknownAction) throw error;
           console.warn("[providers] doctor fell back to the older diagnostics action", { provider, message });
           result = await read({ provider, runDoctor: true }, pin);
         }
