@@ -206,6 +206,69 @@ struct MachineUpdateAttempt: Equatable {
   }
 }
 
+/// The processes that held files in a Windows install folder open when an
+/// update could not replace it. `at` is the phone's clock, rebuilt from the
+/// age the machine sends.
+struct HostUpdateBlock: Equatable {
+  struct Holder: Equatable {
+    let pid: Int
+    let name: String
+  }
+  let at: Date
+  let targetVersion: String?
+  let holders: [Holder]
+}
+
+/// What a machine's hello says about its last update: when its brain started
+/// (a start after the update was sent means it restarted), and what blocked
+/// the install when something did. Both nil for a host from before them.
+struct HostUpdateFacts: Equatable {
+  var brainStartedAt: Date?
+  var block: HostUpdateBlock?
+
+  /// Read from a hello's `brain` record (`SyncPeerMetadata.uptimeMs` and
+  /// `lastUpdateBlock`) when it arrives at `now`.
+  static func fromHello(_ brain: [String: Any]?, now: Date) -> HostUpdateFacts {
+    guard let brain else { return HostUpdateFacts() }
+    let uptimeMs = (brain["uptimeMs"] as? NSNumber)?.doubleValue
+    let startedAt = uptimeMs.flatMap { $0.isFinite && $0 >= 0 ? now.addingTimeInterval(-$0 / 1000) : nil }
+    var block: HostUpdateBlock?
+    if let raw = brain["lastUpdateBlock"] as? [String: Any],
+       let ageMs = (raw["ageMs"] as? NSNumber)?.doubleValue, ageMs.isFinite, ageMs >= 0 {
+      let holders = (raw["holders"] as? [Any] ?? []).compactMap { entry -> HostUpdateBlock.Holder? in
+        guard let holder = entry as? [String: Any],
+              let pid = (holder["pid"] as? NSNumber)?.intValue,
+              let name = nonEmptyTrimmed(holder["name"] as? String) else { return nil }
+        return HostUpdateBlock.Holder(pid: pid, name: name)
+      }
+      block = HostUpdateBlock(
+        at: now.addingTimeInterval(-ageMs / 1000),
+        targetVersion: nonEmptyTrimmed(raw["targetVersion"] as? String),
+        holders: Array(holders.prefix(8))
+      )
+    }
+    return HostUpdateFacts(brainStartedAt: startedAt, block: block)
+  }
+}
+
+/// How long a brain that restarted after the update was sent must stay up on
+/// the old version before the update counts as failed: an install restarts it
+/// more than once, and a minute is past every step of one that works.
+let machineUpdateOldBrainSettle: TimeInterval = 60
+/// A block's `at` is rebuilt from an age, so it can land a little before the
+/// attempt it belongs to.
+private let machineUpdateBlockClockSlack: TimeInterval = 30
+
+/// "node.exe (PID 7292) had ADE’s files open." Follows "didn’t install: ".
+func describeHostUpdateBlock(_ block: HostUpdateBlock) -> String {
+  var names = block.holders.prefix(3).map { "\($0.name) (PID \($0.pid))" }
+  guard !names.isEmpty else { return "something on it kept ADE’s old files in use." }
+  let more = block.holders.count - names.count
+  if more > 0 { names.append("\(more) more") }
+  let list = names.count == 1 ? names[0] : names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
+  return "\(list) had ADE’s files open."
+}
+
 /// Where an attempt is now, against the machine as the phone sees it.
 struct MachineUpdateStatus: Equatable {
   let ok: Bool
@@ -214,20 +277,39 @@ struct MachineUpdateStatus: Equatable {
   let inFlight: Bool
 }
 
-func describeMachineUpdateAttempt(_ attempt: MachineUpdateAttempt, live: Bool, version: String?, now: Date) -> MachineUpdateStatus {
+func describeMachineUpdateAttempt(
+  _ attempt: MachineUpdateAttempt,
+  live: Bool,
+  version: String?,
+  facts: HostUpdateFacts? = nil,
+  now: Date
+) -> MachineUpdateStatus {
   guard let pending = attempt.pendingVersion else {
     return MachineUpdateStatus(ok: attempt.ok, message: attempt.message, inFlight: false)
   }
   if live, let version = nonEmptyTrimmed(version), compareAdeVersions(version, pending) >= 0 {
     return MachineUpdateStatus(ok: true, message: "Updated to \(version).", inFlight: false)
   }
-  if now.timeIntervalSince(attempt.startedAt) < attempt.grace {
+  // Its brain restarted after the update was sent and has stayed up on the old
+  // version: the install ran and failed. Say so now, not after the wait.
+  let restartedOnOldVersion = live
+    && (facts?.brainStartedAt).map { $0 > attempt.startedAt && now.timeIntervalSince($0) >= machineUpdateOldBrainSettle } == true
+  // The installer said why this attempt failed (Windows: what held its files).
+  let block = live
+    ? facts?.block.flatMap { $0.at >= attempt.startedAt.addingTimeInterval(-machineUpdateBlockClockSlack) ? $0 : nil }
+    : nil
+  if block == nil, !restartedOnOldVersion, now.timeIntervalSince(attempt.startedAt) < attempt.grace {
     return MachineUpdateStatus(ok: true, message: attempt.message, inFlight: true)
   }
   if live {
+    let stillOn = "Still on \(version ?? "an older version") — the update to \(pending) didn’t install"
+    if let block {
+      let close = block.holders.isEmpty ? "Then tap Update" : "Close \(block.holders.count == 1 ? "it" : "them"), then tap Update"
+      return MachineUpdateStatus(ok: false, message: "\(stillOn): \(describeHostUpdateBlock(block)) \(close) to try again.", inFlight: false)
+    }
     return MachineUpdateStatus(
       ok: false,
-      message: "Still on \(version ?? "an older version") — the update to \(pending) didn’t install on that machine. Tap Update to try again.",
+      message: "\(stillOn) on that machine. Tap Update to try again.",
       inFlight: false
     )
   }
@@ -460,14 +542,14 @@ final class MachineUpdateStore: ObservableObject {
     guard let key = machine.machineKey else { return false }
     if checkingKeys.contains(key) || updatingKeys.contains(key) { return true }
     guard let attempt = attempts[key] else { return false }
-    return describeMachineUpdateAttempt(attempt, live: machine.isLive, version: machine.appVersion, now: Date()).inFlight
+    return describeMachineUpdateAttempt(attempt, live: machine.isLive, version: machine.appVersion, facts: machine.updateFacts, now: Date()).inFlight
   }
 
   /// The last attempt's line for this machine, read against what it reports now.
   func status(for machine: SettingsMachine) -> MachineUpdateStatus? {
     guard let key = machine.machineKey, let attempt = attempts[key] else { return nil }
     _ = clock
-    return describeMachineUpdateAttempt(attempt, live: machine.isLive, version: machine.appVersion, now: Date())
+    return describeMachineUpdateAttempt(attempt, live: machine.isLive, version: machine.appVersion, facts: machine.updateFacts, now: Date())
   }
 
   func attempt(for machine: SettingsMachine) -> MachineUpdateAttempt? {

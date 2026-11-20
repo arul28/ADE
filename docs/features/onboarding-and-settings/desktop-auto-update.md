@@ -150,9 +150,10 @@ That card also stops waiting out its grace (5 min, or 35 min while
 downloading) when the far brain has restarted since the update was sent and
 has stayed up a minute on the old version (`hostStartedAt`, taken from the
 handshake's `uptimeMs`). A link that only dropped keeps the same brain, so it
-does not count. The phone's card (`MachineUpdateStore.swift`) does not have
-either signal yet: it reads machines from the account directory, not a
-handshake.
+does not count. The phone gets both from the sync hello instead: every host's
+`brain` metadata carries `uptimeMs` and `lastUpdateBlock`
+(`hostUpdateFacts`). `HostUpdateFacts` in `MachineUpdateStore.swift` reads
+them, and the phone's card applies the same two rules.
 
 The window also writes a heartbeat. A copy of the old ADE opened by hand during
 the install (the person sees nothing happening and clicks the shortcut) reads

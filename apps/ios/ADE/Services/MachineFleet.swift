@@ -84,6 +84,8 @@ final class MachineFleet: ObservableObject {
     var routeKind: SyncConnectionRouteKind? = nil
     /// The machine's ADE version from its last hello, nil for an older host.
     var appVersion: String? = nil
+    /// What its last hello said about its last update.
+    var updateFacts: HostUpdateFacts? = nil
     /// An ADE Cloud computer of the account.
     var isCloud: Bool = false
     /// Its chats, sessions and lanes show in the project's lists
@@ -896,6 +898,7 @@ final class MachineFleet: ObservableObject {
         gaveUp: connection.gaveUp,
         routeKind: state == .live ? connection.liveRouteKind : nil,
         appVersion: connection.hostAppVersion,
+        updateFacts: connection.hostUpdateFacts,
         isCloud: isCloud,
         listsWork: fleetMachineListsWork(
           isLive: state == .live,

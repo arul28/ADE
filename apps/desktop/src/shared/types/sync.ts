@@ -229,6 +229,14 @@ export type SyncPeerMetadata = {
   appBuild?: string;
   bundleIdentifier?: string;
   /**
+   * Host only: how long its brain process had run when it answered this hello.
+   * A later start than the update a phone sent means the brain restarted (an
+   * age, so the phone's clock needs no sync). Additive: older phones ignore it.
+   */
+  uptimeMs?: number;
+  /** Host only: what kept its last update from installing (Windows). */
+  lastUpdateBlock?: SyncHostUpdateBlock;
+  /**
    * `"roster"` marks a light socket that carries only the machine-wide roster,
    * cross-project chats and routed commands. Hosts never replicate CRDT
    * changesets to it, ignore any it sends, and never record a delivered
@@ -236,6 +244,18 @@ export type SyncPeerMetadata = {
    * before. Hosts that honor it say so with the `rosterPeer` hello feature.
    */
   syncRole?: "roster";
+};
+
+/**
+ * The processes that held files in a Windows install folder open when an
+ * update could not replace it (`apps/desktop/build/ade-update-holders.ps1`,
+ * read by `ade-cli/src/lib/updateBlockedReport.ts`). `ageMs`, not a time: the
+ * reader's clock is another machine's.
+ */
+export type SyncHostUpdateBlock = {
+  ageMs: number;
+  targetVersion: string | null;
+  holders: Array<{ pid: number; name: string; path: string | null }>;
 };
 
 export type SyncPeerConnectionState = SyncPeerMetadata & {

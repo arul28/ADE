@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { compareUpdateVersions } from "../../../desktop/src/shared/updateVersions";
+import type { SyncHostUpdateBlock, SyncPeerMetadata } from "../../../desktop/src/shared/types/sync";
+import { readInstalledDesktopAppVersion } from "../../../desktop/src/main/services/native/nativeHelperPaths";
+import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 
 /**
  * What kept the last Windows update from installing, as the brain reports it
@@ -11,11 +14,7 @@ import { compareUpdateVersions } from "../../../desktop/src/shared/updateVersion
  *
  * `ageMs`, not a time: the reader's clock is another machine's.
  */
-export type UpdateBlockedReport = {
-  ageMs: number;
-  targetVersion: string | null;
-  holders: Array<{ pid: number; name: string; path: string | null }>;
-};
+export type UpdateBlockedReport = SyncHostUpdateBlock;
 
 /** Older than this, the block says nothing about the update in front of you. */
 const MAX_REPORT_AGE_MS = 6 * 60 * 60_000;
@@ -24,12 +23,13 @@ const MAX_HOLDERS = 8;
 /**
  * The report in `text`, or null when there is none worth showing: unreadable,
  * old, or for a version the machine has installed since (`installedVersion`
- * at or past the one that was blocked).
+ * at or past the one that was blocked). `installedVersion` is asked only when
+ * there is a report, so a hello with nothing to report reads no app version.
  */
 export function parseUpdateBlockedReport(
   text: string | null,
   nowMs: number,
-  installedVersion: string | null,
+  installedVersion: () => string | null,
 ): UpdateBlockedReport | null {
   if (!text) return null;
   let raw: unknown;
@@ -47,7 +47,8 @@ export function parseUpdateBlockedReport(
   const targetVersion = typeof record.targetVersion === "string" && record.targetVersion.trim()
     ? record.targetVersion.trim()
     : null;
-  if (targetVersion && installedVersion && compareUpdateVersions(installedVersion, targetVersion) >= 0) return null;
+  const installed = targetVersion ? installedVersion() : null;
+  if (targetVersion && installed && compareUpdateVersions(installed, targetVersion) >= 0) return null;
   const holders = (Array.isArray(record.holders) ? record.holders : [])
     .flatMap((entry) => {
       if (!entry || typeof entry !== "object") return [];
@@ -70,7 +71,7 @@ export function parseUpdateBlockedReport(
  * already has it.
  */
 export function createUpdateBlockedReader(runtimeDir: string): {
-  read(nowMs: number, installedVersion: string | null): UpdateBlockedReport | null;
+  read(nowMs: number, installedVersion: () => string | null): UpdateBlockedReport | null;
 } {
   const filePath = path.join(runtimeDir, "update-blocked.json");
   let text: string | null = null;
@@ -94,5 +95,30 @@ export function createUpdateBlockedReader(runtimeDir: string): {
       refresh();
       return parseUpdateBlockedReport(text, nowMs, installedVersion);
     },
+  };
+}
+
+let machineReader: ReturnType<typeof createUpdateBlockedReader> | null = null;
+
+/**
+ * This machine's report, for every hello it answers (the RPC handshake other
+ * desktops read, and the sync hello the phone reads). Only the Windows
+ * installer writes one; elsewhere this is always null and reads nothing.
+ */
+export function readMachineUpdateBlock(installedVersion: () => string | null): UpdateBlockedReport | null {
+  if (process.platform !== "win32") return null;
+  machineReader ??= createUpdateBlockedReader(path.join(resolveMachineAdeLayout().adeDir, "runtime"));
+  return machineReader.read(Date.now(), installedVersion);
+}
+
+/**
+ * What a host's hello tells a phone about its last update: how long its brain
+ * has run, and what blocked the update when something did.
+ */
+export function hostUpdateFacts(): Pick<SyncPeerMetadata, "uptimeMs" | "lastUpdateBlock"> {
+  const block = readMachineUpdateBlock(() => readInstalledDesktopAppVersion());
+  return {
+    uptimeMs: Math.max(0, Math.round(process.uptime() * 1_000)),
+    ...(block ? { lastUpdateBlock: block } : {}),
   };
 }
