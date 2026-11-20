@@ -93,8 +93,9 @@ function readSignInHistory(file: string): SignInHistory | null | "unreadable" {
   try {
     const parsed: unknown = JSON.parse(text);
     return parsed && typeof parsed === "object" ? parsed as SignInHistory : {};
-  } catch {
+  } catch (error) {
     // A damaged record still says the machine was checked.
+    reportOnce("sign-in-history-parse", error);
     return {};
   }
 }
