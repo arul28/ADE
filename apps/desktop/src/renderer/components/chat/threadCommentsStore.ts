@@ -109,7 +109,7 @@ function dropFailedCommentsTheHostHas(sessionId: string): void {
 export function addLocalThreadComment(
   sessionId: string,
   fields: Omit<ChatThreadComment, "id" | "sessionId" | "includeInNextSend" | "createdAt" | "updatedAt">,
-): (saved?: ChatThreadComment | null, error?: string) => void {
+): ((saved?: ChatThreadComment | null, error?: string) => void) & { localId: string } {
   const at = new Date().toISOString();
   const local: ChatThreadComment = {
     ...fields,
@@ -123,7 +123,24 @@ export function addLocalThreadComment(
   knownHostIdsByLocal.set(local.id, hostList ? new Set(hostList.map((comment) => comment.id)) : null);
   localBySession.set(sessionId, [...(localBySession.get(sessionId) ?? EMPTY), local]);
   publish(sessionId);
-  return settleLocal(sessionId, local);
+  return Object.assign(settleLocal(sessionId, local), { localId: local.id });
+}
+
+/** Whether the host's comment list for this chat has loaded at least once. */
+export function threadCommentListLoaded(sessionId: string): boolean {
+  return bySession.has(sessionId);
+}
+
+/**
+ * A comment saved before the chat's list loaded has no known host ids, so a
+ * lost answer could not be told from a real failure. Once the list is read
+ * (before that comment's create is sent, so it cannot hold its own copy), the
+ * comment takes it as its baseline.
+ */
+export function captureThreadCommentBaseline(sessionId: string, localId: string): void {
+  if (knownHostIdsByLocal.get(localId) != null) return;
+  const hostList = bySession.get(sessionId);
+  if (hostList) knownHostIdsByLocal.set(localId, new Set(hostList.map((comment) => comment.id)));
 }
 
 function settleLocal(sessionId: string, local: ChatThreadComment) {

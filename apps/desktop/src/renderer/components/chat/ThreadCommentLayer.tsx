@@ -32,6 +32,9 @@ import {
 } from "./ThreadCommentControls";
 import {
   addLocalThreadComment,
+  captureThreadCommentBaseline,
+  refreshThreadComments,
+  threadCommentListLoaded,
   THREAD_COMMENT_FOCUS_EVENT,
   threadCommentsApi,
   discardUnsavedDraftBody,
@@ -514,9 +517,16 @@ export function ThreadCommentLayer({
       anchor: saving.anchor,
       body,
     };
+    const loaded = threadCommentListLoaded(sessionId);
     const settle = addLocalThreadComment(sessionId, fields);
     discardDraft();
     try {
+      // Read the list first when it never loaded: a retry after a lost answer
+      // can then tell the saved copy from an older identical comment.
+      if (!loaded) {
+        await refreshThreadComments(sessionId, pin ?? null);
+        captureThreadCommentBaseline(sessionId, settle.localId);
+      }
       settle(await withChatPin(pin ?? null, (chatPin) => api.create({ sessionId, ...fields }, chatPin)));
     } catch (error) {
       settle(null, threadCommentErrorText(error));
