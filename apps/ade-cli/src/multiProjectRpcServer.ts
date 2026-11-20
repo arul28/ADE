@@ -209,6 +209,7 @@ import {
 import { gitRemoteIdentity, peerGitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
 import { readInstalledDesktopAppVersion } from "../../desktop/src/main/services/native/nativeHelperPaths";
+import { brainStartedAgoMs, readMachineUpdateBlock } from "./lib/hostUpdateFacts";
 import { readDesktopUpdateInstallMode } from "../../desktop/src/main/services/native/desktopUpdateInstallMode";
 
 type HandlerEntry = {
@@ -3009,6 +3010,7 @@ export function createMultiProjectRpcRequestHandler(
   const resolveRuntimeEnvInfo = () => {
     const projectRoot = trimmedEnvOrNull("ADE_PROJECT_ROOT");
     const packageChannel = trimmedEnvOrNull("ADE_PACKAGE_CHANNEL");
+    const desktopAppVersion = readInstalledDesktopAppVersion();
     return {
       buildHash: trimmedEnvOrNull("ADE_RUNTIME_BUILD_HASH") ?? computeRuntimeBuildHash(),
       defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
@@ -3021,7 +3023,10 @@ export function createMultiProjectRpcRequestHandler(
       // The installed desktop app's version, beside this brain's own: after
       // `ade brain update` they differ, and another device must not read the
       // brain's version as the app's. Null on a machine with no app.
-      desktopAppVersion: readInstalledDesktopAppVersion(),
+      desktopAppVersion,
+      // What kept the last update from installing, for the Machines card on
+      // other computers; null when nothing did, or that version is in since.
+      lastUpdateBlock: readMachineUpdateBlock(() => desktopAppVersion),
       ...readDesktopUpdateInstallMode(),
     };
   };
@@ -3112,6 +3117,8 @@ export function createMultiProjectRpcRequestHandler(
           multiProject: true,
           pid: process.pid,
           uptimeMs: Math.max(0, Math.round(process.uptime() * 1_000)),
+          // Wall-clock age; `uptimeMs` stops while the computer sleeps (`hostUpdateFacts.ts`).
+          startedAgoMs: brainStartedAgoMs(),
         },
         capabilities: {
           actions: {
@@ -3227,6 +3234,8 @@ export function createMultiProjectRpcRequestHandler(
           multiProject: true,
           pid: process.pid,
           uptimeMs: Math.max(0, Math.round(process.uptime() * 1_000)),
+          // Wall-clock age; `uptimeMs` stops while the computer sleeps (`hostUpdateFacts.ts`).
+          startedAgoMs: brainStartedAgoMs(),
         },
         adeDir: layout.adeDir,
         socketPath: layout.socketPath,

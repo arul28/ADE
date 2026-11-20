@@ -3935,6 +3935,18 @@ app.whenReady().then(async () => {
     } : undefined,
     updaterCacheDir: app.isPackaged ? resolveAutoUpdaterCacheDir() : undefined,
     installTargetPath: runningAppImagePath() ?? process.execPath,
+    readUpdateBlockReport: process.platform === "win32" ? () => {
+      // Startup only, and only on the launch that found a failed install.
+      const reportPath = path.join(resolveMachineAdeLayout().runtimeDir, "update-blocked.json");
+      try {
+        return JSON.parse(fs.readFileSync(reportPath, "utf8").replace(/^\uFEFF/, "")) as unknown;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException)?.code ?? null;
+        // A JSON error has no code; its message can quote the file, so none is kept.
+        if (code !== "ENOENT") updateLogger.warn("autoUpdate.update_block_unreadable", { code: code ?? "invalid_json" });
+        return null;
+      }
+    } : undefined,
     autoCheckEnabled: hasReleaseChannel,
     autoApplyEnabled: hasUpdateFeed && process.env.ADE_DISABLE_AUTO_UPDATE_APPLY !== "1",
     // Stable and Beta are tracks of this same install, not channels: the

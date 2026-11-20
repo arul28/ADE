@@ -57,6 +57,7 @@ import { createTrackFeedPolicy } from "./updateTrackFeed";
 import type { LatestByTrackReader } from "../../../shared/latestByTrack";
 import type { UpdateTrackSwitchResult } from "../../../shared/types";
 import { InstallOnQuitDeferredError } from "./installOnQuit";
+import { updateBlockCause } from "../../../shared/updateBlock";
 import { RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
@@ -285,6 +286,13 @@ type CreateAutoUpdateServiceArgs = {
   forceQuit?: (args: { blockedPhase: string; blockedMs: number }) => void;
   getRuntimeActivitySummary?: () => Promise<{ idle: boolean }>;
   productAnalyticsService?: Pick<ProductAnalyticsService, "captureInternal">;
+  /**
+   * The Windows installer's report of what held the install folder's files
+   * when an update could not replace them (`build/ade-update-holders.ps1`),
+   * parsed; null when there is none. Read only by the launch that finds a
+   * failed install.
+   */
+  readUpdateBlockReport?: () => unknown;
   now?: () => string;
   nowMs?: () => number;
   releaseNotesBaseUrl?: string;
@@ -537,7 +545,8 @@ function reconcilePersistedUpdateState(args: {
   changed: boolean;
   recentlyInstalled: RecentlyInstalledUpdate | null;
   cacheCleanupReason: string | null;
-  failedInstall: { targetVersion: string; attempt: number } | null;
+  /** `requestedAt` only on the launch that found it: when that install was asked for. */
+  failedInstall: { targetVersion: string; attempt: number; requestedAt?: string } | null;
   /** Where the failed install's quit stopped, and how long before this launch it began. */
   failedInstallHandoff: { step: PendingInstallHandoffStep | null; ageMs: number | null } | null;
   /**
@@ -556,7 +565,7 @@ function reconcilePersistedUpdateState(args: {
   let landedQuitInstall: { requestedAt: string } | null = null;
   let landedTrackSwitch = false;
   let cacheCleanupReason: string | null = null;
-  let failedInstall: { targetVersion: string; attempt: number } | null = null;
+  let failedInstall: { targetVersion: string; attempt: number; requestedAt?: string } | null = null;
   let failedInstallFoundNow = false;
   let failedInstallHandoff: { step: PendingInstallHandoffStep | null; ageMs: number | null } | null = null;
 
@@ -629,7 +638,7 @@ function reconcilePersistedUpdateState(args: {
         count: attempt,
         lastFailedAt: args.now,
       };
-      failedInstall = { targetVersion: pendingInstall.targetVersion, attempt };
+      failedInstall = { targetVersion: pendingInstall.targetVersion, attempt, requestedAt: pendingInstall.requestedAt };
       failedInstallFoundNow = true;
       const requestedAtMs = Date.parse(pendingInstall.requestedAt);
       const nowMsValue = Date.parse(args.now);
@@ -739,6 +748,7 @@ export function createAutoUpdateService({
   readSelectedTrack,
   writeSelectedTrack,
   latestByTrack,
+  readUpdateBlockReport,
 }: CreateAutoUpdateServiceArgs) {
   updater.logger = null;
   // Manual download is required so ADE can preflight the updater cache volume
@@ -825,8 +835,16 @@ export function createAutoUpdateService({
     // Reported by the launch that found it. The failure stays saved for the
     // notice (and the retry count), and later launches that only carry it
     // over used to report the same failure again every time.
+    // Only a report written during this attempt: a retry that failed before
+    // the installer ran must not blame what blocked the last one.
+    const blockedBy = updateBlockCause(
+      readUpdateBlockReport?.() ?? null,
+      initialState.failedInstall.targetVersion,
+      Date.parse(initialState.failedInstall.requestedAt ?? ""),
+    );
     logger.error("autoUpdate.install_did_not_land", {
       targetVersion: initialState.failedInstall.targetVersion,
+      blockedBy,
       currentVersion,
       attempt: initialState.failedInstall.attempt,
       downloadPreserved: initialState.cacheCleanupReason == null,
@@ -844,6 +862,7 @@ export function createAutoUpdateService({
       properties: {
         attempt: initialState.failedInstall.attempt,
         handoff_step: initialState.failedInstallHandoff?.step ?? "none",
+        blocked_by: blockedBy,
       },
     });
   }
@@ -897,7 +916,9 @@ export function createAutoUpdateService({
     installMode: manualInstallOnly ? "manual" : "automatic",
     downloadUrl: manualInstallOnly ? `https://github.com/${releaseRepository}/releases/latest` : null,
     recentlyInstalled: initialState.recentlyInstalled,
-    lastInstallFailed: initialState.failedInstall,
+    lastInstallFailed: initialState.failedInstall
+      ? { targetVersion: initialState.failedInstall.targetVersion, attempt: initialState.failedInstall.attempt }
+      : null,
     ...trackPatch(),
     ...(latestByTrack ? { latestByTrack: { ...latestByTrack.current() } } : {}),
   };

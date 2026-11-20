@@ -2116,6 +2116,28 @@ export type AiSettingsStatus = {
    */
   harnessPresets?: AiHarnessPresetSummary[];
   providerAccounts?: AiProviderAccountSummary[];
+  /**
+   * Free models on this machine (`shared/freeModels.ts`). Omitted by a brain
+   * older than the Free page; read a missing block as "someone is signed in".
+   */
+  freeModels?: AiFreeModelsStatus;
+};
+
+/** What the machine that answers the status knows about free models. */
+export type AiFreeModelsStatus = {
+  /**
+   * Nothing on this machine can chat except free models: no provider signed
+   * in, no API key, no custom provider, no local model. New chats start on a
+   * free model.
+   */
+  nothingSignedIn: boolean;
+  /**
+   * A provider was signed in on this machine at some point, or an agent ran
+   * here. False only for a new person: their sign-in strip offers free models.
+   */
+  everSignedIn: boolean;
+  /** The free model the model manifest prefers for a new chat, in order. */
+  preferredDefaultModelIds: string[];
 };
 export type AiFeatureToggles = Partial<Record<AiFeatureKey, boolean>>;
 

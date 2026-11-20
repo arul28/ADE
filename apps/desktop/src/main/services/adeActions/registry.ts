@@ -3429,6 +3429,8 @@ async function buildAiSettingsStatus(
     // the CLI even though the renderer's IPC status carried them.
     ...(status.harnessPresets?.length ? { harnessPresets: status.harnessPresets } : {}),
     ...(status.providerAccounts?.length ? { providerAccounts: status.providerAccounts } : {}),
+    // The phone and other computers read free models from this projection.
+    ...(status.freeModels ? { freeModels: status.freeModels } : {}),
   };
 }
 

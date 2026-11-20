@@ -14,10 +14,12 @@ import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetRoute,
+  RemoteRuntimeUpdateBlock,
   RemoteRuntimeUpdateInstallMode,
 } from "../../../shared/types/remoteRuntime";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
+import { readUpdateBlockHolders } from "../../../shared/updateBlock";
 import {
   runtimeBinaryAssetName,
   runtimeNativeArchiveAssetName,
@@ -146,6 +148,10 @@ type RemoteRuntimeInitializeInfo = {
   version: string | null;
   /** The machine's installed desktop app version; null with no app or from an older brain. */
   desktopAppVersion: string | null;
+  /** See `RemoteRuntimeConnectResult.hostStartedAt`. */
+  hostStartedAt: number | null;
+  /** See `RemoteRuntimeConnectResult.hostUpdateBlock`. */
+  hostUpdateBlock: RemoteRuntimeUpdateBlock | null;
   updateInstallMode?: RemoteRuntimeUpdateInstallMode;
   downloadUrl?: string | null;
   packageChannel: string | null;
@@ -206,9 +212,16 @@ export function validateRemoteRuntimeInitializeResult(args: {
   const updateInstallMode = runtimeInfo.updateInstallMode === "in_place" || runtimeInfo.updateInstallMode === "manual_download" || runtimeInfo.updateInstallMode === "runtime_only"
     ? runtimeInfo.updateInstallMode : undefined;
   const downloadUrl = typeof runtimeInfo.downloadUrl === "string" ? runtimeInfo.downloadUrl : null;
+  // Wall-clock age only: `uptimeMs` stops while the computer sleeps, so an older
+  // brain's start cannot be told from a restart (`hostUpdateFacts.ts`).
+  const startedAgoMs = typeof runtimeInfo.startedAgoMs === "number" && Number.isFinite(runtimeInfo.startedAgoMs) && runtimeInfo.startedAgoMs >= 0
+    ? runtimeInfo.startedAgoMs
+    : null;
   return {
     version,
     desktopAppVersion,
+    hostStartedAt: startedAgoMs == null ? null : Date.now() - startedAgoMs,
+    hostUpdateBlock: readHostUpdateBlock(runtimeInfo.lastUpdateBlock),
     updateInstallMode,
     downloadUrl,
     packageChannel,
@@ -228,6 +241,18 @@ export function validateRemoteRuntimeInitializeResult(args: {
       ...(chatLaunchKinds.length ? { chatLaunchKinds } : {}),
     },
     compatibilityWarnings,
+  };
+}
+
+/** `runtimeInfo.lastUpdateBlock` (`SyncHostUpdateBlock`), or null when absent or malformed. */
+function readHostUpdateBlock(value: unknown): RemoteRuntimeUpdateBlock | null {
+  if (!isRecord(value)) return null;
+  const ageMs = typeof value.ageMs === "number" && Number.isFinite(value.ageMs) && value.ageMs >= 0 ? value.ageMs : null;
+  if (ageMs == null) return null;
+  return {
+    at: Date.now() - ageMs,
+    targetVersion: typeof value.targetVersion === "string" && value.targetVersion.trim() ? value.targetVersion.trim() : null,
+    holders: readUpdateBlockHolders(value.holders),
   };
 }
 
@@ -2523,6 +2548,8 @@ async function bootstrapWindowsRemoteRuntime(args: {
       arch: platform.label,
       version: opened.initializeInfo.version ?? runtimeVersion,
       appVersion: opened.initializeInfo.desktopAppVersion,
+      hostStartedAt: opened.initializeInfo.hostStartedAt,
+      hostUpdateBlock: opened.initializeInfo.hostUpdateBlock,
       updateInstallMode: opened.initializeInfo.updateInstallMode,
       downloadUrl: opened.initializeInfo.downloadUrl,
       route: { kind: "ssh", endpoint: `${host}:${connectedRoute.port ?? request.target.port ?? 22}` },

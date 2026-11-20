@@ -814,6 +814,12 @@ struct WorkChatSessionView: View {
   /// same status for its before-send card). Keyed, so another provider's or
   /// machine's answer never stands in while a new read runs.
   @State var providerSignedOutBeforeSendKey: String?
+  /// The free model the sign-in card offers a brand-new person on the chat's
+  /// machine, or nil (someone signed in there before, or no free models).
+  @State var signInFreeModelId: String?
+  /// A "Use a free model" switch is running: another tap does nothing, so a
+  /// stopped turn is sent once.
+  @State var signInFreeModelSwitching = false
   @State var bottomChromeMinY: CGFloat = 0
   @State var transcriptSafeInsets = EdgeInsets()
   /// The transcript's handle on its own `UICollectionView`. Replaces the
@@ -901,7 +907,8 @@ struct WorkChatSessionView: View {
   /// Moves a staged message to a new position; nil when the provider keeps
   /// its own queue or the host predates `chat.moveSteer`.
   let onMoveSteer: (@MainActor (String, Int) async -> Void)?
-  let onSelectModel: @MainActor (String) async -> Void
+  /// True when the chat now runs on the model.
+  let onSelectModel: @MainActor (String) async -> Bool
   let onSelectRuntimeMode: @MainActor (String) async -> Bool
   let onSelectEffort: @MainActor (String) async -> Void
   let onSelectCodexFastMode: @MainActor (Bool) async -> Bool
@@ -1144,10 +1151,50 @@ struct WorkChatSessionView: View {
   func refreshProviderSignedOutBeforeSend() async {
     guard let key = providerSignInStatusKey, let host = providerSignInHost, host.providerAccountsConnected else { return }
     let provider = chatSummaryContext.provider
+    let generation = WorkFreeModelsStatusStore.shared.generation(for: host)
     let status = try? await host.runProviderAccountsCommand("ai.getStatus", args: [:])
     guard !Task.isCancelled else { return }
+    // The same answer carries the machine's free models; keep it for the card.
+    if let status { WorkFreeModelsStatusStore.shared.record(aiStatus: status, for: host, readAtGeneration: generation) }
     let signedOut = status.map { workProviderSignedOutBeforeSend($0, provider: provider) } ?? false
     providerSignedOutBeforeSendKey = signedOut ? key : nil
+  }
+
+  /// A brand-new person's sign-in card also offers the chat machine's free
+  /// default. Read for the card on screen, on the chat's own machine.
+  /// The card, its machine and that machine's connection: a reconnect reads
+  /// the offer again.
+  var signInFreeModelOfferKey: String? {
+    guard let signIn = shownProviderSignIn else { return nil }
+    let machine = providerSignInHost.map { WorkFreeModelsStatusStore.key(for: $0) } ?? ""
+    return "\(signIn.key)|\(machine)|\(providerSignInHost?.providerAccountsConnected == true)"
+  }
+
+  func refreshSignInFreeModelOffer() async {
+    guard shownProviderSignIn != nil, let host = providerSignInHost, host.providerAccountsConnected,
+          let status = await WorkFreeModelsStatusStore.shared.status(for: host), status.isNewPerson else {
+      signInFreeModelId = nil
+      return
+    }
+    let id = await workFreeDefaultModelId(on: host, status: status)
+    guard !Task.isCancelled else { return }
+    signInFreeModelId = id
+  }
+
+  /// "Use a free model": the chat moves to the free model, the card goes,
+  /// and a turn that stopped on the sign-in sends again on it.
+  func useFreeModelFromSignIn(_ modelId: String, signIn: (key: String, reason: WorkProviderSignInReason)) {
+    guard !signInFreeModelSwitching else { return }
+    signInFreeModelSwitching = true
+    Task { @MainActor in
+      defer { signInFreeModelSwitching = false }
+      // A switch that failed shows its error and keeps the card: a resend
+      // would run on the signed-out model again.
+      guard await onSelectModel(modelId) else { return }
+      dismissedSignInFailureId = signIn.key
+      providerSignedOutBeforeSendKey = nil
+      if signIn.reason == .failedTurn { resendAfterSignIn() }
+    }
   }
 
   /// The turn that stopped on the sign-in sends again by itself, with the
@@ -2300,7 +2347,10 @@ struct WorkChatSessionView: View {
             // Nothing was sent before a no-login card, so nothing sends again.
             if signIn.reason == .failedTurn { resendAfterSignIn() }
           },
-          onDismiss: { dismissedSignInFailureId = signIn.key }
+          onDismiss: { dismissedSignInFailureId = signIn.key },
+          onUseFreeModel: signInFreeModelId.map { modelId in
+            { useFreeModelFromSignIn(modelId, signIn: signIn) }
+          }
         )
         .id(signIn.key)
       } else {
@@ -2392,6 +2442,9 @@ struct WorkChatSessionView: View {
     // Whether the sign-in card stands in for the composer before a send.
     .task(id: providerSignInStatusKey) {
       await refreshProviderSignedOutBeforeSend()
+    }
+    .task(id: signInFreeModelOfferKey) {
+      await refreshSignInFreeModelOffer()
     }
     // A prompt left open when the chat goes away would strand its send
     // forever; answer it for the person.
@@ -3095,13 +3148,15 @@ struct WorkChatSessionView: View {
             copilotAutoTierPending: chatSummaryContext.copilotAutoTierPending,
             onSelectCopilotTiers: { context, auto in pickedCopilotTiers = (context, auto) },
             cloudCatalog: modelPickerCloudCatalog,
+            // The chat's own machine: a chat elsewhere never downloads here.
+            freeModelsMachine: isPersonalChat ? .automatic : (providerSignInHost.map { WorkFreeModelsMachine.host($0) } ?? .unreachable),
             onSelect: { option, pickedReasoning, _, pickedFastMode in
               Task { @MainActor in
                 modelUpdateInFlight = true
                 defer { modelUpdateInFlight = false }
                 let wasCurrentModel = workModelIdsEquivalent(option.id, currentModelId)
                 if !wasCurrentModel {
-                  await onSelectModel(option.id)
+                  _ = await onSelectModel(option.id)
                 }
                 guard !Task.isCancelled else { return }
                 let currentReasoning = chatSummaryContext.reasoningEffort

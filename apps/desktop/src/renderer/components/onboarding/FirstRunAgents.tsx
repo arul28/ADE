@@ -7,6 +7,7 @@ import { settingsMachineScope, SettingsMachineScopeProvider } from "../settings/
 import type { SettingsProviderId } from "../settings/providers/types";
 import { FirstRunAgentRail } from "./FirstRunAgentRail";
 import { prefetchOnboardingDiscovery } from "./FirstRunFlow";
+import { subscribeToolInstalled } from "../../lib/toolsCacheEvents";
 import {
   firstRunAgents,
   firstRunAgentStatus,
@@ -126,6 +127,18 @@ export function FirstRunAgents({
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [pinKey, refresh, remoteTab]);
+
+  // A computer with no agent set up downloads OpenCode at launch, and its
+  // tile turns connected when that lands, not on the next window focus.
+  const opencodeMissing = status != null && status.opencodeBinaryInstalled !== true;
+  useEffect(() => {
+    if (remoteTab || !opencodeMissing) return undefined;
+    const unsubscribe = subscribeToolInstalled("opencode", () => void refresh());
+    // The tools push sends changes only: an install that landed before the
+    // listener is seen by one more read.
+    void refresh();
+    return unsubscribe;
+  }, [opencodeMissing, refresh, remoteTab]);
 
   const agents = useMemo(() => firstRunAgents(), []);
   const tiles = useMemo<AgentTile[]>(

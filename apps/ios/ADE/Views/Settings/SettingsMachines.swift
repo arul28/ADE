@@ -37,6 +37,8 @@ struct SettingsMachine: Identifiable, Equatable {
   /// This machine's own ADE version, from its last hello or its LAN
   /// advertisement. Nil when the phone has not heard it.
   var appVersion: String? = nil
+  /// What its last hello said about its last update (`HostUpdateFacts`).
+  var updateFacts: HostUpdateFacts? = nil
   /// The computer alone ("Arul’s Mac Studio"), when `name` also carries the
   /// install. Rows show it as the title so installs on one computer line up.
   var computerName: String? = nil
@@ -187,6 +189,13 @@ func settingsMachines(
     return nonEmptyTrimmed(host?.runtimeVersion) ?? nonEmptyTrimmed(host?.appVersion)
   }
 
+  /// What the machine's connection's last hello said about its last update.
+  func updateFacts(for key: String?) -> HostUpdateFacts? {
+    guard let key else { return nil }
+    if key != focusedKey, let facts = fleet.machine(for: key)?.updateFacts { return facts }
+    return syncService.hostUpdateFactsByMachineKey[key]
+  }
+
   for machine in account.machines {
     // ADE Cloud is one machine: its lane computers show as one row
     // (`SettingsCloudMachineRow`), never one row each.
@@ -229,6 +238,7 @@ func settingsMachines(
       detail: detail.isEmpty ? nil : detail,
       projects: projects(for: key),
       appVersion: appVersion(for: key, identity: identity),
+      updateFacts: updateFacts(for: key),
       computerName: machine.installLabel == nil ? nil : CloudLaneComputerLabels.label(machineKey: machine.machineKey, hostName: machine.name) ?? machine.rowComputerName,
       install: machine.installLabel
     ))
@@ -252,7 +262,8 @@ func settingsMachines(
       hiddenIdentity: identity ?? "name:\(host.hostName)",
       detail: key == focusedKey ? syncService.lastConnectedRouteKind?.label : nil,
       projects: projects(for: key),
-      appVersion: appVersion(for: key, identity: identity)
+      appVersion: appVersion(for: key, identity: identity),
+      updateFacts: updateFacts(for: key)
     ))
   }
 

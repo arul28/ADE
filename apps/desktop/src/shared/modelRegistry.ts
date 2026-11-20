@@ -1604,6 +1604,7 @@ let activeManifest: ModelManifest | null = null;
 let activeManifestAdeVersion: string | null = null;
 let activeAppDefaults: string[] = [];
 let activeProviderDefaults = new Map<ModelProviderGroup, string[]>();
+let activeFreeDefaults: string[] = [];
 const manifestListeners = new Set<() => void>();
 
 function cloneManifestValue<T>(value: T): T {
@@ -1731,6 +1732,7 @@ export function applyModelManifest(
   activeManifest = manifest;
   activeManifestAdeVersion = adeVersion;
   activeAppDefaults = gatedDefaultIds(manifest.defaults?.app, adeVersion);
+  activeFreeDefaults = gatedDefaultIds(manifest.defaults?.free, adeVersion);
   activeProviderDefaults = new Map();
   for (const [provider, list] of Object.entries(manifest.defaults?.providers ?? {})) {
     if (!isModelProviderGroup(provider)) continue;
@@ -3802,6 +3804,17 @@ export function getAppDefaultModelDescriptor(): ModelDescriptor | undefined {
     if (descriptor && !descriptor.deprecated) return descriptor;
   }
   return getDefaultModelDescriptor("claude") ?? getDefaultModelDescriptor("codex");
+}
+
+/**
+ * The free models a new chat prefers when nothing is signed in, from the
+ * manifest's `defaults.free`, else ADE's own fallback (`shared/freeModels.ts`).
+ * Ids only: free models live in OpenCode's live list, not in this registry.
+ */
+export const FREE_MODEL_FALLBACK_DEFAULT_ID = "opencode/opencode/big-pickle";
+
+export function getFreeModelDefaultIds(): string[] {
+  return activeFreeDefaults.length ? [...activeFreeDefaults] : [FREE_MODEL_FALLBACK_DEFAULT_ID];
 }
 
 /**

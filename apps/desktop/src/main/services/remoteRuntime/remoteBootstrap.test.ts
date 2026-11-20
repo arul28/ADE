@@ -389,6 +389,40 @@ describe("validateRemoteRuntimeInitializeResult", () => {
     expect(info.capabilities.machineProjects.removeCopy).toBe(true);
   });
 
+  it("reads the far brain's update facts onto this computer's clock, and ignores sleep-blind uptime", () => {
+    // These decide when another machine's update card gives up and what it names.
+    vi.useFakeTimers();
+    vi.setSystemTime(5_000_000);
+    try {
+      const read = (runtimeInfo: Record<string, unknown>) => validateRemoteRuntimeInitializeResult({
+        expectedVersion: null,
+        result: { runtimeInfo: { version: "1.2.131", multiProject: true, ...runtimeInfo }, capabilities: { projects: true } },
+      });
+      const info = read({
+        uptimeMs: 1_000,
+        startedAgoMs: 90_000,
+        lastUpdateBlock: {
+          ageMs: 20_000,
+          targetVersion: " 1.2.132 ",
+          holders: [{ pid: 7292, name: "node.exe", path: "C:\\dev\\node.exe" }, { pid: "x", name: "bad" }, { pid: 8, name: " " }],
+        },
+      });
+      expect(info.hostStartedAt).toBe(5_000_000 - 90_000);
+      expect(info.hostUpdateBlock).toEqual({
+        at: 5_000_000 - 20_000,
+        targetVersion: "1.2.132",
+        holders: [{ pid: 7292, name: "node.exe", path: "C:\\dev\\node.exe" }],
+      });
+      // A brain from before `startedAgoMs` sends only uptime, which stops while a
+      // Mac or Linux machine sleeps: no start time beats a wrong one.
+      const older = read({ uptimeMs: 1_000, lastUpdateBlock: { targetVersion: "1.2.132", holders: [] } });
+      expect(older.hostStartedAt).toBeNull();
+      expect(older.hostUpdateBlock).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects a stale single-project runtime", () => {
     expect(() => validateRemoteRuntimeInitializeResult({
       expectedVersion: null,

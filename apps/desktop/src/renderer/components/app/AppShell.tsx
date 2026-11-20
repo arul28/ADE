@@ -44,6 +44,7 @@ import {
   hasConfiguredAiProvider,
   shouldRefreshAiStatusForChatEvent,
 } from "../../lib/aiProviderStatus";
+import { subscribeToolInstalled } from "../../lib/toolsCacheEvents";
 import { hasDismissedGithubReminder } from "../../lib/bannerDismiss";
 import {
   getStoredZoomLevel,
@@ -826,6 +827,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     let refreshSerial = 0;
     let lastChatEventRefreshAt = 0;
     let lastKnownHasProvider = hasConfiguredAiProvider(cachedStatus);
+    let lastKnownOpenCodeInstalled = cachedStatus?.opencodeBinaryInstalled === true;
     const chatEventSubscriptionStartedAt = Date.now();
     const refreshAiStatus = (options: { force?: boolean } = {}) => {
       if (document.visibilityState !== "visible") return;
@@ -834,6 +836,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         if (serial !== refreshSerial) return;
         lastKnownHasProvider = hasConfiguredAiProvider(status);
+        lastKnownOpenCodeInstalled = status.opencodeBinaryInstalled === true;
         setAiStatus(status);
       }).catch(() => {
         if (cancelled) return;
@@ -877,6 +880,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       refreshAiStatus({ force: detail?.force !== false });
     };
     window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
+    // OpenCode landing on this computer (downloaded at launch when no agent
+    // is set up) makes its free models ready. A computer that already
+    // has it ignores the tools cache's pushes: no forced re-probe for them.
+    const unsubscribeOpenCodeInstalled = isRemoteProject
+      ? () => undefined
+      : subscribeToolInstalled("opencode", () => {
+        if (!lastKnownOpenCodeInstalled) refreshAiStatus({ force: true });
+      });
     return () => {
       cancelled = true;
       window.clearTimeout(aiTimer);
@@ -884,6 +895,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
       unsubscribeChatEvents();
+      unsubscribeOpenCodeInstalled();
     };
   }, [currentProjectRoot, isRemoteProject, location.pathname, tabCopyPin?.key]);
 
@@ -1060,6 +1072,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const hasAnyAiProvider = useMemo(() => {
     return hasConfiguredAiProvider(aiStatus);
   }, [aiStatus]);
+  const freeModelsReady = aiStatus?.freeModels?.nothingSignedIn === true && aiStatus.opencodeBinaryInstalled === true;
 
   const commandPaletteBinding = useMemo(
     () => getEffectiveBinding(keybindings, "commandPalette.open", "Mod+K"),
@@ -1208,6 +1221,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           currentProjectRoot={currentProjectRoot}
           githubStatus={githubStatusScopeRef.current === githubStatusScope ? githubStatus : null}
           hasAnyAiProvider={hasAnyAiProvider}
+          freeModelsReady={freeModelsReady}
           aiStatusLoaded={aiStatusLoaded && aiStatus !== null}
           relayHealth={syncRelayHealth}
           navigate={navigate}

@@ -1,4 +1,6 @@
 import { memo, useCallback } from "react";
+import { FREE_MODEL_BADGE_LABELS, type FreeModelBadge as FreeModelBadgeKind } from "../../../../shared/freeModels";
+import { FreeModelBadge } from "./FreeModelBadge";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { Brain, Check, ImageSquare, Lightning, SignIn, Star } from "@phosphor-icons/react";
 import {
@@ -102,6 +104,8 @@ export type ModelListRowProps = {
   onCopilotContextTierChange?: (modelId: string, next: "default" | "long_context") => void;
   /** The list is scoped to this row's provider, so the detail line need not name it. */
   omitProviderInDetail?: boolean;
+  /** A free model's tag (`shared/freeModels.ts`); absent for every other model. */
+  freeBadge?: FreeModelBadgeKind | null;
 };
 
 export const ModelListRow = memo(function ModelListRow({
@@ -130,6 +134,7 @@ export const ModelListRow = memo(function ModelListRow({
   copilotContextTier = "default",
   onCopilotContextTierChange,
   omitProviderInDetail = false,
+  freeBadge = null,
 }: ModelListRowProps) {
   const sub = subProviderLabel(model);
   const showCopilotContextChip = Boolean(onCopilotContextTierChange)
@@ -320,7 +325,7 @@ export const ModelListRow = memo(function ModelListRow({
           aria-disabled={!isAvailable || undefined}
           aria-selected={isActive}
           aria-current={isFocused ? "true" : undefined}
-          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${maxModeBadge ? ", max mode only" : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : needsSignIn ? ", not signed in" : ""}${
+          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${freeBadge ? `, ${FREE_MODEL_BADGE_LABELS[freeBadge].toLowerCase()}` : ""}${maxModeBadge ? ", max mode only" : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : needsSignIn ? ", not signed in" : ""}${
             // This label replaces the descendants' accessible names, so the
             // badge beside the chip is otherwise invisible to a screen reader —
             // and "the server gave you a different tier" is exactly the kind of
@@ -394,6 +399,7 @@ export const ModelListRow = memo(function ModelListRow({
                   Not signed in
                 </span>
               ) : null}
+              {freeBadge ? <FreeModelBadge badge={freeBadge} /> : null}
               {maxModeBadge ? (
                 <span
                   className="inline-flex shrink-0 items-center rounded-full bg-amber-500/[0.12] px-1.5 py-px text-[9px] font-semibold uppercase leading-none text-amber-300/85"

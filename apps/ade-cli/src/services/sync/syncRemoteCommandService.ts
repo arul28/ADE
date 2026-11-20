@@ -7961,6 +7961,19 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     }), "runtime");
   register("ai.antigravitySignInCancel", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
     (await antigravitySignIn()).cancelAntigravitySignIn({ flowId: requireString(payload.flowId, "ai.antigravitySignInCancel requires flowId.") }), "runtime");
+  // ADE's pinned copy of a provider's tool on THIS machine, the same calls as
+  // the desktop's `ai.pinnedToolStatus` / `ai.pinnedToolDownload` actions. The
+  // phone's and the web client's Free page download OpenCode with them.
+  // Reading is a viewer's; a download is a controller's.
+  const pinnedProviderTools = () => import("../../../../desktop/src/main/services/ai/pinnedProviderTools");
+  register("ai.pinnedToolStatus", { viewerAllowed: true }, async (payload) =>
+    (await pinnedProviderTools()).getPinnedProviderToolStatus(
+      requireString(payload.provider, "ai.pinnedToolStatus requires provider."),
+    ), "runtime");
+  register("ai.pinnedToolDownload", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    (await pinnedProviderTools()).startPinnedProviderToolDownload(
+      requireString(payload.provider, "ai.pinnedToolDownload requires provider."),
+    ), "runtime");
   register("ai.listCursorCloudRepositories", { viewerAllowed: true }, async (payload) =>
     requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudRepositories({
       refresh: payload.refresh === true,

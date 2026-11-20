@@ -796,8 +796,10 @@ extension WorkSessionDestinationView {
     }
   }
 
+  /// True when the chat now runs on the model.
   @MainActor
-  func selectModel(_ modelId: String) async {
+  @discardableResult
+  func selectModel(_ modelId: String) async -> Bool {
     do {
       _ = try await syncService.updateChatSession(sessionId: sessionId, modelId: modelId)
       await refreshChatStateAfterAction(forceRemote: true)
@@ -819,9 +821,11 @@ extension WorkSessionDestinationView {
         )
       }
       ADEHaptics.light()
+      return true
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
+      return false
     }
   }
 

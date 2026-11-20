@@ -67,7 +67,29 @@ function onPath(command: string, env: NodeJS.ProcessEnv): boolean {
   }
 }
 
-/** Signs that this machine uses the provider behind a pinned tool, or null for a tool with no rule. */
+/** Copilot's own signs: its CLI, its tokens or its config. */
+function copilotOwnSignals(env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): boolean {
+  return onPath("copilot", env)
+    || hasEnv(withCopilotCarriedEnv(env, platform), COPILOT_TOKEN_ENV_KEYS)
+    || exists(path.join(copilotConfigHome({ env, homeDir: home }), "config.json"));
+}
+
+/**
+ * A GitHub CLI sign-in. Copilot follows that account, but alone it is a weak
+ * sign: most developers have one with no Copilot plan.
+ */
+function ghCliSignedIn(env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): boolean {
+  return ghHostsFiles({ env, homeDir: home, platform }).some(exists);
+}
+
+/** Pinned tools that are not agents: their use or download says nothing about a sign-in. */
+export const NON_AGENT_TOOLS: ReadonlySet<string> = new Set(["opencode", "node", "ffmpeg"]);
+
+/**
+ * Signs that this machine uses the provider behind a pinned tool, or null for
+ * a tool with no rule here. Copilot's rule (both its runtime and its terminal
+ * CLI, one account) is in `selectDemandedAgentTools`.
+ */
 function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): boolean | null {
   const homeArgs = { env, homeDir: home };
   switch (tool) {
@@ -78,13 +100,6 @@ function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, pla
         || exists(path.join(home, ".claude.json"));
     case "codex":
       return onPath("codex", env) || exists(path.join(codexConfigHome(homeArgs), "auth.json"));
-    // The terminal CLI follows the same account as the SDK runtime.
-    case "copilot":
-    case "copilot-cli":
-      return onPath("copilot", env)
-        || hasEnv(withCopilotCarriedEnv(env, platform), COPILOT_TOKEN_ENV_KEYS)
-        || exists(path.join(copilotConfigHome(homeArgs), "config.json"))
-        || ghHostsFiles({ env, homeDir: home, platform }).some(exists);
     case "opencode":
       // OpenCode is also the engine for API-key, OpenRouter and local models.
       // Keys saved only in ADE's own store are not read here: saving one starts
@@ -183,15 +198,33 @@ export function selectDemandedAgentTools(pinned: readonly string[], args: Demand
   // download would keep itself current forever.
   const usage = policy === "off" ? {} : readToolUsage(toolsRoot);
   const now = Date.now();
-  const fetch: string[] = [];
-  const skip: string[] = [];
-  for (const tool of pinned) {
+  const wanted = new Set<string>();
+  // Some agent is set up here: used lately, or a sign of it beyond a GitHub
+  // CLI sign-in (`ghCliSignedIn`).
+  let agentSetUp = false;
+  for (const tool of policy === "off" ? [] : pinned) {
     const usedAt = usage[tool];
     const recentlyUsed = usedAt !== undefined && now - usedAt < RECENT_TOOL_USE_MS;
-    const wanted = policy === "off"
-      ? false
-      : recentlyUsed || (policy === "signals" && (providerSignals(tool, env, home, platform) ?? false));
-    (wanted ? fetch : skip).push(tool);
+    const copilot = tool === "copilot" || tool === "copilot-cli";
+    // Copilot's own signs set it up; a GitHub CLI sign-in alone only fetches it.
+    const copilotOwn = copilot && policy === "signals" && copilotOwnSignals(env, home, platform);
+    const signals = policy === "signals" && (copilot
+      ? copilotOwn || ghCliSignedIn(env, home, platform)
+      : providerSignals(tool, env, home, platform) ?? false);
+    if (!recentlyUsed && !signals) continue;
+    wanted.add(tool);
+    if (NON_AGENT_TOOLS.has(tool) || agentSetUp) continue;
+    agentSetUp = recentlyUsed || !copilot || copilotOwn;
   }
-  return { fetch, skip };
+  // A computer with no agent set up gets OpenCode anyway: its free models
+  // need no account and no key, so they are the only chat such a person can
+  // start. Only under `signals`: an ADE Cloud computer (`used`) has every
+  // sign-in copied onto it.
+  if (policy === "signals" && pinned.includes("opencode") && !agentSetUp) {
+    wanted.add("opencode");
+  }
+  return {
+    fetch: pinned.filter((tool) => wanted.has(tool)),
+    skip: pinned.filter((tool) => !wanted.has(tool)),
+  };
 }

@@ -364,6 +364,8 @@ final class WorkProviderSignInController: ObservableObject {
     self.awaitingCode = awaitingCode
     switch state {
     case "succeeded":
+      // The machine has a sign-in now: its free-models answer is out of date.
+      if let host { WorkFreeModelsStatusStore.shared.invalidate(for: host) }
       phase = .done
       self.message = nil
     case "verifying":
@@ -429,6 +431,9 @@ struct WorkProviderSignInCard: View {
   let reason: WorkProviderSignInReason
   let onSignedIn: () -> Void
   let onDismiss: () -> Void
+  /// A brand-new person on a machine with free models: switch the chat to the
+  /// machine's free default instead of signing in. Nil hides the offer.
+  let onUseFreeModel: (() -> Void)?
   @StateObject private var controller: WorkProviderSignInController
   @State private var code = ""
   @State private var copied = false
@@ -441,13 +446,15 @@ struct WorkProviderSignInCard: View {
     instanceId: String?,
     reason: WorkProviderSignInReason = .failedTurn,
     onSignedIn: @escaping () -> Void,
-    onDismiss: @escaping () -> Void
+    onDismiss: @escaping () -> Void,
+    onUseFreeModel: (() -> Void)? = nil
   ) {
     self.provider = provider
     self.machineName = machineName
     self.reason = reason
     self.onSignedIn = onSignedIn
     self.onDismiss = onDismiss
+    self.onUseFreeModel = onUseFreeModel
     _controller = StateObject(wrappedValue: WorkProviderSignInController(provider: provider, host: host, instanceId: instanceId))
   }
 
@@ -498,6 +505,10 @@ struct WorkProviderSignInCard: View {
             .foregroundStyle(ADEColor.textMuted)
             .fixedSize(horizontal: false, vertical: true)
         }
+      }
+
+      if let onUseFreeModel, !controller.signingIn, controller.phase != .done {
+        freeModelOffer(onUseFreeModel)
       }
 
       if let message = controller.message, !message.isEmpty {
@@ -560,6 +571,24 @@ struct WorkProviderSignInCard: View {
           cancelButton
         }
       }
+    }
+  }
+
+  /// The other way in for a new person: chat now on a free model.
+  private func freeModelOffer(_ action: @escaping () -> Void) -> some View {
+    HStack(spacing: 8) {
+      Text("No account yet?")
+        .font(.footnote)
+        .foregroundStyle(ADEColor.textSecondary)
+      Button(action: action) {
+        Label("Use a free model", systemImage: "gift")
+          .font(.footnote.weight(.semibold))
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(ADEColor.success)
+      .accessibilityIdentifier("Work.SignIn.UseFreeModel")
+      .accessibilityHint("Switches this chat to a free model. No account or key needed.")
+      Spacer(minLength: 0)
     }
   }
 

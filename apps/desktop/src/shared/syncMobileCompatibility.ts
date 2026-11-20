@@ -212,6 +212,10 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "ai.antigravitySignInStatus",
   "ai.antigravitySignInComplete",
   "ai.antigravitySignInCancel",
+  // The Free page's "Get free models": ADE's pinned OpenCode on the chat's
+  // machine. Optional: an older host leaves the page without a download.
+  "ai.pinnedToolStatus",
+  "ai.pinnedToolDownload",
   // Cursor Cloud watch/open. iOS and the web client presence-gate inbound
   // sync on these; optional so an older phone against a newer host does not
   // go limited, and an older host simply omits the actions.

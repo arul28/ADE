@@ -4396,6 +4396,8 @@ final class SyncService: ObservableObject {
   /// per machine so a focus switch never shows one machine's track on
   /// another. A machine that sent no version has no entry.
   @Published private(set) var hostAppVersionByMachineKey: [String: String] = [:]
+  /// What each machine's last hello said about its last update (`HostUpdateFacts`).
+  @Published private(set) var hostUpdateFactsByMachineKey: [String: HostUpdateFacts] = [:]
   /// The machine the project's CTO lives on (account setting
   /// `cto.homeMachine`), as a fleet key. Nil = the primary machine.
   @Published var ctoHomeMachineKey: String?
@@ -16372,6 +16374,15 @@ final class SyncService: ObservableObject {
     return cached.catalog
   }
 
+  #if DEBUG
+  /// Fixture screens: a catalog the model picker reads as this host's, with
+  /// no machine behind it.
+  func seedPreviewChatModelCatalog(_ catalog: AgentChatModelCatalog) {
+    chatModelCatalogCache[chatModelsCacheKey(provider: "catalog:preview")] =
+      ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: Date())
+  }
+  #endif
+
   @MainActor
   func getChatModelCatalog(
     mode: String = "refresh-stale",
@@ -23575,6 +23586,10 @@ final class SyncService: ObservableObject {
       let version = syncNonEmpty(brain?["appVersion"] as? String)
       if hostAppVersionByMachineKey[machineKey] != version {
         hostAppVersionByMachineKey[machineKey] = version
+      }
+      let facts = HostUpdateFacts.fromHello(brain, now: Date())
+      if hostUpdateFactsByMachineKey[machineKey] != facts {
+        hostUpdateFactsByMachineKey[machineKey] = facts
       }
     }
     // A user-initiated transition records the machine it LEFT before

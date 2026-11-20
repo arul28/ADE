@@ -217,7 +217,15 @@ protocol ProviderAccountsHost: AnyObject {
   var canChangeProviderAccounts: Bool { get }
   /// A dropped connection, as opposed to a host that answered with an error.
   var providerAccountsConnected: Bool { get }
+  /// The machine advertises this one command (free models ask before they
+  /// offer a download the machine cannot run).
+  func supportsProviderAccountsAction(_ action: String) -> Bool
   func runProviderAccountsCommand(_ action: String, args: [String: Any]) async throws -> Any
+}
+
+extension ProviderAccountsHost {
+  /// A host that cannot say tries the command and reports its failure.
+  func supportsProviderAccountsAction(_ action: String) -> Bool { true }
 }
 
 private let providerAccountsCommandTimeout: UInt64 = 30_000_000_000
@@ -226,6 +234,7 @@ extension SyncService: ProviderAccountsHost {
   var supportsProviderAccounts: Bool { supportsRemoteAction("providerAccounts.list") }
   var canChangeProviderAccounts: Bool { canInvokeRemoteAction("providerAccounts.setDefault") }
   var providerAccountsConnected: Bool { connectionState == .connected }
+  func supportsProviderAccountsAction(_ action: String) -> Bool { supportsRemoteAction(action) }
 
   func runProviderAccountsCommand(_ action: String, args: [String: Any]) async throws -> Any {
     try requireInvokableRemoteAction(action)
@@ -246,6 +255,7 @@ extension MachineConnection: ProviderAccountsHost {
   var supportsProviderAccounts: Bool { supportsAction("providerAccounts.list") }
   var canChangeProviderAccounts: Bool { phase == .live && supportsAction("providerAccounts.setDefault") }
   var providerAccountsConnected: Bool { phase == .live }
+  func supportsProviderAccountsAction(_ action: String) -> Bool { supportsAction(action) }
 
   func runProviderAccountsCommand(_ action: String, args: [String: Any]) async throws -> Any {
     guard phase == .live else {

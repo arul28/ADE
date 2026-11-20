@@ -72,6 +72,8 @@ final class MachineConnection {
   /// The machine's ADE version from the last hello (`brain.appVersion`). Nil
   /// for an older host. It names the machine's update track (the Beta chip).
   private(set) var hostAppVersion: String?
+  /// See `HostUpdateFacts`; replaced by every hello like `hostAppVersion`.
+  private(set) var hostUpdateFacts: HostUpdateFacts?
 
   /// Called after any change the fleet publishes (phase, roster, name).
   var onChange: (() -> Void)?
@@ -385,6 +387,7 @@ final class MachineConnection {
     // Every hello replaces it: a machine that moved to an older ADE (no
     // version in the hello) must not keep the last one.
     hostAppVersion = nonEmptyTrimmed((payload["brain"] as? [String: Any])?["appVersion"] as? String)
+    hostUpdateFacts = HostUpdateFacts.fromHello(payload["brain"] as? [String: Any], now: Date())
     chunkAssembler = SyncEnvelopeChunkAssembler()
     socket = result.task
     liveRouteKind = syncConnectionRouteKind(result.address)

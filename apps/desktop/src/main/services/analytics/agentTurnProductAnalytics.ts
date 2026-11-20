@@ -12,6 +12,7 @@ import type { ProductAnalyticsService } from "./productAnalyticsService";
 import { derivedEventId } from "./analyticsEventId";
 import { detectInstallSource } from "./installSource";
 import { classifyProviderAccountRefusal } from "../../../shared/providerAccountRefusal";
+import { isFreeModelId } from "../../../shared/freeModels";
 
 type AgentTurnAnalytics = Pick<ProductAnalyticsService, "captureInternal">;
 
@@ -581,6 +582,28 @@ export function captureAgentTurnSettledAnalytics(args: {
       errorKind: event.status === "failed" ? failedTurnKind(event) : null,
     },
   });
+
+  // A chat on a free model (nothing signed in, or picked from the Free page):
+  // at most one fact per chat each day, on its first settled turn on one
+  // that day (the dedupe store clears at the UTC day roll, and the daily
+  // event cap still applies). The model itself stays in `$ai_generation` above.
+  if (isFreeModelId(event.model)) {
+    analytics.captureInternal({
+      event: "ade_feature_used",
+      surface: "api",
+      projectId,
+      sessionId: event.sessionId,
+      dedupeKey: `free-model-chat:${event.sessionId}`,
+      minimumIntervalMs: 31 * 24 * 60 * 60_000,
+      properties: {
+        feature: "chat",
+        action: "free_model_used",
+        outcome,
+        provider: "opencode",
+        source: "runtime",
+      },
+    });
+  }
 
   analytics.captureInternal({
     event: "ade_work_session_completed",

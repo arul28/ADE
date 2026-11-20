@@ -11,6 +11,7 @@ import type {
   RemoteRuntimeTargetInput,
   RemoteRuntimeTargetRoute,
   RemoteRuntimeTargetRouteSource,
+  RemoteRuntimeUpdateBlock,
 } from "../../../shared/types";
 import { isTailnetHostname } from "../../../shared/tailnet";
 import { compareUpdateVersions } from "../../../shared/updateVersions";
@@ -717,132 +718,12 @@ export function isMachineVersionCurrent(
 }
 
 /**
- * What "Update & restart" left behind for one machine. The host's reply is not
- * the outcome: an update that is still in flight (`pendingVersion`) is only
- * done when the machine comes back reporting that version.
- */
-export type MachineUpdateAttempt = {
-  ok: boolean;
-  message: string;
-  /** The version the machine should come back on; null when nothing is in flight. */
-  pendingVersion: string | null;
-  /** True while the far app is still downloading, which takes longer to land. */
-  downloading: boolean;
-  startedAtMs: number;
-  updateInstallMode?: RemoteRuntimeConnectionStatus["updateInstallMode"];
-  downloadUrl?: string | null;
-};
-
-/** Long enough for an app swap plus the brain restart behind it. */
-export const MACHINE_UPDATE_INSTALL_GRACE_MS = 5 * 60_000;
-/** A download first, then the same install. */
-export const MACHINE_UPDATE_DOWNLOAD_GRACE_MS = 35 * 60_000;
-
-export function machineUpdateGraceMs(attempt: MachineUpdateAttempt): number {
-  return attempt.downloading ? MACHINE_UPDATE_DOWNLOAD_GRACE_MS : MACHINE_UPDATE_INSTALL_GRACE_MS;
-}
-
-/** Turn the host's reply into an attempt the card can check against the machine. */
-export function machineUpdateAttemptFromResult(
-  result: {
-    ok: boolean;
-    message?: string | null;
-    updateApplied?: boolean;
-    targetVersion?: string | null;
-    route?: string;
-    pendingVersion?: string | null;
-    updateInstallMode?: RemoteRuntimeConnectionStatus["updateInstallMode"];
-    downloadUrl?: string | null;
-  },
-  fallbackMessage: string,
-  nowMs: number,
-): MachineUpdateAttempt {
-  // Hosts from before `pendingVersion` only had the standalone route, where an
-  // applied update means the target is what should come back.
-  const pendingVersion = !result.ok
-    ? null
-    : result.pendingVersion !== undefined
-      ? result.pendingVersion?.trim() || null
-      : result.updateApplied
-        ? result.targetVersion?.trim() || null
-        : null;
-  return {
-    ok: result.ok,
-    message: result.message?.trim() || fallbackMessage,
-    pendingVersion,
-    // The terminal route has staged the runtime but still downloads the app
-    // installer, so it gets the download grace too.
-    downloading: result.ok
-      && (result.route === "desktop_app" || result.route === "terminal")
-      && result.updateApplied === false
-      && pendingVersion != null,
-    startedAtMs: nowMs,
-    updateInstallMode: result.updateInstallMode,
-    downloadUrl: result.downloadUrl,
-  };
-}
-
-export type MachineUpdateStatus = {
-  ok: boolean;
-  message: string;
-  /** Still waiting on the machine; the card keeps "Update & restart" busy. */
-  inFlight: boolean;
-};
-
-/**
- * Check an attempt against the machine as it is now. Landed: the machine
- * reports the version (or newer). Not landed in time: say so plainly, with
- * the version it is actually on, instead of leaving "reconnecting…" up.
- */
-export function describeMachineUpdateAttempt(
-  attempt: MachineUpdateAttempt,
-  machine: { connected: boolean; version: string | null },
-  nowMs: number,
-): MachineUpdateStatus {
-  const pending = attempt.pendingVersion;
-  if (!pending) return { ok: attempt.ok, message: attempt.message, inFlight: false };
-  if (machine.connected && machine.version && !isMachineVersionOutdated(machine.version, pending)) {
-    return { ok: true, message: `Updated to ${machine.version}.`, inFlight: false };
-  }
-  if (nowMs - attempt.startedAtMs < machineUpdateGraceMs(attempt)) {
-    return { ok: true, message: attempt.message, inFlight: true };
-  }
-  if (machine.connected) {
-    return {
-      ok: false,
-      message: `Still on ${machine.version ?? "an older version"} — the update to ${pending} didn't install on that machine. Press Update to try again.`,
-      inFlight: false,
-    };
-  }
-  return {
-    ok: false,
-    message: `Not back yet after the update to ${pending}. Check that ADE is running on that machine.`,
-    inFlight: false,
-  };
-}
-
-/**
  * The key a machine's color is picked from. The account's machine key when the
  * machine has one, so every device that can see it lands on the same color;
  * the saved target's id otherwise.
  */
 export function machineColorKey(target: Pick<RemoteRuntimeTarget, "id" | "pairedMachine">): string {
   return target.pairedMachine?.machineKey?.trim() || target.id;
-}
-
-/**
- * Where an update to one machine is, for the row: being asked about, being
- * sent, or waiting on the machine to come back on the new version.
- */
-export function machineUpdatePhase(args: {
-  checking: boolean;
-  sending: boolean;
-  status: MachineUpdateStatus | null;
-}): "checking" | "sending" | "restarting" | null {
-  if (args.sending) return "sending";
-  if (args.status?.inFlight) return "restarting";
-  if (args.checking) return "checking";
-  return null;
 }
 
 /** A connected machine and the ADE version it runs, as an update needs it. */
@@ -863,6 +744,10 @@ export type ConnectedMachine = {
   arch?: string | null;
   updateInstallMode?: RemoteRuntimeConnectionStatus["updateInstallMode"];
   downloadUrl?: string | null;
+  /** See `RemoteRuntimeConnectionStatus.hostStartedAt`. */
+  hostStartedAt?: number | null;
+  /** See `RemoteRuntimeConnectionStatus.hostUpdateBlock`. */
+  hostUpdateBlock?: RemoteRuntimeUpdateBlock | null;
   /** False when this client cannot ask it to update (`RemoteRuntimeCapabilities.remoteUpdate`). */
   canUpdate?: boolean;
 };
@@ -885,6 +770,8 @@ export function connectedMachinesFromSnapshot(
         arch: connection.arch ?? connection.target.lastSeenArch ?? null,
         updateInstallMode: connection.updateInstallMode,
         downloadUrl: connection.downloadUrl,
+        hostStartedAt: connection.hostStartedAt ?? null,
+        hostUpdateBlock: connection.hostUpdateBlock ?? null,
         canUpdate: connection.capabilities?.remoteUpdate !== false,
       };
     });

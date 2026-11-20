@@ -4,7 +4,8 @@
  * The prompt box stays mounted and usable below it, so nothing the person
  * typed moves or hides while a provider is signed out. Two states:
  * - the strip: one line that says the provider is not signed in on the chat's
- *   machine, with a "Sign in" button;
+ *   machine, with a "Sign in" button (and, for a brand-new person, "Use a
+ *   free model");
  * - the card: `ProviderSignInComposer`, shown after "Sign in" or at once when
  *   a send just failed on the sign-in. The card draws its own frame.
  *
@@ -12,6 +13,7 @@
  * tune it in one place.
  */
 import { memo, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Gift } from "@phosphor-icons/react";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { providerColor } from "../usage/providerColors";
@@ -24,6 +26,7 @@ export const ProviderSignInStrip = memo(function ProviderSignInStrip({
   runsHere,
   adeCloudPass = false,
   onSignIn,
+  onUseFreeModel,
 }: {
   provider: string;
   machineName: string;
@@ -32,6 +35,11 @@ export const ProviderSignInStrip = memo(function ProviderSignInStrip({
   /** Claude on ADE Cloud: what it needs there is a pass, not a sign-in. */
   adeCloudPass?: boolean;
   onSignIn: () => void;
+  /**
+   * Shown only to a brand-new person (nothing signed in, never was): switch
+   * this chat to a free model instead (`shared/freeModels.ts`).
+   */
+  onUseFreeModel?: () => void;
 }) {
   // A pass is Claude's own (the account's plan), not Claude Code's sign-in.
   const label = adeCloudPass ? "Claude" : providerSignInSpec(provider)?.label ?? provider;
@@ -58,6 +66,19 @@ export const ProviderSignInStrip = memo(function ProviderSignInStrip({
       <span className="ade-psi-text ade-psi-short">
         <span className="ade-psi-lead">{adeCloudPass ? `${label}: needs a pass` : `${label}: not signed in`}</span>
       </span>
+      {onUseFreeModel ? (
+        <button
+          type="button"
+          className="kit-btn ade-psi-button ade-psi-free"
+          data-size="sm"
+          data-testid="provider-sign-in-use-free-model"
+          onClick={onUseFreeModel}
+        >
+          <Gift size={11} weight="fill" aria-hidden className="ade-psi-free-mark" />
+          <span className="ade-psi-long">Use a free model</span>
+          <span className="ade-psi-short">Free model</span>
+        </button>
+      ) : null}
       <button type="button" className="kit-btn ade-psi-button" data-size="sm" onClick={onSignIn}>
         Sign in
       </button>

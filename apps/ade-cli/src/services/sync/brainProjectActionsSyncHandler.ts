@@ -178,6 +178,7 @@ import {
   verifyClerkAccountAttestation,
   type VerifiedAccountAttestation,
 } from "../account/accountAttestationVerifier";
+import { hostUpdateFacts } from "../../lib/hostUpdateFacts";
 
 type BrainProjectActionsSyncHandlerArgs = {
   logger: Logger;
@@ -771,6 +772,7 @@ export function createBrainProjectActionsSyncHandler(
     siteId: localSiteId,
     dbVersion: 0,
     ...(args.appVersion?.trim() ? { appVersion: args.appVersion.trim() } : {}),
+    ...hostUpdateFacts(),
   });
 
   const sendActionResult = async <TPayload>(

@@ -82,6 +82,22 @@
   flex: none;
 }
 
+/* "Use a free model": the free models' sky mark, so it reads as the same
+   thing the picker's Free page lists. */
+.ade-psi-free {
+  gap: 4px;
+}
+
+.ade-psi-free-mark {
+  flex: none;
+  color: var(--color-sky-300, #7dd3fc);
+}
+
+.ade-psi-free .ade-psi-long,
+.ade-psi-free .ade-psi-short {
+  flex: none;
+}
+
 /* The kit's 1px focus ring is faint on the tinted strip: a clear 2px ring in
    the provider tint, inside the strip so the box edge does not cut it. */
 .ade-psi-button:focus-visible {
