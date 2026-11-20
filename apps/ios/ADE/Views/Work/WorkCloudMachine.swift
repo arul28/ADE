@@ -201,8 +201,10 @@ struct CloudLaneStateLines: View {
     let instance = syncService.cloudServerInstance(fleetKey: fleetKey)
     let deleting = store.deletingSoon(instanceId: instance?.id)
     let state = cloudLaneState(fleetKey: fleetKey, sync: syncService, store: store)
-    // A chat's next message makes the new computer: its line offers the size.
-    let sizeKey = state == .deleted && context == .chat
+    // A chat's next message makes the new computer: its line offers the size,
+    // once the account's sizes are known (no menu with nothing in it).
+    let tiers = cloudPhoneTiers(store.account?.catalog)
+    let sizeKey = state == .deleted && context == .chat && !tiers.isEmpty
       ? fleetKey.flatMap { syncService.cloudAccountMachineKey(fleetKey: $0)?.lowercased() }
       : nil
     CloudLaneStateLinesContent(
@@ -215,7 +217,7 @@ struct CloudLaneStateLines: View {
       context: context,
       sizePick: sizeKey.map { key in
         CloudNewComputerSizePick(
-          tiers: cloudPhoneTiers(store.account?.catalog),
+          tiers: tiers,
           picked: store.newComputerSizes[key],
           pick: { store.pickNewComputerSize(machineKey: key, sizeId: $0) }
         )

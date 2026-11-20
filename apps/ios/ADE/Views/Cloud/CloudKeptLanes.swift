@@ -100,15 +100,20 @@ struct CloudNewComputerSizeMenu: View {
     let currentId = pick.picked ?? cloudQueueSizeId
     let current = pick.tiers.first { $0.id == currentId }
     Menu {
-      Picker("Size of the new computer", selection: Binding(get: { currentId }, set: { pick.pick($0) })) {
+      Section("Size of the new computer") {
         ForEach(pick.tiers) { tier in
-          Label {
-            Text(tier.label)
-            Text("\(tier.specs.joined(separator: ", ")). \(tier.runs).")
-          } icon: {
-            Image(systemName: tier.symbol)
+          // A button, not a picker row: a menu button shows its second line.
+          Button {
+            pick.pick(tier.id)
+          } label: {
+            Label {
+              Text(tier.label)
+              Text("\(tier.specs.joined(separator: ", ")). \(tier.rateLine).")
+            } icon: {
+              Image(systemName: tier.id == currentId ? "checkmark" : tier.symbol)
+            }
           }
-          .tag(tier.id)
+          .accessibilityAddTraits(tier.id == currentId ? .isSelected : [])
         }
       }
     } label: {

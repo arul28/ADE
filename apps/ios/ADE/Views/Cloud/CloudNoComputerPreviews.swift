@@ -27,6 +27,13 @@ enum CloudNoComputerPreviews {
         branch: "fix-flaky-upload-test",
         sizeLabel: cloudQueueSizeLabel(account: nil)
       )))
+    case "duo-cloud-chat-deleted-picked":
+      // A kept lane whose next computer the person sized Large in the line's menu.
+      return AnyView(CloudChatFixture(state: .deleted, deleted: CloudDeletedComputerFacts(
+        fate: cloudComputerFateSentence(.idle, deletedAt: 1_763_424_000_000),
+        branch: "fix-flaky-upload-test",
+        sizeLabel: cloudQueueSizeLabel(account: nil)
+      ), pickedSize: "large"))
     case "duo-cloud-chat-deleted-blocked":
       return AnyView(CloudChatFixture(state: .deleted, deleted: CloudDeletedComputerFacts(
         fate: cloudComputerFateSentence(.plan, deletedAt: 1_763_424_000_000),
@@ -130,6 +137,35 @@ private struct CloudChatFixture: View {
   var deletingDays: Int?
   var deleted: CloudDeletedComputerFacts = .unknown
   var queued: [CloudChatQueuedMessage] = []
+  /// The size picked in the line's menu when the fixture opens.
+  var pickedSize: String?
+  @ObservedObject private var store = AccountCloudStore.shared
+
+  /// The four sizes, as a signed-in account's catalog lists them.
+  private static let tiers: [CloudPhoneTier] = [
+    CloudPhoneTier(id: "small", label: "Small", type: "default", cpu: 2, memoryGb: 4, multiplierMilli: 1000, diskMaxGb: 12),
+    CloudPhoneTier(id: "medium", label: "Medium", type: "default", cpu: 4, memoryGb: 8, multiplierMilli: 2000, diskMaxGb: 20),
+    CloudPhoneTier(id: "large", label: "Large", type: "vm", cpu: 4, memoryGb: 8, multiplierMilli: 5000, diskMaxGb: 50),
+    CloudPhoneTier(id: "xlarge", label: "X-Large", type: "vm", cpu: 4, memoryGb: 16, multiplierMilli: 8000, diskMaxGb: 100),
+  ]
+
+  /// The deleted line's size menu, on the real store, as `CloudLaneStateLines` passes it.
+  private var sizePick: CloudNewComputerSizePick? {
+    guard state == .deleted else { return nil }
+    return CloudNewComputerSizePick(
+      tiers: Self.tiers,
+      picked: store.newComputerSizes["mk-cloud"],
+      pick: { store.pickNewComputerSize(machineKey: "mk-cloud", sizeId: $0) }
+    )
+  }
+
+  private var shownDeleted: CloudDeletedComputerFacts {
+    var facts = deleted
+    if let picked = store.newComputerSizes["mk-cloud"], let tier = Self.tiers.first(where: { $0.id == picked }) {
+      facts.sizeLabel = tier.label
+    }
+    return facts
+  }
 
   var body: some View {
     NavigationStack {
@@ -143,7 +179,7 @@ private struct CloudChatFixture: View {
         .padding(16)
       }
       .safeAreaInset(edge: .top, spacing: 0) {
-        CloudLaneStateLinesContent(state: state, deletingDays: deletingDays, deletingSizeLabel: cloudQueueSizeLabel(account: nil), deleted: deleted)
+        CloudLaneStateLinesContent(state: state, deletingDays: deletingDays, deletingSizeLabel: cloudQueueSizeLabel(account: nil), deleted: shownDeleted, sizePick: sizePick)
       }
       .safeAreaInset(edge: .bottom, spacing: 0) {
         VStack(spacing: 0) {
@@ -161,6 +197,7 @@ private struct CloudChatFixture: View {
         account: nil,
         queued: queued.isEmpty ? [:] : [AccountCloudStore.chatKey(machineKey: "mk-cloud", chatId: "chat-1"): queued]
       )
+      AccountCloudStore.shared.pickNewComputerSize(machineKey: "mk-cloud", sizeId: pickedSize)
     }
   }
 

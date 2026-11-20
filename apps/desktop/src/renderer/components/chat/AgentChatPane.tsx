@@ -19733,7 +19733,10 @@ export function AgentChatPane({
    * Codex commands). Everything else is sent to the provider as a turn
    * and waits for the sign-in like a message.
    */
+  const deletedComputerBlocked = deletedComputerFacts?.blocked != null;
   const sendRunsWithoutSignIn = useCallback((text: string) => {
+    // A blocked deleted-computer chat has no computer to run anything on.
+    if (deletedComputerBlocked) return false;
     if (text === "/login") return providerSignInNeed != null;
     const hasExtras = attachments.length > 0 || contextAttachments.length > 0
       || iosElementContextItems.length > 0 || appControlContextItems.length > 0 || builtInBrowserContextItems.length > 0;
@@ -19748,7 +19751,7 @@ export function AgentChatPane({
         || /^\/goal(?:\s+(?:show|status|clear|reset|none))?$/i.test(text);
     }
     return false;
-  }, [appControlContextItems.length, attachments.length, builtInBrowserContextItems.length, claudeUsageAvailable, contextAttachments.length, iosElementContextItems.length, providerSignInNeed, selectedSessionId, sessionProvider]);
+  }, [appControlContextItems.length, attachments.length, builtInBrowserContextItems.length, claudeUsageAvailable, contextAttachments.length, deletedComputerBlocked, iosElementContextItems.length, providerSignInNeed, selectedSessionId, sessionProvider]);
   useEffect(() => {
     openSignInForLoginCommandRef.current = () => {
       if (!providerSignInNeed) return false;

@@ -719,7 +719,7 @@ export function applyBrowserMockCloud(ade: any): void {
       savedChats: mockDeletedComputerChats(now),
       // The account's queue: a message to a deleted computer's chat makes a new one.
       sendChatMessage: async (args: { messageId: string }) => {
-        console.info("[browser mock] cloud.sendChatMessage", args);
+        console.info(`[browser mock] cloud.sendChatMessage ${JSON.stringify(args)}`);
         return { state: "sent", messageId: args.messageId, wake: { state: "launching", launchId: null } };
       },
     } : {}),

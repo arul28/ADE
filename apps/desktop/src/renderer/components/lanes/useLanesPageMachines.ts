@@ -286,10 +286,13 @@ export function useLanesPageMachines({
     setForeignLaneSelection(projectStateKey, key);
   }, [projectStateKey]);
   // A resting ADE Cloud lane is listed under its saved-chats id until its
-  // computer connects, then under the connection's id. The lane the person
-  // opened stays selected across that move (lane ids are unique per lane).
+  // computer connects, then under the connection's id; a deleted computer's
+  // lane under `ade-cloud-deleted` until its new computer lists it. The lane
+  // the person opened stays selected across that move (lane ids are unique
+  // per lane).
   const movedForeignKey = useMemo(() => {
-    if (!foreignSelectedKey?.startsWith(SAVED_CHATS_MACHINE_PREFIX) || foreignRowByKey.has(foreignSelectedKey)) return null;
+    if (!foreignSelectedKey || foreignRowByKey.has(foreignSelectedKey)) return null;
+    if (!foreignSelectedKey.startsWith(SAVED_CHATS_MACHINE_PREFIX) && !foreignSelectedKey.startsWith(`${DELETED_CLOUD_COMPUTER_MACHINE_ID}:`)) return null;
     const laneId = foreignSelectedKey.slice(foreignSelectedKey.lastIndexOf(":") + 1);
     const matches = [...foreignRowByKey].filter(([, row]) => row.lane.id === laneId);
     return matches.length === 1 ? matches[0]![0] : null;
