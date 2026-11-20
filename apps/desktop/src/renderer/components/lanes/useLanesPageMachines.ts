@@ -146,6 +146,23 @@ export function useLanesPageMachines({
   const deletedCloudLanes = useCloudLanesWithoutComputerRows();
   const { deletedByLaneId, deletingSoonByLaneId } = useCloudLaneRowNotes(deletedCloudLanes);
 
+  const activeMachine = allMachineLanes.machines[0] ?? null;
+  const activeMachineId = activeMachine?.machineId ?? null;
+  // The union carries no slice for the tab's own machine, so its `online`
+  // stays true after that machine drops. The tab's copy pin follows the
+  // connection, and is null while that machine is offline. An offline own
+  // computer is hidden, as in Work: its lanes leave the list and the page
+  // says so in one line. An ADE Cloud computer that is asleep is not offline.
+  const tabCopyPin = useTabCopyPin();
+  const isCloudMachine = useCallback(
+    (machine: { hostname: string | null; machineId: string }) => isAdeCloudComputer({ hostname: machine.hostname, machineKey: machine.machineId }, cloudIndex),
+    [cloudIndex],
+  );
+  const tabMachineOffline = activeMachine?.binding?.kind === "remote" && tabCopyPin == null
+    && !isCloudMachine(activeMachine);
+  // The tab machine's own lanes leave the list while it is offline.
+  const shownLocalLanes = tabMachineOffline ? NO_LANES : localLanes;
+
   const foreignLanes = useMemo<ForeignLaneModel & { deletedLaneByKey: ReadonlyMap<string, CloudLaneWithoutComputerRow> }>(() => {
     const rowByKey = new Map<string, MachineLane>();
     const viewLanes: LaneSummary[] = [];
@@ -161,7 +178,8 @@ export function useLanesPageMachines({
       else realLanesByMachineId.set(row.machineId, [row.lane]);
     }
     // A lane that a computer lists again (another device started it) is that computer's row.
-    const listedLaneIds = new Set([...localLanes.map((lane) => lane.id), ...[...rowByKey.values()].map((row) => row.lane.id)]);
+    // Only the rows the list shows count: the tab's own lanes leave it while that machine is offline.
+    const listedLaneIds = new Set([...shownLocalLanes.map((lane) => lane.id), ...[...rowByKey.values()].map((row) => row.lane.id)]);
     for (const deleted of deletedCloudLanes) {
       if (listedLaneIds.has(deleted.laneId)) continue;
       const base = deleted.lane ?? (deleted.kept ? keptLaneSummary(deleted.kept) : null);
@@ -193,7 +211,7 @@ export function useLanesPageMachines({
       viewLanes.push({ ...row.lane, id: row.key });
     }
     return { rowByKey, viewLanes, realLanesByMachineId, deletedLaneByKey };
-  }, [allMachineLanes, deletedCloudLanes, goneMachineIds, localLanes, restingMachineIds]);
+  }, [allMachineLanes, deletedCloudLanes, goneMachineIds, restingMachineIds, shownLocalLanes]);
   const deletedLaneByKey = foreignLanes.deletedLaneByKey;
   const deletedLaneByKeyRef = useRef(deletedLaneByKey);
   deletedLaneByKeyRef.current = deletedLaneByKey;
@@ -204,17 +222,11 @@ export function useLanesPageMachines({
   ));
   const foreignRowByKeyRef = useRef(foreignRowByKey);
   foreignRowByKeyRef.current = foreignRowByKey;
-  const activeMachine = allMachineLanes.machines[0] ?? null;
-  const activeMachineId = activeMachine?.machineId ?? null;
   /**
    * The pin of the tab's own lanes (the rows from the tab's copy): that
    * machine's address from the router. Null while the copy is offline or no
    * project is open; then nothing is sent for those rows.
    */
-  // The union carries no slice for the tab's own machine, so its `online`
-  // stays true after that machine drops. The tab's copy pin follows the
-  // connection, and is null while that machine is offline.
-  const tabCopyPin = useTabCopyPin();
   const tabLanePin = activeMachine?.routable && activeMachine.online && tabCopyPin != null ? activeMachine.pin : null;
 
   // The shared router over the same union the list renders. Every action on a
@@ -249,16 +261,6 @@ export function useLanesPageMachines({
     }
     return { ok: true, laneId: key, pin: route.pin, machineId: null, name: local.lane.name };
   }, []);
-  // The tab's own machine has no union slice, so `online` stays true after it
-  // drops; its copy pin is null then. An offline own computer is hidden, as
-  // in Work: its lanes leave the list and the page says so in one line. An
-  // ADE Cloud computer that is asleep is not offline.
-  const isCloudMachine = useCallback(
-    (machine: { hostname: string | null; machineId: string }) => isAdeCloudComputer({ hostname: machine.hostname, machineKey: machine.machineId }, cloudIndex),
-    [cloudIndex],
-  );
-  const tabMachineOffline = activeMachine?.binding?.kind === "remote" && tabCopyPin == null
-    && !isCloudMachine(activeMachine);
   // The machines whose lanes are listed: the tab's own while it is on, the
   // online ones, and ADE Cloud computers that are only asleep.
   const liveMachines = useMemo(
@@ -328,8 +330,6 @@ export function useLanesPageMachines({
 
   /* ---- Rows ---- */
 
-  // The tab machine's own lanes leave the list while it is offline.
-  const shownLocalLanes = tabMachineOffline ? NO_LANES : localLanes;
   const allViewLanes = useMemo(
     () => (foreignLanes.viewLanes.length === 0 ? shownLocalLanes : [...shownLocalLanes, ...foreignLanes.viewLanes]),
     [foreignLanes.viewLanes, shownLocalLanes],

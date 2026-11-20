@@ -3,6 +3,7 @@ import type { CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import type { CloudTierId } from "../../../shared/cloudTiers";
 import type { OpenProjectBinding } from "../../../shared/types/core";
+import { adeCloudDoBlock, useAdeCloudAccess } from "../../state/cloudAccess";
 import { useCloudAccount } from "../../state/cloudAccountStore";
 import { SAVED_CHAT_COMPUTER_GONE_MESSAGE, type SavedChatLocation } from "../../state/cloudSavedChats";
 import { TRAY_ACTION_LABEL } from "../chat/AdeCloudComposerParts";
@@ -71,6 +72,8 @@ export function cloudLaneComputerDeletedFacts(input: {
   /** The lane's branch as its saved chats list it, when not kept. */
   branch?: string | null;
   account: CloudAccountState | null;
+  /** Why ADE Cloud can't start or wake anything now (`adeCloudDoBlock`: blocked, signed out), or null. */
+  doBlock: string | null;
   defaultTier: CloudTierId;
   viaQueue: boolean;
   binding: OpenProjectBinding | null;
@@ -84,9 +87,11 @@ export function cloudLaneComputerDeletedFacts(input: {
   const localProblem = input.viaQueue
     ? null
     : kept ? cloudLaneRestartProblem(kept, input.binding, input.originUrl) : SAVED_CHAT_COMPUTER_GONE_MESSAGE;
-  const blocked = accountBlock
-    ? { message: accountBlock.message, actions: accountBlock.actions }
-    : localProblem ? { message: localProblem, actions: [] } : null;
+  const blocked = input.doBlock
+    ? { message: input.doBlock, actions: [] }
+    : accountBlock
+      ? { message: accountBlock.message, actions: accountBlock.actions }
+      : localProblem ? { message: localProblem, actions: [] } : null;
   return {
     laneId: input.laneId,
     laneName: kept?.laneName ?? input.laneName,
@@ -254,6 +259,7 @@ export function CloudLaneWithoutComputerDetail({
   onOpenSettings: (action: AdeCloudTrayAction) => void;
 }) {
   const account = useCloudAccount();
+  const doBlock = adeCloudDoBlock(useAdeCloudAccess());
   const newest = row.sessions[0] ?? null;
   // A lane with no chat starts its own new computer; one with chats goes on in its chat.
   const startsOwn = !newest && row.kept != null;
@@ -265,6 +271,7 @@ export function CloudLaneWithoutComputerDetail({
     computer: row.computer,
     branch: row.lane?.branchRef ?? null,
     account,
+    doBlock,
     defaultTier,
     viaQueue: !startsOwn && Boolean(window.ade?.cloud?.sendChatMessage),
     binding,

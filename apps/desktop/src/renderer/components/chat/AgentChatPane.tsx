@@ -16742,7 +16742,7 @@ export function AgentChatPane({
     // and a new computer continues this same chat, in this row. A server
     // without the queue gets the old way for a freed lane: a new chat there.
     const freedLane = selectedSessionId && !subagentView ? freedChatLaneRef.current : null;
-    const goneChat = selectedSessionId && !subagentView && !freedLane
+    const goneChat = selectedSessionId && !subagentView
       ? savedChatLocation(chatForeignPin, selectedSessionId, () => false)
       : null;
     if (freedLane || goneChat?.computerGone) {
@@ -19451,8 +19451,11 @@ export function AgentChatPane({
         computer: chatGoneLocation?.row.computer ?? null,
         branch: (chatMachineLanes ?? lanes).find((lane) => lane.id === deletedComputerLaneId)?.branchRef ?? null,
         account: deletedComputerAccount,
+        doBlock: adeCloud.doBlock,
         defaultTier: rootAppStoreApi.getState().cloudDefaultTier,
-        viaQueue: Boolean(window.ade?.cloud?.sendChatMessage),
+        // The queue needs the old computer's key (the saved chat's, else the kept lane's), as Send does.
+        viaQueue: Boolean(window.ade?.cloud?.sendChatMessage)
+          && Boolean(chatGoneLocation?.machineKey ?? freedChatLaneRef.current?.formerMachineKey),
         binding: projectBinding,
         originUrl: originUrlForBinding(projectBinding),
       })

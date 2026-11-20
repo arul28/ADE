@@ -377,7 +377,7 @@ export async function deleteCloudLaneWithoutComputer(row: CloudLaneWithoutComput
   const ok = await confirmDialog({
     title: `Delete ${row.laneName}?`,
     message: row.kept
-      ? `ADE stops listing the lane and deletes ${chats ?? "any saved chats it has"}. Its branch stays on GitHub.`
+      ? `ADE stops listing the lane and deletes ${chats ?? "any saved chats it has"} and its saved work that isn't on GitHub. Its branch stays on GitHub.`
       : `ADE deletes ${chats ?? "its saved chats"} from ADE Cloud. Work it pushed stays on GitHub.`,
     icon: <CloudMark size={16} brand />,
     confirmLabel: cloudLaneWithoutComputerDeleteLabel(row),

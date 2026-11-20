@@ -7,8 +7,8 @@ import SwiftUI
 // list shows each as a normal lane row with a quiet "Computer deleted"; a tap
 // opens its newest saved chat, else its kept-lane page (the chat's "computer
 // deleted" line, New computer on the same branch, Delete). The ADE Cloud
-// page's "Lanes and computers" card keeps the desktop's folded block
-// (`CloudLanesWithoutComputerBlock.tsx`), every project's. A chat whose
+// page's "Lanes and computers" card lists every project's, as the desktop's
+// ADE Cloud page does (`CloudDashboard.tsx`). A chat whose
 // computer was deleted says what happened and what its next message does
 // (`CloudDeletedComputerFacts`), in the desktop's words (`cloudLaneLife.ts`).
 //
@@ -625,13 +625,13 @@ struct CloudKeptLaneChatList: View {
   }
 }
 
-/// A kept lane's actions on its lane page: New computer on the same branch,
-/// its saved chats, and Delete. Its state line (what happened, or why ADE
-/// can't make a computer) sits in the page's top inset.
+/// A kept lane's actions on its lane page: New computer on the same branch
+/// (only for a lane with no saved chat, as on the desktop: one with chats
+/// gets its new computer from a message in its chat), its saved chats, and
+/// Delete. Its state line (what happened, or why ADE can't make a computer)
+/// sits in the page's top inset.
 struct CloudKeptLaneActionsCard: View {
   let lane: CloudLaneWithoutComputer
-  /// The page lists the lane's chats itself: leave them out here.
-  var showsChats = true
   /// What the page's state line already says is wrong: New computer's own
   /// problem shows under it only when it is something else.
   var lineReason: String? = nil
@@ -642,6 +642,31 @@ struct CloudKeptLaneActionsCard: View {
   @State private var deleteAsk = false
   private var syncService: SyncService { syncPublishes.service }
 
+  @ViewBuilder
+  private func newComputerButton(problem: String?, holds: Bool) -> some View {
+    Button {
+      Task {
+        starting = true
+        await KeptCloudLane.startNewComputer(lane, sync: syncService)
+        starting = false
+      }
+    } label: {
+      HStack(spacing: 6) {
+        if starting { ProgressView().controlSize(.small).tint(.white) } else { Image(systemName: "plus") }
+        Text(starting || holds ? "Starting…" : "New computer on the same branch")
+      }
+    }
+    .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
+    .disabled(problem != nil || starting || deleting || holds)
+    .adeInspectable("CloudLane.Kept.NewComputer")
+    if let problem, problem != lineReason {
+      Text(problem)
+        .font(.footnote)
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+  }
+
   var body: some View {
     let launch = launches.laneLaunch(for: lane)
     let holds = KeptCloudLane.launchHolds(launch)
@@ -649,31 +674,13 @@ struct CloudKeptLaneActionsCard: View {
     let chats = KeptCloudLane.savedChats(lane, sync: syncService)
     let deleteLabel = KeptCloudLane.deleteLabel(chatCount: chats.count)
     VStack(alignment: .leading, spacing: 12) {
-      Button {
-        Task {
-          starting = true
-          await KeptCloudLane.startNewComputer(lane, sync: syncService)
-          starting = false
-        }
-      } label: {
-        HStack(spacing: 6) {
-          if starting { ProgressView().controlSize(.small).tint(.white) } else { Image(systemName: "plus") }
-          Text(starting || holds ? "Starting…" : "New computer on the same branch")
-        }
-      }
-      .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
-      .disabled(problem != nil || starting || deleting || holds)
-      .adeInspectable("CloudLane.Kept.NewComputer")
-      if let problem, problem != lineReason {
-        Text(problem)
-          .font(.footnote)
-          .foregroundStyle(ADEColor.textSecondary)
-          .fixedSize(horizontal: false, vertical: true)
+      if chats.isEmpty {
+        newComputerButton(problem: problem, holds: holds)
       }
       if let launch {
         WorkCloudLaunchSetupCard(entry: launch)
       }
-      if showsChats, !chats.isEmpty {
+      if !chats.isEmpty {
         VStack(alignment: .leading, spacing: 4) {
           Text(chats.count == 1 ? "Its saved chat" : "Its \(chats.count) saved chats")
             .font(.footnote.weight(.semibold))

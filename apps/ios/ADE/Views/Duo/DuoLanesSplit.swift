@@ -146,7 +146,7 @@ extension LanesTabView {
   private var duoLaneFilterMenuContent: some View {
     Picker("Show", selection: $quickFilter) {
       ForEach(LaneQuickFilter.allCases) { filter in
-        let count = laneListPresentation.quickFilterCounts[filter] ?? 0
+        let count = laneQuickFilterCount(filter)
         Text("\(filter.title) (\(count))").tag(filter)
       }
     }

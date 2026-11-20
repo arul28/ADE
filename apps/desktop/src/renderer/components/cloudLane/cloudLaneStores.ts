@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { CloudLaneJobSnapshot, CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
+import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { cloudLaneLifeAvailable, listCloudLaneJobs, listCloudLanesWithoutComputer } from "./cloudLaneActions";
 
@@ -251,7 +252,8 @@ export function cloudLaneWithoutComputerForBinding(
 ): CloudLaneWithoutComputer | null {
   if (!binding || binding.kind !== "remote") return null;
   const host = binding.hostname?.trim().toLowerCase() ?? "";
-  const target = binding.targetId?.trim() ?? "";
+  // A saved chat's pin names its old computer as `cloud-saved:<machine key>`.
+  const target = (savedChatsMachineKey(binding.targetId) ?? binding.targetId?.trim() ?? "").toLowerCase();
   return lanes.find((lane) => (host && lane.formerInstanceId.toLowerCase() === host)
-    || (lane.formerMachineKey != null && lane.formerMachineKey === target)) ?? null;
+    || (target && lane.formerMachineKey?.toLowerCase() === target)) ?? null;
 }
