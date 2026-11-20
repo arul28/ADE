@@ -78,11 +78,9 @@ export function formatCloudLanes(value: unknown): string {
   } else if (!lanes.length) {
     lines.push("No lanes on ADE Cloud. Start one: ade chat create --machine cloud --provider <p> --model <id> --prompt \"…\".");
   } else {
-    // By project, then awake lanes first, then the rest by name.
+    // By project, in the order the action gives (awake first, or the biggest disk first for --stale).
     const byProject = new Map<string, Row[]>();
-    const order = (lane: Row) => (lane.state === "awake" ? 0 : lane.state === "computer_deleted" ? 2 : 1);
-    const sorted = [...lanes].sort((left, right) => order(left) - order(right) || str(left.name).localeCompare(str(right.name)));
-    for (const lane of sorted) {
+    for (const lane of lanes) {
       const project = str(lane.projectOrigin) || "no project";
       byProject.set(project, [...(byProject.get(project) ?? []), lane]);
     }

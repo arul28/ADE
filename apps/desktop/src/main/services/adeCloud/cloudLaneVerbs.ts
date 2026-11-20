@@ -75,6 +75,8 @@ export type CloudLaneVerbDeps = {
 /** How many pages of the account's saved chats a lane list reads (200 each). */
 const CHAT_PAGES = 5;
 const CHAT_PAGE = 200;
+/** How many pages (100 each) of CLI and shell copies a lookup by id reads. */
+const SESSION_PAGES = 20;
 /** A lane unused this long counts as stale (`ade cloud lanes --stale`). */
 const STALE_MS = 7 * 24 * 60 * 60_000;
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
@@ -311,10 +313,10 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
     return null;
   };
 
-  /** Which computer saved a CLI or shell copy, from at most `CHAT_PAGES` pages of the account's copies. */
+  /** Which computer saved a CLI or shell copy, from at most `SESSION_PAGES` pages of the account's copies. */
   const sessionMachineKey = async (api: CloudApiClient, sessionId: string): Promise<string | null> => {
     let cursor: string | null = null;
-    for (let page = 0; page < CHAT_PAGES; page += 1) {
+    for (let page = 0; page < SESSION_PAGES; page += 1) {
       const listed = await api.savedSessions({ cursor });
       const found = listed?.sessions.find((session) => session.sessionId === sessionId);
       if (found) return found.machineKey;
@@ -365,7 +367,9 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const { lanes, unread } = await readLanes();
       const project = text(args, "project");
       const projectKey = project ? normalizeGitRemoteIdentity(project) ?? project.toLowerCase() : null;
-      let picked = lanes;
+      // Awake lanes first, then the rest, then lanes whose computer was deleted; by name in each. `--stale` sorts by disk below.
+      const rank = (lane: CloudLaneEntry) => (lane.state === "awake" ? 0 : lane.state === "computer_deleted" ? 2 : 1);
+      let picked = [...lanes].sort((left, right) => rank(left) - rank(right) || left.name.localeCompare(right.name));
       if (projectKey) picked = picked.filter((lane) => normalizeGitRemoteIdentity(lane.projectOrigin) === projectKey);
       if (args.deleted === true) picked = picked.filter((lane) => lane.state === "computer_deleted");
       if (args.stale === true) {
