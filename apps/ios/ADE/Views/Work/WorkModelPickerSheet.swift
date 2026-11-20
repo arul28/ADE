@@ -235,6 +235,12 @@ struct WorkModelPickerSheet: View {
   /// The Free entry shows wherever free models are listed, or could be after
   /// a download on the chat's machine. A surface that narrows the models
   /// (a fixed list, a provider filter, ADE Cloud) only shows ones it has.
+  /// The Free page works with no main catalog: it lists free models, or its
+  /// own machine can list or set them up.
+  private var freePageStandsAlone: Bool {
+    showsFreeEntry && (!scopedFreeGroups.isEmpty || separateFreeModelsHost != nil)
+  }
+
   private var showsFreeEntry: Bool {
     if !scopedFreeGroups.isEmpty { return true }
     return cloudCatalog == nil && modelFilter == nil && availableModelIds == nil && freeModelsHost != nil
@@ -349,7 +355,7 @@ struct WorkModelPickerSheet: View {
           loadingState
         } else if let cloudCatalogError, catalog.isEmpty {
           cloudCatalogErrorState(cloudCatalogError)
-        } else if catalog.isEmpty && !customHarnessesAvailable {
+        } else if catalog.isEmpty && !customHarnessesAvailable && !freePageStandsAlone {
           catalogEmptyState
         } else {
           Divider().overlay(ADEKit.rule)

@@ -387,7 +387,8 @@ export function useProviderAuthStatus(options?: {
         projectRoot,
         pin,
         force: forceUnpinnedRefresh,
-      }).then(applyStatus).catch(() => undefined);
+        // The cache, not this reply: a newer read may have finished first.
+      }).then((reply) => applyStatus(peekAiStatusCached(projectRoot, pin) ?? reply)).catch(() => undefined);
     }
 
     return () => {

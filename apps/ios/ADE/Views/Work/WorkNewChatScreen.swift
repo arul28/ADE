@@ -1250,8 +1250,11 @@ struct WorkNewChatScreen: View {
       ?? String(describing: syncService.connectionState)
     // A new free list (OpenCode finished downloading), a sign-in on this
     // machine and the end of a launch all run the free default again.
-    let generation = selectedMachineHost.map { freeModelsStore.generation(for: $0) } ?? 0
-    return "\(selectedMachineKey ?? "focused")|\(phase)|\(sessionMode)|\(generation)|\(busy)"
+    // The machine itself, too: the primary connection can move to another one.
+    let host = selectedMachineHost
+    let machine = host.map { WorkFreeModelsStatusStore.key(for: $0) } ?? "none"
+    let generation = host.map { freeModelsStore.generation(for: $0) } ?? 0
+    return "\(machine)|\(phase)|\(sessionMode)|\(generation)|\(busy)"
   }
 
   /// Nothing signed in on the chosen machine: start on its free default (the

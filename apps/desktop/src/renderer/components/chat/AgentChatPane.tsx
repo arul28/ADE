@@ -2280,6 +2280,11 @@ type ComposerDraftStorageSnapshot = {
    * send restored".
    */
   restoredFor?: string;
+  /**
+   * ADE picked the model (the free default, the tour's first chat): a
+   * restored draft keeps it out of the launch defaults and "last used".
+   */
+  keepsMachineDefaults?: true;
   updatedAt: string;
 };
 
@@ -3937,6 +3942,7 @@ function normalizeStoredComposerDraft(
     builtInBrowserContextItems: normalizeComposerBuiltInBrowserContextItems(value.builtInBrowserContextItems),
     draftLaunchTargetId: nonEmptyString(value.draftLaunchTargetId),
     ...(restoredFor ? { restoredFor } : {}),
+    ...(value.keepsMachineDefaults === true ? { keepsMachineDefaults: true as const } : {}),
     updatedAt,
   };
 }
@@ -12931,7 +12937,8 @@ export function AgentChatPane({
       // The recipe is not persisted; a restored draft starts as plain auto-create.
       clearNewLaneConfig();
       if (!selectedSessionId && saved.modelId) {
-        // A saved draft's model was chosen before: ADE's free default leaves it.
+        // A saved draft's model was chosen before (by a person, or by ADE):
+        // ADE's free default leaves it.
         draftModelChosenRef.current = true;
         draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
         draftLaunchConfigHydratedRef.current = `${draftLaunchConfigScopeKey}:composer-draft`;
@@ -12946,6 +12953,8 @@ export function AgentChatPane({
           controls: saved.controls,
           updatedAt: saved.updatedAt,
         }, { preserveFast: true });
+        // ADE's own pick stays out of the launch defaults after a reload.
+        if (saved.keepsMachineDefaults) draftKeepsMachineDefaultsRef.current = true;
       }
       setHydratedComposerDraftStorageKey(composerDraftStorageKeyValue);
       return;
@@ -13154,6 +13163,8 @@ export function AgentChatPane({
   const snapshotWithDraftText = useCallback((): ComposerDraftStorageSnapshot => ({
     ...currentComposerDraftSnapshotBase,
     text: draftStore.get(),
+    // Read at save time: ADE sets it right after its own model change.
+    ...(draftKeepsMachineDefaultsRef.current ? { keepsMachineDefaults: true as const } : {}),
     updatedAt: new Date().toISOString(),
   }), [currentComposerDraftSnapshotBase, draftStore]);
   latestComposerDraftSnapshotRef.current = {

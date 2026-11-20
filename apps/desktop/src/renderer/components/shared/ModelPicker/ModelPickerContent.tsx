@@ -1341,6 +1341,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
 
             {isEmpty && freeActive ? (
               <FreeModelsEmptyState
+                // One instance per machine: its re-read belongs to one machine.
+                key={runtimePin?.key ?? "tab"}
                 runtimePin={runtimePin}
                 opencodeInstalled={opencodeBinaryKnown ? opencodeBinaryInstalled : null}
                 catalogRefreshing={activeProviderRefreshing}

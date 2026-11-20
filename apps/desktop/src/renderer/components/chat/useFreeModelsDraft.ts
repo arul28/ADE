@@ -147,7 +147,8 @@ export function useFreeModelsDraft(args: {
     adeModelChangeRef.current(freeDefaultModelId);
     // After the change, which clears the flag as a person's pick would.
     draftKeepsMachineDefaultsRef.current = true;
-  }, [adeModelChangeRef, catalogScopeKey, composerReady, draftKeepsMachineDefaultsRef, draftModelChosenRef, freeDefaultModelId, freshDraft, modelId, nothingSignedIn]);
+    // `draftKey`: another draft on the same model decides again.
+  }, [adeModelChangeRef, catalogScopeKey, composerReady, draftKey, draftKeepsMachineDefaultsRef, draftModelChosenRef, freeDefaultModelId, freshDraft, modelId, nothingSignedIn]);
 
   // Someone signed in on the machine while the draft sat on ADE's free
   // model: put back the model the draft opened on, once that model can run

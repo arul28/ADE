@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiClaudeAvailability, AiProviderConnections } from "../../../shared/types";
-import { noteToolUse } from "../../../../../ade-cli/src/services/tools/usage";
+import { noteToolUse, readToolUsage } from "../../../../../ade-cli/src/services/tools/usage";
 import type { FreeModelsStatusInputs } from "./freeModelsStatus";
 
 const RECORD = "provider-sign-in-history.json";
@@ -18,6 +18,12 @@ function inputs(overrides: { claudeReady?: boolean; localModelCount?: number } =
     localModelCount: overrides.localModelCount ?? 0,
     customProviderCount: 0,
   };
+}
+
+/** `noteToolUse` writes in the background: wait until the reader sees it. */
+async function noteUse(tool: string, toolsRoot: string) {
+  noteToolUse(tool, toolsRoot);
+  await vi.waitFor(() => expect(readToolUsage(toolsRoot)).toHaveProperty(tool));
 }
 
 /** A fresh process: the module keeps a "seen" answer for its lifetime. */
@@ -66,11 +72,11 @@ describe("buildFreeModelsStatus sign-in history", () => {
     // A machine with no record yet: an agent that ran here counts once;
     // OpenCode (the free models) does not.
     fs.rmSync(path.join(process.env.ADE_HOME!, RECORD));
-    noteToolUse("opencode", env.ADE_TOOLS_ROOT!);
+    await noteUse("opencode", env.ADE_TOOLS_ROOT!);
     build = await freshBuild();
     expect(build(inputs(), env).everSignedIn).toBe(false);
     fs.rmSync(path.join(process.env.ADE_HOME!, RECORD));
-    noteToolUse("claude-code", env.ADE_TOOLS_ROOT!);
+    await noteUse("claude-code", env.ADE_TOOLS_ROOT!);
     build = await freshBuild();
     expect(build(inputs(), env).everSignedIn).toBe(true);
   });
