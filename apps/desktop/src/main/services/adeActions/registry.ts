@@ -332,6 +332,7 @@ import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
 import { claudePassVaultFromStore } from "../adeCloud/claudePassStore";
 import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
 import { buildCloudAgentActions } from "../adeCloud/cloudAgentActions";
+import { createCloudLaneAccount } from "../adeCloud/cloudLaneAccount";
 import { cloudDiskGrowHost } from "../adeCloud/cloudDiskGrowHost";
 import { createCloudBrainMaker, type CloudBrainMaker, type CloudBrainMakerBase } from "../adeCloud/cloudBrainMaker";
 import {
@@ -4788,19 +4789,21 @@ function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType
 function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   const signedIn = () => runtime.accountAuthService?.getStatus().signedIn === true;
   const credentials = cloudAccessDeps(runtime);
+  // ADE's account server for this account, or null when signed out.
+  const accountApi = () => {
+    const baseUrl = signedIn() ? getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }) : null;
+    return baseUrl
+      ? createCloudApiClient({
+          baseUrl,
+          accessToken: async () => (signedIn() ? await runtime.accountAuthService!.getAccessToken().catch(() => null) : null),
+        })
+      : null;
+  };
   const agentLimits = createCloudAgentLimitsStore({
     vault: () => (signedIn() && runtime.accountVaultStore ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_AGENT_LIMITS_VAULT_KEY) : null),
     machineStore: () => cloudMachineStore(),
     // `PUT /cloud/limits`: only the changed fields, with the revision they replace.
-    accountApi: () => {
-      const baseUrl = signedIn() ? getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }) : null;
-      return baseUrl
-        ? createCloudApiClient({
-            baseUrl,
-            accessToken: async () => (signedIn() ? await runtime.accountAuthService!.getAccessToken().catch(() => null) : null),
-          })
-        : null;
-    },
+    accountApi,
     logger: runtime.logger,
   });
   // A good list or a finished make also tells the sign-in renewal that the
@@ -4819,6 +4822,20 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   }));
   const agentChatService = runtime.agentChatService ?? null;
   const maker = observeCloudComputerMakes(cloudBrainMakerFor(runtime, machines));
+  // The account side of a lane's life, shared with the desktop (`cloudLaneAccount.ts`).
+  // A brain holds no connections to the computers, and the desktop reads the list again on its own.
+  const laneAccount = createCloudLaneAccount({
+    machines,
+    client: () => requireCloudProvider(credentials),
+    laneBackups: async (machineKey) => {
+      const api = accountApi();
+      if (!api) throw new Error("This ADE isn't signed in to your ADE account.");
+      return await api.laneBackups(null, machineKey);
+    },
+    forgetMachineConnections: () => undefined,
+    changed: () => undefined,
+    logger: runtime.logger,
+  });
   const verbs = buildCloudAgentActions({
     machines,
     limits: agentLimits,
@@ -4855,6 +4872,11 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
     diskGrow: cloudDiskGrowHost,
     projectRoot: runtime.projectRoot ?? null,
     analytics: runtime.productAnalyticsService ?? null,
+    lanes: {
+      account: () => laneAccount,
+      client: () => requireCloudProvider(credentials),
+      api: accountApi,
+    },
     logger: runtime.logger,
   });
   const cloudSignIns = buildCloudSignInActions({
@@ -4911,10 +4933,22 @@ function savedChatReads(credentials: CloudAccessDeps): {
     },
     saved_chats_read: async (args) => {
       const request = input(args);
-      const machineKey = text(request.machineKey);
       const chatId = text(request.chatId);
       const server = cloudServerFor(credentials);
-      if (!server || !machineKey || !chatId) return null;
+      if (!server || !chatId) return null;
+      // No machine key (`ade cloud chats read <chat id>`): the account's list says which computer saved it.
+      let machineKey = text(request.machineKey);
+      let searched = true;
+      for (let page = 0, cursor: string | null = null; !machineKey && page < 5; page += 1) {
+        const listed: CloudSavedChatList = await server.listSavedChats({ limit: 200, cursor });
+        machineKey = listed.chats.find((chat) => chat.chatId === chatId)?.machineKey ?? null;
+        cursor = listed.nextCursor;
+        if (!cursor) break;
+        if (page === 4) searched = false;
+      }
+      // Past the newest 1,000 the chat may still exist: say so, never "no such chat".
+      if (!machineKey && !searched) throw new Error(`ADE Cloud has no saved chat ${chatId} among your newest 1,000. Pass --machine-key (ade cloud chats --machine-key <key>).`);
+      if (!machineKey) return null;
       return await server.readSavedChat({
         machineKey,
         chatId,

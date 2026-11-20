@@ -1,6 +1,6 @@
 ---
 name: ade-cloud
-description: "Before any ADE Cloud work via `ade cloud`, and when this computer needs more free disk (grow it with `ade cloud resize --free`): the account (plan, hours, disk, ADE Cloud iPhone (iOS Simulator) minutes, every plan's price and what it includes, computers, lanes, sizes, agent limits, whether a new lane can start), start, follow, retry or cancel a cloud lane at the size the work needs (Android, Docker), explain a refusal, propose a cleanup, manage the computers (list, sleep, wake, a resize request, work-state, clear caches, delete). Agents start lanes; they never make a computer."
+description: "Before any ADE Cloud work via `ade cloud`, and when this computer needs more free disk (grow it with `ade cloud resize --free`): the account (plan, hours, disk, ADE Cloud iPhone (iOS Simulator) minutes, every plan's price and what it includes, computers, lanes, sizes, agent limits, whether a new lane can start), start, follow, retry or cancel a cloud lane at the size the work needs (Android, Docker), explain a refusal, propose a cleanup (`ade cloud lanes --stale`, then free or delete a lane), manage the lanes, saved chats, CLI copies, backups and server jobs of the account, manage the computers (list, sleep, wake, a resize request, work-state, clear caches, delete). Agents start lanes; they never make a computer."
 ---
 
 # ADE Cloud
@@ -80,6 +80,28 @@ Propose a cleanup to the person first: which lanes, and why each is safe (its
 pull request is merged, nothing is unpushed, unused for long, `deletesAt`).
 Delete nothing without their yes. Deleting a lane deletes its computer.
 
+The cleanup, in order (reads wake nothing):
+
+1. `ade cloud lanes --stale --json`: lanes unused a week or due for cleanup,
+   biggest disk first. `ade cloud lanes --json` lists every lane: on a
+   computer (`state` awake, asleep, …) or `computer_deleted` (the lane and its
+   chats stay; its next message makes a new computer on its branch).
+2. `ade cloud lanes git <lane> --json` and `ade cloud backups --json`: what is
+   not on GitHub yet.
+3. Then one of these. Each shows the person a card in your chat:
+   - `ade cloud lanes free <lane>`: keep it for later. ADE pushes its work,
+     removes its computer and keeps the lane and its chats.
+   - `ade cloud lanes delete <lane>`: the lane, its computer and its saved
+     chats (`--keep-chats` keeps them). ADE checks the work first and names
+     it on the card; the card also offers Keep for later. A person always
+     decides, even for a computer your chat made. A lane whose computer was
+     deleted has only its chats left: deleting it deletes them, and
+     `--keep-chats` is refused there.
+
+`ade cloud lanes keep <lane>` stops the idle cleanup's delete of a computer
+(`deletesAt`). It wakes nothing and uses no hours. `ade cloud lanes start
+<lane>` makes a new computer for a lane whose computer was deleted.
+
 ADE Cloud deletes unused computers on its own: on Free after 3 days unused
 (warned at 2), on a paid plan after 10 (warned at 7). It commits and pushes
 each lane's work to the lane's branch first and keeps the lane; a push that
@@ -115,7 +137,9 @@ You may read and manage every computer on the account: `ade cloud status`,
 `list`, `hours`, `limits`, `work-state`, `sleep`, `wake`, `update`, a size
 change request (`ade cloud resize --request`), your own disk
 (`ade cloud resize --free`), clearing caches with its card, and `delete` with
-its card. Each asks the person like a new lane when it uses hours or deletes.
+its card. The account's lanes, saved chats, CLI copies, lane backups and
+server jobs too: `ade cloud lanes|chats|sessions|backups|jobs|project`, where
+each delete has its card. Each asks the person like a new lane when it uses hours or deletes.
 `create`, `copy` and `move` are the person's (see Never).
 On a lane's cloud computer that needs more disk (a build, an emulator, a
 big install), grow it yourself: `ade cloud resize --free <GB> --reason "<why>"`

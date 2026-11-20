@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
 import { CaretDown, CaretRight, ChatCircleText, Plus, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import type { CloudChatComputer, CloudComputerDeleteReason } from "../../../shared/cloudSavedChats";
-import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
+import type { CloudChatComputer } from "../../../shared/cloudSavedChats";
+import { CLOUD_KEPT_LANE_FATE, cloudComputerFateSentence, type CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { sameMachineKey } from "../../../shared/machineAddress";
 import type { TerminalSessionSummary } from "../../../shared/types";
@@ -82,47 +82,16 @@ const dayOf = (ms: number | null | undefined): string | null => (ms && Number.is
   ? new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" })
   : null);
 
-/** What happened to the computer, for a kept lane's reason or the saved chats' answer. */
-function computerFate(reason: CloudComputerDeleteReason | "inactive" | undefined, when: string): string {
-  switch (reason) {
-    case "you":
-      return `You deleted its computer${when}.`;
-    case "freed":
-      return `You freed its computer${when}.`;
-    case "idle":
-      return `ADE deleted its computer${when} because it wasn't used.`;
-    case "plan":
-      return `ADE deleted its computer${when} to fit your plan.`;
-    case "inactive":
-      return `ADE deleted its computer${when} after 30 days without use.`;
-    case "automation":
-      return `Its automation finished${when}, and ADE deleted its computer.`;
-    case "project":
-      return `Its project's computers were deleted${when}.`;
-    case "launch":
-      return `Its launch didn't finish, so ADE deleted its computer${when}.`;
-    default:
-      return `Its computer was deleted${when}.`;
-  }
-}
-
-const KEPT_REASON: Record<CloudLaneWithoutComputer["reason"], CloudComputerDeleteReason | "inactive"> = {
-  freed: "freed",
-  idle_cleanup: "idle",
-  plan_limit: "plan",
-  inactive: "inactive",
-};
-
 /** What happened to the lane's computer, in one line. */
 function rowSentence(row: LaneRow): string {
   if (row.kept) {
     const on = dayOf(row.kept.since);
     const branch = row.kept.branchRef ? row.kept.branchRef.replace(/^origin\//, "") : null;
-    return `${computerFate(KEPT_REASON[row.kept.reason], on ? ` on ${on}` : "")} Its work is on ${branch ?? "GitHub"}.`;
+    return `${cloudComputerFateSentence(CLOUD_KEPT_LANE_FATE[row.kept.reason], on ? ` on ${on}` : "")} Its work is on ${branch ?? "GitHub"}.`;
   }
   const computer = row.computer?.state === "deleted" ? row.computer : null;
   const on = dayOf(computer?.deletedAt);
-  const fate = computerFate(computer?.reason, on ? ` on ${on}` : "");
+  const fate = cloudComputerFateSentence(computer?.reason, on ? ` on ${on}` : "");
   // ADE's own deletes say why; a delete the person made says the chats are what they kept.
   return computer?.reason === "you" || computer?.reason === "freed" || computer?.reason === "other" || !computer
     ? `${fate} Its chats are kept here.`

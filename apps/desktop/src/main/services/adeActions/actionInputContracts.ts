@@ -320,6 +320,96 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { machine: string }",
       example: "ade cloud delete \"lane copy\"",
     },
+    lanes: {
+      description: "Every lane of the ADE Cloud account, one list, with no wake and no spend. A lane is on a computer (state awake | asleep | starting | stopping | deleting | error) or its computer was deleted (computer_deleted: the lane and its chats stay, and its next message makes a new computer on its branch; deleted {at, fate, sentence} says why). Each lane: {laneId, name, branch, projectOrigin, state, computer {instanceId, machineKey, name, sizeLabel, hoursRate, lastUsedAt, deletesAt, diskGb} | null, deleted | null, chats (saved chat count), backup {commits, files, savedAt, bytes} | null (work not on GitHub that ADE saved), machineKeys, link}. unread lists the parts ADE couldn't read. stale: lanes unused for a week or due for deletion, biggest disk first.",
+      input: "object { project?: string (a git origin), deleted?: boolean (only lanes whose computer was deleted), stale?: boolean }",
+      example: "ade cloud lanes --stale --text",
+    },
+    lane_show: {
+      description: "One ADE Cloud lane (as in lanes) and its saved chats [{chatId, machineKey, title, provider, model, updatedAt}]. No wake.",
+      input: "object { lane: string (its name, id, branch or ADE link; a name two lanes share is refused with their ids) }",
+      example: "ade cloud lanes show fix-login --text",
+    },
+    lane_delete: {
+      description: "Delete an ADE Cloud lane. On a computer: ADE checks its work first (no wake when the computer is asleep and saved), then asks the person on one card: Delete lane (the computer and, unless keepChats, its saved chats go) | Keep for later (ADE pushes the work, removes the computer, keeps the lane and its chats) | Cancel. Computer already deleted: the lane's record, its saved work and its saved chats go. A full-auto chat goes on alone only for a computer it made; plan mode, automations and ADE MCP apps are told no. Returns {outcome: deleted | kept_for_later | partial | failed, message, ...}.",
+      input: "object { lane: string (its name, id, branch or ADE link; a name two lanes share is refused with their ids), keepChats?: boolean }",
+      example: "ade cloud lanes delete fix-login",
+    },
+    lane_free: {
+      description: "Keep an ADE Cloud lane for later: ADE pushes its work to GitHub, removes its computer (no more hours or disk), and keeps the lane and its chats. Its next message makes a new computer on the same branch. Asks the person first, as a delete.",
+      input: "object { lane: string (its name, id, branch or ADE link; a name two lanes share is refused with their ids) }",
+      example: "ade cloud lanes free fix-login",
+    },
+    lane_start: {
+      description: "A new computer for a lane whose computer was deleted, on the lane's branch (origin/<branch>), as a lane launch (lane_launch's card and limits). Run it in a folder of the lane's project. Returns the launch status.",
+      input: "object { lane: string (its name, id, branch or ADE link; a name two lanes share is refused with their ids), size?: \"small\" | \"medium\" | \"large\" | \"xlarge\" }",
+      example: "ade cloud lanes start fix-login --size medium",
+    },
+    lane_keep: {
+      description: "Stop the idle cleanup's delete of a lane's computer (a lane with deletesAt): the idle clock starts again. It wakes nothing and uses no hours.",
+      input: "object { lane: string (its name, id, branch or ADE link; a name two lanes share is refused with their ids) }",
+      example: "ade cloud lanes keep fix-login",
+    },
+    lane_git: {
+      description: "An ADE Cloud lane's Git summary as its computer saved it at rest (branch, commits ahead, changed files), with no wake. summary is null when no computer saved one.",
+      input: "object { lane: string (its name, id, branch or ADE link; a name two lanes share is refused with their ids) }",
+      example: "ade cloud lanes git fix-login --text",
+    },
+    saved_chats_list: {
+      description: "The account's saved chats: what each ADE Cloud computer saved, readable with the computer asleep or deleted. Newest first, a page at a time. Each row: {chatId, machineKey, laneId, laneName, title, provider, model, updatedAt, computer {state: exists | deleted, ...}}.",
+      input: "object { machineKey?: string, projectKey?: string, limit?: number (at most 500), cursor?: string }",
+      example: "ade cloud chats --text",
+    },
+    saved_chats_read: {
+      description: "One saved chat's messages from the account's copy, with no wake. machineKey is found from the account's list when left out. Null: no such chat.",
+      input: "object { chatId: string, machineKey?: string, before?: number, limit?: number }",
+      example: "ade cloud chats read <chat id> --text",
+    },
+    saved_chat_delete: {
+      description: "Delete one saved chat from ADE Cloud for good. Refused while the chat's computer still runs it. Asks the person first, as a delete.",
+      input: "object { chatId: string, machineKey?: string }",
+      example: "ade cloud chats delete <chat id>",
+    },
+    sessions_list: {
+      description: "The account's saved CLI and shell copies (what an ADE Cloud computer kept of each terminal), with no wake.",
+      input: "object { machineKey?: string, project?: string, cursor?: string }",
+      example: "ade cloud sessions --text",
+    },
+    session_read: {
+      description: "One saved CLI or shell copy (its last lines), with no wake. machineKey is found from the list when left out.",
+      input: "object { sessionId: string, machineKey?: string }",
+      example: "ade cloud sessions read <session id> --text",
+    },
+    session_delete: {
+      description: "Delete one saved CLI or shell copy from ADE Cloud for good. Asks the person first, as a delete.",
+      input: "object { sessionId: string, machineKey?: string }",
+      example: "ade cloud sessions delete <session id>",
+    },
+    backups_list: {
+      description: "The account's lane backups: each lane's work not on GitHub (commits, changed files) that its computer saved at rest. No wake.",
+      input: "object { laneId?: string }",
+      example: "ade cloud backups --text",
+    },
+    backup_forget: {
+      description: "Delete a lane's saved work for good. It isn't on GitHub, so it can't come back. The server refuses it while the lane's computer still holds the work. Asks the person first, as a delete.",
+      input: "object { laneId: string, machineKey?: string }",
+      example: "ade cloud backups forget <lane id>",
+    },
+    jobs_list: {
+      description: "What ADE's server runs now for the account: lane launches, computer moves and copies, each with its id and state. unread lists the parts ADE couldn't read.",
+      input: "no input",
+      example: "ade cloud jobs --text",
+    },
+    job_cancel: {
+      description: "Cancel a server job by its id: a launch deletes the computer made for it; a move or a copy deletes the new computer and keeps the old one. Asks the person first, as a delete.",
+      input: "object { jobId: string }",
+      example: "ade cloud jobs cancel <job id>",
+    },
+    project_overview: {
+      description: "One project's whole ADE Cloud view with no computer awake: its lanes, saved chats, CLI copies, Git summaries and the computers due for deletion. origin defaults to this folder's git origin.",
+      input: "object { origin?: string (github.com/<owner>/<repo>) }",
+      example: "ade cloud project --text",
+    },
   },
   mcp_registry: {
     list: {

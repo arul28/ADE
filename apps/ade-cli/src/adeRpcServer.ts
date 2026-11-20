@@ -4241,6 +4241,9 @@ const CLOUD_APPROVED_ACTIONS = new Set([
   "tier_request",
   // A launch's approval link and starting chat go only to who started it.
   "lane_launch_status",
+  // The account's lanes, chats, copies, backups and jobs: each delete asks in the stamped chat.
+  // `lane_start` makes a lane's new computer through `lane_launch`'s own card.
+  "lane_delete", "lane_free", "lane_start", "saved_chat_delete", "session_delete", "backup_forget", "job_cancel",
 ]);
 
 /** The `cloud` actions that add a computer that is not a new lane's: an agent's always waits on the person. */
