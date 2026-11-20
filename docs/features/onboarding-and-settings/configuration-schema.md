@@ -256,9 +256,13 @@ semantics, available environment variables, and failure behavior.
 type LaneSetupScriptConfig = {
   commands?: string[];          // shell command lines, run in order
   unixCommands?: string[];      // used on macOS/Linux instead of `commands`
+  macosCommands?: string[];     // macOS only; wins over `unixCommands` there
+  linuxCommands?: string[];     // Linux only (ADE Cloud); wins over `unixCommands` there
   windowsCommands?: string[];   // used on Windows instead of `commands`
   scriptPath?: string;          // relative to the project root, run last
   unixScriptPath?: string;
+  macosScriptPath?: string;
+  linuxScriptPath?: string;
   windowsScriptPath?: string;
   injectPrimaryPath?: boolean;  // expose $PRIMARY_WORKTREE_PATH
 };

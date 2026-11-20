@@ -1708,15 +1708,17 @@ describe("projectConfigService - settings that follow the account", () => {
     expect(logged).not.toContain("pw-not-a-real-value");
     expect(logged).not.toContain(a.root);
 
-    // A setup script outside the clone exists only on this computer.
+    // A setup script outside the clone exists only on this computer, whichever OS's field names it.
     const scriptHere = path.join(os.tmpdir(), "ade-elsewhere", "setup.sh");
-    const b = makeComputer("holds-script", store, { laneEnvInit: { setupScript: { scriptPath: scriptHere } } });
-    b.service.moveSettingsToAccount();
-    expect(store.rows.has(`${SCOPE}|lanes.envInit`)).toBe(false);
-    expect(b.service.get().accountNotices).toEqual([
-      expect.objectContaining({ kind: "kept_here", key: "lanes.envInit", reason: "machine_path" }),
-    ]);
-    expect(b.file().laneEnvInit.setupScript.scriptPath).toBe(scriptHere);
+    for (const field of ["scriptPath", "macosScriptPath", "linuxScriptPath"] as const) {
+      const b = makeComputer(`holds-${field}`, store, { laneEnvInit: { setupScript: { [field]: scriptHere } } });
+      b.service.moveSettingsToAccount();
+      expect(store.rows.has(`${SCOPE}|lanes.envInit`)).toBe(false);
+      expect(b.service.get().accountNotices).toEqual([
+        expect.objectContaining({ kind: "kept_here", key: "lanes.envInit", reason: "machine_path" }),
+      ]);
+      expect(b.file().laneEnvInit.setupScript[field]).toBe(scriptHere);
+    }
   });
 
   it("refuses a save from a snapshot read before another computer changed an account setting", () => {

@@ -1559,6 +1559,9 @@ describe("ProvidersSection", () => {
         checkedAt: "2026-08-31T00:00:00.000Z",
       });
       (window.ade as any).ai.acpProviderDiagnostics = runDiagnostics;
+      // The settings' machine runs an older ADE with no doctor action of its own: the old doctor run still works there.
+      const runDoctor = vi.fn().mockRejectedValue(new Error("Unknown ADE action: ai.runAcpProviderDoctor"));
+      (window.ade as any).ai.runAcpProviderDoctor = runDoctor;
 
       const view = renderProvidersSection("grok");
       const current = within(view.container);
@@ -1569,6 +1572,7 @@ describe("ProvidersSection", () => {
       await waitFor(() => {
         expect(current.getByText("everything is fine")).toBeTruthy();
       });
+      expect(runDoctor).toHaveBeenCalledWith({ provider: "grok" }, null);
       expect(runDiagnostics).toHaveBeenCalledWith({ provider: "grok", runDoctor: true }, null);
 
       cleanup();

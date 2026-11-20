@@ -6,8 +6,11 @@ import type { ChatThreadComment } from "../../../shared/threadComments";
 import {
   addLocalThreadComment,
   countCommentsForNextSend,
+  countFailedThreadComments,
   refreshThreadComments,
+  retryFailedThreadComment,
   setThreadComments,
+  threadCommentSaveError,
   useThreadComments,
 } from "./threadCommentsStore";
 
@@ -126,5 +129,44 @@ describe("threadCommentsStore.addLocalThreadComment", () => {
     act(() => settleFailed(null));
     expect(result.current.map((entry) => entry.id)).toEqual(["saved-2"]);
     expect(countCommentsForNextSend(result.current)).toBe(1);
+  });
+
+  // A create whose answer is lost may still have saved: the comment must not
+  // vanish (the person's text is gone) nor be saved twice on Retry (create is
+  // not idempotent), and it never rides a send while it is unsaved.
+  it("keeps a failed comment for Retry and saves it once, finding a copy the lost answer already saved", async () => {
+    const sessionId = "store-local-retry";
+    let hostList: ChatThreadComment[] = [];
+    const list = vi.fn(async () => hostList);
+    const create = vi.fn(async (args: { body: string }) => ({ ...comment("created-1", sessionId), body: args.body }));
+    (window as unknown as { ade: unknown }).ade = { agentChat: { threadComments: { list, create } } };
+    const { result } = renderHook(() => useThreadComments(sessionId, CHAT_PIN));
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+
+    let landed!: ReturnType<typeof addLocalThreadComment>;
+    let refused!: ReturnType<typeof addLocalThreadComment>;
+    act(() => {
+      landed = addLocalThreadComment(sessionId, fields("landed"));
+      refused = addLocalThreadComment(sessionId, fields("refused"));
+    });
+    act(() => {
+      landed(null, "Can't reach the computer");
+      refused(null, "Can't reach the computer");
+    });
+    expect(result.current.map((entry) => entry.body)).toEqual(["landed", "refused"]);
+    expect(threadCommentSaveError(landed.localId)).toBe("Can't reach the computer");
+    expect(countFailedThreadComments(result.current)).toBe(2);
+    expect(countCommentsForNextSend(result.current)).toBe(0);
+
+    // The first one's save landed after all: Retry finds it and creates nothing.
+    hostList = [{ ...comment("landed-on-host", sessionId), body: "landed", anchor: { kind: "text", quote: "landed", prefix: "", suffix: "" } }];
+    await act(() => retryFailedThreadComment(sessionId, landed.localId, CHAT_PIN, String));
+    expect(create).not.toHaveBeenCalled();
+    // The second never landed: Retry creates it, once.
+    await act(() => retryFailedThreadComment(sessionId, refused.localId, CHAT_PIN, String));
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(result.current.map((entry) => entry.id)).toEqual(["landed-on-host", "created-1"]);
+    expect(countFailedThreadComments(result.current)).toBe(0);
+    expect(countCommentsForNextSend(result.current)).toBe(2);
   });
 });

@@ -359,6 +359,10 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
     if (idleSince != null && options.requestIdleSleep) {
       const due = idleSince + CLOUD_IDLE_SLEEP_AFTER_MS - 5_000;
       sleepsAt = lastTickAt + Math.max(0, Math.ceil((due - lastTickAt) / intervalMs)) * intervalMs;
+      // Sent between checks (a boot report after one): a check that already
+      // passed asks nothing more, so the next one is when it sleeps.
+      const at = now();
+      if (sleepsAt < at - 1_000) sleepsAt += Math.ceil((at - sleepsAt) / intervalMs) * intervalMs;
     }
     try {
       options.onIdleFacts({ busy: wasBusy, idleSince, sleepsAt, awakeSince });

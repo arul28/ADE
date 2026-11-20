@@ -152,6 +152,10 @@ struct CloudMoveCard: View {
 struct CloudMachineFacts: View {
   @ObservedObject var store: CloudPaneStore
   let machine: CloudPhoneMachine
+  /// Its live facts from the account server (`GET .../status`), read once
+  /// each time the page opens or its state changes; never wakes it. Nil
+  /// (no rows) on a server older than the route or any failed read.
+  @State private var live: CloudComputerLiveStatus?
 
   var body: some View {
     let tier = cloudPhoneTier(of: machine, in: store.tiers)
@@ -179,8 +183,18 @@ struct CloudMachineFacts: View {
         let lastRun = cloudLastRun(machine, now: store.now)
         if !lastRun.isEmpty { fact("Last run", lastRun) }
         if machine.pastDue == true { fact("State", "Suspended") }
+        if let live, machine.isAwake {
+          if let since = live.awakeSince { fact("Awake for", cloudAwakeFor(since, now: store.now)) }
+          if let agents = cloudLiveAgentsLine(live.activity, now: store.now) { fact("Agents", agents) }
+          if let restarts = live.restarts, restarts > 0 {
+            fact("Restarts", "\(restarts) since it woke")
+          }
+        }
       }
       .font(.subheadline)
+      if let live, machine.isAwake, let memory = cloudLiveMemoryWarning(live) {
+        ADESettingsNotice(message: memory, tone: .warn)
+      }
       if machine.noLane {
         Text("Made before each lane had its own computer. It still counts toward your computers and disk.")
           .font(.system(size: 12.5))
@@ -192,6 +206,14 @@ struct CloudMachineFacts: View {
       }
     }
     .adeKitCard()
+    .task(id: "\(machine.instanceId)#\(machine.state)") {
+      guard machine.isAwake else { live = nil; return }
+      guard let client = await SyncService.shared?.cloudServerClient() else { return }
+      // A 404 (an older server) or any other failure: today's facts, no rows added.
+      let read = try? await client.computerStatus(instanceId: machine.instanceId)
+      guard !Task.isCancelled else { return }
+      live = read
+    }
   }
 
   private func fact(_ label: String, _ value: String) -> some View {
@@ -199,6 +221,37 @@ struct CloudMachineFacts: View {
       Text(label).foregroundStyle(ADEColor.textMuted)
       Text(value).foregroundStyle(ADEColor.textPrimary).lineLimit(2).truncationMode(.middle)
     }
+  }
+}
+
+/// "2 h 5 min", "12 min": how long this stretch awake has lasted.
+func cloudAwakeFor(_ sinceMs: Double, now: Date) -> String {
+  let minutes = max(0, Int((now.timeIntervalSince1970 - sinceMs / 1000) / 60))
+  if minutes < 60 { return "\(max(1, minutes)) min" }
+  let rest = minutes % 60
+  return rest == 0 ? "\(minutes / 60) h" : "\(minutes / 60) h \(rest) min"
+}
+
+/// "2 running", else "None · sleeps in ~N min" when it will sleep on its own.
+func cloudLiveAgentsLine(_ activity: CloudComputerLiveStatus.Activity?, now: Date) -> String? {
+  guard let activity else { return nil }
+  if let running = activity.runningAgents, running > 0 { return "\(running) running" }
+  if let sleepsAt = activity.sleepsAt {
+    let minutes = max(1, Int(((sleepsAt / 1000 - now.timeIntervalSince1970) / 60).rounded(.up)))
+    return "None · sleeps in ~\(minutes) min"
+  }
+  return activity.busy == true ? "Working" : nil
+}
+
+/// The memory warning to show, or nil when memory is fine or unknown.
+func cloudLiveMemoryWarning(_ live: CloudComputerLiveStatus) -> String? {
+  if live.outOfMemory == true {
+    return "It ran out of memory and restarted. A bigger size gives it more."
+  }
+  switch live.memory {
+  case "critical": return "Its memory is nearly full. A bigger size gives it more."
+  case "pressure": return "Its memory is running high."
+  default: return nil
   }
 }
 

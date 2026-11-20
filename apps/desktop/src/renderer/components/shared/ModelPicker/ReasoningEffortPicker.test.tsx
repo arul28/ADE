@@ -104,72 +104,26 @@ describe("ReasoningEffortPicker", () => {
     expect(effortLabel()?.getAttribute("data-direction")).toBe("down");
   });
 
-  it("renders nothing when the model has no reasoning tiers", () => {
+  it.each<[string, string]>([
+    ["the model has no reasoning tiers", OPENCODE_MODEL_ID],
+    ["there is no model", ""],
+  ])("renders nothing when %s", (_label, modelId) => {
     const { container } = render(
-      <ReasoningEffortPicker
-        modelId={OPENCODE_MODEL_ID}
-        reasoningEffort={null}
-        onChange={vi.fn()}
-      />,
+      <ReasoningEffortPicker modelId={modelId} reasoningEffort={null} onChange={vi.fn()} />,
     );
     expect(container.querySelector('[data-reasoning-effort-picker-trigger="true"]')).toBeNull();
   });
 
-  it("renders nothing when modelId is empty", () => {
-    const { container } = render(
-      <ReasoningEffortPicker
-        modelId=""
-        reasoningEffort={null}
-        onChange={vi.fn()}
-      />,
-    );
-    expect(container.querySelector('[data-reasoning-effort-picker-trigger="true"]')).toBeNull();
-  });
-
-  it("shows the current effort as a chip on the trigger", () => {
-    render(
-      <ReasoningEffortPicker
-        modelId={ANTHROPIC_MODEL_ID}
-        reasoningEffort="high"
-        onChange={vi.fn()}
-      />,
-    );
-    const trigger = screen.getByRole("button", { name: /Reasoning effort/i });
-    expect(trigger.textContent).toContain("HI");
-  });
-
-  it("falls back to the family-remembered effort when none is provided", () => {
-    reasoningByFamilyStore.anthropic = "medium";
-    render(
-      <ReasoningEffortPicker
-        modelId={ANTHROPIC_MODEL_ID}
-        reasoningEffort={null}
-        onChange={vi.fn()}
-      />,
-    );
-    const trigger = screen.getByRole("button", { name: /Reasoning effort/i });
-    expect(trigger.textContent).toContain("MED");
-  });
-
-  it("opens the popover and lists the model's reasoning tiers on click", async () => {
-    const user = userEvent.setup();
-    render(
-      <ReasoningEffortPicker
-        modelId={ANTHROPIC_MODEL_ID}
-        reasoningEffort="medium"
-        onChange={vi.fn()}
-      />,
-    );
-    const trigger = screen.getByRole("button", { name: /Reasoning effort/i });
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-
-    await user.click(trigger);
-
-    expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    const group = screen.getByRole("radiogroup", { name: /Reasoning effort/i });
-    expect(group).toBeTruthy();
-    const radios = screen.getAllByRole("radio");
-    expect(radios.length).toBeGreaterThan(0);
+  // The trigger shows the effort a send would use: the chat's own, else the
+  // family's remembered one, clamped to what the model offers.
+  it.each<[string, string, string | null, string | null, string]>([
+    ["the chat's own effort", ANTHROPIC_MODEL_ID, "high", null, "HI"],
+    ["the family-remembered effort when the chat has none", ANTHROPIC_MODEL_ID, null, "medium", "MED"],
+    ["a remembered Ultra clamped on a model without it (Luna)", "openai/gpt-5.6-luna", null, "ultra", "MED"],
+  ])("shows %s on the trigger", (_label, modelId, reasoningEffort, remembered, chip) => {
+    if (remembered) reasoningByFamilyStore[modelId.split("/")[0]!] = remembered;
+    render(<ReasoningEffortPicker modelId={modelId} reasoningEffort={reasoningEffort} onChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /Reasoning effort/i }).textContent).toContain(chip);
   });
 
   it("uses cached runtime catalog reasoning tiers for dynamic runtime models", () => {
@@ -276,19 +230,6 @@ describe("ReasoningEffortPicker", () => {
     expect(screen.getByRole("radio", { name: "Ultracode" }).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByText(/automatically delegates work across multiple agents/i)).toBeTruthy();
     expect(screen.getByText(/automatically delegates work across multiple agents/i).getAttribute("data-reasoning-ultra-warning")).toBe("true");
-  });
-
-  it("clamps a remembered Ultra effort when switching to Luna", () => {
-    reasoningByFamilyStore.openai = "ultra";
-    render(
-      <ReasoningEffortPicker
-        modelId="openai/gpt-5.6-luna"
-        reasoningEffort={null}
-        onChange={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByRole("button", { name: /Reasoning effort/i }).textContent).toContain("MED");
   });
 
   it("calls onChange and persists the tier when a tier is selected", async () => {

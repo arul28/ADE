@@ -340,16 +340,21 @@ extension View {
   /// computer; only doing (a send, a terminal, a Git action) does. A
   /// computer the server lists awake is connected with no wake, and
   /// `onAwake` runs once it answers. Any other machine changes nothing.
+  /// `restingStateInHeader`: the screen's header shows asleep and waking
+  /// (`CloudLaneHeaderStateButton`), so only a failed wake, a refusal, a
+  /// deleted computer and the deleting-soon notice take a line here.
   func showsCloudLaneState(
     fleetKey: String?,
+    restingStateInHeader: Bool = false,
     onAwake: (() async -> Void)? = nil
   ) -> some View {
-    modifier(CloudLaneStateModifier(fleetKey: fleetKey, onAwake: onAwake))
+    modifier(CloudLaneStateModifier(fleetKey: fleetKey, restingStateInHeader: restingStateInHeader, onAwake: onAwake))
   }
 }
 
 private struct CloudLaneStateModifier: ViewModifier {
   let fleetKey: String?
+  let restingStateInHeader: Bool
   let onAwake: (() async -> Void)?
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
 
@@ -362,7 +367,7 @@ private struct CloudLaneStateModifier: ViewModifier {
     content
       .safeAreaInset(edge: .top, spacing: 0) {
         if syncPublishes.service.isCloudFleetKey(fleetKey) {
-          CloudLaneStateLines(fleetKey: fleetKey)
+          CloudLaneStateLines(fleetKey: fleetKey, showsRestingState: !restingStateInHeader)
         }
       }
       .task(id: "\(fleetKey ?? "")#\(serverStatus)") {

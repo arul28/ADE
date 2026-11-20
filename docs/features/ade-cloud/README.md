@@ -129,6 +129,7 @@ Facts from those docs that ADE's design leans on:
 | The account's lanes, saved chats, CLI copies, backups and server jobs from the CLI and agents (`ade cloud lanes`, `chats`, `sessions`, `backups`, `jobs`, `project`) | `cloudLaneVerbs.ts`; text in `apps/ade-cli/src/cliCloudLanes.ts` |
 | Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
 | The disk measure and Clear caches on a cloud computer | `cloudDiskUsage.ts` |
+| A lane computer's status menu: the header button and menu, the status hook, the server read, the provider's status webhook (migration `0050`), the brain's activity report | `apps/desktop/src/renderer/components/cloudLane/CloudLaneHeaderButton.tsx`, `CloudLaneComputerPanel.tsx`, `CloudLaneConnectionRow.tsx`, `cloudLaneStatus.ts`, `useCloudComputerStatus.ts`; `registerCloudIpc.ts` (`cloudComputerStatus`); `apps/account-directory/src/cloud/computerStatus.ts`, `apps/account-directory/src/webhookSignature.ts`, `apps/account-directory/scripts/register-agent37-webhook.mjs`; `apps/ade-cli/src/services/account/cloudActivityReporter.ts` |
 | Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`, `apps/ade-cli/src/services/power/cloudIgnoredFiles.ts` |
 | Idle cleanup (warn, save, delete unused computers) | `apps/account-directory/src/cloud/idleCleanup.ts`, `planCleanup.ts` (`saveBeforeDelete`), `apps/desktop/src/renderer/components/settings/cloudDashboard/CloudIdleCleanupNotice.tsx` |
 | Lane backups at rest (save, report, restore, download) | `apps/account-directory/src/cloud/laneBackups.ts`, `apps/ade-cli/src/services/cloudChats/cloudLaneBackup.ts`, `apps/desktop/src/main/services/lanes/cloudLaneRestoreHook.ts`, `apps/desktop/src/main/services/adeCloud/cloudLaneBackupIpc.ts`, `apps/desktop/src/renderer/components/cloudLane/CloudLaneSavedWork.tsx`, `apps/ios/ADE/Views/Cloud/CloudMachineScreen.swift` (`CloudSavedWorkRow`) |
@@ -194,10 +195,18 @@ that stops (see Sleep and busy rules).
   `cloudDefaultTier`, Small at first). A label turns Send off when the account
   is out of hours, uses all its computers, or has a full disk. See
   [Run on ADE Cloud in the composer](../chat/README.md#run-on-ade-cloud-in-the-composer).
-- **A cloud lane's chat:** a cloud button in the header manages the lane's
-  computer: Change size, Disk, hours and more, Sleep (asks first while a turn
-  runs) and Delete lane. It is account level, by the computer's id, so it works
-  for a chat on any machine.
+- **A cloud lane's chat:** one cloud button in the header
+  (`CloudLaneHeaderButton.tsx`). Its mark says asleep, waking or awake
+  (`cloudLaneStatus.ts`), with a warning dot while idle cleanup plans to delete
+  the computer. With that button the chat has no "asleep" banner (a message
+  wakes the computer); only a failed wake shows a line (Try again), and a chat
+  with no header button still shows the asleep and waking lines
+  (`ChatMachineWakeBanner`, `headerLaneId`). The menu opens on the computer's
+  status (up since, size, disk and hours, its work, running agents, trouble
+  only when there is some; see [The status menu](#the-status-menu)), then Wake,
+  Keep, Change size, Sleep (asks first while a turn runs), the ADE Cloud page
+  and Delete lane. It is account level, by the computer's id, so it works for
+  a chat on any machine.
 - **Look:** the Night sky tokens, the cloud mark, the size icon and the skyline
   are in `remoteTargets/cloudBrand.tsx` and `cloudBrand.css`.
 - **CLI:** `ade cloud` (`ade help cloud`) and
@@ -1354,13 +1363,41 @@ channel's image, only when nothing runs (`apps/account-directory/src/cloud/updat
   clears it. A failed rollback is not retried.
 - **Hours.** An automatic update or rollback of an awake, idle computer uses
   a free window (`free_wake_started_at`, `free_wake_until`) until the boot
-  report: the restart is ADE's, not use. A person's update is metered.
+  report: the restart is ADE's, not use. The idle update's power log and free
+  window are written before the provider is asked, and the computer's call
+  waits at most 8 s for the provider (a quick refusal reaches it; otherwise it
+  is told the update started), because the restart can cancel that request. A person's update is metered.
 - **What people see.** Where other machines have an Update button, a cloud
   computer shows "Updates itself when idle", "Updating…", or "Update failed:
   <why>." with Retry. `ade cloud status` gives each computer's
   `update {image, channel, target, state, error}`. Each update writes
   `cloud_power_log` (`update_manual`, `update_idle`, `update_asleep`,
   `update_rollback`).
+
+### The status menu
+
+A cloud lane's header menu (`CloudLaneComputerPanel.tsx`) reads one account
+call when it opens, never on a timer, and no read wakes the computer
+(`window.ade.cloud.computerStatus`, IPC `ade.cloud.computerStatus`, then
+`GET /cloud/instances/:id/status`, `computerStatus.ts`, migration `0050`;
+`useCloudComputerStatus.ts` keeps a read 20 s in the window, the server 15 s).
+The answer puts together:
+
+- **The provider's signed webhook,** `POST /cloud/agent37/webhook`
+  (Standard Webhooks, secret `AGENT37_WEBHOOK_SECRET`): every status change of
+  the account's computers goes to `cloud_instance_events` once per
+  `webhook-id`, so a sleep, wake or restart between two minute ticks is seen.
+  A change to running also keeps the provider's restart count. A failed save
+  answers 503 so the provider retries; a refused signature is logged
+  (`secret_unreadable` is reported). Register it once with
+  `apps/account-directory/scripts/register-agent37-webhook.mjs`.
+- **The brain's own word,** `POST /cloud/instances/:id/activity`
+  (`cloud_computer_activity`): working or idle, since when, when it sleeps and
+  how many agents run. `cloudActivityReporter.ts` (CLI) sends it only when that
+  changes (and once after a wake), riding the keep-awake's checks through
+  `onIdleFacts`; the agent count comes from each busy read.
+- **The provider's health and metrics** (restarts, memory verdict) and the
+  newest disk measure.
 
 ## Rules on a cloud computer
 
@@ -1408,6 +1445,12 @@ One busy list, `decideCloudBusy` in
   no output and no touch for 60 minutes. A shell's prompt state comes from
   `/proc` (`readPtyForeground`): tpgid on a normal kernel, the shell's
   children on gVisor.
+- Typing warms the chat's model (`chat.prewarmDraft`, and `chat.warmupModel`
+  with `sdkOnly`). These are background writes, so typing never wakes a
+  sleeping computer, but an awake one counts it as use and stays awake. Any
+  other warmup (a viewed Cursor tile) is not use. A person's **Run doctor**
+  (`ai.runAcpProviderDoctor`) is use and wakes it; the page-open diagnostics
+  are not.
 - Three minutes after the last work, the brain calls
   `POST /cloud/instances/:id/idle`. The provider's own 5-minute timer is the
   backstop. The app's own writes (`isBackgroundAdeWrite`) neither wake a
@@ -1450,7 +1493,8 @@ One busy list, `decideCloudBusy` in
   (`markCloudWakeForSend`, display only). In a chat on a sleeping computer, a
   proof offers **Wake**, and a code block's **Run** wakes it first
   (`useChatMachineWake.tsx`). A deleted computer's proof says so with no
-  button. A tool panel (`CloudToolGate`, `terminals/cloudToolGate.tsx`) wakes
+  button. Every wake for use logs its cause (`remote.cloud_woken_for_use`:
+  target, `via`, action). A tool panel (`CloudToolGate`, `terminals/cloudToolGate.tsx`) wakes
   the computer on a person's click through `cloud.machineAction`; a restored
   tab shows Wake; at 0 hours or over the plan's disk it shows the lane's
   saved work instead (`CloudLaneSavedWork`, no wake). A connect from ADE Web to an asleep computer wakes

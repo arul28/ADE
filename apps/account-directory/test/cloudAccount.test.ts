@@ -682,6 +682,9 @@ describe("ADE Cloud account", () => {
       seedComputer(harness);
       provide(harness);
       harness.insert("cloud_user_keys", { user_id: OWNER, sealed_key: "v1.x.y", created_at: NOW });
+      // Its status menu's facts carry no user id: they go with the computer.
+      harness.insert("cloud_instance_events", { delivery_id: "evt_1", instance_id: INSTANCE, status: "running", at: NOW - DAY, received_at: NOW - DAY });
+      harness.insert("cloud_computer_activity", { instance_id: INSTANCE, busy: 0, running_agents: 0, reported_at: NOW - DAY });
       harness.net.subscriptions.set("sub_1", activeSubscription);
       const response = await deleteAccountOverClerk();
 
@@ -691,6 +694,7 @@ describe("ADE Cloud account", () => {
       expect(harness.row("select plan, stripe_subscription_id from cloud_accounts where user_id = ?", OWNER)).toEqual(expect.objectContaining({ plan: "free", stripe_subscription_id: null }));
       expect(computer(harness).deleted_at).toBe(NOW);
       expect(harness.rows("select user_id from cloud_user_keys where user_id = ?", OWNER)).toEqual([]);
+      expect([...harness.rows("select instance_id from cloud_instance_events"), ...harness.rows("select instance_id from cloud_computer_activity")]).toEqual([]);
       // Its vault and settings live in the push relay's D1, so the relay is asked to remove them.
       expect(harness.relayCalls).toEqual([
         { method: "DELETE", url: `https://relay.test/directory/accounts/${OWNER}`, directoryAuth: "directory-secret" },
@@ -4479,6 +4483,9 @@ describe("ADE Cloud computer status (the provider's webhook and the brain's acti
     expect((await deliver("evt_unsigned", asleep, { sign: "" })).status).toBe(401);
     // Another workspace instance (not one of ADE's computers) is answered and not kept.
     expect((await deliver("evt_other", event("running", null, NOW - MIN, "zzzzz99999"))).status).toBe(200);
+    // Nor is a late one for a computer already deleted (its facts went with it).
+    seedComputer(harness, { instance_id: "gone0000001", status: "deleted", awake_since: null, deleted_at: NOW - MIN });
+    expect((await deliver("evt_gone", event("sleeping", "running", NOW - MIN, "gone0000001"))).status).toBe(200);
     expect(events().map((row) => row.delivery_id)).toEqual(["evt_1"]);
 
     // Out of order: an older change arriving late never wins over the newer one.
@@ -4491,6 +4498,13 @@ describe("ADE Cloud computer status (the provider's webhook and the brain's acti
       memory: "pressure",
       outOfMemory: false,
     }));
+
+    // Deliveries missed since (a sleep, then a wake the tick saw): the row is
+    // newer, so that older running event no longer dates this stretch awake
+    // nor counts its restarts.
+    harness.exec("update cloud_computers set status_changed_at = ? where instance_id = ?", NOW - 2 * MIN, INSTANCE);
+    harness.net.once.push({ match: new RegExp(`GET ${SANDBOX}/instances/${INSTANCE}/logs`), reply: health(6) });
+    expect(await status()).toEqual(expect.objectContaining({ status: "running", awakeSince: NOW - 2 * MIN, restarts: null }));
   });
 
   it("shows the brain's activity of this stretch awake, never an older report", async () => {
