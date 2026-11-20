@@ -1157,19 +1157,29 @@ account, never a pin.
   free its computer (`freeCloudLaneWithConfirm`), Keep this computer while
   the idle cleanup warned, and the ADE Cloud page. Its Delete tab is the cloud
   delete with the keep-chats box.
-- **Lanes without a computer** (`CloudLanesWithoutComputerBlock.tsx`): one
-  folded block above the Work list and in the Lanes tab. It lists the lanes
-  the server kept without a computer (with "New computer" on the same branch)
-  and lanes whose computer was deleted with their chats kept. Each row gives
-  the server's reason in one line. Delete in the row's ⋯ menu removes the kept
-  record first (the server refuses it while a computer holds the lane again),
-  then every chat of that lane id. A gold dot marks a row not seen yet
-  (`ade.cloudLanesWithoutComputer.seen.v1`).
-  - On the iPhone (`CloudKeptLanes.swift`) the same block sits at the top of
-    the project's Lanes list and under the computers on the ADE Cloud page.
-    New computer starts a lane launch on the kept branch; its steps show in
-    the row, and a launch started on another device shows its card too.
-    Delete asks first, removes the kept record, then the lane's saved chats.
+- **A deleted computer looks like a sleeping one** (`cloudLanesWithoutComputer.tsx`,
+  `CloudLaneComputerDeletedBanner.tsx`). A lane whose computer was deleted,
+  kept by the server or listed only by its saved chats, stays a normal row
+  among the ADE Cloud lanes in Lanes and Work, with one quiet "Computer
+  deleted" mark. Its rows name the machine id `ade-cloud-deleted`, which
+  nothing routes to, so every lane action refuses them. Its lane page and its
+  chats show one inline banner: what happened, what the next message does,
+  and "Why?". The next message goes through the account's queue, which makes
+  a new computer (Small, or bigger if the project needs it) and continues the
+  same chat. When ADE Cloud can't start one (the account is blocked or signed
+  out, no hours or disk, no branch or repository), the banner turns to a
+  warning with the reason and Send is off. A lane with no chat offers New
+  computer on the same branch instead. Delete asks first, removes the kept
+  record (the server refuses it while a computer holds the lane again), then
+  every saved chat of that lane on its old computers, page by page; when
+  chats remain, it says so and keeps the row. The ADE Cloud page lists every
+  project's kept lanes (`CloudDashboard.tsx`).
+  - On the iPhone the same lanes are normal rows in the project's Lanes list
+    (`LaneKeptCloudRows.swift`), counted under Active. A tap opens the newest
+    saved chat, else the kept-lane page (`CloudKeptLaneActionsCard` in
+    `CloudKeptLanes.swift`): New computer on the same branch for a lane with
+    no saved chat, its saved chats, and Delete. The chat's line says what
+    happened and what its next message does (`CloudDeletedComputerFacts`).
     Everything goes through the account server, so it works with no machine
     of the person's own.
   - **Lane links to a kept lane** open its kept page, not "Lane shared with
