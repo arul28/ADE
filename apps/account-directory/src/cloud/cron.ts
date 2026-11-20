@@ -1,4 +1,4 @@
-import { expireChatMessages } from "./chatMessages";
+import { carryLaunchMessagesForComputer, expireChatMessages } from "./chatMessages";
 import { runLinearRenewalCron } from "./linearRenewal";
 import { captureCloudDay, type CloudWaitUntil } from "./analytics";
 import { cancelTimedWakes, type WakeBlock } from "./accountNotices";
@@ -145,6 +145,7 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
 
   const statements: D1PreparedStatement[] = [];
   const gone: TickComputer[] = [];
+  const keyed: string[] = [];
   for (const computer of live) {
     const instance = byId.get(computer.instance_id);
     if (!instance) {
@@ -154,6 +155,7 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
     statements.push(...(updateBootStatements(env, computer, instance.status, now) ?? statusChangeStatements(env, computer, instance.status, now, "seen_by_tick")));
     if (instance.metadata.ade_machine_key && instance.metadata.ade_machine_key !== computer.machine_key) {
       computer.machine_key = instance.metadata.ade_machine_key;
+      keyed.push(computer.instance_id);
       statements.push(env.DB.prepare("update cloud_computers set machine_key = ? where instance_id = ?").bind(computer.machine_key, computer.instance_id));
       const named = nameMachineAfterComputerStatement(env, computer, computer.machine_key);
       if (named) statements.push(named);
@@ -181,6 +183,8 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   }
   statements.push(...await diskDayStatements(env, diskConfirmed, now));
   if (statements.length) await env.DB.batch(statements);
+  // A chat launch's follow-ups that waited for the computer's key join its chat.
+  for (const instanceId of keyed) await carryLaunchMessagesForComputer(env, instanceId, now);
 
   await confirmGone(env, provider, gone, live, now);
   // The owner's block list: a computer of a blocked account that isn't stopped (one a launch finished after the block) is stopped now.

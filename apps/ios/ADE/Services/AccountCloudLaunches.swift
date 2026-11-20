@@ -431,6 +431,10 @@ final class AccountCloudLaunchStore: ObservableObject {
     var record: CloudLaunchRecord?
     /// The start itself failed (the server refused, or no answer).
     var startError: String?
+    /// The start surely did not reach ADE Cloud as a launch (signed out, a
+    /// file upload failed, or the server refused it), so nothing runs under
+    /// this id. With no answer at all it may have: the launch stays, with Retry.
+    var startNeverReached = false
     /// The start this phone sent; a launch found from another device uses its record's `request`.
     var body: RemoteJSONValue?
     /// `chat` (a chat and its first message) or `lane` (a lane alone, as "New
@@ -524,7 +528,7 @@ final class AccountCloudLaunchStore: ObservableObject {
   /// the message and says why, so the launch leaves this phone.
   func discardFailedStart(_ launchId: String) {
     guard let entry = entries.first(where: { $0.launchId == launchId }),
-          entry.startError != nil, entry.record == nil else { return }
+          entry.startNeverReached, entry.record == nil else { return }
     entries.removeAll { $0.launchId == launchId }
     pendingFiles[launchId] = nil
   }
@@ -770,7 +774,10 @@ final class AccountCloudLaunchStore: ObservableObject {
     defer { startingLaunchIds.remove(launchId) }
     let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else {
-      patch(launchId) { $0.startError = "Sign in to ADE to start a chat on ADE Cloud." }
+      patch(launchId) {
+        $0.startError = "Sign in to ADE to start a chat on ADE Cloud."
+        $0.startNeverReached = true
+      }
       return
     }
     // Each file goes once; a failed upload stops here and Retry sends the rest.
@@ -783,7 +790,11 @@ final class AccountCloudLaunchStore: ObservableObject {
       } catch {
         guard generation == accountGeneration else { return }
         let reason = cloudServerFailureMessage(error)
-        patch(launchId) { $0.startError = "ADE couldn't send \(file.name) to ADE Cloud. \(reason)" }
+        patch(launchId) {
+          $0.startError = "ADE couldn't send \(file.name) to ADE Cloud. \(reason)"
+          // The start goes after the files: it was not sent.
+          $0.startNeverReached = true
+        }
         return
       }
     }
@@ -794,12 +805,27 @@ final class AccountCloudLaunchStore: ObservableObject {
       patch(launchId) {
         $0.record = record
         $0.startError = nil
+        $0.startNeverReached = false
       }
       poll(using: sync)
     } catch {
       guard generation == accountGeneration else { return }
       let message = cloudServerFailureMessage(error)
-      patch(launchId) { $0.startError = message }
+      let refused = Self.isClearRefusal(error)
+      patch(launchId) {
+        $0.startError = message
+        $0.startNeverReached = refused
+      }
+    }
+  }
+
+  /// The server answered no, so it kept nothing under the id. Not a lost
+  /// answer, an unreadable one or a server error: those may have gone through.
+  private static func isClearRefusal(_ error: Error) -> Bool {
+    switch error as? CloudServerClient.Failure {
+    case .refused?, .noAccess?, .unauthorized?: return true
+    case .server(let status, _)?: return (400..<500).contains(status)
+    default: return false
     }
   }
 
@@ -888,10 +914,7 @@ final class AccountCloudLaunchStore: ObservableObject {
       guard generation == accountGeneration else { return cloudServerFailureMessage(error) }
       let failure = error as? CloudServerClient.Failure
       // A clear answer: the server kept nothing under this id.
-      switch failure {
-      case .refused?, .server?: unconfirmedMessages[launchId] = nil
-      default: break
-      }
+      if Self.isClearRefusal(error) { unconfirmedMessages[launchId] = nil }
       // `chat_ready` or `launch_closed`: the launch moved on. Read it now, so
       // the page opens the chat (with this message as its draft) or shows
       // why, without waiting for the next poll.

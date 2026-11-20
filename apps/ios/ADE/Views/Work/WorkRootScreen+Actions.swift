@@ -270,6 +270,7 @@ extension WorkRootListScreen {
     isSelecting = false
     selectedSessionTransitionId = nil
     path = NavigationPath()
+    cloudLaunchPageOpen = false
     lastWorkProjectionReloadRevision = nil
     lastWorkLocalProjectionReload = .distantPast
     lastCoalescedChatSummaryRefresh = .distantPast
@@ -907,10 +908,12 @@ extension WorkRootListScreen {
           duoComposeRoute = nil
           duoSelectedRoute = route
           path = NavigationPath()
+          cloudLaunchPageOpen = false
         } else {
           var fresh = NavigationPath()
           fresh.append(route)
           path = fresh
+          cloudLaunchPageOpen = false
         }
         return
       }
@@ -938,6 +941,7 @@ extension WorkRootListScreen {
       fresh.append(route)
     }
     path = fresh
+    cloudLaunchPageOpen = false
     if remoteChat == nil {
       syncService.persistOpenWorkSessionRoute(sessionId: request.sessionId)
     }
@@ -1078,6 +1082,7 @@ extension WorkRootListScreen {
     navigationMutationPending = false
     selectedSessionTransitionId = nil
     path = NavigationPath()
+    cloudLaunchPageOpen = false
     // Framing for this one navigation, not a new preference: marking it keeps
     // the reset below out of the project's persisted view state.
     if !workViewStateDeeplinkActive {

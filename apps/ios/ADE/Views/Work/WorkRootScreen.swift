@@ -1694,7 +1694,7 @@ struct WorkRootListScreen: View, Equatable {
         launchId: launchId,
         navigationChrome: inColumn ? .column : .pushedDetail,
         onBack: inColumn ? { duoClearSelection() } : nil,
-        onChatReady: { chatId in await openLaunchedCloudChat(chatId) }
+        onChatReady: { chatId in await openLaunchedCloudChat(chatId, fromLaunch: launchId) }
       )
       .id(route.openId)
     } else if let remoteTerminal = route.remoteTerminal {
@@ -1873,18 +1873,25 @@ struct WorkRootListScreen: View, Equatable {
   /// unavailable", so this never opens one: it answers false and the
   /// launch's page stays with a way to try again.
   @discardableResult
-  func openLaunchedCloudChat(_ chatId: String) async -> Bool {
+  func openLaunchedCloudChat(_ chatId: String, fromLaunch launchId: String) async -> Bool {
     func listedRow() -> TerminalSessionSummary? {
       mergedSessions.first { $0.id == chatId }
     }
-    if listedRow() == nil,
-       let launchId = cloudLaunches.entries.first(where: { $0.record?.sessionId == chatId })?.launchId {
+    // The open waits on the computer and the roster. If the person left the
+    // launch's page meanwhile, the chat must not pull them back to it.
+    let launchRouteId = workCloudLaunchRouteSessionId(launchId)
+    func launchPageShows() -> Bool {
+      duoLayout.isWide
+        ? duoSelectedRoute?.sessionId == launchRouteId
+        : cloudLaunchPageOpen && selectedSessionTransitionId == launchRouteId
+    }
+    if listedRow() == nil {
       await cloudLaunches.connectComputer(launchId, using: syncService)
     }
     // The roster lists the chat a moment after the link is live.
     let listedBy = ContinuousClock.now + .seconds(15)
     while ContinuousClock.now < listedBy {
-      if Task.isCancelled { return false }
+      if Task.isCancelled || !launchPageShows() { return false }
       if let row = listedRow() {
         // Off the new-chat page and the launch's page first, as `showNewChatRoute` does.
         cloudLaunchPageOpen = false
@@ -2145,7 +2152,10 @@ struct WorkRootListScreen: View, Equatable {
         }
       }
       .onChange(of: path.count) { _, newCount in
-        if newCount == 0 { cloudLaunchPageOpen = false }
+        // The launch page is only ever the one page on the stack; anything
+        // else on it (a chat pushed on top, the compose page after a fold)
+        // means the list is hidden again.
+        if newCount != 1 { cloudLaunchPageOpen = false }
         if newCount == 0, let leftSessionId = selectedSessionTransitionId {
           // Leaving a chat is what marks it seen (desktop stamps the same
           // moment): everything it showed, including output that landed while

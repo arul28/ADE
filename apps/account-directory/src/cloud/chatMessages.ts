@@ -114,8 +114,12 @@ function signInOf(row: ChatMessageRow): CloudLaunchSignIn | null {
  */
 export async function carryLaunchMessagesToChat(env: CloudEnv, launch: LaunchRow, sessionId: string, now: number): Promise<void> {
   if (launch.kind === "lane" || launch.continue_chat_id || !launch.instance_id) return;
+  // Only the ones not carried yet: each report of the chat, and the computer's key arriving, try again.
   const messages = (await env.DB.prepare(`
-    select message_id, text, provider, model_id from cloud_launch_messages where launch_id = ? and seq > 1 order by seq
+    select lm.message_id, lm.text, lm.provider, lm.model_id from cloud_launch_messages lm
+    where lm.launch_id = ? and lm.seq > 1
+      and not exists (select 1 from cloud_chat_messages m where m.launch_id = lm.launch_id and m.message_id = lm.message_id and m.via_launch = 1)
+    order by lm.seq
   `).bind(launch.launch_id).all<{ message_id: string; text: string; provider: string | null; model_id: string | null }>()).results ?? [];
   if (messages.length === 0) return;
   const computer = await env.DB.prepare("select machine_key from cloud_computers where instance_id = ? and user_id = ?")
@@ -137,6 +141,23 @@ export async function carryLaunchMessagesToChat(env: CloudEnv, launch: LaunchRow
     }, { instanceId: null, launchId: launch.launch_id, viaLaunch: true }, now);
   }
   logCloud("cloud.launch_messages_carried", { userId: launch.user_id, launchId: launch.launch_id, count: messages.length });
+}
+
+/**
+ * A computer's machine key arrived (it writes it after the launch's path):
+ * its chat launch's follow-ups that waited for the key join the chat now.
+ * Never fails its caller; it logs.
+ */
+export async function carryLaunchMessagesForComputer(env: CloudEnv, instanceId: string, now: number): Promise<void> {
+  try {
+    const launch = await env.DB.prepare(`
+      select * from cloud_launches where instance_id = ? and kind = 'chat' and session_id is not null and continue_chat_id is null
+      order by created_at desc limit 1
+    `).bind(instanceId).first<LaunchRow>();
+    if (launch?.session_id) await carryLaunchMessagesToChat(env, launch, launch.session_id, now);
+  } catch (error) {
+    logCloud("cloud.launch_messages_carry_failed", { instanceId, error: error instanceof Error ? error.name : "unknown" });
+  }
 }
 
 /** The sentences of a message a continue launch never sent; the launch's own sentence comes first when it has one. */

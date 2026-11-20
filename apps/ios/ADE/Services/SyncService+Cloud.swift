@@ -947,9 +947,9 @@ extension SyncService {
   /// account's machines, both fresh. The launch made a new computer, and a
   /// machine list from before it would route the chat to a "deleted" copy.
   func readCloudForLaunchedChat() async {
-    refreshCloudServerIfStale(force: true)
     async let machines: Void = AccountService.shared.loadMachines()
-    await cloudServerReadTask?.value
+    // A read already out may have started before the launch: it ends, then a new one runs.
+    await refreshCloudServerInstances()
     await machines
   }
 
@@ -963,9 +963,7 @@ extension SyncService {
   @discardableResult
   func connectLaunchedCloudComputer(instanceId: String) async -> Bool {
     async let projects: Void = AccountProjectStore.shared.refresh()
-    async let machines: Void = AccountService.shared.loadMachines()
-    await refreshCloudServerInstances()
-    await machines
+    await readCloudForLaunchedChat()
     await projects
     guard let accountKey = cloudServerInstances.first(where: { $0.id == instanceId })?.machineKey else { return false }
     resolveCloudMachineKeys()

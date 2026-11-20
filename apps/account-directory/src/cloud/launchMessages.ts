@@ -84,6 +84,18 @@ export function chatMessagesDeliveredStatement(env: CloudEnv, launchId: string, 
   `).bind(now, launchId);
 }
 
+/**
+ * The computer could not send one launch message: the chat's row for it
+ * (`via_launch`) reads failed now, with the same sentence, so it stops
+ * counting as open and shows its failure without waiting for the cron.
+ */
+export function chatMessageFailedStatement(env: CloudEnv, launchId: string, messageId: string, error: string, now: number): D1PreparedStatement {
+  return env.DB.prepare(`
+    update cloud_chat_messages set state = 'failed', error = ?, updated_at = ?
+    where launch_id = ? and message_id = ? and via_launch = 1 and state in ('queued', 'sending', 'waiting_for_sign_in')
+  `).bind(error, now, launchId, messageId);
+}
+
 /** The chat exists: the computer started it with the first message. */
 export function firstMessageDeliveredStatement(env: CloudEnv, launchId: string, sessionId: string, now: number): D1PreparedStatement {
   return env.DB.prepare(`
@@ -264,7 +276,11 @@ async function handleReportMessage(request: Request, env: CloudEnv, launch: Laun
     update cloud_launch_messages set state = ?, session_id = ?, error = ?, updated_at = ?
     where launch_id = ? and message_id = ? and claim_id = ? and (state = 'sending' or state = ?)
   `).bind(state, state === "delivered" ? sessionId : null, error, now, launch.launch_id, messageId, claimId, state).run();
-  if ((written.meta?.changes ?? 0) === 1 && state === "delivered") await chatMessagesDeliveredStatement(env, launch.launch_id, now).run();
+  if ((written.meta?.changes ?? 0) === 1) {
+    await (state === "delivered"
+      ? chatMessagesDeliveredStatement(env, launch.launch_id, now)
+      : chatMessageFailedStatement(env, launch.launch_id, messageId, error ?? "ADE couldn't send this message to the chat.", now)).run();
+  }
   const stored = await readMessage(env, launch.launch_id, messageId);
   if (!stored) return notFound();
   if ((written.meta?.changes ?? 0) !== 1) return fail("message_taken", "This message isn't this computer's to finish.", 409, { state: stored.state });

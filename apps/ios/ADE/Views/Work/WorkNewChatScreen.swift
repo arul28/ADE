@@ -1938,9 +1938,10 @@ struct WorkNewChatScreen: View {
     )
     busy = false
     let launch = cloudLaunches.entries.first { $0.launchId == launchId }
-    if let startError = launch?.startError, launch?.record == nil {
-      // ADE Cloud kept nothing: the message stays here (false restores the
-      // draft), with the reason, for a send again.
+    if let startError = launch?.startError, launch?.startNeverReached == true, launch?.record == nil {
+      // ADE Cloud surely kept nothing: the message stays here (false
+      // restores the draft), with the reason, for a send again. A start with
+      // no answer may run: its page opens with Retry under the same id.
       ADEHaptics.error()
       cloudLaunches.discardFailedStart(launchId)
       errorMessage = startError
