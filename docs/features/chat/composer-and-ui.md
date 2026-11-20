@@ -1123,19 +1123,24 @@ free tier runs in ADE's pinned OpenCode with nothing signed in.
   counting an agent that ran there before (older ADE versions), and the
   first sign-in seen marks it. Later agent runs do not count, because a
   runtime start is noted even with no sign-in. A local model is not a
-  sign-in: it clears `nothingSignedIn` but never marks the record.
+  sign-in: it clears `nothingSignedIn` but never marks the record. Pi
+  counts only with a stored key or login, because its settings list models
+  that have no sign-in.
   With nothing signed in:
   - the picker opens on the Free page (also when the status arrives after
     the picker opened, unless the person picked a page);
   - a fresh chat draft starts on the preferred free model, else the first
-    listed one (`chat/useFreeModelsDraft.ts`). ADE set it, so it is not
+    listed one (`chat/useFreeModelsDraft.ts`). It loads OpenCode's catalog
+    for that machine, and a load that found no free model runs again on a
+    later status read, at most once in 30 s. ADE set it, so it is not
     remembered as the launch default or "last used". A model someone chose
     wins, also one chosen before the status arrived, the tour's pick and a
     restored saved draft. A sign-in on that
     machine puts the draft back on the model it opened on;
   - a person who never signed in there gets **Use a free model** on the
     sign-in strip, on a draft or an open chat (iOS: on the chat's sign-in
-    card, which also re-sends a turn that stopped on the sign-in);
+    card, which also re-sends a turn that stopped on the sign-in, once the
+    model change succeeded);
   - the app banner says **Free models are ready** (accent) instead of the
     missing-provider warning, once OpenCode is on the machine.
 - **Download at launch.** A computer with no sign of any agent downloads

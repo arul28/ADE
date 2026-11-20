@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { isFreeModel, pickFreeDefaultModelId } from "../../../shared/freeModels";
 import type { AiSettingsStatus, OpenProjectBinding } from "../../../shared/types";
+import { AI_STATUS_CACHE_UPDATED_EVENT } from "../../lib/aiDiscoveryCache";
 import { subscribeToolInstalled } from "../../lib/toolsCacheEvents";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { fetchSharedRuntimeCatalog } from "../shared/ModelPicker/sharedCatalogFetch";
@@ -8,6 +9,9 @@ import { fetchSharedRuntimeCatalog } from "../shared/ModelPicker/sharedCatalogFe
 function isFreeInScope(modelId: string, scopeKey: string): boolean {
   return isFreeModel(resolveModelDescriptorWithRuntimeCatalog(modelId, scopeKey) ?? { id: modelId });
 }
+
+/** The least time between two loads of the free models for one machine. */
+const FREE_CATALOG_RETRY_MS = 30_000;
 
 type ModelChangeRef = MutableRefObject<((modelId: string) => void) | null>;
 
@@ -91,15 +95,33 @@ export function useFreeModelsDraft(args: {
   // it. With nothing signed in, load it for the composer's machine, so a new
   // chat can start on a free model before anyone opens the picker.
   // One load per scope and status read: a load that failed, or listed no free
-  // model, runs again on the next status re-read. That retry skips the
-  // freshness check, or it would answer with the same empty list.
-  const catalogRequestedForRef = useRef<{ scopeKey: string; status: AiSettingsStatus | null } | null>(null);
+  // model, runs again on a later status re-read. A re-read that says the same
+  // keeps the old status object, so the reads are counted from the cache
+  // event, and only while no free model is known. Such a retry waits 30 s
+  // after the last load. A retry skips the freshness check, or it would
+  // answer with the same empty list.
+  const waitingForFreeModels = freshDraft && nothingSignedIn && opencodeInstalled && freeModelIds.length === 0;
+  const [statusReads, setStatusReads] = useState(0);
   useEffect(() => {
-    if (!freshDraft || !nothingSignedIn || !opencodeInstalled || freeModelIds.length > 0) return;
+    if (!waitingForFreeModels) return undefined;
+    const onUpdated = () => setStatusReads((count) => count + 1);
+    window.addEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
+    return () => window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
+  }, [waitingForFreeModels]);
+  const catalogRequestedForRef = useRef<{
+    scopeKey: string;
+    status: AiSettingsStatus | null;
+    statusReads: number;
+    at: number;
+  } | null>(null);
+  useEffect(() => {
+    if (!waitingForFreeModels) return;
     const previous = catalogRequestedForRef.current;
-    if (previous?.scopeKey === catalogScopeKey && previous.status === aiStatus) return;
-    const retry = previous?.scopeKey === catalogScopeKey;
-    catalogRequestedForRef.current = { scopeKey: catalogScopeKey, status: aiStatus };
+    const retry = previous != null && previous.scopeKey === catalogScopeKey;
+    if (retry && previous.status === aiStatus) {
+      if (previous.statusReads === statusReads || Date.now() - previous.at < FREE_CATALOG_RETRY_MS) return;
+    }
+    catalogRequestedForRef.current = { scopeKey: catalogScopeKey, status: aiStatus, statusReads, at: Date.now() };
     void fetchSharedRuntimeCatalog({
       scopeKey: catalogScopeKey,
       mode: retry ? "force" : "refresh-stale",
@@ -108,7 +130,7 @@ export function useFreeModelsDraft(args: {
     }).then((result) => {
       if (result.status === "ok") latestRef.current.onCatalogLoaded();
     });
-  }, [aiStatus, catalogScopeKey, freeModelIds.length, freshDraft, nothingSignedIn, opencodeInstalled, runtimeBindingKey]);
+  }, [aiStatus, catalogScopeKey, runtimeBindingKey, statusReads, waitingForFreeModels]);
 
   // OpenCode is still downloading on this computer (it downloads at launch
   // when no agent is set up): re-read the status when it lands, and the

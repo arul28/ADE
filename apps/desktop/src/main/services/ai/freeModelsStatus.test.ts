@@ -13,7 +13,7 @@ function inputs(overrides: { claudeReady?: boolean; localModelCount?: number } =
     claude: { auth: { ready: overrides.claudeReady === true } } as AiClaudeAvailability,
     providerConnections: {} as AiProviderConnections,
     auth: [],
-    piAvailableModelIds: [],
+    piProviders: [],
     opencodeProviders: [],
     localModelCount: overrides.localModelCount ?? 0,
     customProviderCount: 0,

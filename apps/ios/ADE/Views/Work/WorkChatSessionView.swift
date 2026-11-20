@@ -899,7 +899,8 @@ struct WorkChatSessionView: View {
   /// Moves a staged message to a new position; nil when the provider keeps
   /// its own queue or the host predates `chat.moveSteer`.
   let onMoveSteer: (@MainActor (String, Int) async -> Void)?
-  let onSelectModel: @MainActor (String) async -> Void
+  /// True when the chat now runs on the model.
+  let onSelectModel: @MainActor (String) async -> Bool
   let onSelectRuntimeMode: @MainActor (String) async -> Bool
   let onSelectEffort: @MainActor (String) async -> Void
   let onSelectCodexFastMode: @MainActor (Bool) async -> Bool
@@ -1168,9 +1169,9 @@ struct WorkChatSessionView: View {
   /// and a turn that stopped on the sign-in sends again on it.
   func useFreeModelFromSignIn(_ modelId: String, signIn: (key: String, reason: WorkProviderSignInReason)) {
     Task { @MainActor in
-      await onSelectModel(modelId)
-      // A switch that failed shows its error; a resend then stops on the
-      // sign-in again and brings a new card.
+      // A switch that failed shows its error and keeps the card: a resend
+      // would run on the signed-out model again.
+      guard await onSelectModel(modelId) else { return }
       dismissedSignInFailureId = signIn.key
       providerSignedOutBeforeSendKey = nil
       if signIn.reason == .failedTurn { resendAfterSignIn() }
@@ -3136,7 +3137,7 @@ struct WorkChatSessionView: View {
                 defer { modelUpdateInFlight = false }
                 let wasCurrentModel = workModelIdsEquivalent(option.id, currentModelId)
                 if !wasCurrentModel {
-                  await onSelectModel(option.id)
+                  _ = await onSelectModel(option.id)
                 }
                 guard !Task.isCancelled else { return }
                 let currentReasoning = chatSummaryContext.reasoningEffort

@@ -4,6 +4,7 @@ import { getFreeModelDefaultIds } from "../../../shared/freeModels";
 import type {
   AiClaudeAvailability,
   AiFreeModelsStatus,
+  AiPiProviderStatus,
   AiProviderConnections,
   OpenCodeProviderSummary,
 } from "../../../shared/types";
@@ -27,7 +28,8 @@ export type FreeModelsStatusInputs = {
   providerConnections: AiProviderConnections;
   auth: readonly DetectedAuth[];
   /** Models Pi can run with its own sign-ins. */
-  piAvailableModelIds: readonly string[];
+  /** Pi's providers: one with a stored key or login is a sign-in. */
+  piProviders: readonly AiPiProviderStatus[];
   opencodeProviders: readonly OpenCodeProviderSummary[];
   /** Local models a runtime on this machine has loaded. */
   localModelCount: number;
@@ -46,7 +48,11 @@ function machineHasSignIn(inputs: FreeModelsStatusInputs): boolean {
     || entry.type === "openrouter"
     || (entry.type === "cli-subscription" && entry.authenticated)
   ))) return true;
-  if (inputs.piAvailableModelIds.length > 0) return true;
+  // Pi lists every model in its settings, signed in or not: only a key or a
+  // login counts. A local server is a local model, not a sign-in.
+  if (inputs.piProviders.some((provider) => (
+    provider.configured && (provider.authType === "api-key" || provider.authType === "oauth")
+  ))) return true;
   // `connected` alone is Zen's free tier; `signedIn` is a key or a login.
   if (inputs.opencodeProviders.some((provider) => provider.signedIn === true)) return true;
   return inputs.customProviderCount > 0;

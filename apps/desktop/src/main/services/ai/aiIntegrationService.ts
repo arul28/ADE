@@ -2633,7 +2633,7 @@ export function createAiIntegrationService(args: {
               claude: availability.claude,
               providerConnections,
               auth,
-              piAvailableModelIds: piProfileInventory.availableModelIds,
+              piProviders: piProfileInventory.providers,
               opencodeProviders: opencodeInventory.providers,
               localModelCount: discoveredLocalModels.length,
               customProviderCount: effectiveConfig?.ai?.customProviders?.length ?? 0,

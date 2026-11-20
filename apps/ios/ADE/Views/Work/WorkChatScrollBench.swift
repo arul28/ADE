@@ -400,7 +400,7 @@ struct WorkChatScrollBenchScreen: View {
       onDispatchSteerInline: nil,
       onDispatchSteerInterrupt: nil,
       onMoveSteer: nil,
-      onSelectModel: { _ in },
+      onSelectModel: { _ in true },
       onSelectRuntimeMode: { _ in true },
       onSelectEffort: { _ in },
       onSelectCodexFastMode: { _ in true },
