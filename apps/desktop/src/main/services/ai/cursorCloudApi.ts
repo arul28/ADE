@@ -101,7 +101,10 @@ async function cursorApiGet<T>(path: string, apiKey: string, query?: Record<stri
     const code = body.code ?? "unknown";
     const message = body.message ?? (text || `Request failed with status ${response.status}`);
     const plain = response.status === 401 || response.status === 429;
-    throw new CursorCloudApiError(plain ? message : `[${code}] ${message}`, response.status, code);
+    const error = new CursorCloudApiError(plain ? message : `[${code}] ${message}`, response.status, code);
+    // Cursor refused the saved key ("Invalid User API Key"): the person
+    // replaces it in Settings; nothing in ADE is broken.
+    throw response.status === 401 ? markExpected(error, "user") : error;
   }
   if (!text) return {} as T;
   try {

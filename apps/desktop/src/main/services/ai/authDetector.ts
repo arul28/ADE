@@ -35,6 +35,9 @@ import {
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
 import { getCursorAccount, listCursorApiModels } from "./cursorCloudApi";
+import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
+import { isOfflineFetchError } from "../../../shared/sentry/expectedFailure";
+import { forwardLogToSentry } from "../../../shared/sentry/logBridge";
 import { resolveMuseExecutable } from "./museExecutable";
 
 type CliName =
@@ -1034,7 +1037,8 @@ async function verifyCursorApiKey(
       })(),
       new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(
-          () => reject(new Error("Verification timed out.")),
+          // Cursor's API not answering is the network or Cursor, not a broken key or runtime.
+          () => reject(markExpected(new Error("Verification timed out."), "network")),
           API_KEY_VERIFY_TIMEOUT_MS,
         );
       }),
@@ -1055,6 +1059,10 @@ async function verifyCursorApiKey(
     const authFailed = /auth|unauthorized|forbidden|invalid|api key/i.test(message);
     if (authFailed) {
       reportProviderRuntimeAuthFailure("cursor", "Cursor rejected the configured API key. Check the key from the Cursor dashboard API page.");
+    } else if (expectedErrorKind(error) === "network" || isOfflineFetchError(error)) {
+      // The check never got an answer, so it says nothing about the runtime:
+      // its health stays as it was, and the person sees the message below.
+      forwardLogToSentry("warn", "provider.cursor.verify_unreachable", { message });
     } else {
       reportProviderRuntimeFailure("cursor", message);
     }

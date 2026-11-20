@@ -1813,6 +1813,7 @@ struct WorkSessionDestinationView: View {
       .onAppear {
         ChatOpenCloseTiming.destinationAppeared(sessionId: sessionId)
         chatDestinationVisible = true
+        syncService.noteChatDestinationAppeared(sessionId: sessionId)
         // Install remote routing synchronously with presentation so the first
         // user interaction cannot race the async load task and accidentally
         // fall back to the active project.
@@ -2002,6 +2003,7 @@ struct WorkSessionDestinationView: View {
       }
       .onDisappear {
         chatDestinationVisible = false
+        syncService.noteChatDestinationDisappeared(sessionId: sessionId)
         detachThreadModel()
         // The next appearance re-retains the stream (cancelling the delayed
         // unsubscribe scheduled below) and resumes it if it closed.
@@ -2020,6 +2022,10 @@ struct WorkSessionDestinationView: View {
         let wasPersonalChat = personalChat
         if wasCrossProject || wasPersonalChat {
           Task { @MainActor in
+            // The same chat opened again while this screen left (a
+            // notification tap, a Hub cover): that screen owns the stream
+            // and the routing scope now.
+            guard !syncService.chatDestinationIsVisible(sessionId: sessionId) else { return }
             try? await syncService.unsubscribeFromChatEvents(sessionId: sessionId)
             // Preserve routing through the unsubscribe payload, then drop it
             // so a later ordinary project chat with the same id cannot inherit
@@ -2031,7 +2037,9 @@ struct WorkSessionDestinationView: View {
             }
           }
         } else if let currentSession = session ?? initialSession,
-                  isChatSession(currentSession) {
+                  isChatSession(currentSession),
+                  // As above: a screen already showing this chat keeps it.
+                  !syncService.chatDestinationIsVisible(sessionId: sessionId) {
           syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
         }
       }
@@ -2560,6 +2568,9 @@ struct WorkSessionDestinationView: View {
         : nil,
       transcriptLoadState: transcriptLoadState,
       onRetryTranscript: {
+        // Idempotent: puts back a routing scope lost since the chat opened,
+        // so the retried subscribe names the chat's project again.
+        registerChatCommandScope()
         thread.retry()
       },
       providerSignInAllowed: providerSignInAllowed,

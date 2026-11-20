@@ -154,8 +154,8 @@ async function check(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepR
       };
     }
   }
-  if (work === "setup") return { kind: "fail", error: "This lane is still being set up. Finish signing in, or cancel the setup, then free the computer." };
-  if (work === "busy") return { kind: "fail", error: "The agent is still working. Stop it or wait, then free the computer." };
+  if (work === "setup") return { kind: "fail", error: "This lane is still being set up. Finish signing in, or cancel the setup, then free the computer.", refused: true };
+  if (work === "busy") return { kind: "fail", error: "The agent is still working. Stop it or wait, then free the computer.", refused: true };
   if (work === "unknown") return { kind: "fail", error: "ADE couldn't tell whether the agent is still working, so the computer stays. Try again in a moment." };
   return { kind: "next", step: "push", patch: { state: "pushing", message: `Pushing ${nameOf(job)}'s work to GitHub…` } };
 }
@@ -168,7 +168,12 @@ async function push(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepRe
   // Archived lanes too: their work goes with the computer.
   const ran = await tryExec(ctx, computer.instance_id, pushWorkCommand(false), PUSH_EXEC_MS);
   const tally = ran && ran.exitCode === 0 ? readPushWorkTally(ran.stdout) : null;
-  if (!tally) return { kind: "fail", error: "ADE couldn't push this lane's work, so the computer stays. Try again." };
+  if (!tally) {
+    let code = "push_tally_unreadable";
+    if (!ran) code = "push_exec_failed";
+    else if (ran.exitCode !== 0) code = `push_exit_${ran.exitCode}`;
+    return { kind: "fail", error: "ADE couldn't push this lane's work, so the computer stays. Try again.", code };
+  }
   logCloud("cloud.free_pushed", { jobId: job.job_id, pushed: tally.pushed, failed: tally.failed, skipped: tally.skipped });
   const left = (tally.lanes ?? []).filter((lane) => lane.state === "unpushed" || lane.state === "failed");
   if (tally.failed > 0 || left.length > 0 || (!tally.lanes && tally.skipped > 0)) {

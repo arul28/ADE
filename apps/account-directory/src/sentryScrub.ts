@@ -11,6 +11,17 @@
 
 import { cloudflareTransientKindOfText } from "./cloudflareTransient";
 
+/**
+ * Whether a Worker sends to Sentry. `SENTRY_ENVIRONMENT` is `production` only
+ * in the deployed config (wrangler.jsonc); anything else, `wrangler dev`
+ * included, is `development` and sends nothing. A run with no `SENTRY_RELEASE`
+ * sends nothing either: every deploy passes one, while `wrangler dev --env
+ * production` and workerd tests that load the deployed config do not.
+ */
+export function workerSentryEnabled(environment: string, release: string | undefined): boolean {
+  return Boolean(release?.trim()) && environment !== "development";
+}
+
 const REDACTED = "[redacted]";
 const MESSAGE_LIMIT = 200;
 

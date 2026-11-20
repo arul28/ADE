@@ -131,7 +131,12 @@ export function runFirstLoadWithRetry(args: {
     // answered by now, so a machine that comes back and still fails gets its
     // issue then.
     const offline = fields.errorClass === "network" || (typeof navigator !== "undefined" && navigator.onLine === false);
-    if (fields.errorClass === "update_in_progress" || offline || (targetId && connection?.state !== "connected")) {
+    // `not_connected` is the web sync client saying it is reconnecting to that
+    // machine. The connection snapshot can still read "connected" for that
+    // moment (ADE-WEB-B: every fetch failing, snapshot "connected"), so the
+    // error's own code counts as the machine being away.
+    const reconnecting = Boolean(targetId) && fields.errorCode === "not_connected";
+    if (fields.errorClass === "update_in_progress" || offline || reconnecting || (targetId && connection?.state !== "connected")) {
       if (!waitingReported) forwardSignalToSentry("work.first_load_waiting", fields, surface);
       waitingReported = true;
       return;

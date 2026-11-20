@@ -165,15 +165,24 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       body = JSON.stringify(init.body);
       headers["content-type"] = "application/json";
     }
+    const noAnswer = (error: unknown): CloudApiError => {
+      const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+      return new CloudApiError(timedOut ? "ADE Cloud did not answer in time. Try again." : "ADE Cloud can't be reached. Check your connection.", timedOut ? "timeout" : "network", 0);
+    };
     let response: Response;
     try {
       response = await fetcher(`${base}${path}`, { method, headers, body, signal: AbortSignal.timeout(init.timeoutMs ?? timeoutMs) });
     } catch (error) {
-      const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-      throw new CloudApiError(timedOut ? "ADE Cloud did not answer in time. Try again." : "ADE Cloud can't be reached. Check your connection.", timedOut ? "timeout" : "network", 0);
+      throw noAnswer(error);
     }
     if (response.ok && init.rawResponse) return response as unknown as T;
-    const text = await response.text().catch(() => "");
+    // A success whose body never arrived is no answer, not an empty one (an
+    // empty success reads as "older server" to callers). A failure keeps its
+    // status either way.
+    const text = await response.text().catch((error: unknown) => {
+      if (response.ok) throw noAnswer(error);
+      return "";
+    });
     let parsed: unknown = null;
     try {
       parsed = text ? JSON.parse(text) : null;

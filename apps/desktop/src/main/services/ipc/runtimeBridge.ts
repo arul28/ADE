@@ -310,6 +310,9 @@ const REMOTE_RUNTIME_SYNC_METHODS = new Set([
   "sync.setRuntimeName",
   "sync.clearRuntimeName",
   "sync.setActiveLanePresence",
+  // Read-only; the brain answers it (multiProjectRpcServer). The preload's
+  // pinned `sync.getCloudRelayStatus` asked it here and was refused.
+  "sync.getCloudRelayStatus",
   "modelPicker.getFavorites",
   "modelPicker.setFavorites",
   "modelPicker.toggleFavorite",
@@ -359,6 +362,12 @@ function normalizeRuntimeStreamEventsRequest(value: unknown): RemoteRuntimeStrea
 
 function isRemoteRuntimeSyncMethod(value: string): boolean {
   return REMOTE_RUNTIME_SYNC_METHODS.has(value);
+}
+
+/** The refusal for a sync method off the list, naming it when it is a plain method name. */
+function syncMethodNotExposedError(where: "Local" | "Remote", method: string): Error {
+  const named = /^[A-Za-z][\w.]{0,79}$/.test(method) ? ` (${method})` : "";
+  return new Error(`${where} sync method is not exposed${named}.`);
 }
 
 function withRuntimeActionClientMetadata(
@@ -1973,7 +1982,7 @@ export function registerRuntimeBridge({
       const target = requireRemoteTarget(id);
       if (!projectId) throw new Error("Remote project is required.");
       if (!isRemoteRuntimeSyncMethod(method))
-        throw new Error("Remote sync method is not exposed.");
+        throw syncMethodNotExposedError("Remote", method);
       return await remoteConnectionService.callSync(
         target.id,
         projectId,
@@ -2173,7 +2182,7 @@ export function registerRuntimeBridge({
       const method = typeof arg?.method === "string" ? arg.method.trim() : "";
       const params = isObjectRecord(arg?.params) ? arg.params : {};
       if (!isRemoteRuntimeSyncMethod(method))
-        throw new Error("Local sync method is not exposed.");
+        throw syncMethodNotExposedError("Local", method);
 
       const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
       const session = getWindowSession ? getWindowSession(windowId) : null;

@@ -1,5 +1,5 @@
 import type { CloudflareOptions } from "@sentry/cloudflare";
-import { admitEvent, scrubBreadcrumb, scrubEvent, scrubSpan } from "./sentryScrub";
+import { admitEvent, scrubBreadcrumb, scrubEvent, scrubSpan, workerSentryEnabled } from "./sentryScrub";
 
 // Sentry for this Worker and its RepoEventsDurableObject. The DSN is public (wrangler.jsonc
 // vars). SENTRY_RELEASE is injected by the deploy workflow. Nothing sent from here may
@@ -16,16 +16,14 @@ export type SentryEnv = {
 const WORKER_NAME = "ade-github-webhook-relay";
 
 export function sentryOptions(env: SentryEnv): CloudflareOptions {
-  // `SENTRY_ENVIRONMENT` is set to `production` only in the deployed config
-  // (wrangler.jsonc). Anything else, `wrangler dev` included, is
-  // `development` and sends nothing, so local runs never spend the quota.
+  // Who sends at all: `workerSentryEnabled` (sentryScrub.ts).
   const environment = env.SENTRY_ENVIRONMENT?.trim() || "development";
   return {
     dsn: env.SENTRY_DSN,
     release: env.SENTRY_RELEASE,
     dist: `worker-${WORKER_NAME}`,
     environment,
-    enabled: environment !== "development",
+    enabled: workerSentryEnabled(environment, env.SENTRY_RELEASE),
     initialScope: { tags: { worker: WORKER_NAME } },
     tracesSampleRate: 0.01,
     // This Worker calls no other Worker. No trace headers on GitHub or Linear calls.

@@ -91,8 +91,13 @@ export type StepResult =
   | { kind: "next"; step: string; patch?: JobPatch; delayMs?: number }
   /** Run the same step again after `delayMs` (a poll). */
   | { kind: "wait"; delayMs: number; patch?: JobPatch }
-  /** The job failed: the kind's undo runs, and `error` is what the person reads. */
-  | { kind: "fail"; error: string }
+  /**
+   * The job failed: the kind's undo runs, and `error` is what the person reads.
+   * `refused` marks the person's own state (an agent still working, a lane
+   * still being set up), not ADE's failure: logged, never a Sentry event.
+   * `code` is a closed code for which failure it was, tagged on the event.
+   */
+  | { kind: "fail"; error: string; refused?: true; code?: string }
   /** Nothing is left to do: `patch` names the end (`done`). */
   | { kind: "end"; patch: JobPatch };
 
@@ -285,7 +290,8 @@ export async function runJob(env: CloudEnv, jobId: string, deps: CloudJobDeps, o
       }
       const after = clock();
       if (result.kind === "fail") {
-        reportCloudFailure("cloud.job_failed", { jobId, kind: job.kind, step: job.step, message: result.error });
+        if (result.refused) logCloud("cloud.job_refused", { jobId, kind: job.kind, step: job.step, message: result.error });
+        else reportCloudFailure("cloud.job_failed", { jobId, kind: job.kind, step: job.step, code: result.code, message: result.error });
         await writeJob(env, jobId, leaseId, after, { patch: kind.failed(job, result.error), step: UNDO_STEP, attempts: 0, nextAt: after });
         continue;
       }

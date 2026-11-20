@@ -1,5 +1,9 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
+import { AdeExpectedError } from "../../../shared/expectedError";
+import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../ai/cliExecutableResolver";
+import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import { resolveWindowsCmdInvocation, shouldUseWindowsCmdWrapper } from "../shared/processExecution";
 import { destroyChildProcessStreams, signalChildProcessTree, signalProcessGroup } from "../shared/utils";
 
@@ -61,6 +65,24 @@ export function maskSecretValues(text: string, values: readonly string[]): strin
   return out;
 }
 
+/**
+ * The env a command runs in before the secrets go in: the person's own, as a
+ * terminal gets it. A brain started from the Dock or by launchd has a bare
+ * PATH, without the shell's version managers (where `npx` lives), and carries
+ * the host's own keys, which would turn a Node CLI into Electron.
+ */
+function userCommandEnv(): NodeJS.ProcessEnv {
+  const env = userProcessEnv(process.env);
+  // The terminal's order: interactive rc entries (version managers), then
+  // login, then the host's, so a host `node` never shadows the person's.
+  setPathEnvValue(env, augmentProcessPathWithShellAndKnownCliDirs({
+    env: process.env,
+    includeInteractiveShell: true,
+    preferShellOrder: true,
+  }));
+  return env;
+}
+
 function isInside(child: string, parent: string): boolean {
   const relative = path.relative(parent, child);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
@@ -81,10 +103,13 @@ export async function runWithSecrets(input: {
   if (!input.allowedRoots.some((root) => isInside(cwd, path.resolve(root)))) {
     throw new Error("`ade secrets exec` runs only inside this project or one of its lanes.");
   }
+  if (!fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new AdeExpectedError(`The folder to run in no longer exists: ${cwd}`, "user");
+  }
   const timeoutMs = Math.min(Math.max(input.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS, 1_000), MAX_EXEC_TIMEOUT_MS);
   const names = Object.keys(input.secrets).sort();
   const values = names.map((name) => input.secrets[name]!).filter(Boolean);
-  const env: NodeJS.ProcessEnv = { ...(input.baseEnv ?? process.env), ...input.secrets };
+  const env: NodeJS.ProcessEnv = { ...(input.baseEnv ?? userCommandEnv()), ...input.secrets };
   const invocation = shouldUseWindowsCmdWrapper(file)
     ? resolveWindowsCmdInvocation(file, args, env)
     : { command: file, args, windowsVerbatimArguments: false };
@@ -134,9 +159,14 @@ export async function runWithSecrets(input: {
         }
       }, 5_000).unref();
     }, timeoutMs);
-    child.on("error", (error) => {
+    child.on("error", (error: NodeJS.ErrnoException) => {
       clearTimeout(timer);
       // The spawn error names the command, never a value.
+      if (error.code === "ENOENT") {
+        // Not installed, or not on the PATH a terminal gets: the caller's to fix.
+        reject(new AdeExpectedError(`Could not start ${file}: no such command on this machine's PATH.`, "user"));
+        return;
+      }
       reject(new Error(`Could not start ${file}: ${error.message}`));
     });
     let settled = false;

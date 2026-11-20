@@ -37,23 +37,24 @@ export const BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS = 5_000;
  */
 export const BRAIN_LOOP_MACHINE_WAIT_CEILING_MS = 5 * 60_000;
 
-/**
- * Page faults per 30 s of freeze that mean memory is coming back from swap
- * (major) or being unpacked from compressed memory (minor). Rates, not counts,
- * so a long freeze is not blamed on memory only because it lasted long.
- */
-export const BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS_PER_30S = 50;
-export const BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS_PER_30S = 50_000;
-
-/**
- * Share of the freeze the process may spend on the CPU and still be waiting
- * on memory. A loop that allocates as it spins also takes minor faults, but it
- * runs the whole time; a process waiting for its pages mostly does not.
- */
-export const BRAIN_LOOP_MEMORY_STARVED_MAX_CPU_SHARE = 0.5;
-
-/** A synchronous file call open this long is a drive not answering. */
-export const BRAIN_LOOP_DRIVE_STALL_MS = 10_000;
+/** The limits brainLoopFreezeCause judges a freeze by. */
+export const BRAIN_LOOP_FREEZE_LIMITS = {
+  /**
+   * Page faults per 30 s of freeze that mean memory is coming back from swap
+   * (major) or being unpacked from compressed memory (minor). Rates, not counts,
+   * so a long freeze is not blamed on memory only because it lasted long.
+   */
+  memoryStarvedMajorFaultsPer30s: 50,
+  memoryStarvedMinorFaultsPer30s: 50_000,
+  /**
+   * Share of the freeze the process may spend on the CPU and still be waiting
+   * on memory. A loop that allocates as it spins also takes minor faults, but it
+   * runs the whole time; a process waiting for its pages mostly does not.
+   */
+  memoryStarvedMaxCpuShare: 0.5,
+  /** A synchronous file call open this long is a drive not answering. */
+  driveStallMs: 10_000,
+};
 
 export type BrainLoopFreezeCause = "self" | "memory" | "drive";
 
@@ -79,20 +80,22 @@ export function brainLoopFreezeCause(args: {
   /** How long since the last heartbeat. */
   windowMs: number;
   syncFsCallBlockedMs: number | null;
-}): BrainLoopFreezeCause {
-  // No nested functions here: this body is stringified into the worker, and a
+}, limits: typeof BRAIN_LOOP_FREEZE_LIMITS): BrainLoopFreezeCause {
+  // Stringified into the worker, so this body names nothing outside itself: a
+  // minified bundle renames module constants, and the worker has none of them
+  // (the limits come in as an argument). No nested functions either: the
   // bundler's name helper (`__name`) does not exist there.
   const windowMs = Math.max(1, args.windowMs);
   const per30s = 30_000 / windowMs;
-  if (args.majorFaults != null && args.majorFaults * per30s >= BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS_PER_30S) {
+  if (args.majorFaults != null && args.majorFaults * per30s >= limits.memoryStarvedMajorFaultsPer30s) {
     return "memory";
   }
   if (
     args.minorFaults != null
-    && args.minorFaults * per30s >= BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS_PER_30S
-    && args.cpuMs <= windowMs * BRAIN_LOOP_MEMORY_STARVED_MAX_CPU_SHARE
+    && args.minorFaults * per30s >= limits.memoryStarvedMinorFaultsPer30s
+    && args.cpuMs <= windowMs * limits.memoryStarvedMaxCpuShare
   ) return "memory";
-  if (args.syncFsCallBlockedMs != null && args.syncFsCallBlockedMs >= BRAIN_LOOP_DRIVE_STALL_MS) return "drive";
+  if (args.syncFsCallBlockedMs != null && args.syncFsCallBlockedMs >= limits.driveStallMs) return "drive";
   return "self";
 }
 
@@ -104,8 +107,10 @@ export function evaluateBrainLoopWatchdog(args: {
   previousCheckWallMs: number;
   previousCheckMonotonicMs: number;
   thresholdMs: number;
-  checkIntervalMs?: number;
+  checkIntervalMs: number;
 }): BrainLoopWatchdogEvaluation {
+  // Stringified into the worker like brainLoopFreezeCause: it names nothing
+  // outside itself.
   const wallSinceHeartbeat = Math.max(0, args.nowWallMs - args.lastHeartbeatWallMs);
   const monotonicSinceHeartbeat = Math.max(
     0,
@@ -119,7 +124,7 @@ export function evaluateBrainLoopWatchdog(args: {
   );
   const sleepGapFloorMs = Math.max(
     args.thresholdMs,
-    (args.checkIntervalMs ?? BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS) * 4,
+    args.checkIntervalMs * 4,
   );
   const checkGapDeltaMs = Math.abs(wallSinceCheck - monotonicSinceCheck);
   const slept = wallSinceCheck > sleepGapFloorMs
@@ -144,10 +149,7 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
     const BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS = ${BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS};
     const evaluateBrainLoopWatchdog = ${evaluateBrainLoopWatchdog.toString()};
     const BRAIN_LOOP_MACHINE_WAIT_CEILING_MS = ${BRAIN_LOOP_MACHINE_WAIT_CEILING_MS};
-    const BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS_PER_30S = ${BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS_PER_30S};
-    const BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS_PER_30S = ${BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS_PER_30S};
-    const BRAIN_LOOP_MEMORY_STARVED_MAX_CPU_SHARE = ${BRAIN_LOOP_MEMORY_STARVED_MAX_CPU_SHARE};
-    const BRAIN_LOOP_DRIVE_STALL_MS = ${BRAIN_LOOP_DRIVE_STALL_MS};
+    const BRAIN_LOOP_FREEZE_LIMITS = ${JSON.stringify(BRAIN_LOOP_FREEZE_LIMITS)};
     const brainLoopFreezeCause = ${brainLoopFreezeCause.toString()};
     // Process-wide counters at the last heartbeat: what the freeze since then
     // cost in paging and CPU. resourceUsage() in a worker reads the whole
@@ -517,7 +519,7 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
           cpuMs,
           windowMs: evaluation.blockedMs,
           syncFsCallBlockedMs: blockedFsCall ? blockedFsCall.blockedMs : null,
-        });
+        }, BRAIN_LOOP_FREEZE_LIMITS);
         if (cause !== "self" && evaluation.blockedMs < BRAIN_LOOP_MACHINE_WAIT_CEILING_MS) {
           if (!machineWait) {
             machineWait = { cause, heartbeatWallMs: lastHeartbeatWallMs, evidenceAtMs: null };

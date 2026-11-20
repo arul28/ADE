@@ -737,13 +737,18 @@ async function hold(env: CloudEnv, waitUntil: CloudWaitUntil, fresh: Fresh, reas
     where instance_id = ? and deleted_at is null
   `).bind(now, reason.slice(0, 300), count, computer.instance_id).run();
   const retryAt = now + backoffMs(HELD_RETRY_MS, HELD_RETRY_MAX_MS, count);
+  // A computer that never reported a save rested before its ADE saved lane
+  // work: nothing failed, the owner's daily report counts it, and it waits for
+  // its next rest without an email.
+  const neverSaved = code === BACKUP_NEVER_SAVED_CODE;
   if (BACKUP_STATE_CODES.has(code)) logCloud("cloud.idle_cleanup_held", { instanceId: computer.instance_id, code, first, count });
-  // Every hold is worth a look: a delete that should have happened didn't.
-  reportCloudFailure(BACKUP_STATE_CODES.has(code) ? "cloud.idle_cleanup_not_saved" : "cloud.idle_cleanup_save_failed", { instanceId: computer.instance_id, code, first, count });
+  // Every other hold is worth a look: a delete that should have happened didn't.
+  if (!neverSaved) {
+    reportCloudFailure(BACKUP_STATE_CODES.has(code) ? "cloud.idle_cleanup_not_saved" : "cloud.idle_cleanup_save_failed", { instanceId: computer.instance_id, code, first, count });
+  }
   await logStep(env, computer, "push_refused", code, now);
   captureCloudIdleCleanup(env, waitUntil, account.user_id, { step: "push_refused", plan: planIdOf(account), reason: code }, computer.instance_id, now);
-  // A computer that never saved is not a failure to tell the person about: it waits for its next rest.
-  if (first && code !== BACKUP_NEVER_SAVED_CODE) await sendStepEmail(env, waitUntil, account, computer, "held", idleHeldEmail(computer, reason, retryAt, now), now);
+  if (first && !neverSaved) await sendStepEmail(env, waitUntil, account, computer, "held", idleHeldEmail(computer, reason, retryAt, now), now);
 }
 
 /** The owner's daily report line: what the idle cleanup did on `day`, and how many computers it keeps now because their save failed. */

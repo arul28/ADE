@@ -31353,6 +31353,7 @@ async function runServe(
       // for a target that never takes over.
       const hosted = await scopeRegistry.switchSyncHost(projectId, {
         deactivatePreviousHost: true,
+        reason: "client_switch",
       });
       if (hosted) releaseProjectlessHostLease();
       await scopeRegistry.deactivateInactiveSyncHosts();
@@ -33061,7 +33062,7 @@ async function runServe(
       // ADE_PROJECT_ROOT selects the project whose sync scope this brain
       // should serve. It may already follow another machine, so resolve it as
       // a reader and let the scope's blocker determine whether it is a viewer.
-      activeScope = await scopeRegistry.switchSyncHost(preferredSyncProjectId, { purpose: "serve" });
+      activeScope = await scopeRegistry.switchSyncHost(preferredSyncProjectId, { purpose: "serve", reason: "startup" });
     } else {
       activeScope = await scopeRegistry.resolveActiveSyncHost((record) => {
         if (reportedMissingSyncProjectIds.has(record.projectId)) return;

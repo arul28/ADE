@@ -47,9 +47,11 @@ export function initWebClientSentry(): void {
     // A desktop-only member called on web is expected, not a crash.
     // A page the browser translated has had its text nodes swapped under
     // React, which then fails to insert or remove them: not ADE's DOM.
-    beforeSend: (event, hint) => (isAdeUnavailableError(hint?.originalException) || isTranslationDomError(hint?.originalException)
-      ? null
-      : hooks.beforeSend(event, hint)),
+    beforeSend: (event, hint) => {
+      if (isAdeUnavailableError(hint?.originalException) || isTranslationDomError(hint?.originalException)) return null;
+      if (isReactDomMoveError(hint?.originalException)) event.tags = { ...event.tags, ...foreignDomTags() };
+      return hooks.beforeSend(event, hint);
+    },
     beforeBreadcrumb: hooks.beforeBreadcrumb,
     beforeSendSpan: hooks.beforeSendSpan,
     beforeSendLog: hooks.beforeSendLog,
@@ -122,9 +124,25 @@ async function refreshAccountHash(): Promise<void> {
   }
 }
 
-function isTranslationDomError(error: unknown): boolean {
+function isReactDomMoveError(error: unknown): boolean {
   return error instanceof Error
     && error.name === "NotFoundError"
-    && /\b(?:insertBefore|removeChild)\b/.test(error.message)
-    && /\btranslated-(?:ltr|rtl)\b/.test(document.documentElement.className);
+    && /\b(?:insertBefore|removeChild)\b/.test(error.message);
+}
+
+function isTranslationDomError(error: unknown): boolean {
+  return isReactDomMoveError(error) && /\btranslated-(?:ltr|rtl)\b/.test(document.documentElement.className);
+}
+
+/**
+ * What else edited the page when React lost a node it placed: a translator
+ * extension that does not mark the page as Chrome's does (it wraps text in
+ * `<font>` and often rewrites `lang`), or nothing, which makes it ADE's own.
+ * Counts and the language tag only, never page text.
+ */
+function foreignDomTags(): Record<string, string> {
+  return {
+    dom_html_lang: document.documentElement.lang || "none",
+    dom_font_nodes: String(Math.min(document.getElementsByTagName("font").length, 1000)),
+  };
 }

@@ -2,6 +2,7 @@ import * as inspector from "node:inspector";
 import { performance } from "node:perf_hooks";
 import { captureProblem } from "../../../../desktop/src/shared/sentry/capture";
 import { BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS } from "./brainLoopWatchdog";
+import { BRAIN_LOOP_FREEZE_LIMITS, brainLoopFreezeCause } from "./brainLoopWatchdogWorker";
 
 /**
  * Names the code behind a brain freeze.
@@ -18,7 +19,9 @@ import { BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS } from "./brainLoopWatchdog";
  * At most one profile an hour, and only after a freeze, so a healthy brain
  * never profiles. A cause becomes a Sentry issue only when the watchdog saw
  * another freeze start during the profile, at most once per cause in a
- * brain's life.
+ * brain's life, and only when the brain froze itself: while the machine is
+ * paging the brain back in from swap, any code it happens to be in stalls,
+ * and the profile names that code for nothing.
  */
 
 const PROFILE_MS = 60_000;
@@ -187,6 +190,50 @@ export type BrainStallProfiler = {
   dispose(): void;
 };
 
+type UsageSample = { majorFaults: number; cpuMs: number; atMs: number };
+
+type MachinePressure = {
+  freezeCause: ReturnType<typeof brainLoopFreezeCause>;
+  majorFaultsPer30s: number | null;
+  cpuMs: number;
+};
+
+function usageNow(): UsageSample {
+  const usage = process.resourceUsage();
+  return {
+    majorFaults: usage.majorPageFault,
+    cpuMs: (usage.userCPUTime + usage.systemCPUTime) / 1_000,
+    atMs: performance.now(),
+  };
+}
+
+/**
+ * Who froze the brain during the profile, by the watchdog's own rule
+ * (brainLoopFreezeCause): memory when it read pages back from swap at a
+ * starved rate. Only major faults count here: the minor-fault rule needs the
+ * CPU share of the freeze alone, and the profile's minute also holds idle
+ * time. libuv counts every Windows fault as major, so Windows is never
+ * judged memory-starved.
+ */
+function machinePressure(start: UsageSample): MachinePressure {
+  const end = usageNow();
+  const windowMs = Math.max(1, end.atMs - start.atMs);
+  const majorFaults = Math.max(0, end.majorFaults - start.majorFaults);
+  const cpuMs = Math.max(0, end.cpuMs - start.cpuMs);
+  const faultsMeaningful = process.platform !== "win32";
+  return {
+    freezeCause: brainLoopFreezeCause({
+      majorFaults: faultsMeaningful ? majorFaults : null,
+      minorFaults: null,
+      cpuMs,
+      windowMs,
+      syncFsCallBlockedMs: null,
+    }, BRAIN_LOOP_FREEZE_LIMITS),
+    majorFaultsPer30s: faultsMeaningful ? Math.round((majorFaults * 30_000) / windowMs) : null,
+    cpuMs: Math.round(cpuMs),
+  };
+}
+
 /**
  * `log` gets the summary as a log line (`brain.stall_profile`); the logger
  * mirrors it to Sentry Logs.
@@ -196,11 +243,18 @@ export function createBrainStallProfiler(deps: {
 }): BrainStallProfiler {
   let lastStartedAt: number | null = null;
   let session: inspector.Session | null = null;
+  /** Process counters when the profile started: what paging the minute cost. */
+  let usageAtStart: UsageSample | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   /** Freezes the watchdog saw while the profile ran. */
   let stallsInProfile = 0;
   /** A finished profile that caught a freeze, waiting for the watchdog's late word on it. */
-  let awaitingStall: { summary: BrainStallProfileSummary; stoppedAt: number; timer: ReturnType<typeof setTimeout> } | null = null;
+  let awaitingStall: {
+    summary: BrainStallProfileSummary;
+    pressure: MachinePressure | null;
+    stoppedAt: number;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
   let disposed = false;
   const reportedCauses = new Set<string>();
 
@@ -234,8 +288,10 @@ export function createBrainStallProfiler(deps: {
   /** A freeze in the profile long enough to be a near miss. */
   const reportable = (summary: BrainStallProfileSummary) => summary.longestRunMs >= BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS;
 
-  /** One Sentry issue for each cause. */
-  const report = (summary: BrainStallProfileSummary) => {
+
+  /** One Sentry issue for each cause the brain owns. */
+  const report = (summary: BrainStallProfileSummary, pressure: MachinePressure | null) => {
+    if (pressure?.freezeCause === "memory") return;
     const key = summary.fingerprint.join("|");
     if (reportedCauses.has(key)) return;
     reportedCauses.add(key);
@@ -249,6 +305,9 @@ export function createBrainStallProfiler(deps: {
         longestRunMs: summary.longestRunMs,
         stack: summary.stack,
         topFrames: summary.topFrames,
+        freezeCause: pressure?.freezeCause ?? null,
+        majorFaultsPer30s: pressure?.majorFaultsPer30s ?? null,
+        cpuMsInProfile: pressure?.cpuMs ?? null,
       },
     });
   };
@@ -258,15 +317,17 @@ export function createBrainStallProfiler(deps: {
       const stopped = (await post(target, "Profiler.stop")) as { profile?: BrainCpuProfile } | undefined;
       // Read after the stop: a freeze noted while it ran is in the profile.
       const sawStall = stallsInProfile > 0;
+      const pressure = usageAtStart ? machinePressure(usageAtStart) : null;
       const summary = stopped?.profile ? summarizeBrainStallProfile(stopped.profile) : null;
       if (!summary) {
-        deps.log("brain.stall_profile", { caught: false, profiledMs: PROFILE_MS, stallsInProfile });
+        deps.log("brain.stall_profile", { caught: false, profiledMs: PROFILE_MS, stallsInProfile, ...pressure });
         return;
       }
       deps.log("brain.stall_profile", {
         caught: true,
         profiledMs: PROFILE_MS,
         stallsInProfile,
+        ...pressure,
         frozenMs: summary.frozenMs,
         runs: summary.runs,
         longestRunMs: summary.longestRunMs,
@@ -277,7 +338,7 @@ export function createBrainStallProfiler(deps: {
       });
       if (!reportable(summary) || disposed) return;
       if (sawStall) {
-        report(summary);
+        report(summary, pressure);
         return;
       }
       // A freeze that ended just before the stop reaches `noteStall` later
@@ -285,7 +346,7 @@ export function createBrainStallProfiler(deps: {
       stopAwaitingStall();
       const timer = setTimeout(stopAwaitingStall, LATE_STALL_WAIT_MS);
       timer.unref?.();
-      awaitingStall = { summary, stoppedAt: performance.now(), timer };
+      awaitingStall = { summary, pressure, stoppedAt: performance.now(), timer };
     } catch (error) {
       logFailure(error);
     } finally {
@@ -301,9 +362,9 @@ export function createBrainStallProfiler(deps: {
         return;
       }
       if (awaitingStall && performance.now() - startedAgoMs <= awaitingStall.stoppedAt) {
-        const { summary } = awaitingStall;
+        const { summary, pressure } = awaitingStall;
         stopAwaitingStall();
-        report(summary);
+        report(summary, pressure);
         return;
       }
       if (process.env.ADE_DISABLE_STALL_PROFILE === "1") return;
@@ -325,6 +386,7 @@ export function createBrainStallProfiler(deps: {
           await post(target, "Profiler.enable");
           await post(target, "Profiler.setSamplingInterval", { interval: PROFILE_SAMPLING_US });
           await post(target, "Profiler.start");
+          usageAtStart = usageNow();
         } catch (error) {
           logFailure(error);
           if (session === target) end();

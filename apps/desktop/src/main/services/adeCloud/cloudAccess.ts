@@ -8,13 +8,17 @@ import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { cloudStatusAwake, type CloudStatus } from "../../../shared/adeCloud";
 import { setAdeCloudIphoneSkillVisible, setAdeCloudSkillVisible, setAgentSkillAccessRefresh } from "../../../shared/agentSkillRoots";
 import type { AccountVaultResult } from "../../../shared/types/accountVault";
-import { getSignedInAccountAccessToken, type AccountAuthService } from "../../../../../ade-cli/src/services/account/accountAuthService";
+import {
+  getSignedInAccountAccessToken,
+  requireSignedInAccountAccessToken,
+  type AccountAuthService,
+} from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { resolveSelectedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
 import { readCloudComputerIdAsync } from "../../../../../ade-cli/src/services/account/hardwareAnchor";
 import { isAdeCloudComputer } from "./cloudComputerRules";
 import { cloudAccessKey, rememberCloudAccess, rememberedCloudAccess } from "./cloudAccessMemory";
 import { getErrorMessage } from "../shared/utils";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider } from "./cloudProvider";
 import { createCloudServerProvider, type CloudComputerSignal } from "./cloudServerProvider";
 import { CLOUD_COMPUTER_UNREADABLE } from "../../../../../account-directory/src/cloud/contract";
@@ -56,13 +60,15 @@ export function cloudAccessDepsFor(args: {
   runningVersion?: () => string | null;
   logger?: CloudAccessDeps["logger"];
   onDirectoryUnavailable?: (error: unknown) => void;
+  /** How long one call waits for the account token (`accountTokenWithin`); unset waits as long as the token takes. */
+  tokenWaitMs?: number;
 }): CloudAccessDeps {
   return {
     signedIn: () => args.account()?.getStatus().signedIn === true,
     accountId: () => args.account()?.getStatus().userId ?? null,
     accessToken: async () => {
       const account = args.account();
-      return account ? await getSignedInAccountAccessToken(account) : null;
+      return account ? await accountTokenWithin(account, args.tokenWaitMs) : null;
     },
     directoryBaseUrl: () => {
       try {
@@ -82,6 +88,50 @@ export function cloudAccessDepsFor(args: {
     computer: cloudFreePlanComputer,
     logger: args.logger,
   };
+}
+
+/**
+ * The desktop's wait for the account token before one ADE Cloud call. Near
+ * its expiry the token comes from the brain (`createBrainRefreshBroker`),
+ * whose own budget is 30 s, the whole IPC deadline of a read: this wait plus
+ * the request (`ACCOUNT_REQUEST_TIMEOUT_MS`) must fit inside it.
+ */
+export const DESKTOP_CLOUD_TOKEN_WAIT_MS = 10_000;
+
+/** The 30 s IPC deadline a desktop ADE Cloud read must answer within. */
+const DESKTOP_CLOUD_READ_DEADLINE_MS = 30_000;
+
+/**
+ * One request to the account server after the token wait, with a margin, so
+ * a slow server answers "did not answer in time" in words, as the network,
+ * instead of the IPC timing out around both.
+ */
+export const ACCOUNT_REQUEST_TIMEOUT_MS = DESKTOP_CLOUD_READ_DEADLINE_MS - DESKTOP_CLOUD_TOKEN_WAIT_MS - 2_000;
+
+/**
+ * The account token for one ADE Cloud call; null when signed out or when the
+ * sign-in can't be refreshed (the call then says to sign in, as before). With
+ * `waitMs`, a token that takes longer fails as the network, in words, so the
+ * call answers inside its own deadline instead of the IPC timing out around it.
+ */
+export async function accountTokenWithin(
+  account: Pick<AccountAuthService, "getStatus" | "getAccessToken">,
+  waitMs?: number,
+): Promise<string | null> {
+  if (!waitMs) return await getSignedInAccountAccessToken(account);
+  try {
+    return await requireSignedInAccountAccessToken(account, { timeoutMs: waitMs });
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw markExpected(
+        new CloudProviderError("ADE couldn't refresh your ADE account sign-in in time. Try again in a moment.", "token_timeout", 0),
+        "network",
+      );
+    }
+    // Offline is not signed out: say so instead of asking for a sign-in.
+    if (expectedErrorKind(error) === "network") throw error;
+    return null;
+  }
 }
 
 /** An `unreadable` id is sent for this long, then read again. */

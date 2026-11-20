@@ -59,9 +59,12 @@ export function adeRendererSenderState(event: Pick<IpcMainInvokeEvent, "sender" 
   try {
     if (typeof event.sender.isDestroyed === "function" && event.sender.isDestroyed()) return "gone";
     win = BrowserWindow.fromWebContents(event.sender);
-    // A live sender with no owning window is a guest/panel surface, not a
-    // teardown: deny it as untrusted so the refusal is still recorded.
-    if (!win) return "untrusted";
+    // No owning window: either ADE's own renderer still sending after its
+    // window closed (on macOS the app outlives it; the closing page's polls
+    // and streams fire once more), or a guest/panel surface. Only ADE's
+    // renderer URL is the teardown; any other page is still an untrusted
+    // sender, recorded as one. Both are refused.
+    if (!win) return isTrustedAdeRendererUrl(readSenderUrl(event)) ? "gone" : "untrusted";
     if (typeof win.isDestroyed === "function" && win.isDestroyed()) return "gone";
   } catch {
     return "gone";

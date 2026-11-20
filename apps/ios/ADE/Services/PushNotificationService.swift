@@ -920,11 +920,21 @@ final class PushNotificationService: ObservableObject {
         }
     }
 
+    /// Off the main thread, in order. A write to App Group defaults is a
+    /// synchronous round trip to cfprefsd, and at launch (the Live Activity
+    /// token arriving) that wait held the main thread for 3-4 s (ADE-IOS-28).
+    /// Only this service reads the diagnostics back, at its next launch.
     private func persistDiagnostics() {
-        if let data = try? JSONEncoder().encode(diagnostics) {
-            defaults.set(data, forKey: diagnosticsKey)
-        }
+        guard let data = try? JSONEncoder().encode(diagnostics) else { return }
+        let defaults = self.defaults
+        let key = diagnosticsKey
+        Self.diagnosticsWriteQueue.async { defaults.set(data, forKey: key) }
     }
+
+    nonisolated private static let diagnosticsWriteQueue = DispatchQueue(
+        label: "com.ade.push.diagnostics-write",
+        qos: .utility
+    )
 
     private static func loadPrefs(from defaults: UserDefaults, key: String) -> PushPrefs {
         guard let data = defaults.data(forKey: key),

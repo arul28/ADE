@@ -9,7 +9,7 @@ import type {
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
 import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, markExpected, type ExpectedErrorKind } from "../../../shared/expectedError";
 import {
   coerceProjects,
   validateRemoteRuntimeInitializeResult,
@@ -129,7 +129,14 @@ export async function bootstrapPairedRuntime(args: {
   const openTransport = args.options?.openTransport ?? openSyncRuntimeTransport;
   const correlationId = randomUUID();
   const attemptRecorder = createRouteAttemptRecorder();
-  const { attempts, record: recordAttempt } = attemptRecorder;
+  const { attempts } = attemptRecorder;
+  // Seen on every attempt, also the ones the capped list drops: one malformed
+  // hello anywhere keeps the failure a report.
+  let protocolDriftSeen = false;
+  const recordAttempt: typeof attemptRecorder.record = (attempt) => {
+    if (isProtocolDrift(attempt)) protocolDriftSeen = true;
+    attemptRecorder.record(attempt);
+  };
   let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
   let accountHelloCode: PairedRuntimeAccountHelloCode | null = null;
   let relayRetried = false;
@@ -430,11 +437,53 @@ export async function bootstrapPairedRuntime(args: {
       diagnostic,
     );
   }
-  throw new PairedRuntimeTransportUnavailableError(
+  const unavailable = new PairedRuntimeTransportUnavailableError(
     // The message names the computer as ADE shows it (its ADE name), not
     // the host name of its operating system.
     pairedRuntimeFailureMessage(failure, args.target.name.trim() || credentials.hostIdentity.name, accountHelloCode, { handshakeTimedOut }),
     undefined,
     diagnostic,
   );
+  const kind = pairedRouteFailureKind(failure, protocolDriftSeen);
+  throw kind ? markExpected(unavailable, kind) : unavailable;
 }
+
+/**
+ * Only an older or newer ADE on the other machine is the person's to fix
+ * among protocol failures. A malformed hello or a payload this build cannot
+ * read is contract drift between two ADE builds, and stays a report.
+ */
+const VERSION_SKEW_ERROR_CODES = new Set(["hello_host_update_required", "hello_protocol_version_mismatch"]);
+
+function isProtocolDrift(attempt: { failure?: RemoteRuntimeConnectionAttemptFailure; errorCode?: string }): boolean {
+  return attempt.failure === "protocol" && !VERSION_SKEW_ERROR_CODES.has(attempt.errorCode ?? "");
+}
+
+/**
+ * Drift on any route stays a report, whatever cause dominates the headline;
+ * otherwise every protocol failure was version skew, the person's to fix.
+ */
+function pairedRouteFailureKind(
+  failure: RemoteRuntimeConnectionAttemptFailure,
+  protocolDriftSeen: boolean,
+): ExpectedErrorKind | null {
+  return protocolDriftSeen ? null : PAIRED_ROUTE_FAILURE_KIND[failure];
+}
+
+/**
+ * Every route spent, by its dominant cause. The machine asleep, busy, or
+ * another computer at its saved address is the network between the two; a
+ * stale pairing, a sign-in or an older ADE there is the person's to fix, and
+ * the headline says how. Only a cause ADE could not name stays a report.
+ */
+const PAIRED_ROUTE_FAILURE_KIND: Record<RemoteRuntimeConnectionAttemptFailure, ExpectedErrorKind | null> = {
+  unreachable: "network",
+  timeout: "network",
+  identity: "network",
+  superseded: "network",
+  pairing: "user",
+  authentication: "user",
+  capability: "user",
+  protocol: "user",
+  unknown: null,
+};

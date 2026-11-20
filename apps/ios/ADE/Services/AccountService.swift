@@ -193,24 +193,32 @@ struct AccountDeviceOwnershipStore {
   }
 
   var state: AccountDeviceOwnershipState {
-    let sharedState: AccountDeviceOwnershipState
+    resolved().state
+  }
+
+  /// The state, and whether both stored copies (App Group defaults and the
+  /// Keychain epoch) already hold it.
+  private func resolved() -> (state: AccountDeviceOwnershipState, stored: Bool) {
+    var savedState: AccountDeviceOwnershipState?
     if let data = defaults.data(forKey: key),
        let decoded = try? JSONDecoder().decode(AccountDeviceOwnershipState.self, from: data),
        Self.isValid(epoch: decoded.ownershipEpoch) {
-      sharedState = decoded
+      savedState = decoded
+    }
+    let sharedState = savedState ?? AccountDeviceOwnershipState(ownershipEpoch: 1, ownerId: nil)
+    let deviceId = normalizedDurableDeviceId
+    let durableEpoch = deviceId.flatMap(loadDurableEpoch).flatMap { Self.isValid(epoch: $0) ? $0 : nil }
+    let state: AccountDeviceOwnershipState
+    if let durableEpoch, durableEpoch > sharedState.ownershipEpoch {
+      // App Group defaults are removed on reinstall while the Keychain device
+      // identity survives. Recover the epoch high-water mark, but never infer an
+      // owner from stale defaults; the next signed-in transition advances it.
+      state = AccountDeviceOwnershipState(ownershipEpoch: durableEpoch, ownerId: nil)
     } else {
-      sharedState = AccountDeviceOwnershipState(ownershipEpoch: 1, ownerId: nil)
+      state = sharedState
     }
-    guard let deviceId = normalizedDurableDeviceId,
-          let durableEpoch = loadDurableEpoch(deviceId),
-          Self.isValid(epoch: durableEpoch),
-          durableEpoch > sharedState.ownershipEpoch else {
-      return sharedState
-    }
-    // App Group defaults are removed on reinstall while the Keychain device
-    // identity survives. Recover the epoch high-water mark, but never infer an
-    // owner from stale defaults; the next signed-in transition advances it.
-    return AccountDeviceOwnershipState(ownershipEpoch: durableEpoch, ownerId: nil)
+    let stored = savedState == state && (deviceId == nil || durableEpoch == state.ownershipEpoch)
+    return (state, stored)
   }
 
   /// Commits the account boundary before any network request is allowed to use
@@ -221,9 +229,12 @@ struct AccountDeviceOwnershipStore {
     let normalizedOwnerId = ownerId?
       .trimmingCharacters(in: .whitespacesAndNewlines)
     let resolvedOwnerId = normalizedOwnerId?.isEmpty == false ? normalizedOwnerId : nil
-    let current = state
+    let (current, stored) = resolved()
     guard current.ownerId != resolvedOwnerId else {
-      persist(current)
+      // Every Clerk auth event (each token refresh) repeats the same owner.
+      // Rewriting unchanged copies cost a defaults sync and a Keychain update
+      // on the main thread each time; one held it for 47 s (ADE-IOS-28).
+      if !stored { persist(current) }
       return current
     }
     let nextEpoch = min(

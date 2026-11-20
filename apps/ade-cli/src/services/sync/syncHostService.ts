@@ -85,6 +85,7 @@ import type {
   SyncChatLaunchEventPayload,
   SyncChatSubscribePayload,
   SyncChatSubscribeSnapshotPayload,
+  SyncChatSubscribeUnavailable,
   SyncChatUnsubscribePayload,
   SyncArtifactRange,
   SyncFileBlob,
@@ -168,7 +169,9 @@ import {
   transcriptStorageKey,
 } from "./syncChatTranscriptReads";
 import {
+  CHAT_TRANSCRIPT_READ_FAILED,
   chatEventDeliveryKey,
+  chatSubscribeUnavailableSnapshot,
   compactChatEventEnvelopeForMobileSync,
   compactChatEventEnvelopeForSync,
   prepareChatSnapshotEventsForPeer,
@@ -670,6 +673,8 @@ const RELAY_PEER_BRAIN_STATUS_INTERVAL_MS = 30_000;
 const NATIVE_LAN_DISCOVERY_RECOVERY_DELAY_MS = 1_000;
 const NATIVE_LAN_DISCOVERY_FALLBACK_MS = 30_000;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
+/** A required reply that takes this long to encode and send is logged. */
+const SLOW_REQUIRED_SEND_MS = 1_000;
 export const REQUIRED_SEND_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const SEND_AND_WAIT_TIMEOUT_MS = 15_000;
 const DEFAULT_SYNC_MESSAGE_TIMEOUT_MS = 60_000;
@@ -5218,6 +5223,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const guestPayload = laneShareGuestOutboundPayload(ws, type, payload);
     if (!guestPayload) return false;
     payload = guestPayload.payload;
+    const sendStartedAt = Date.now();
     const frames = encodeFramesFor(peer, type, payload, requestId);
     const frameBytes = frames.reduce((sum, frame) => sum + syncFrameByteLength(frame), 0);
     const bufferedAmount = ws.bufferedAmount;
@@ -5270,6 +5276,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           error: error.message,
         });
       });
+    }
+    // Encoding and handing a reply to the socket run on the brain's loop. A
+    // freeze inside `ws.send` (ADE-BRAIN-8A) says nothing about the reply;
+    // this names its type, action and size.
+    const sendMs = Date.now() - sendStartedAt;
+    if (sendMs >= SLOW_REQUIRED_SEND_MS) {
+      args.logger.warn("sync_host.slow_send", { ...logFields, frames: frames.length, durationMs: sendMs });
     }
     return true;
   }
@@ -5738,6 +5751,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
     let result: SyncProjectSwitchResultPayload | null = null;
+    // Which device moved this machine's hosted project: every other client
+    // still on the old project is refused project-scoped requests after it.
+    args.logger.info("sync_host.project_switch_requested", {
+      fromProjectId: args.projectId ?? null,
+      toProjectId: toOptionalString(payload?.projectId) ?? null,
+      peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+      peerDeviceName: peer.metadata?.deviceName ?? null,
+      peerPlatform: peer.metadata?.platform ?? null,
+    });
     try {
       result = await args.projectCatalogProvider.prepareProjectConnection(payload ?? {});
       await sendAndWait(peer.ws, "project_switch_result", result, requestId);
@@ -6145,6 +6167,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     );
   }
 
+  /**
+   * The chat payload a request stamped with a non-hosted project becomes: it
+   * names that project (unless it already names its own scope), so the
+   * file-backed cross-project path serves it. Null when that project is not
+   * one this machine can serve chats for (not registered, refused as too slow
+   * to open, no resolver), and the envelope is refused as before.
+   */
+  function chatPayloadForNonHostedProject(
+    payload: Record<string, unknown> | null,
+    envelopeProjectId: string,
+  ): Record<string, unknown> | null {
+    if (!args.foreignChatProvider || !payload) return null;
+    const sessionId = toOptionalString(payload.sessionId);
+    if (!sessionId) return null;
+    const namesOwnScope = toOptionalString(payload.projectId) != null
+      || toOptionalString(payload.projectRootPath) != null;
+    const routed = namesOwnScope ? payload : { ...payload, projectId: envelopeProjectId };
+    const scope = resolveForeignChatScope(routed as ChatScopeRequest, sessionId);
+    return scope.kind === "foreign" ? routed : null;
+  }
+
   // Resolve a foreign-project subscription's transcript path via the provider
   // (the security boundary — validates the project is registered and confines
   // the path to that project's `.ade` transcripts). `kind: "local"` means the
@@ -6302,6 +6345,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
    */
   function peerWantsSlimChat(peer: PeerState): boolean {
     return peer.metadata?.capabilities?.includes(SYNC_MOBILE_CHAT_SLIM_CAPABILITY) === true;
+  }
+
+  /**
+   * Answers a `chat_subscribe` this host cannot serve. Without an answer the
+   * phone waits out its snapshot watchdog and shows a generic "didn't answer";
+   * a peer that understands `unavailable` shows the real reason instead. Older
+   * peers get nothing, as before: they would read the empty events as an
+   * empty chat.
+   */
+  function sendChatSubscribeUnavailable(
+    peer: PeerState,
+    requestId: string | null,
+    sessionId: string,
+    unavailable: SyncChatSubscribeUnavailable,
+  ): void {
+    const answer = chatSubscribeUnavailableSnapshot(peer.metadata, sessionId, unavailable, nowIso());
+    if (answer) sendRequired(peer, "chat_subscribe", answer, requestId);
   }
 
   function chatEventCoalescerFor(peer: PeerState, sessionId: string): SubagentProgressCoalescer {
@@ -7623,6 +7683,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
 
+    if (type === "chat_subscribe") {
+      const sessionId = toOptionalString((payload as { sessionId?: unknown } | null | undefined)?.sessionId);
+      if (sessionId) {
+        sendChatSubscribeUnavailable(peer, requestId, sessionId, {
+          code: resolution.code,
+          message: resolution.message,
+        });
+      }
+      return;
+    }
+
     if (type === "chat_tool_result") {
       const toolPayload = (payload ?? {}) as { sessionId?: string; itemId?: string };
       sendRequired(peer, "chat_tool_result", {
@@ -8702,15 +8773,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
 
     const envelopePayload = safeObjectValue(envelope.payload);
-    const personalChatEnvelope =
-      (
-        envelope.type === "chat_subscribe"
-        || envelope.type === "chat_unsubscribe"
-        || envelope.type === "chat_history"
-        || envelope.type === "chat_tool_result"
-      )
-      && envelopePayload?.chatScope === "personal";
-    const projectScope: SyncHostProjectScopeResolution = personalChatEnvelope
+    const chatStreamEnvelope =
+      envelope.type === "chat_subscribe"
+      || envelope.type === "chat_unsubscribe"
+      || envelope.type === "chat_history"
+      || envelope.type === "chat_tool_result";
+    const personalChatEnvelope = chatStreamEnvelope && envelopePayload?.chatScope === "personal";
+    let projectScope: SyncHostProjectScopeResolution = personalChatEnvelope
       ? { ok: true, projectId: null, usedSingleProjectFallback: false }
       : resolveSyncHostInboundProjectScope(
           envelope.type,
@@ -8729,6 +8798,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         code: projectScope.code,
       });
       return;
+    }
+    if (
+      !projectScope.ok
+      && projectScope.code === "project_mismatch"
+      && chatStreamEnvelope
+      && projectScope.receivedProjectId
+      && !peer.laneShareGuest
+    ) {
+      // A phone whose project is not the one this machine hosts right now
+      // (the host moved under it: a restart, another device's switch). Its
+      // commands, files and terminals already reach that project; serve its
+      // chats too, from that project's transcripts, the way a cross-project
+      // chat is served.
+      const routedPayload = chatPayloadForNonHostedProject(envelopePayload, projectScope.receivedProjectId);
+      if (routedPayload) {
+        envelope = { ...envelope, payload: routedPayload };
+        projectScope = { ok: true, projectId: args.projectId ?? null, usedSingleProjectFallback: false };
+      }
     }
     const executeFileRequest = args.remoteCommandExecutor?.executeFileRequest;
     if (
@@ -9473,6 +9560,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           markChatEventSent(peer, event);
         }
         hydrationSucceeded = true;
+        } catch (error) {
+          // A transcript that cannot be read must not leave the phone waiting
+          // on a request that will never be answered.
+          // Not after an answer already sent (a resume ack, a snapshot).
+          if (!signal?.aborted && !hydrationSucceeded) {
+            sendChatSubscribeUnavailable(peer, envelope.requestId, sessionId, CHAT_TRANSCRIPT_READ_FAILED);
+          }
+          throw error;
         } finally {
           peer.hydratingChatSessionIds.delete(sessionId);
           if (!hydrationSucceeded) {

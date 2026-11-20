@@ -827,6 +827,8 @@ type PtyEntry = {
    */
   cliPromptAttentionRaised: boolean;
   disposed: boolean;
+  /** How this process itself exited, even when closeEntry kept the prior row's end state. */
+  processExitCode: number | null;
   createdAt: number;
   cleanupPaths: string[];
   lastResizeCols: number | null;
@@ -5360,6 +5362,7 @@ export function createPtyService({
     // pinned indefinitely.
     entry.recentOutputTail = "";
 
+    entry.processExitCode = exitCode;
     const endedAt = new Date().toISOString();
     let status = statusFromExit(exitCode);
     let endExitCode = exitCode;
@@ -8305,6 +8308,7 @@ export function createPtyService({
         attentionRequested: false,
         cliPromptAttentionRaised: false,
         disposed: false,
+        processExitCode: null,
         createdAt: Date.now(),
         cleanupPaths,
         lastResizeCols: null,
@@ -9237,6 +9241,9 @@ export function createPtyService({
         promptAtLaunch,
       );
       const created = await flight;
+      // Held from launch: an exit removes the entry from the map, and the
+      // failure below reads the code it recorded.
+      const launchedEntry = ptys.get(created.ptyId);
       // The message itself may be embedded in the provider's launch command,
       // so there is not always a later PTY write that can mark the new turn.
       // Wait until launch succeeds before clearing the previous turn's state.
@@ -9255,12 +9262,22 @@ export function createPtyService({
           || !resumeFlightCreated,
       });
       if (!written) {
+        // The usual cause: the resumed CLI ended before its prompt was ready
+        // (Sentry ADE-DESKTOP-D9, Windows, at ~2 s). Say so, with its exit
+        // code, so the person and the report can tell it from a stuck prompt.
+        const exited = !liveEntryBySessionId(created.sessionId);
+        // The resumed process's own code: the session row may show the prior run's.
+        const exitCode = exited ? launchedEntry?.processExitCode ?? null : null;
         logger.warn("pty.resume_send_input_failed_preserved", {
           sessionId,
           ptyId: created.ptyId,
           provider,
+          exited,
+          exitCode,
         });
-        throw new Error(`Terminal session '${sessionId}' could not receive the message.`);
+        throw new Error(exited
+          ? `Terminal session '${sessionId}' could not receive the message: its ${provider} CLI exited${exitCode != null ? ` (exit code ${exitCode})` : ""} before it was ready.`
+          : `Terminal session '${sessionId}' could not receive the message.`);
       }
 
       return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });

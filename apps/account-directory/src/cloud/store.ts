@@ -361,8 +361,22 @@ export function reportCloudFailure(event: string, meta: Record<string, unknown> 
   const now = Date.now();
   if (now - (lastFailureReport.get(event) ?? 0) < FAILURE_REPORT_INTERVAL_MS) return;
   lastFailureReport.set(event, now);
-  // Only the event name: `meta` carries account and instance ids.
-  Sentry.captureMessage(event, { level: "warning", fingerprint: [event], tags: { area } });
+  // The event name, plus the closed codes that say which failure it was:
+  // `meta` also carries account and instance ids and free text, which stay in the log.
+  Sentry.captureMessage(event, { level: "warning", fingerprint: [event], tags: { area, ...failureCodeTags(meta) } });
+}
+
+/** `meta` fields that hold a closed code (`provider_timeout`, `push`, `free`), never an id or a sentence. */
+const FAILURE_CODE_TAG_KEYS = ["code", "kind", "step", "reason"] as const;
+const FAILURE_CODE_VALUE = /^[A-Za-z][A-Za-z0-9_.:-]{0,47}$/;
+
+function failureCodeTags(meta: Record<string, unknown>): Record<string, string> {
+  const tags: Record<string, string> = {};
+  for (const key of FAILURE_CODE_TAG_KEYS) {
+    const value = meta[key];
+    if (typeof value === "string" && FAILURE_CODE_VALUE.test(value)) tags[`failure_${key}`] = value;
+  }
+  return tags;
 }
 
 /**
