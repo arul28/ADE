@@ -40,6 +40,7 @@ import { runAdeCloudAccountCall, type AdeCloudAccountCallFn } from "../../../sha
 import { createAdeCloudSyncClient } from "./adeCloudSyncClient";
 import type { AdeCloudBridge } from "../../../shared/adeCloud/chatQueue";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer, type CloudChatSendRequest } from "../../../shared/adeCloudMachine";
+import { isCloudTierId } from "../../../shared/cloudTiers";
 import { CloudApiError } from "../../../shared/cloudApiClient";
 import { CLOUD_CHAT_MESSAGE_MAX_CHARS, cloudChatMessageSettingsOf, isCloudRefusalCode } from "../../../../../account-directory/src/cloud/contract";
 
@@ -1284,6 +1285,7 @@ export function createFederatedWebAdapter({
       const provider = field(request.provider, 64);
       const modelId = field(request.modelId, 256);
       const settings = cloudChatMessageSettingsOf(request.settings);
+      const sizeId = isCloudTierId(request.sizeId) ? request.sizeId : null;
       try {
         const result = await cloudApiOrThrow().sendChatMessage(machineKey, chatId, {
           messageId,
@@ -1291,6 +1293,7 @@ export function createFederatedWebAdapter({
           ...(provider ? { provider } : {}),
           ...(modelId ? { modelId } : {}),
           ...(settings ? { settings } : {}),
+          ...(sizeId ? { sizeId } : {}),
         });
         return { state: "sent", messageId: result.message.messageId, wake: { state: result.wake.state, launchId: result.wake.launchId ?? null } };
       } catch (error) {

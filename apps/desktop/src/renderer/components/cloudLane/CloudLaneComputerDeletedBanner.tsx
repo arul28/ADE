@@ -1,17 +1,21 @@
-import { useState, type CSSProperties } from "react";
-import type { CloudAccountState } from "../../../shared/adeCloud";
+import { useMemo, useState, type CSSProperties } from "react";
+import { cloudCatalogOf, cloudHoursLeftMilli, type CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
-import type { CloudTierId } from "../../../shared/cloudTiers";
+import { cloudTiers, type CloudTierId } from "../../../shared/cloudTiers";
+import { pickCloudDefaultTier } from "../../lib/cloudDefaultTier";
+import { pickNewComputerSize, useNewComputerSize } from "../../state/adeCloudChatQueue";
+import { useRootAppStore } from "../../state/appStore";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { adeCloudDoBlock, useAdeCloudAccess } from "../../state/cloudAccess";
 import { useCloudAccount } from "../../state/cloudAccountStore";
 import { SAVED_CHAT_COMPUTER_GONE_MESSAGE, type SavedChatLocation } from "../../state/cloudSavedChats";
-import { TRAY_ACTION_LABEL } from "../chat/AdeCloudComposerParts";
+import { CloudSizeButton, TRAY_ACTION_LABEL } from "../chat/AdeCloudComposerParts";
 import { adeCloudAccountBlock, type AdeCloudTrayAction } from "../chat/useAdeCloudDraft";
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import { Banner, NoticePopover, type NoticeAction } from "../ui/notice";
 import { cloudLaneRestartProblem, cloudLaneRestartTier, useStartLaneOnNewComputer } from "./CloudLaneWithoutComputer";
 import {
+  CLOUD_QUEUE_SIZE_ID,
   canDeleteCloudLaneWithoutComputer,
   cloudLaneWithoutComputerBranch,
   cloudLaneWithoutComputerDeleteLabel,
@@ -33,8 +37,8 @@ import {
  *
  * A send in the chat goes through the account's queue
  * (`sendThroughCloudQueue`): the server makes a new computer for the lane at
- * ADE's default size, or bigger (`cloudQueueSizeLabel`; the queue takes no size) and
- * continues the chat there. A server without the queue gets a kept lane's
+ * the size picked in the banner's chip, else at ADE's size, Small or bigger
+ * (`cloudQueueSizeLabel`), and continues the chat there. A server without the queue gets a kept lane's
  * old path, a new chat on a new computer at the old size
  * (`startFreedLaneChat`). When a new computer can't start, the banner turns
  * to a warning with the reason, and the composer's Send is off with the same
@@ -163,6 +167,25 @@ function useDeleteAction(facts: CloudLaneComputerDeleted, row: CloudLaneWithoutC
   };
 }
 
+/**
+ * The size chip of the new computer a chat's next message makes: ADE's size
+ * (Small, or bigger if the project needed it) until the person picks one.
+ */
+function NewComputerSizeChip({ machineKey, account, picked }: { machineKey: string; account: CloudAccountState | null; picked: CloudTierId | null }) {
+  const defaultTier = useRootAppStore((state) => state.cloudDefaultTier);
+  const tiers = useMemo(() => cloudTiers(cloudCatalogOf(account)), [account]);
+  return (
+    <CloudSizeButton
+      tiers={tiers}
+      tierId={picked ?? CLOUD_QUEUE_SIZE_ID}
+      defaultTier={defaultTier}
+      onChoose={(tier) => pickNewComputerSize(machineKey, tier)}
+      onSetDefault={pickCloudDefaultTier}
+      hoursLeftMilli={account ? cloudHoursLeftMilli(account) : null}
+    />
+  );
+}
+
 export function CloudLaneComputerDeletedBanner({
   facts,
   where = "chat",
@@ -170,6 +193,7 @@ export function CloudLaneComputerDeletedBanner({
   onOpenSettings,
   onOpenChat,
   newComputer = null,
+  sizeMachineKey = null,
   style,
 }: {
   facts: CloudLaneComputerDeleted;
@@ -183,10 +207,15 @@ export function CloudLaneComputerDeletedBanner({
   onOpenChat?: (() => void) | null;
   /** Lanes, a kept lane with no chat: its own "New computer". */
   newComputer?: { start: () => void; busy: boolean } | null;
+  /** A chat whose next message goes through the account's queue: the deleted computer's key, for the new computer's size chip. */
+  sizeMachineKey?: string | null;
   style?: CSSProperties;
 }) {
   const deleteAction = useDeleteAction(facts, row);
+  const picked = useNewComputerSize(sizeMachineKey);
+  const account = useCloudAccount(Boolean(sizeMachineKey));
   const branch = facts.branch ?? "the lane's branch";
+  const sizeLabel = picked ? cloudTierLabel(account, picked) : facts.sizeLabel;
   if (facts.blocked) {
     const fixes: NoticeAction[] = onOpenSettings
       ? facts.blocked.actions.map((action) => ({ label: TRAY_ACTION_LABEL[action], onClick: () => onOpenSettings(action) }))
@@ -208,7 +237,7 @@ export function CloudLaneComputerDeletedBanner({
     );
   }
   const next = where === "chat"
-    ? `Your next message makes a new computer on ${branch}, at ${facts.sizeLabel}, and continues this chat there.`
+    ? `Your next message makes a new computer on ${branch}, at ${sizeLabel}, and continues this chat there.`
     : newComputer
       ? `A new computer for it starts on ${branch}, at ${facts.sizeLabel}.`
       : `A message in its chat makes a new computer on ${branch}, at ${facts.sizeLabel}, and continues the chat there.`;
@@ -232,6 +261,7 @@ export function CloudLaneComputerDeletedBanner({
           </>
         ),
         actions: [...primary, ...(deleteAction ? [deleteAction] : [])],
+        extra: sizeMachineKey ? <NewComputerSizeChip machineKey={sizeMachineKey} account={account} picked={picked} /> : undefined,
       }}
     />
   );

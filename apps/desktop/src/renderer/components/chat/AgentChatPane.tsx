@@ -498,7 +498,7 @@ import {
 import { chatNoticeReducer, noticeForChat, shownChatNotice, type ChatNotice } from "./chatNotice";
 import { SAVED_CHAT_COMPUTER_GONE_MESSAGE, savedChatComputerGone, savedChatLocation } from "../../state/cloudSavedChats";
 import { newClientSendId } from "../../../shared/adeCloud/chatQueue";
-import { adeCloudQueueHoldsMessage, markAdeCloudQueuedMessageDelivered, noteAdeCloudQueuedSend, useAdeCloudChatQueue } from "../../state/adeCloudChatQueue";
+import { adeCloudQueueHoldsMessage, markAdeCloudQueuedMessageDelivered, noteAdeCloudQueuedSend, peekNewComputerSize, pickNewComputerSize, useAdeCloudChatQueue } from "../../state/adeCloudChatQueue";
 import { CloudQueuedMessages, draftWithPutBack } from "./CloudQueuedMessages";
 import { CloudQueueSendCard, type CloudQueueSend } from "./CloudQueueSendCard";
 import { isAdeCloudComputer, useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
@@ -14859,8 +14859,10 @@ export function AgentChatPane({
     const messageId = newClientSendId();
     const provider = selectedSession?.provider ?? null;
     setError(null);
+    // The size picked in the banner for the new computer; none is ADE's size.
+    const sizeId = peekNewComputerSize(chat.machineKey);
     try {
-      const answer = await send({ ...chat, messageId, text, provider, modelId: modelId || null });
+      const answer = await send({ ...chat, messageId, text, provider, modelId: modelId || null, ...(sizeId ? { sizeId } : {}) });
       if (answer.state === "unsupported") return "unsupported";
       if (answer.state === "refused") {
         setError({ message: answer.message, kind: "status" });
@@ -14869,6 +14871,7 @@ export function AgentChatPane({
       // Queued: the chat shows it as its own queued row (`adeCloudChatQueue.ts`),
       // the box clears, and the chat stays selected with the launch's card.
       noteAdeCloudQueuedSend(chat, answer, { text, provider, modelId: modelId || null });
+      if (sizeId) pickNewComputerSize(chat.machineKey, null);
       draftStore.set("");
       draftsPerSessionRef.current.delete(chat.chatId);
       setCloudQueueSend({ chatId: chat.chatId, wake: answer.wake.state, launchId: answer.wake.launchId ?? null, text });
@@ -19443,6 +19446,9 @@ export function AgentChatPane({
     && (freedChatLaneRef.current != null || chatGoneLocation?.computerGone === true);
   const deletedComputerAccount = useCloudAccount(chatComputerDeleted);
   const deletedComputerLaneId = freedChatLaneRef.current?.laneId ?? chatGoneLocation?.row.laneId ?? selectedSession?.laneId ?? null;
+  // The queue needs the old computer's key (the saved chat's, else the kept lane's), as Send does.
+  const deletedComputerMachineKey = chatGoneLocation?.machineKey ?? freedChatLaneRef.current?.formerMachineKey ?? null;
+  const deletedComputerViaQueue = Boolean(window.ade?.cloud?.sendChatMessage) && Boolean(deletedComputerMachineKey);
   const deletedComputerFacts = chatComputerDeleted && deletedComputerLaneId
     ? cloudLaneComputerDeletedFacts({
         laneId: deletedComputerLaneId,
@@ -19453,9 +19459,7 @@ export function AgentChatPane({
         account: deletedComputerAccount,
         doBlock: adeCloud.doBlock,
         defaultTier: rootAppStoreApi.getState().cloudDefaultTier,
-        // The queue needs the old computer's key (the saved chat's, else the kept lane's), as Send does.
-        viaQueue: Boolean(window.ade?.cloud?.sendChatMessage)
-          && Boolean(chatGoneLocation?.machineKey ?? freedChatLaneRef.current?.formerMachineKey),
+        viaQueue: deletedComputerViaQueue,
         binding: projectBinding,
         originUrl: originUrlForBinding(projectBinding),
       })
@@ -22540,7 +22544,12 @@ export function AgentChatPane({
         ) : null}
         <ChatMachineWakeBanner style={RUNTIME_BANNER_STYLE} />
         {deletedComputerFacts && cloudQueueSend?.chatId !== selectedSessionId ? (
-          <CloudLaneComputerDeletedBanner facts={deletedComputerFacts} onOpenSettings={openAdeCloudSettings} style={RUNTIME_BANNER_STYLE} />
+          <CloudLaneComputerDeletedBanner
+            facts={deletedComputerFacts}
+            onOpenSettings={openAdeCloudSettings}
+            sizeMachineKey={deletedComputerViaQueue ? deletedComputerMachineKey : null}
+            style={RUNTIME_BANNER_STYLE}
+          />
         ) : null}
         {cloudQueueSend && cloudQueueSend.chatId === selectedSessionId ? (
           <CloudQueueSendCard

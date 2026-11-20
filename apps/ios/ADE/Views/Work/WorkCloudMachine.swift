@@ -201,6 +201,10 @@ struct CloudLaneStateLines: View {
     let instance = syncService.cloudServerInstance(fleetKey: fleetKey)
     let deleting = store.deletingSoon(instanceId: instance?.id)
     let state = cloudLaneState(fleetKey: fleetKey, sync: syncService, store: store)
+    // A chat's next message makes the new computer: its line offers the size.
+    let sizeKey = state == .deleted && context == .chat
+      ? fleetKey.flatMap { syncService.cloudAccountMachineKey(fleetKey: $0)?.lowercased() }
+      : nil
     CloudLaneStateLinesContent(
       state: state,
       deletingDays: deleting.map { cloudDeletingSoonDays(deletesAt: $0.deletesAt) },
@@ -209,6 +213,13 @@ struct CloudLaneStateLines: View {
         ? cloudDeletedComputerFacts(fleetKey: fleetKey, sync: syncService, store: store) ?? .unknown
         : .unknown,
       context: context,
+      sizePick: sizeKey.map { key in
+        CloudNewComputerSizePick(
+          tiers: cloudPhoneTiers(store.account?.catalog),
+          picked: store.newComputerSizes[key],
+          pick: { store.pickNewComputerSize(machineKey: key, sizeId: $0) }
+        )
+      },
       keeping: keeping,
       keepError: keepError,
       onDismissFailure: {
@@ -239,6 +250,8 @@ struct CloudLaneStateLinesContent: View {
   /// computer, or why ADE can't make one.
   var deleted: CloudDeletedComputerFacts = .unknown
   var context: CloudLaneLineContext = .chat
+  /// The `.deleted` chat line's size menu for the new computer; nil shows none.
+  var sizePick: CloudNewComputerSizePick? = nil
   var keeping = false
   var keepError: String?
   var onDismissFailure: () -> Void = {}
@@ -300,7 +313,20 @@ struct CloudLaneStateLinesContent: View {
   /// ADE can't make a new computer, the reason instead, in the warning tone.
   private var deletedLine: some View {
     let blocked = deleted.blocked != nil
-    return HStack(alignment: .top, spacing: 10) {
+    return VStack(alignment: .leading, spacing: 8) {
+      deletedText(blocked: blocked)
+      if !blocked, let sizePick {
+        // Its own control, outside the combined text: VoiceOver reaches it on its own.
+        CloudNewComputerSizeMenu(pick: sizePick)
+          .padding(.leading, 28)
+      }
+    }
+    .stateLineChrome()
+    .adeInspectable(blocked ? "CloudLane.Blocked" : "CloudLane.Deleted")
+  }
+
+  private func deletedText(blocked: Bool) -> some View {
+    HStack(alignment: .top, spacing: 10) {
       Image(systemName: blocked ? "exclamationmark.icloud" : "icloud.slash")
         .font(.system(size: 14, weight: .semibold))
         .foregroundStyle(blocked ? ADEColor.warning : ADEColor.textSecondary)
@@ -343,11 +369,9 @@ struct CloudLaneStateLinesContent: View {
       }
       Spacer(minLength: 0)
     }
-    .stateLineChrome()
     // One element: the title and what happened, then Why? (activating it
     // opens the two lines, which then read as part of it).
     .accessibilityElement(children: .combine)
-    .adeInspectable(blocked ? "CloudLane.Blocked" : "CloudLane.Deleted")
   }
 
   private func deletingSoonLine(days: Int) -> some View {

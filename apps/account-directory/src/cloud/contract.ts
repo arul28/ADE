@@ -1309,6 +1309,12 @@ export type CloudChatMessageRequest = {
   modelId?: string | null;
   /** Kept sealed with the text; given back only to the chat's computer. */
   settings?: CloudChatMessageSettings | null;
+  /**
+   * The size of the new computer when this message makes one (the chat's
+   * computer was deleted). Left out: Small, or bigger if the project needed
+   * it before. Ignored when the chat's computer still exists.
+   */
+  sizeId?: CloudTierId | null;
 };
 
 export type CloudChatQueuedMessage = {

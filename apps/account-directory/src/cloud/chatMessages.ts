@@ -17,11 +17,13 @@ import {
   type CloudLaunchMessage,
   type CloudLaunchRecord,
   type CloudLaunchSignIn,
+  type CloudTierId,
   type CloudWakeOutcome,
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
 import { addLaunchMessage, cancelLaunchMessageStatement, LAUNCH_MESSAGE_ID, launchMessageOf } from "./launchMessages";
 import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, r2KeyOf, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
+import { cloudSizeForTier } from "./plans";
 import { openJson, sealJson, userKeys, type UserKeys } from "./seal";
 import { logCloud, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 import { copyRow, openSummary, type CopyRow } from "./chats";
@@ -455,6 +457,8 @@ type SendInput = {
   provider: string | null;
   modelId: string | null;
   settings: CloudChatMessageSettings | null;
+  /** The new computer's size, when the person picked one; used only by a launch. */
+  sizeId?: CloudTierId | null;
 };
 
 async function insertRow(
@@ -507,6 +511,9 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
   const modelId = body.modelId == null ? null : shortString(body.modelId, 300);
   // Known keys and short values only; anything else is left out.
   const settings = cloudChatMessageSettingsOf(body.settings);
+  // The size of a new computer, when this message makes one: a size ADE Cloud offers, or left out.
+  const sizeId = body.sizeId == null ? null : cloudSizeForTier(body.sizeId) ? body.sizeId as CloudTierId : undefined;
+  if (sizeId === undefined) return badRequest("That size isn't one ADE Cloud offers.");
 
   const chat = await resolveTarget(env, userId, machineKey, chatId);
   if (!chat) return notFound();
@@ -530,7 +537,7 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
   await keepDraftFiles(env, userId, attachments, now);
   if (!deps.wake) return fail("unavailable", "ADE Cloud can't wake computers right now. Try again soon.", 503);
 
-  const input: SendInput = { messageId, text, attachments, provider, modelId, settings };
+  const input: SendInput = { messageId, text, attachments, provider, modelId, settings, sizeId };
   const computer = await liveComputerOf(env, userId, chat);
   if (computer) {
     // Every refusal runs before the row is written: a refused send stores nothing.
@@ -576,8 +583,9 @@ async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, 
   const parsed: ParsedLaunchRequest = {
     launchId: crypto.randomUUID(),
     kind: "chat",
-    sizeId: "small",
-    sizeChoice: "default",
+    // A picked size starts as picked; none is Small, or bigger if the project needed it (`startSizeOf`).
+    sizeId: input.sizeId ?? "small",
+    sizeChoice: input.sizeId ? "picked" : "default",
     project: { origin },
     lane: {
       id: chat.lane_id,

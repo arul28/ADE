@@ -1165,14 +1165,22 @@ account, never a pin.
   nothing routes to, so every lane action refuses them. Its lane page and its
   chats show one inline banner: what happened, what the next message does,
   and "Why?". The next message goes through the account's queue, which makes
-  a new computer (Small, or bigger if the project needs it) and continues the
-  same chat. When ADE Cloud can't start one (the account is blocked or signed
+  a new computer and continues the same chat. The chat's banner has a size
+  chip for that computer. With no pick, the server starts it at Small, or
+  bigger if the project needed it before. A pick goes with the message
+  (`sizeId`), and the server starts the computer at that size and does not
+  change it. The pick belongs to the deleted computer's machine key, so all
+  of its chats share it, and a send that carries it clears it. When ADE Cloud can't start one (the account is blocked or signed
   out, no hours or disk, no branch or repository), the banner turns to a
   warning with the reason and Send is off. A lane with no chat offers New
   computer on the same branch instead. Delete asks first, removes the kept
   record (the server refuses it while a computer holds the lane again), then
   every saved chat of that lane on its old computers, page by page; when
-  chats remain, it says so and keeps the row. The ADE Cloud page lists every
+  chats remain, it says so and keeps the row. After the server confirms a
+  delete, the lane leaves the list at once (`noteKeptLaneDeleted`), and a
+  saved-chats read that started before the delete can't list the lane or
+  its chats again (`noteCloudSavedChatsDeleted`). A lane on a deleted
+  computer whose chats are all gone leaves the list. The ADE Cloud page lists every
   project's kept lanes (`CloudDashboard.tsx`).
   - On the iPhone the same lanes are normal rows in the project's Lanes list
     (`LaneKeptCloudRows.swift`), counted under Active. A tap opens the newest

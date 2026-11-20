@@ -27,6 +27,7 @@ import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { IPC } from "../../../shared/ipc";
 import { CloudApiError, createCloudApiClient } from "../../../shared/cloudApiClient";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer } from "../../../shared/adeCloudMachine";
+import { isCloudTierId } from "../../../shared/cloudTiers";
 import { CLOUD_CHAT_MESSAGE_MAX_CHARS, cloudChatMessageSettingsOf, isCloudRefusalCode, type CloudCarriedSignIns, type CloudLaneBackup, type CloudLaunchRecord, type CloudModelCatalog } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudRemoteSignInStatus } from "../../../shared/accountCloudLaunches";
 import { readCloudSignInEnd, type CloudSignInEndList, type CloudSignInSettingRead } from "./cloudSignInEndWarning";
@@ -287,6 +288,7 @@ export function registerCloudIpc(args: {
     const provider = text(arg?.provider, 64);
     const modelId = text(arg?.modelId, 256);
     const settings = cloudChatMessageSettingsOf(arg?.settings);
+    const sizeId = isCloudTierId(arg?.sizeId) ? arg.sizeId : null;
     try {
       const result = await accountApi().sendChatMessage(machineKey, chatId, {
         messageId,
@@ -294,6 +296,7 @@ export function registerCloudIpc(args: {
         ...(provider ? { provider } : {}),
         ...(modelId ? { modelId } : {}),
         ...(settings ? { settings } : {}),
+        ...(sizeId ? { sizeId } : {}),
       });
       logger.info("cloud.chat_message_sent", { wake: result.wake.state });
       if (result.wake.state !== "awake") sendToAllWindows(IPC.cloudStatusChanged);

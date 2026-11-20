@@ -213,7 +213,7 @@ export function cloudLaneWithoutComputerBranch(kept: CloudLaneWithoutComputer | 
  * queue takes no size (`sendThroughLaunch` in the server's `chatMessages.ts`);
  * the server may start Medium for a repository whose setup needed it before.
  */
-const CLOUD_QUEUE_SIZE_ID: CloudTierId = "small";
+export const CLOUD_QUEUE_SIZE_ID: CloudTierId = "small";
 
 /** A tier's name as the account's catalog gives it ("Small"). */
 export function cloudTierLabel(account: CloudAccountState | null | undefined, id: CloudTierId): string {

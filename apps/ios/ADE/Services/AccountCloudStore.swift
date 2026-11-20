@@ -66,6 +66,10 @@ final class AccountCloudStore: ObservableObject {
   @Published private(set) var lanesWithoutComputerUnread = false
   /// Held messages by chat (`chatKey`), oldest first.
   @Published private(set) var queued: [String: [CloudChatQueuedMessage]] = [:]
+  /// The size picked for the computer that replaces a deleted one, by the
+  /// deleted computer's machine key (lowercased; its chats share the one new
+  /// computer), until a send carries it. None: ADE's size.
+  @Published private(set) var newComputerSizes: [String: String] = [:]
   /// "Keep it" went through for these computers this run.
   @Published private(set) var keptInstanceIds: Set<String> = []
   /// Failed held messages the person put back or dismissed. They stay on
@@ -295,10 +299,12 @@ final class AccountCloudStore: ObservableObject {
       }
     }
     guard generation == accountGeneration else { return .failed("The account changed. Send the message again.") }
+    let sizeId = newComputerSizes[machineKey.lowercased()]
     do {
-      let result = try await client.queueMessage(machineKey: machineKey, chatId: chatId, messageId: messageId, text: text, attachments: attachments)
+      let result = try await client.queueMessage(machineKey: machineKey, chatId: chatId, messageId: messageId, text: text, attachments: attachments, sizeId: sizeId)
       guard generation == accountGeneration else { return .failed("The account changed. Send the message again.") }
       upsert(result.message, key: key)
+      if sizeId != nil { newComputerSizes[machineKey.lowercased()] = nil }
       accountCloudLog.notice("cloud_store queue=sent wake=\(result.wake?.state ?? "none", privacy: .public)")
       return .queued(result.message, wakeState: result.wake?.state ?? "waking")
     } catch CloudServerClient.Failure.noAccess {
@@ -310,6 +316,11 @@ final class AccountCloudStore: ObservableObject {
     } catch {
       return .failed(cloudServerFailureMessage(error))
     }
+  }
+
+  /// Picks (or, with nil, unpicks) the size of the computer that replaces this deleted one.
+  func pickNewComputerSize(machineKey: String, sizeId: String?) {
+    newComputerSizes[machineKey.lowercased()] = sizeId
   }
 
   /// Cancels a message that still waits. Nil when it worked.
@@ -496,6 +507,7 @@ final class AccountCloudStore: ObservableObject {
     lanesReadSeq &+= 1
     lanesReadAt = nil
     queued = [:]
+    newComputerSizes = [:]
     keptInstanceIds = []
     hiddenMessageIds = []
     hiddenMessageOrder = []

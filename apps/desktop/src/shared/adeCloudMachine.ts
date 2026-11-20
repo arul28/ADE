@@ -57,6 +57,8 @@ export type CloudChatSendRequest = {
   modelId?: string | null;
   /** The chat settings picked before this send; the computer applies them before it sends. */
   settings?: import("../../../account-directory/src/cloud/contract").CloudChatMessageSettings | null;
+  /** The size the person picked for the new computer, when the chat's computer was deleted. Left out: ADE's size. */
+  sizeId?: import("./cloudTiers").CloudTierId | null;
 };
 
 /**

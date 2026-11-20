@@ -83,6 +83,55 @@ func cloudQueueSizeLabel(account: CloudPhoneAccount?) -> String {
   return "\(label) or bigger if the project needs it"
 }
 
+/// The size menu of the computer that replaces a deleted one: the sizes, the
+/// pick (nil: ADE's size), and how to change it.
+struct CloudNewComputerSizePick {
+  let tiers: [CloudPhoneTier]
+  let picked: String?
+  let pick: (String?) -> Void
+}
+
+/// The deleted-computer line's size chip: the size the next message's new
+/// computer starts at. The desktop's chip in the chat's banner.
+struct CloudNewComputerSizeMenu: View {
+  let pick: CloudNewComputerSizePick
+
+  var body: some View {
+    let currentId = pick.picked ?? cloudQueueSizeId
+    let current = pick.tiers.first { $0.id == currentId }
+    Menu {
+      Picker("Size of the new computer", selection: Binding(get: { currentId }, set: { pick.pick($0) })) {
+        ForEach(pick.tiers) { tier in
+          Label {
+            Text(tier.label)
+            Text("\(tier.specs.joined(separator: ", ")). \(tier.runs).")
+          } icon: {
+            Image(systemName: tier.symbol)
+          }
+          .tag(tier.id)
+        }
+      }
+    } label: {
+      HStack(spacing: 5) {
+        Image(systemName: current?.symbol ?? "square")
+          .font(.system(size: 11, weight: .semibold))
+        Text(current?.label ?? "Small")
+          .font(.caption.weight(.semibold))
+        Image(systemName: "chevron.up.chevron.down")
+          .font(.system(size: 9, weight: .semibold))
+      }
+      .foregroundStyle(ADEColor.textPrimary)
+      .padding(.horizontal, 10)
+      .frame(minHeight: 30)
+      .background(ADEColor.textPrimary.opacity(0.06), in: Capsule())
+      .contentShape(Capsule())
+    }
+    .accessibilityLabel("Size of the new computer")
+    .accessibilityValue(current?.label ?? "Small")
+    .adeInspectable("CloudLane.NewComputerSize")
+  }
+}
+
 /// What a chat or lane page says once its ADE Cloud computer was deleted:
 /// what happened, and what makes the new one (its branch and size), or why
 /// ADE can't make one now. The desktop's `cloudLaneComputerDeletedFacts`.
@@ -176,7 +225,13 @@ func cloudDeletedComputerFacts(fleetKey: String?, sync: SyncService, store: Acco
   let kept = store.lanesWithoutComputer.first { $0.formerMachineKey?.lowercased() == accountKey }
     ?? store.lanesWithoutComputer.first { laneIds.contains($0.laneId) }
   let computer = chats.lazy.compactMap(\.computer).first { $0.isDeleted }
-  return cloudDeletedComputerFacts(kept: kept, computer: computer, viaQueue: true, store: store)
+  var facts = cloudDeletedComputerFacts(kept: kept, computer: computer, viaQueue: true, store: store)
+  // The size picked in the chat's line, else ADE's.
+  if let picked = store.newComputerSizes[accountKey],
+     let tier = cloudPhoneTiers(store.account?.catalog).first(where: { $0.id == picked }) {
+    facts.sizeLabel = tier.label
+  }
+  return facts
 }
 
 /// Why a message can't make a new computer for this chat's deleted one, in
