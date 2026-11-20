@@ -60,9 +60,6 @@ const STARTS_KEPT = 20;
 /** One issue per platform: the platform is appended. */
 const RESTART_LOOP_FINGERPRINT = ["brain", "restart_loop"] as const;
 
-/** launchd's word on the last brain it saw end (macOS), read when a loop is found. */
-let launchdLastExit: string | null = null;
-
 /** This brain's own start, for `markBrainStoppedCleanly`. */
 let current: { startsPath: string; pid: number; at: string } | null = null;
 /**
@@ -109,11 +106,11 @@ export function startBrainRestartLoopWatch(options: { runtimeDir: string; build:
   // This brain sends the report if it lives long enough; if it dies first,
   // the next one finds `loopFoundAt` and takes over.
   const delayMs = Math.max(0, Math.min(LOOP_QUIET_MS, loopFoundAtMs + LOOP_REPORT_MAX_DELAY_MS - nowMs));
-  // Asked now, so the answer is in hand when the report goes.
-  readLaunchdLastExit().then((value) => {
-    launchdLastExit = value;
-  }, () => {});
-  setTimeout(() => sendLoopReport(startsPath), delayMs).unref();
+  // Asked now; the report waits for the answer (two seconds at most). In a
+  // loop that outlives each brain the report is due at once, so not waiting
+  // would drop the field exactly where it matters.
+  const launchdLastExit = readLaunchdLastExit().catch(() => null);
+  setTimeout(() => void launchdLastExit.then((lastExit) => sendLoopReport(startsPath, lastExit)), delayMs).unref();
 }
 
 function isRestartLoopEvent(event: DiagnosticEvent): boolean {
@@ -245,7 +242,7 @@ function countedStartsInWindow(starts: readonly BrainStart[], nowMs: number): nu
   }).length;
 }
 
-function sendLoopReport(startsPath: string): void {
+function sendLoopReport(startsPath: string, launchdLastExit: string | null): void {
   const nowMs = Date.now();
   const state = readStartsFile(startsPath);
   const foundAt = state.loopFoundAt;
@@ -316,20 +313,36 @@ function mostCommon(values: readonly string[]): string {
  * or when launchd does not answer within two seconds. Runs only in a brain
  * whose start found a loop waiting for its report, once per start.
  */
-function readLaunchdLastExit(): Promise<string | null> {
-  if (process.platform !== "darwin") return Promise.resolve(null);
+async function readLaunchdLastExit(): Promise<string | null> {
+  if (process.platform !== "darwin") return null;
   const label = resolveRuntimeServiceName();
+  const uid = currentUid();
+  // The domain the agent is in, as `isLaunchAgentRegistered` checks it.
+  for (const domain of [`gui/${uid}`, `user/${uid}`]) {
+    const answer = await launchctlPrint(`${domain}/${label}`);
+    if (answer != null) return launchdExitFacts(answer);
+  }
+  return null;
+}
+
+const LAUNCHD_EXIT_FIELDS = [
+  ["exit", "last exit code"],
+  ["signal", "last terminating signal"],
+  ["reason", "last exit reason"],
+] as const;
+
+function launchdExitFacts(printed: string): string | null {
+  const facts = LAUNCHD_EXIT_FIELDS.flatMap(([name, key]) => {
+    const value = printed.match(new RegExp(`^\\s*${key} = (.+)$`, "m"))?.[1]?.trim().slice(0, 120);
+    return value ? [`${name}=${value}`] : [];
+  });
+  return facts.length > 0 ? facts.join("; ") : null;
+}
+
+function launchctlPrint(target: string): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile("launchctl", ["print", `gui/${currentUid()}/${label}`], { encoding: "utf8", timeout: 2_000 }, (error, stdout) => {
-      if (error || typeof stdout !== "string") {
-        resolve(null);
-        return;
-      }
-      const facts = ["last exit code", "last terminating signal", "last exit reason"]
-        .map((key) => stdout.match(new RegExp(`^\\s*${key} = (.+)$`, "m"))?.[1]?.trim().slice(0, 120))
-        .map((value, index) => (value ? `${["exit", "signal", "reason"][index]}=${value}` : null))
-        .filter((value): value is string => value !== null);
-      resolve(facts.length > 0 ? facts.join("; ") : null);
+    execFile("launchctl", ["print", target], { encoding: "utf8", timeout: 2_000 }, (error, stdout) => {
+      resolve(error || typeof stdout !== "string" ? null : stdout);
     });
   });
 }

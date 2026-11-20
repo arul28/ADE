@@ -14,7 +14,6 @@ import type {
   SyncPeerMetadata,
 } from "../../../../desktop/src/shared/types";
 import {
-  SYNC_CHAT_SUBSCRIBE_UNAVAILABLE_CAPABILITY,
   SYNC_MOBILE_CHAT_SLIM_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
@@ -30,7 +29,9 @@ import {
   transcriptStorageKey,
 } from "./syncChatTranscriptReads";
 import {
+  CHAT_TRANSCRIPT_READ_FAILED,
   chatEventDeliveryKey,
+  chatSubscribeUnavailableSnapshot,
   compactChatEventEnvelopeForMobileSync,
   compactChatEventEnvelopeForSync,
   prepareChatSnapshotEventsForPeer,
@@ -137,24 +138,14 @@ export function createBrainChatSubscriptions(args: {
   const peerWantsSlimChat = (peer: BrainChatPeer): boolean =>
     peer.metadata?.capabilities?.includes(SYNC_MOBILE_CHAT_SLIM_CAPABILITY) === true;
 
-  /**
-   * Answers a subscribe this ingress cannot serve, to a peer that understands
-   * `unavailable`. Older peers get no answer, as before (see the capability).
-   */
   const sendSubscribeUnavailable = (
     peer: BrainChatPeer,
     requestId: string | null | undefined,
     sessionId: string,
     unavailable: SyncChatSubscribeUnavailable,
   ): void => {
-    if (peer.metadata?.capabilities?.includes(SYNC_CHAT_SUBSCRIBE_UNAVAILABLE_CAPABILITY) !== true) return;
-    send(peer.ws, "chat_subscribe", {
-      sessionId,
-      capturedAt: nowIso(),
-      truncated: false,
-      events: [],
-      unavailable,
-    } satisfies SyncChatSubscribeSnapshotPayload, requestId);
+    const answer = chatSubscribeUnavailableSnapshot(peer.metadata, sessionId, unavailable, nowIso());
+    if (answer) send(peer.ws, "chat_subscribe", answer, requestId);
   };
 
   const markChatEventSent = (subscription: BrainChatSubscription, event: AgentChatEventEnvelope): void => {
@@ -295,11 +286,9 @@ export function createBrainChatSubscriptions(args: {
         scope,
         error: error instanceof Error ? error.message : String(error),
       });
-      if (isCurrent()) {
-        sendSubscribeUnavailable(peer, requestId, sessionId, {
-          code: "transcript_read_failed",
-          message: "The machine couldn’t read this chat’s transcript.",
-        });
+      // Only for the subscribe still in charge: a newer one answers itself.
+      if (isCurrent() && peer.chatSubscriptions.get(sessionId) === subscription) {
+        sendSubscribeUnavailable(peer, requestId, sessionId, CHAT_TRANSCRIPT_READ_FAILED);
       }
       throw error;
     } finally {

@@ -437,8 +437,25 @@ export async function bootstrapPairedRuntime(args: {
     undefined,
     diagnostic,
   );
-  const kind = PAIRED_ROUTE_FAILURE_KIND[failure];
+  const kind = pairedRouteFailureKind(failure, attempts);
   throw kind ? markExpected(unavailable, kind) : unavailable;
+}
+
+/**
+ * Only an older or newer ADE on the other machine is the person's to fix
+ * among protocol failures. A malformed hello or a payload this build cannot
+ * read is contract drift between two ADE builds, and stays a report.
+ */
+const VERSION_SKEW_ERROR_CODES = new Set(["hello_host_update_required", "hello_protocol_version_mismatch"]);
+
+function pairedRouteFailureKind(
+  failure: RemoteRuntimeConnectionAttemptFailure,
+  attempts: readonly { failure?: RemoteRuntimeConnectionAttemptFailure; errorCode?: string }[],
+): ExpectedErrorKind | null {
+  if (failure !== "protocol") return PAIRED_ROUTE_FAILURE_KIND[failure];
+  return attempts.some((attempt) => attempt.failure === "protocol" && VERSION_SKEW_ERROR_CODES.has(attempt.errorCode ?? ""))
+    ? "user"
+    : null;
 }
 
 /**

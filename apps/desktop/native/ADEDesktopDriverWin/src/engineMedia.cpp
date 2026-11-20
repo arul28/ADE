@@ -67,7 +67,7 @@ void Engine::mediaLoop(std::shared_ptr<Lane> lane) {
       if (!ok) {
         if (nowMs() - lane->lastStreamErrorMs > 5000) {
           lane->lastStreamErrorMs = nowMs();
-          std::string message = err.find("handle is invalid") != std::string::npos
+          std::string message = isLockedConsoleCaptureError(err)
                                     ? "This PC is locked, so the private screen shows no picture. It resumes after unlock."
                                     : "No frame from the Windows screen: " + err;
           emit_(eventLine("stream-error", Json::Object{{"laneId", lane->laneId}, {"message", message}}));
@@ -317,14 +317,16 @@ Json Engine::stopRecording(const Json& req) {
   }
   // Joining the media thread races stream.start's ensureMediaThread unless
   // both run under the operation lock.
+  // A recording started on this lane while the file was being finished uses
+  // the same thread, so it stays too.
   const auto releaseMediaThread = [&] {
     std::unique_lock<std::recursive_mutex> operation(operationMutex_);
-    bool streaming;
+    bool inUse;
     {
       std::lock_guard<std::mutex> lock(lane->media);
-      streaming = lane->streaming;
+      inUse = lane->streaming || lane->recorder != nullptr;
     }
-    if (!streaming) {
+    if (!inUse) {
       lane->mediaRun = false;
       if (lane->mediaThread.joinable()) lane->mediaThread.join();
     }
@@ -365,7 +367,7 @@ Json Engine::stopRecording(const Json& req) {
     DeleteFileW(path.c_str());
     releaseMediaThread();
     if (!writeError.empty()) fail(code::kInternalError, "could not write the recording: " + writeError);
-    if (stillError.find("handle is invalid") != std::string::npos) {
+    if (isLockedConsoleCaptureError(stillError)) {
       fail(code::kLocked, "This PC is locked, so the recording has no picture. Unlock it and record again.");
     }
     fail(code::kInternalError, "The recording for lane " + lane->laneId

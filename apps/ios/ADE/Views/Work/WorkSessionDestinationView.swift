@@ -2024,8 +2024,7 @@ struct WorkSessionDestinationView: View {
           Task { @MainActor in
             // The same chat opened again while this screen left (a
             // notification tap, a Hub cover): that screen owns the stream
-            // and the routing scope now. Dropping them here sent its
-            // subscribes out with no project, and the host never answered.
+            // and the routing scope now.
             guard !syncService.chatDestinationIsVisible(sessionId: sessionId) else { return }
             try? await syncService.unsubscribeFromChatEvents(sessionId: sessionId)
             // Preserve routing through the unsubscribe payload, then drop it
@@ -2038,7 +2037,9 @@ struct WorkSessionDestinationView: View {
             }
           }
         } else if let currentSession = session ?? initialSession,
-                  isChatSession(currentSession) {
+                  isChatSession(currentSession),
+                  // As above: a screen already showing this chat keeps it.
+                  !syncService.chatDestinationIsVisible(sessionId: sessionId) {
           syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
         }
       }

@@ -827,6 +827,8 @@ type PtyEntry = {
    */
   cliPromptAttentionRaised: boolean;
   disposed: boolean;
+  /** How this process itself exited, even when closeEntry kept the prior row's end state. */
+  processExitCode: number | null;
   createdAt: number;
   cleanupPaths: string[];
   lastResizeCols: number | null;
@@ -5360,6 +5362,7 @@ export function createPtyService({
     // pinned indefinitely.
     entry.recentOutputTail = "";
 
+    entry.processExitCode = exitCode;
     const endedAt = new Date().toISOString();
     let status = statusFromExit(exitCode);
     let endExitCode = exitCode;
@@ -8305,6 +8308,7 @@ export function createPtyService({
         attentionRequested: false,
         cliPromptAttentionRaised: false,
         disposed: false,
+        processExitCode: null,
         createdAt: Date.now(),
         cleanupPaths,
         lastResizeCols: null,
@@ -9259,7 +9263,8 @@ export function createPtyService({
         // (Sentry ADE-DESKTOP-D9, Windows, at ~2 s). Say so, with its exit
         // code, so the person and the report can tell it from a stuck prompt.
         const exited = !liveEntryBySessionId(created.sessionId);
-        const exitCode = exited ? sessionService.get(created.sessionId)?.exitCode ?? null : null;
+        // The resumed process's own code: the session row may show the prior run's.
+        const exitCode = exited ? ptys.get(created.ptyId)?.processExitCode ?? null : null;
         logger.warn("pty.resume_send_input_failed_preserved", {
           sessionId,
           ptyId: created.ptyId,

@@ -1358,13 +1358,20 @@ npx wrangler@4.105.0 pages deploy apps/desktop/dist/web-client \
   --project-name ade-web-client --branch main \
   --commit-hash "$(git rev-parse origin/main)" --commit-dirty=false
 
-# Workers: one install at the repo root covers all of them
+# Workers: one install at the repo root covers all of them.
+# Each Worker sends to Sentry only when deployed with SENTRY_RELEASE
+# (`workerSentryEnabled` in src/sentryScrub.ts), so pass the release the way
+# deploy-web.yml computes it, or production errors go unreported.
 npm ci
-(cd apps/account-directory && npm run deploy:production)
-(cd apps/webhook-relay && npm run deploy)
-(cd apps/tunnel-relay && npm run deploy -- --tag "$(git rev-parse origin/main)" --message "release $(git rev-parse --short origin/main)")
-(cd apps/push-relay && npm run deploy)
+SENTRY_RELEASE="ade@$(git describe --tags --match 'v[0-9]*' | sed 's/^v//')"
+(cd apps/account-directory && npm run deploy:production:prepare && npm run deploy:production:upload -- --var "SENTRY_RELEASE:$SENTRY_RELEASE")
+(cd apps/webhook-relay && npm run deploy:prepare && npm run deploy:upload -- --var "SENTRY_RELEASE:$SENTRY_RELEASE")
+(cd apps/tunnel-relay && npm run deploy -- --tag "$(git rev-parse origin/main)" --message "release $(git rev-parse --short origin/main)" --var "SENTRY_RELEASE:$SENTRY_RELEASE")
+(cd apps/push-relay && SENTRY_RELEASE="$SENTRY_RELEASE" npm run deploy)
 ```
+
+A hand deploy uploads no source maps, so Sentry stacks from it stay minified
+until the next CI deploy.
 
 `deploy-web.yml` still runs the Pages step as floating `npx wrangler@4`
 (`.github/workflows/deploy-web.yml:77`), so CI and a hand deploy can be on

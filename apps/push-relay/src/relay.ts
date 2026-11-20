@@ -632,13 +632,12 @@ export async function pruneRelayState(env: PushRelayEnv): Promise<void> {
 
 /** How often one isolate prunes from requests; retention is hours to days. */
 const REQUEST_PRUNE_INTERVAL_MS = 60_000;
-const lastRequestPruneAt = new WeakMap<object, number>();
+const lastRequestPruneAt = new WeakMap<D1Database, number>();
 
 /**
  * `pruneRelayState` from a request, at most once a minute per isolate and
- * database. It is nine statements, and it ran after every publish (about
- * 13,500 a day) for rows whose retention is hours or days; the hourly cron
- * still runs it in full.
+ * database: it is nine statements, for rows whose retention is hours or days.
+ * The hourly cron still runs it in full.
  */
 async function pruneRelayStateFromRequest(env: PushRelayEnv): Promise<void> {
   const now = Date.now();

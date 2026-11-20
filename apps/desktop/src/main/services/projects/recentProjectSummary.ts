@@ -364,15 +364,38 @@ const gitOriginCache = new Map<string, GitOriginCacheEntry>();
 export function readGitOriginUrlWithoutGit(projectRoot: string): string | undefined {
   try {
     const gitDir = resolveGitMetadataDirectory(projectRoot);
-    if (!gitDir) return undefined;
-    const text = fs.readFileSync(path.join(resolveGitConfigDirectory(gitDir), "config"), "utf8");
-    if (/^\s*\[\s*include/im.test(text) || /^\s*worktreeConfig\s*=\s*true\b/im.test(text)) return undefined;
-    const urls = originUrlLines(text);
-    // A quoted value, an inline comment or an escape needs git's own decoding.
-    return urls.length === 1 && !/["\\;#]/.test(urls[0]!) ? urls[0] : undefined;
+    return gitDir ? originFromConfig(readCheckoutGitConfig(gitDir)) : undefined;
   } catch {
     return undefined;
   }
+}
+
+type CheckoutGitConfig = {
+  configPath: string;
+  /** Null when the file is missing or unreadable. */
+  text: string | null;
+  /** False when git reads more than this file (includes, per-worktree config). */
+  selfContained: boolean;
+};
+
+const GIT_CONFIG_INDIRECTION = /^\s*\[\s*include|^\s*worktreeConfig\s*=\s*true\b/im;
+
+function readCheckoutGitConfig(gitDir: string): CheckoutGitConfig {
+  const configPath = path.join(resolveGitConfigDirectory(gitDir), "config");
+  let text: string | null = null;
+  try {
+    text = fs.readFileSync(configPath, "utf8");
+  } catch {
+    // No readable config: git reads only the global files.
+  }
+  return { configPath, text, selfContained: text == null || !GIT_CONFIG_INDIRECTION.test(text) };
+}
+
+function originFromConfig(config: CheckoutGitConfig): string | undefined {
+  if (config.text == null || !config.selfContained) return undefined;
+  const urls = originUrlLines(config.text);
+  // A quoted value, an inline comment or an escape needs git's own decoding.
+  return urls.length === 1 && !/["\\;#]/.test(urls[0]!) ? urls[0] : undefined;
 }
 
 /** Every `url` value in the config's `[remote "origin"]` sections, in order. */
@@ -402,13 +425,14 @@ function originUrlLines(configText: string): string[] {
 export function readGitOriginUrlFromConfigOrGit(projectRoot: string): string | null {
   // No git metadata, no checkout, so no origin (readGitConfigOriginUrl says the
   // same). Starting git there only re-read the global config: a sync spawn on
-  // the brain's loop, once a minute per folder, that took seconds on a busy Mac.
+  // the brain's loop, once a minute per folder.
   const gitDir = resolveGitMetadataDirectory(projectRoot);
   if (!gitDir) return null;
-  const fromFile = readGitOriginUrlWithoutGit(projectRoot);
+  const config = readCheckoutGitConfig(gitDir);
+  const fromFile = originFromConfig(config);
   if (fromFile !== undefined) return fromFile;
   // git's answer stands until a config file it read changes.
-  const signature = gitOriginSpawnSignature(gitDir);
+  const signature = gitOriginSpawnSignature(config);
   const cached = signature ? gitOriginSpawnCache.get(projectRoot) : undefined;
   if (cached && cached.signature === signature) return cached.url;
   const result = spawnSync("git", ["config", "--get", "remote.origin.url"], {
@@ -434,33 +458,38 @@ const gitOriginSpawnCache = new Map<string, { signature: string; url: string | n
 
 /**
  * The size and mtime of every config file git reads for the origin: the
- * checkout's own and the user's global ones. Null when the checkout's config
- * includes other files or has per-worktree config, which this cannot watch:
- * git is asked every time then, as before.
+ * checkout's own and the user's global ones. Null when any of them pulls in
+ * other files (includes, per-worktree config), which this cannot watch: git
+ * is asked every time then, as before.
  */
-function gitOriginSpawnSignature(gitDir: string): string | null {
-  const configPath = path.join(resolveGitConfigDirectory(gitDir), "config");
-  try {
-    const text = fs.readFileSync(configPath, "utf8");
-    if (/^\s*\[\s*include/im.test(text) || /^\s*worktreeConfig\s*=\s*true\b/im.test(text)) return null;
-  } catch {
-    // No readable config: git reads only the global files.
-  }
+function gitOriginSpawnSignature(config: CheckoutGitConfig): string | null {
+  if (!config.selfContained) return null;
   const home = os.homedir();
   const xdgConfigHome = process.env.XDG_CONFIG_HOME?.trim() || path.join(home, ".config");
-  const files = [
-    configPath,
+  const globalFiles = [
     process.env.GIT_CONFIG_GLOBAL?.trim() || path.join(home, ".gitconfig"),
     path.join(xdgConfigHome, "git", "config"),
   ];
-  return files.map((file) => {
+  const parts: string[] = [];
+  for (const file of [config.configPath, ...globalFiles]) {
+    let stat: fs.Stats;
     try {
-      const stat = fs.statSync(file);
-      return `${stat.size}:${stat.mtimeMs}`;
+      stat = fs.statSync(file);
     } catch {
-      return "-";
+      parts.push("-");
+      continue;
     }
-  }).join("|");
+    if (file !== config.configPath) {
+      if (!stat.isFile()) return null;
+      try {
+        if (GIT_CONFIG_INDIRECTION.test(fs.readFileSync(file, "utf8"))) return null;
+      } catch {
+        return null;
+      }
+    }
+    parts.push(`${stat.size}:${stat.mtimeMs}`);
+  }
+  return parts.join("|");
 }
 
 /**

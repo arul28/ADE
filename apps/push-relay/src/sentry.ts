@@ -1,5 +1,5 @@
 import type { CloudflareOptions } from "@sentry/cloudflare";
-import { admitEvent, scrubBreadcrumb, scrubEvent, scrubSpan } from "./sentryScrub";
+import { admitEvent, scrubBreadcrumb, scrubEvent, scrubSpan, workerSentryEnabled } from "./sentryScrub";
 
 // Sentry for this Worker. The DSN is public (wrangler.jsonc vars). SENTRY_RELEASE is
 // injected by the deploy workflow. Nothing sent from here may carry request bodies,
@@ -15,21 +15,14 @@ export type SentryEnv = {
 const WORKER_NAME = "ade-push-relay";
 
 export function sentryOptions(env: SentryEnv): CloudflareOptions {
-  // `SENTRY_ENVIRONMENT` is set to `production` only in the deployed config
-  // (wrangler.jsonc). Anything else, `wrangler dev` included, is
-  // `development` and sends nothing, so local runs never spend the quota.
-  // A run with no SENTRY_RELEASE sends nothing either: every deploy passes it
-  // (deploy-web.yml), and `wrangler dev --env production` or a workerd test
-  // that loads the deployed config does not, so those cannot file production
-  // events (their stacks were local `.wrangler/tmp` and `/app/repo` paths).
+  // Who sends at all: `workerSentryEnabled` (sentryScrub.ts).
   const environment = env.SENTRY_ENVIRONMENT?.trim() || "development";
-  const deployed = Boolean(env.SENTRY_RELEASE?.trim());
   return {
     dsn: env.SENTRY_DSN,
     release: env.SENTRY_RELEASE,
     dist: `worker-${WORKER_NAME}`,
     environment,
-    enabled: deployed && environment !== "development",
+    enabled: workerSentryEnabled(environment, env.SENTRY_RELEASE),
     initialScope: { tags: { worker: WORKER_NAME } },
     // About 750K requests a day. 5M spans a month on the free plan is about 167K a day, so sample at 0.1%.
     tracesSampleRate: 0.001,

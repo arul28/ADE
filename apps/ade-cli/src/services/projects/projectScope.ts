@@ -20,7 +20,7 @@ import { QUEUED_OPEN_PHASE, type ProjectOpenStrikes } from "./projectOpenStrikes
 
 type ScopeLogger = {
   warn: (event: string, meta?: Record<string, unknown>) => void;
-  info?: (event: string, meta?: Record<string, unknown>) => void;
+  info: (event: string, meta?: Record<string, unknown>) => void;
 };
 
 /**
@@ -870,7 +870,7 @@ export class ProjectScopeRegistry {
     }
     if (this.syncHostProjectId === projectId) {
       this.syncHostProjectId = null;
-      this.options.logger?.info?.("project_scope.sync_host_released", {
+      this.options.logger?.info("project_scope.sync_host_released", {
         projectId,
         reason: entry.reason,
       });
@@ -1229,7 +1229,7 @@ export class ProjectScopeRegistry {
       // Publish authority only after the target has fully activated. Until
       // this assignment every failure/timeout still resolves to the old host.
       this.syncHostProjectId = projectId;
-      this.options.logger?.info?.("project_scope.sync_host_switched", {
+      this.options.logger?.info("project_scope.sync_host_switched", {
         from: previousHostId,
         to: projectId,
         reason: options.reason ?? null,

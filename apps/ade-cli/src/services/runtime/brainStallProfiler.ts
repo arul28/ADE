@@ -190,6 +190,50 @@ export type BrainStallProfiler = {
   dispose(): void;
 };
 
+type UsageSample = { majorFaults: number; cpuMs: number; atMs: number };
+
+type MachinePressure = {
+  freezeCause: ReturnType<typeof brainLoopFreezeCause>;
+  majorFaultsPer30s: number | null;
+  cpuMs: number;
+};
+
+function usageNow(): UsageSample {
+  const usage = process.resourceUsage();
+  return {
+    majorFaults: usage.majorPageFault,
+    cpuMs: (usage.userCPUTime + usage.systemCPUTime) / 1_000,
+    atMs: performance.now(),
+  };
+}
+
+/**
+ * Who froze the brain during the profile, by the watchdog's own rule
+ * (brainLoopFreezeCause): memory when it read pages back from swap at a
+ * starved rate. Only major faults count here: the minor-fault rule needs the
+ * CPU share of the freeze alone, and the profile's minute also holds idle
+ * time. libuv counts every Windows fault as major, so Windows is never
+ * judged memory-starved.
+ */
+function machinePressure(start: UsageSample): MachinePressure {
+  const end = usageNow();
+  const windowMs = Math.max(1, end.atMs - start.atMs);
+  const majorFaults = Math.max(0, end.majorFaults - start.majorFaults);
+  const cpuMs = Math.max(0, end.cpuMs - start.cpuMs);
+  const faultsMeaningful = process.platform !== "win32";
+  return {
+    freezeCause: brainLoopFreezeCause({
+      majorFaults: faultsMeaningful ? majorFaults : null,
+      minorFaults: null,
+      cpuMs,
+      windowMs,
+      syncFsCallBlockedMs: null,
+    }, BRAIN_LOOP_FREEZE_LIMITS),
+    majorFaultsPer30s: faultsMeaningful ? Math.round((majorFaults * 30_000) / windowMs) : null,
+    cpuMs: Math.round(cpuMs),
+  };
+}
+
 /**
  * `log` gets the summary as a log line (`brain.stall_profile`); the logger
  * mirrors it to Sentry Logs.
@@ -200,7 +244,7 @@ export function createBrainStallProfiler(deps: {
   let lastStartedAt: number | null = null;
   let session: inspector.Session | null = null;
   /** Process counters when the profile started: what paging the minute cost. */
-  let usageAtStart: { majorFaults: number; cpuMs: number; atMs: number } | null = null;
+  let usageAtStart: UsageSample | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   /** Freezes the watchdog saw while the profile ran. */
   let stallsInProfile = 0;
@@ -244,41 +288,6 @@ export function createBrainStallProfiler(deps: {
   /** A freeze in the profile long enough to be a near miss. */
   const reportable = (summary: BrainStallProfileSummary) => summary.longestRunMs >= BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS;
 
-  const usageNow = () => {
-    const usage = process.resourceUsage();
-    return {
-      majorFaults: usage.majorPageFault,
-      cpuMs: (usage.userCPUTime + usage.systemCPUTime) / 1_000,
-      atMs: performance.now(),
-    };
-  };
-
-  /**
-   * Who froze the brain during the profile, by the watchdog's own rule
-   * (brainLoopFreezeCause): memory when it read pages back from swap at a
-   * starved rate. Only major faults count here: the minor-fault rule needs the
-   * CPU share of the freeze alone, and the profile's minute also holds idle
-   * time. libuv counts every Windows fault as major, so Windows is never
-   * judged memory-starved.
-   */
-  const machinePressure = (start: { majorFaults: number; cpuMs: number; atMs: number }) => {
-    const end = usageNow();
-    const windowMs = Math.max(1, end.atMs - start.atMs);
-    const majorFaults = Math.max(0, end.majorFaults - start.majorFaults);
-    const faultsMeaningful = process.platform !== "win32";
-    return {
-      freezeCause: brainLoopFreezeCause({
-        majorFaults: faultsMeaningful ? majorFaults : null,
-        minorFaults: null,
-        cpuMs: Math.max(0, end.cpuMs - start.cpuMs),
-        windowMs,
-        syncFsCallBlockedMs: null,
-      }, BRAIN_LOOP_FREEZE_LIMITS),
-      majorFaultsPer30s: faultsMeaningful ? Math.round((majorFaults * 30_000) / windowMs) : null,
-      cpuMs: Math.round(Math.max(0, end.cpuMs - start.cpuMs)),
-    };
-  };
-  type MachinePressure = ReturnType<typeof machinePressure>;
 
   /** One Sentry issue for each cause the brain owns. */
   const report = (summary: BrainStallProfileSummary, pressure: MachinePressure | null) => {

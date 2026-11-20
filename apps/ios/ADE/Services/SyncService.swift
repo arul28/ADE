@@ -5305,10 +5305,10 @@ final class SyncService: ObservableObject {
   /// project (a cold open waits up to a minute) before the catalog agrees.
   private var lastProjectSwitchRequestedAt: TimeInterval?
   private static let projectSwitchSettleWindow: TimeInterval = 90
-  /// When this phone last asked a machine to serve its project again, per
-  /// machine. Two devices on two projects would otherwise take turns forever.
-  private var hostedProjectReassertedAt: [String: TimeInterval] = [:]
-  private var hostedProjectContentionReported: Set<String> = []
+  /// Per machine: when this phone last asked it to serve the phone's project
+  /// again, and whether another device moved it off again soon after. Once
+  /// held, the phone stops asking until the person picks a project.
+  private var hostedProjectReasserts: [String: (at: TimeInterval, held: Bool)] = [:]
   private static let hostedProjectReconcileDelayNanoseconds: UInt64 = 15_000_000_000
   private static let hostedProjectReassertCooldown: TimeInterval = 600
   /// Bumps each time a project open starts, so a caller that waits between
@@ -6465,7 +6465,7 @@ final class SyncService: ObservableObject {
     guard !projects.isEmpty, let machineKey = focusedMachineKey else { return }
     let open = projects.filter { $0.isOpen == true }
     catalogHostedProject = open.count <= 1 ? (machineKey, open.first?.id) : nil
-    scheduleHostedProjectReconcile(reason: "catalog")
+    scheduleHostedProjectReconcile(trigger: .catalog)
   }
 
   private var catalogHostedProjectId: String? {
@@ -6473,19 +6473,33 @@ final class SyncService: ObservableObject {
     return known.projectId
   }
 
+  /// Whether the focused machine serves this phone's project: nil when its
+  /// catalog named no hosted project (or came from another machine).
+  private var hostedProjectIsActive: Bool? {
+    catalogHostedProjectId.map { hostedId in
+      isActiveProject(id: hostedId, rootPath: remoteProjectCatalog.first(where: { $0.id == hostedId })?.rootPath)
+    }
+  }
+
+  private enum HostedProjectReconcileTrigger: String {
+    case catalog
+    case hello
+    case changesetAckMismatch = "changeset_ack_mismatch"
+  }
+
   /// The machine serves another project than the one this phone is on: every
   /// project-scoped request (phone edits, chat transcripts, files) is refused
   /// until the two agree. Wait out a handoff in progress (a switch this phone
   /// just asked for lands a fresh catalog when the host moves), then ask the
   /// machine to serve this phone's project again, without moving the screen.
-  private func scheduleHostedProjectReconcile(reason: String) {
+  private func scheduleHostedProjectReconcile(trigger: HostedProjectReconcileTrigger) {
     let generation = connectionGeneration
     if let pending = hostedProjectReconcileTask {
       if pending.generation == generation { return }
       pending.task.cancel()
       hostedProjectReconcileTask = nil
     }
-    guard hostedProjectMismatch(reason: reason) != nil else { return }
+    guard hostedProjectMismatch(trigger: trigger) != nil else { return }
     let task = Task { @MainActor [weak self] in
       try? await Task.sleep(nanoseconds: Self.hostedProjectReconcileDelayNanoseconds)
       guard let self, !Task.isCancelled else { return }
@@ -6493,86 +6507,91 @@ final class SyncService: ObservableObject {
       guard generation == self.connectionGeneration else { return }
       if let requestedAt = self.lastProjectSwitchRequestedAt,
          ProcessInfo.processInfo.systemUptime - requestedAt < Self.projectSwitchSettleWindow {
-        self.scheduleHostedProjectReconcile(reason: reason)
+        self.scheduleHostedProjectReconcile(trigger: trigger)
         return
       }
-      self.reassertActiveProjectIfHostMovedOff(reason: reason)
+      self.reassertActiveProjectIfHostMovedOff(trigger: trigger)
     }
     hostedProjectReconcileTask = (generation, task)
   }
 
   /// The active project's catalog row when the host serves another project.
-  private func hostedProjectMismatch(reason: String) -> MobileProjectSummary? {
+  private func hostedProjectMismatch(trigger: HostedProjectReconcileTrigger) -> MobileProjectSummary? {
     guard activeProjectId != nil,
           supportsProjectCatalog,
           canSendLiveRequests(),
           !isProjectSwitching,
+          hostedProjectReasserts[focusedMachineKey ?? ""]?.held != true,
           let active = remoteProjectCatalog.first(where: { isActiveProject($0) }),
           active.isAvailable,
           active.rootPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     else { return nil }
-    if let hosted = catalogHostedProjectId {
-      if isActiveProject(id: hosted, rootPath: remoteProjectCatalog.first(where: { $0.id == hosted })?.rootPath) {
-        return nil
-      }
-    } else if reason != "changeset_ack_mismatch" {
+    switch hostedProjectIsActive {
+    case true?:
+      return nil
+    case false?:
+      return active
+    case nil:
       // No hosted row (projectless host, or an older host that marks none):
       // only a refused ack proves the machine is not on our project.
-      return nil
+      return trigger == .changesetAckMismatch ? active : nil
     }
-    return active
   }
 
-  private func reassertActiveProjectIfHostMovedOff(reason: String) {
-    guard let active = hostedProjectMismatch(reason: reason),
-          let rootPath = active.rootPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+  /// Ask the machine to serve this phone's project again. The phone stays on
+  /// that project, so nothing local changes: no screen moves, and chats and
+  /// terminals keep their subscriptions, which the reconnect's hello restores
+  /// on the host that now serves them.
+  private func reassertActiveProjectIfHostMovedOff(trigger: HostedProjectReconcileTrigger) {
+    guard let active = hostedProjectMismatch(trigger: trigger),
+          let rootPath = active.rootPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+          let machineKey = focusedMachineKey
     else { return }
-    let machineKey = focusedMachineKey ?? "focused"
     let now = ProcessInfo.processInfo.systemUptime
     let fields: [String: String] = [
-      "reason": reason,
+      "trigger": trigger.rawValue,
       "activeProjectId": active.id,
       "hostedProjectId": catalogHostedProjectId ?? "none",
       "hostAppVersion": hostAppVersionByMachineKey[machineKey] ?? "nil",
     ]
-    if let last = hostedProjectReassertedAt[machineKey], now - last < Self.hostedProjectReassertCooldown {
+    if let last = hostedProjectReasserts[machineKey]?.at, now - last < Self.hostedProjectReassertCooldown {
       // Moved off again soon after this phone moved it back: another device
-      // on this machine works in another project. Say so once; do not fight.
+      // on this machine works in another project. Give way instead of taking
+      // turns; the person's next project pick asks again.
+      hostedProjectReasserts[machineKey] = (last, true)
       syncConnectLog.notice(
-        "ADE_SYNC_TRACE host_project_contention reason=\(reason, privacy: .public) hosted=\(self.catalogHostedProjectId ?? "none", privacy: .public)"
+        "ADE_SYNC_TRACE host_project_held trigger=\(trigger.rawValue, privacy: .public) hosted=\(self.catalogHostedProjectId ?? "none", privacy: .public)"
       )
-      guard hostedProjectContentionReported.insert(machineKey).inserted else { return }
-      var context = fields
-      context["secondsSinceReassert"] = String(Int(now - last))
-      CrashReporting.capture(
-        NSError(
-          domain: "ADE.SyncHostProjectContention",
-          code: 1,
-          userInfo: [NSLocalizedDescriptionKey: "Another device keeps moving the machine to another project"]
-        ),
-        context: context
-      )
+      CrashReporting.breadcrumb("sync.project", message: "another device moved the machine to another project; giving way", data: fields)
       return
     }
-    hostedProjectReassertedAt[machineKey] = now
+    hostedProjectReasserts[machineKey] = (now, false)
     syncConnectLog.notice(
-      "ADE_SYNC_TRACE host_project_reassert reason=\(reason, privacy: .public) active=\(active.id, privacy: .public) hosted=\(self.catalogHostedProjectId ?? "none", privacy: .public)"
+      "ADE_SYNC_TRACE host_project_reassert trigger=\(trigger.rawValue, privacy: .public) active=\(active.id, privacy: .public) hosted=\(self.catalogHostedProjectId ?? "none", privacy: .public)"
     )
     CrashReporting.breadcrumb("sync.project", message: "machine serves another project; asking for ours again", data: fields)
-    let selectionGeneration = beginProjectSelection()
-    projectSwitchInFlightRootPath = normalizedProjectRoot(rootPath) ?? rootPath
-    projectSelectionTask = Task { @MainActor [weak self] in
+    let selectionGeneration = projectSelectionGeneration
+    let activeProjectIdAtStart = activeProjectId
+    Task { @MainActor [weak self] in
       guard let self else { return }
+      let switched: Bool
       do {
-        try await self.switchToDesktopProject(active, rootPath: rootPath, selectionGeneration: selectionGeneration, dismissHome: false)
+        let raw = try await self.sendProjectSwitchRequest(active, rootPath: rootPath)
+        switched = (try? self.decode(raw, as: MobileProjectSwitchResultPayload.self))?.ok == true
       } catch {
-        guard self.isCurrentProjectSelection(selectionGeneration) else { return }
         syncConnectLog.notice("ADE_SYNC_TRACE host_project_reassert failure=\(syncLogErrorSummary(error), privacy: .public)")
-        self.logProjectSwitchPhase("failed", completed: true)
+        return
       }
-      guard self.isCurrentProjectSelection(selectionGeneration) else { return }
-      self.projectSwitchInFlightRootPath = nil
-      self.projectSelectionTask = nil
+      // The person picked a project, or the phone moved machines, meanwhile:
+      // that open owns the connection now.
+      guard switched,
+            self.isCurrentProjectSelection(selectionGeneration),
+            self.activeProjectId == activeProjectIdAtStart,
+            self.focusedMachineKey == machineKey
+      else { return }
+      // A fresh session's hello carries this project, and the reconnect
+      // (which tears the old socket down first) restores every subscription.
+      await self.reconnectIfPossible(replaceSuspendedSession: true)
     }
   }
 
@@ -7166,6 +7185,8 @@ final class SyncService: ObservableObject {
     projectSwitchInFlightRootPath = nil
     projectSwitchTimingStartedAt = nil
     projectSwitchTimingLastPhaseAt = nil
+    // A project the person picks is theirs to ask for again.
+    hostedProjectReasserts.removeAll()
     projectSelectionGeneration &+= 1
     return projectSelectionGeneration
   }
@@ -14963,10 +14984,8 @@ final class SyncService: ObservableObject {
     guard !trimmedSessionId.isEmpty else { return }
     let normalizedProjectId = syncNormalizedCommandScopeValue(projectId)
     let normalizedRootPath = syncNormalizedProjectRootScope(projectRootPath)
-    // The same test the chat view's `isCrossProject` uses. A looser one (any
-    // root-path match) once called a chat "active" that the view called
-    // foreign: the view kept its cross-project UI, the scope was dropped, and
-    // the subscribe went out with no project, which no host can answer.
+    // The same test the chat view's `isCrossProject` uses, so the two never
+    // disagree about whether a chat belongs to the active project.
     let matchesActive: Bool = {
       if let normalizedProjectId {
         return isActiveProject(id: normalizedProjectId, rootPath: normalizedRootPath)
@@ -15329,11 +15348,7 @@ final class SyncService: ObservableObject {
       syncChatLog.notice(
         "chat_subscribe_stalled session=\(sessionId, privacy: .public) attempts=\(attempts, privacy: .public)"
       )
-      stalledChatSnapshotSessionIds.insert(sessionId)
-      localStateRevision += 1
-      if let threadKey = chatThreadKey(for: sessionId) {
-        chatThreadRegistry.markSnapshotStalled(threadKey, message: nil)
-      }
+      markChatSnapshotStalled(sessionId, message: nil)
       return
     }
     chatSnapshotResendAttemptsBySession[sessionId] = attempts + 1
@@ -15365,6 +15380,11 @@ final class SyncService: ObservableObject {
     recentFullChatSnapshotRequestBySession.removeValue(forKey: sessionId)
     chatSnapshotWatchdogsBySession.removeValue(forKey: sessionId)?.cancel()
     chatSnapshotResendAttemptsBySession.removeValue(forKey: sessionId)
+    markChatSnapshotStalled(sessionId, message: message)
+  }
+
+  /// The chat's failure card, with the host's reason when it gave one.
+  private func markChatSnapshotStalled(_ sessionId: String, message: String?) {
     stalledChatSnapshotSessionIds.insert(sessionId)
     localStateRevision += 1
     if let threadKey = chatThreadKey(for: sessionId) {
@@ -23832,6 +23852,8 @@ final class SyncService: ObservableObject {
     restoreTerminalSubscriptions()
     restoreChatEventSubscriptions()
     subscribeRosterIfNeeded()
+    // The hello's catalog landed before the connection was usable.
+    scheduleHostedProjectReconcile(trigger: .hello)
     chatLaunchKnownUnsupported = false
     hydrateChatLaunchesIfSupported()
     if let relayAuthorizationLease {
@@ -24576,7 +24598,7 @@ final class SyncService: ObservableObject {
     }
     guard ack.toDbVersion >= pending.payload.toDbVersion else { return }
     if ack.error?.code == "project_mismatch" {
-      scheduleHostedProjectReconcile(reason: "changeset_ack_mismatch")
+      scheduleHostedProjectReconcile(trigger: .changesetAckMismatch)
     }
     if ack.ok {
       pendingOutboundChangeset = nil
@@ -29863,10 +29885,15 @@ extension SyncService {
       requestSnapshot: requestSnapshot,
       resume: resume
     )
-    focusedChatStreamTraces[sessionId, default: ChatStreamTrace()].lastSubscribeScope =
-      payload["chatScope"] as? String == "personal" ? "personal"
-      : (payload["projectId"] != nil || payload["projectRootPath"] != nil) ? "foreign"
-      : "project"
+    let subscribeScope: String
+    if payload["chatScope"] as? String == "personal" {
+      subscribeScope = "personal"
+    } else if payload["projectId"] != nil || payload["projectRootPath"] != nil {
+      subscribeScope = "foreign"
+    } else {
+      subscribeScope = "project"
+    }
+    focusedChatStreamTraces[sessionId, default: ChatStreamTrace()].lastSubscribeScope = subscribeScope
     CrashReporting.breadcrumb("chat.stream", message: "focused chat_subscribe", data: [
       "session": sessionId,
       "sent": String(sent),
@@ -29906,9 +29933,9 @@ extension SyncService {
     fields["snapshotPending"] = String(recentFullChatSnapshotRequestBySession[trimmed] != nil)
     fields["snapshotStalled"] = String(stalledChatSnapshotSessionIds.contains(trimmed))
     fields["scope"] = chatCommandScopeBySession[trimmed].map { String(describing: $0).prefix(40).description } ?? "project"
-    fields["hostedProjectIsActive"] = catalogHostedProjectId.map { hostedId in
-      String(isActiveProject(id: hostedId, rootPath: remoteProjectCatalog.first(where: { $0.id == hostedId })?.rootPath))
-    } ?? (catalogHostedProject?.machineKey == focusedMachineKey ? "none" : "unknown")
+    fields["hostedProjectIsActive"] = hostedProjectIsActive.map { String($0) }
+      ?? (catalogHostedProject?.machineKey == focusedMachineKey ? "none" : "unknown")
+    fields["hostedProjectHeld"] = String(hostedProjectReasserts[focusedMachineKey ?? ""]?.held == true)
     return fields
   }
 

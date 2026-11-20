@@ -494,9 +494,8 @@ export function buildAccountPageQuery(options: {
         ...cursor.keys,
       ]);
       // The OR alone does not bound the (user_id, updated_at) index, so every
-      // pull read all of the account's rows (61 a pull for settings on
-      // 2026-11-19, at one pull per machine per 30 s). This implied bound
-      // turns it into a seek from the cursor's stamp.
+      // pull read all of the account's rows. This implied bound turns it into
+      // a seek from the cursor's stamp.
       conditions.push("updated_at >= ?", after.sql);
       bindings.push(cursor.updatedAt, ...after.bindings);
     } else {

@@ -449,7 +449,7 @@ describe("ProjectRegistry", () => {
     expect(updated.gitOriginUrl).toBe("git@github.com:arul28/ADE.git");
   });
 
-  it("backfills git origin on re-add when the existing record is missing it", () => {
+  it("backfills git origin on re-add once the checkout's git config changes", () => {
     const homeDir = makeTempRoot("ade-project-registry-readd-null-");
     const projectRoot = path.join(homeDir, "ADE");
     const registryDir = path.join(homeDir, ".ade-runtime");

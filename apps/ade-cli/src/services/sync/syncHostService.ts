@@ -128,7 +128,6 @@ import {
   SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
   SYNC_MOBILE_CHAT_SLIM_CAPABILITY,
-  SYNC_CHAT_SUBSCRIBE_UNAVAILABLE_CAPABILITY,
   SYNC_ROSTER_CHAT_DELTA_CAPABILITY,
   SYNC_COMMAND_ROUTING_GROUPS_CAPABILITY,
   SYNC_ROSTER_CHAT_PAGES_CAPABILITY,
@@ -170,7 +169,9 @@ import {
   transcriptStorageKey,
 } from "./syncChatTranscriptReads";
 import {
+  CHAT_TRANSCRIPT_READ_FAILED,
   chatEventDeliveryKey,
+  chatSubscribeUnavailableSnapshot,
   compactChatEventEnvelopeForMobileSync,
   compactChatEventEnvelopeForSync,
   prepareChatSnapshotEventsForPeer,
@@ -6359,14 +6360,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     sessionId: string,
     unavailable: SyncChatSubscribeUnavailable,
   ): void {
-    if (peer.metadata?.capabilities?.includes(SYNC_CHAT_SUBSCRIBE_UNAVAILABLE_CAPABILITY) !== true) return;
-    sendRequired(peer, "chat_subscribe", {
-      sessionId,
-      capturedAt: nowIso(),
-      truncated: false,
-      events: [],
-      unavailable,
-    } satisfies SyncChatSubscribeSnapshotPayload, requestId);
+    const answer = chatSubscribeUnavailableSnapshot(peer.metadata, sessionId, unavailable, nowIso());
+    if (answer) sendRequired(peer, "chat_subscribe", answer, requestId);
   }
 
   function chatEventCoalescerFor(peer: PeerState, sessionId: string): SubagentProgressCoalescer {
@@ -8815,8 +8810,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // (the host moved under it: a restart, another device's switch). Its
       // commands, files and terminals already reach that project; serve its
       // chats too, from that project's transcripts, the way a cross-project
-      // chat is served. Before this the chat got no answer at all and the
-      // phone showed "Couldn't load the transcript".
+      // chat is served.
       const routedPayload = chatPayloadForNonHostedProject(envelopePayload, projectScope.receivedProjectId);
       if (routedPayload) {
         envelope = { ...envelope, payload: routedPayload };
@@ -9569,11 +9563,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         } catch (error) {
           // A transcript that cannot be read must not leave the phone waiting
           // on a request that will never be answered.
-          if (!signal?.aborted) {
-            sendChatSubscribeUnavailable(peer, envelope.requestId, sessionId, {
-              code: "transcript_read_failed",
-              message: "The machine couldn’t read this chat’s transcript.",
-            });
+          // Not after an answer already sent (a resume ack, a snapshot).
+          if (!signal?.aborted && !hydrationSucceeded) {
+            sendChatSubscribeUnavailable(peer, envelope.requestId, sessionId, CHAT_TRANSCRIPT_READ_FAILED);
           }
           throw error;
         } finally {

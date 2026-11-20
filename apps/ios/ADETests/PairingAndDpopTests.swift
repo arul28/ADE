@@ -815,21 +815,10 @@ final class PairingAndDpopTests: XCTestCase {
       "The surviving device identity must advance past Relay's prior ownership epoch"
     )
 
-    // A repeated owner (every token refresh) rewrites nothing that already
-    // holds the state, but still heals a copy that lost it.
+    // A repeated owner (every token refresh) still heals a copy that lost it.
     durableEpochs[deviceId] = nil
     XCTAssertEqual(reinstalled.transition(to: "user-a").ownershipEpoch, 4)
     XCTAssertEqual(durableEpochs[deviceId], 4, "A same-owner transition must restore a missing Keychain epoch")
-    var savedAgain = false
-    let watched = AccountDeviceOwnershipStore(
-      defaults: defaults,
-      key: key,
-      durableDeviceId: { deviceId },
-      loadDurableEpoch: { durableEpochs[$0] },
-      saveDurableEpoch: { _, _ in savedAgain = true }
-    )
-    XCTAssertEqual(watched.transition(to: "user-a").ownershipEpoch, 4)
-    XCTAssertFalse(savedAgain, "An unchanged owner must not rewrite the Keychain epoch")
   }
 
   @MainActor

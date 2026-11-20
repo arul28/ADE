@@ -169,7 +169,9 @@ async function push(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepRe
   const ran = await tryExec(ctx, computer.instance_id, pushWorkCommand(false), PUSH_EXEC_MS);
   const tally = ran && ran.exitCode === 0 ? readPushWorkTally(ran.stdout) : null;
   if (!tally) {
-    const code = !ran ? "push_exec_failed" : ran.exitCode !== 0 ? `push_exit_${ran.exitCode}` : "push_tally_unreadable";
+    let code = "push_tally_unreadable";
+    if (!ran) code = "push_exec_failed";
+    else if (ran.exitCode !== 0) code = `push_exit_${ran.exitCode}`;
     return { kind: "fail", error: "ADE couldn't push this lane's work, so the computer stays. Try again.", code };
   }
   logCloud("cloud.free_pushed", { jobId: job.job_id, pushed: tally.pushed, failed: tally.failed, skipped: tally.skipped });

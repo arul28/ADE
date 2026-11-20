@@ -18,7 +18,7 @@ import { readCloudComputerIdAsync } from "../../../../../ade-cli/src/services/ac
 import { isAdeCloudComputer } from "./cloudComputerRules";
 import { cloudAccessKey, rememberCloudAccess, rememberedCloudAccess } from "./cloudAccessMemory";
 import { getErrorMessage } from "../shared/utils";
-import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
+import { AdeExpectedError, expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider } from "./cloudProvider";
 import { createCloudServerProvider, type CloudComputerSignal } from "./cloudServerProvider";
 import { CLOUD_COMPUTER_UNREADABLE } from "../../../../../account-directory/src/cloud/contract";
@@ -93,10 +93,20 @@ export function cloudAccessDepsFor(args: {
 /**
  * The desktop's wait for the account token before one ADE Cloud call. Near
  * its expiry the token comes from the brain (`createBrainRefreshBroker`),
- * whose own budget is 30 s, the whole IPC deadline of a read: a refresh the
- * brain can't finish used to spend that deadline before the request even left.
+ * whose own budget is 30 s, the whole IPC deadline of a read: this wait plus
+ * the request (`ACCOUNT_REQUEST_TIMEOUT_MS`) must fit inside it.
  */
 export const DESKTOP_CLOUD_TOKEN_WAIT_MS = 10_000;
+
+/** The 30 s IPC deadline a desktop ADE Cloud read must answer within. */
+const DESKTOP_CLOUD_READ_DEADLINE_MS = 30_000;
+
+/**
+ * One request to the account server after the token wait, with a margin, so
+ * a slow server answers "did not answer in time" in words, as the network,
+ * instead of the IPC timing out around both.
+ */
+export const ACCOUNT_REQUEST_TIMEOUT_MS = DESKTOP_CLOUD_READ_DEADLINE_MS - DESKTOP_CLOUD_TOKEN_WAIT_MS - 2_000;
 
 /**
  * The account token for one ADE Cloud call; null when signed out or when the
@@ -118,6 +128,8 @@ export async function accountTokenWithin(
         "network",
       );
     }
+    // Offline is not signed out: say so instead of asking for a sign-in.
+    if (expectedErrorKind(error) === "network") throw error;
     return null;
   }
 }

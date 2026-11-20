@@ -32,6 +32,8 @@ describe("cleanup cron monitor", () => {
     const env = makeEnv({
       SENTRY_DSN: "https://public@o1.ingest.sentry.io/1",
       SENTRY_ENVIRONMENT: "production",
+      // A deployed Worker always carries its release (workerSentryEnabled).
+      SENTRY_RELEASE: "ade@test",
     } as never);
 
     for (let tick = 0; tick < 3; tick += 1) {
