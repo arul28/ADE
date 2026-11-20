@@ -545,13 +545,20 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const hides = keys.some((key) => key != null && machineFilterIdForKey(key) !== effectiveMachineFilter);
     if (hides) setLaneMachineFilter(LANES_MACHINE_FILTER_ALL);
   }, [effectiveMachineFilter, machineFilterActive, machineFilterIdForKey, setLaneMachineFilter]);
-  // The panel is the person filtering: a Cmd/Shift selection they can no longer
-  // see must not stay armed for a batch action on lanes off screen. Navigation
-  // calls `setLaneMachineFilter` directly and keeps the selection it came with.
-  const changeLaneMachineFilter = useCallback((next: string) => {
-    setLaneMachineFilter(next);
-    setMultiSelectedLaneIds(EMPTY_LANE_ID_SET);
-  }, [setLaneMachineFilter]);
+  // A Cmd/Shift selection the filter hides must not stay armed for a batch
+  // action on lanes off screen. Pruning (rather than clearing) covers every way
+  // the filter narrows, including a stored computer that becomes available
+  // again, and leaves the rows navigation selects in the same pass alone.
+  useEffect(() => {
+    setMultiSelectedLaneIds((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set([...prev].filter((laneKey) => (
+        !showingWithoutComputer
+        && (effectiveMachineFilter === LANES_MACHINE_FILTER_ALL || machineFilterIdForKey(laneKey) === effectiveMachineFilter)
+      )));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [effectiveMachineFilter, machineFilterIdForKey, showingWithoutComputer]);
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
   // Agents are read from the tab's machine, so only its own lanes ask.
   const localFilteredLaneIds = useMemo(
@@ -1795,17 +1802,26 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     urlLaneDeeplinks.inspectorTab,
   ]);
 
+  // One application per navigation: a filter change must not replay a link the
+  // URL still carries and undo the person's new choice.
+  const consumedBareLaneDeepLinkRef = useRef<string | null>(null);
   useEffect(() => {
     if (!active) return;
     if (urlLaneDeeplinks.action) return;
     if (urlLaneDeeplinks.laneIdsRaw) return;
     consumedLaneIdsDeepLinkSignatureRef.current = null;
     const laneId = urlLaneDeeplinks.laneId;
-    if (!laneId) return;
+    if (!laneId) {
+      consumedBareLaneDeepLinkRef.current = null;
+      return;
+    }
     // A link that names another machine is resolved by the effect below; the
     // bare id must not select a same-id lane on this tab's machine.
     if (urlLaneDeeplinks.machineId && urlLaneDeeplinks.machineId !== activeMachineId) return;
     if (deletingLaneIds.has(laneId)) return;
+    const signature = `${location.key}|${laneId}|${urlLaneDeeplinks.machineId ?? ""}|${urlLaneDeeplinks.inspectorTab ?? ""}`;
+    if (consumedBareLaneDeepLinkRef.current === signature) return;
+    consumedBareLaneDeepLinkRef.current = signature;
     revealLanesUnderMachineFilter([laneId]);
     selectLane(laneId);
     if (urlLaneDeeplinks.inspectorTab) {
@@ -1820,6 +1836,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     urlLaneDeeplinks.machineId,
     urlLaneDeeplinks.inspectorTab,
     deletingLaneIds,
+    location.key,
     revealLanesUnderMachineFilter,
     selectLane,
     setLaneInspectorTab,
@@ -2384,7 +2401,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       listHeader={laneListHeader}
       machineFilterEntries={machineFilterEntries}
       machineFilter={effectiveMachineFilter}
-      onMachineFilterChange={changeLaneMachineFilter}
+      onMachineFilterChange={setLaneMachineFilter}
       hideEmptyState={showingWithoutComputer}
       emptyMessage={laneListEmptyMessage}
     />
