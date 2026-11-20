@@ -95,6 +95,8 @@ export type LaneSidebarListProps = {
   foreignLaneIds?: ReadonlySet<string>;
   /** Rendered between the filter row and the list (the ADE Cloud notices). */
   toolbar?: React.ReactNode;
+  /** Rendered at the top of the scrolling list: content that is the list (the lanes without a computer). */
+  listHeader?: React.ReactNode;
   /** The Computer filter's entries; two or fewer means there is nothing to filter. */
   machineFilterEntries?: readonly LaneMachineFilterEntry[];
   /** `"all"`, a computer id, ADE Cloud, or the lanes without a computer. */
@@ -155,6 +157,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     disabledReasonByLaneId,
     foreignLaneIds,
     toolbar,
+    listHeader,
     machineFilterEntries = EMPTY_MACHINE_FILTER_ENTRIES,
     machineFilter = LANES_MACHINE_FILTER_ALL,
     onMachineFilterChange,
@@ -169,8 +172,12 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const machineFilterActive = machineFilter !== LANES_MACHINE_FILTER_ALL;
   // Nothing to filter on a project that lives on one computer, unless a filter
-  // is already on: it must always be reachable to clear.
-  const machineFilterOffered = machineFilterEntries.length > 2 || machineFilterActive;
+  // is already on (it must always be reachable to clear) or lanes without a
+  // computer exist: that entry is the only way to reach them, so the funnel
+  // appears for it alone.
+  const machineFilterOffered = machineFilterEntries.length > 2
+    || machineFilterEntries.some((entry) => entry.kind === "noComputer")
+    || machineFilterActive;
   const groupBy = layout.groupBy;
   // Two rows of one name on two machines (two main checkouts) name their
   // machine on screen; else they look the same.
@@ -377,6 +384,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
         className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1.5 pb-2 outline-none"
         onKeyDown={onListKeyDown}
       >
+        {listHeader}
         {groupBy === "list" ? (
           <div className="flex flex-col gap-0.5">
             {layout.rows.map(renderRow)}
@@ -419,7 +427,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
             {loading && totalLaneCount === 0
               ? "Loading lanes…"
               : totalLaneCount === 0
-                ? (loadError ? `Couldn't load lanes. ${loadError}` : "No lanes yet")
+                ? (loadError ? `Couldn't load lanes. ${loadError}` : (emptyMessage ?? "No lanes yet"))
                 : (emptyMessage ?? "No lanes match")}
           </div>
         ) : !hideEmptyState && filter.trim().length === 0 && totalLaneCount === 1 && creatingRows.length === 0 ? (

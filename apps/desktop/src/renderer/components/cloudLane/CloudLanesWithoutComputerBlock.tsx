@@ -443,16 +443,24 @@ export function useCloudLanesWithoutComputerSummary(): { count: number; unseen: 
   );
 }
 
-export function CloudLanesWithoutComputerBlock({ className, initiallyOpen = false }: { className?: string; initiallyOpen?: boolean }) {
+export function CloudLanesWithoutComputerBlock({ className, initiallyOpen = false, visible = true }: {
+  className?: string;
+  initiallyOpen?: boolean;
+  /**
+   * False while the surface holding the block is not on screen. A block the
+   * filter opened is the person looking at these lanes, so it marks them seen —
+   * but only while they can actually see it: a lane that arrives while the tab
+   * is parked keeps its new dot until they come back.
+   */
+  visible?: boolean;
+}) {
   const enabled = useAdeCloudEnabled();
   const rows = useCloudLanesWithoutComputerRows();
   const seenNow = useSyncExternalStore(subscribeSeen, readSeenNow, readSeenNow);
   const [open, setOpen] = useState(initiallyOpen);
-  // A block the Computer filter opened is the person looking at these lanes:
-  // mark them seen, exactly as pressing the block's own head does.
   useEffect(() => {
-    if (initiallyOpen) markSeen(rows.map(rowKey));
-  }, [initiallyOpen, rows]);
+    if (initiallyOpen && visible) markSeen(rows.map(rowKey));
+  }, [initiallyOpen, rows, visible]);
   const listId = `adecl-wc-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
   const unseen = rows.some((row) => !seenNow.has(rowKey(row)));
   const toggle = useCallback(() => {

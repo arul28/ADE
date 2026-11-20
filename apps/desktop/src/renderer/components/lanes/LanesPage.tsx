@@ -536,11 +536,22 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (!laneFilter.trim()) return machineScopedLanes;
     return machineScopedLanes.filter((lane) => laneMatchesFilter(lane, laneFilter));
   }, [machineScopedLanes, laneFilter]);
-  // A filter change hides rows. A Cmd/Shift selection the person can no longer
-  // see must not stay armed for a batch action on lanes off screen.
-  useEffect(() => {
+  // Explicit navigation must land on the lane it names. A Computer filter that
+  // hides it is no longer a filter, it is a wrong view: drop it to All. The text
+  // filter is left alone (those handlers already clear it when it would hide
+  // the lane).
+  const revealLanesUnderMachineFilter = useCallback((keys: ReadonlyArray<string | null | undefined>) => {
+    if (!machineFilterActive) return;
+    const hides = keys.some((key) => key != null && machineFilterIdForKey(key) !== effectiveMachineFilter);
+    if (hides) setLaneMachineFilter(LANES_MACHINE_FILTER_ALL);
+  }, [effectiveMachineFilter, machineFilterActive, machineFilterIdForKey, setLaneMachineFilter]);
+  // The panel is the person filtering: a Cmd/Shift selection they can no longer
+  // see must not stay armed for a batch action on lanes off screen. Navigation
+  // calls `setLaneMachineFilter` directly and keeps the selection it came with.
+  const changeLaneMachineFilter = useCallback((next: string) => {
+    setLaneMachineFilter(next);
     setMultiSelectedLaneIds(EMPTY_LANE_ID_SET);
-  }, [effectiveMachineFilter]);
+  }, [setLaneMachineFilter]);
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
   // Agents are read from the tab's machine, so only its own lanes ask.
   const localFilteredLaneIds = useMemo(
@@ -1695,6 +1706,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     let handled = false;
     if ((action === "split-open" || action === "split-close-others") && laneId) {
       if (!deletingLaneIds.has(laneId) && lanesById.has(laneId)) {
+        revealLanesUnderMachineFilter([laneId]);
         selectDetailLane(laneId);
         handled = true;
       }
@@ -1726,6 +1738,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         if (laneFilter.trim() && ids.some((id) => !laneMatchesFilter(lanesById.get(id)!, laneFilter))) {
           setLaneFilter("");
         }
+        revealLanesUnderMachineFilter(ids);
         selectDetailLane(ids[0]!);
         setMultiSelectedLaneIds(ids.length > 1 ? new Set(ids) : EMPTY_LANE_ID_SET);
         if (action === "batch") {
@@ -1747,6 +1760,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     lanesById,
     deletingLaneIds,
     active,
+    revealLanesUnderMachineFilter,
   ]);
 
   useEffect(() => {
@@ -1764,6 +1778,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (laneIdsSelection) {
       consumedLaneIdsDeepLinkSignatureRef.current = laneIdsSelection.signature;
       const first = laneIdsSelection.laneIds[0]!;
+      revealLanesUnderMachineFilter(laneIdsSelection.laneIds);
       selectLane(first);
       if (urlLaneDeeplinks.inspectorTab) {
         setLaneInspectorTab(first, urlLaneDeeplinks.inspectorTab as LaneInspectorTab);
@@ -1772,6 +1787,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [
     active,
     availableLaneIds,
+    revealLanesUnderMachineFilter,
     selectLane,
     setLaneInspectorTab,
     urlLaneDeeplinks.action,
@@ -1790,6 +1806,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     // bare id must not select a same-id lane on this tab's machine.
     if (urlLaneDeeplinks.machineId && urlLaneDeeplinks.machineId !== activeMachineId) return;
     if (deletingLaneIds.has(laneId)) return;
+    revealLanesUnderMachineFilter([laneId]);
     selectLane(laneId);
     if (urlLaneDeeplinks.inspectorTab) {
       setLaneInspectorTab(laneId, urlLaneDeeplinks.inspectorTab as LaneInspectorTab);
@@ -1803,6 +1820,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     urlLaneDeeplinks.machineId,
     urlLaneDeeplinks.inspectorTab,
     deletingLaneIds,
+    revealLanesUnderMachineFilter,
     selectLane,
     setLaneInspectorTab,
   ]);
@@ -1825,6 +1843,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (consumedCommitDeepLinkSignatureRef.current === signature) return;
     consumedCommitDeepLinkSignatureRef.current = signature;
 
+    revealLanesUnderMachineFilter([laneId]);
     selectLane(laneId);
 
     // A deep-linked lane id names a lane of the tab's copy.
@@ -1870,6 +1889,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     urlLaneDeeplinks.commitSha,
     urlLaneDeeplinks.laneId,
     urlLaneDeeplinks.laneIdsRaw,
+    revealLanesUnderMachineFilter,
   ]);
 
   // ?laneId=X&machineId=M selects lane X on machine M. Without machineId, a
@@ -1895,6 +1915,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     }
     if (!key) return;
     consumedForeignDeepLinkRef.current = signature;
+    revealLanesUnderMachineFilter([key]);
     selectLane(key);
   }, [
     active,
@@ -1902,6 +1923,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     dedupedLanes,
     foreignRowByKey,
     location.key,
+    revealLanesUnderMachineFilter,
     selectLane,
     urlLaneDeeplinks.action,
     urlLaneDeeplinks.laneId,
@@ -2049,6 +2071,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       openForeignManageRef.current(foreignRow);
       return;
     }
+    revealLanesUnderMachineFilter([laneId]);
     selectLane(laneId);
     setManageInitialTab(null);
     setManagedLaneIds([laneId]);
@@ -2056,7 +2079,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setDeleteForce(false);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
-  }, [deletingLaneIds, foreignRowByKeyRef, selectLane]);
+  }, [deletingLaneIds, foreignRowByKeyRef, revealLanesUnderMachineFilter, selectLane]);
 
   /* ---- Lanes on other machines: manage, archive, delete ---- */
 
@@ -2078,12 +2101,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const restingCloudLane = !row.online && restingMachineIds.has(row.machineId)
       && row.pin != null && cloud.isCloudLane(row.pin, row.lane.id);
     if (machineBlockedReason(row) && !restingCloudLane) return;
+    // Its row may be hidden by the Computer filter; the dialog comes first.
+    revealLanesUnderMachineFilter([foreignLaneKey(row.machineId, row.lane.id)]);
     setManageInitialTab(restingCloudLane ? "computer" : initialTab);
     setLaneActionError(null);
     setDeleteForce(false);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setForeignManageKey(row.key);
-  }, [cloud, restingMachineIds]);
+  }, [cloud, restingMachineIds, revealLanesUnderMachineFilter]);
   openForeignManageRef.current = openForeignManage;
 
   /**
@@ -2270,6 +2295,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // only while the Computer filter asks for them. The tab's own computer while
   // it is offline: its lanes are hidden, and one line says why.
   const activeMachineFilterName = machineFilterEntries.find((entry) => entry.id === effectiveMachineFilter)?.name ?? null;
+  // What "nothing here" says. A computer filter names the computer; a project
+  // whose only lanes lost their computer points at the filter that holds them
+  // instead of claiming there are no lanes at all.
+  const laneListEmptyMessage = laneFilter.trim()
+    ? undefined
+    : machineFilterActive
+      ? `No lanes on ${activeMachineFilterName ?? "that computer"}`
+      : cloudLanesWithoutComputer.count > 0 && allViewLanes.length === 0
+        ? `No live lanes. ${cloudLanesWithoutComputer.count} without a computer.`
+        : undefined;
   const laneListToolbar = (
     <>
       {machineFilterActive && !showingWithoutComputer ? (
@@ -2292,9 +2327,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           {`${offlineTabMachineName} is offline. Its lanes show when it is on.`}
         </p>
       ) : null}
-      {showingWithoutComputer ? <CloudLanesWithoutComputerBlock className="mx-1.5 mb-2" initiallyOpen /> : null}
     </>
   );
+  // While the Computer filter asks for the lanes without a computer, their
+  // block *is* the list: it sits in the scrolling area, so a long set of
+  // recovered lanes can still reach New computer / delete.
+  const laneListHeader = showingWithoutComputer
+    ? <CloudLanesWithoutComputerBlock className="mx-0.5 mb-2" initiallyOpen visible={active} />
+    : null;
 
   /* ---- Render ---- */
 
@@ -2341,13 +2381,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       disabledReasonByLaneId={disabledReasonByLaneId}
       foreignLaneIds={foreignLaneIdSet}
       toolbar={laneListToolbar}
+      listHeader={laneListHeader}
       machineFilterEntries={machineFilterEntries}
       machineFilter={effectiveMachineFilter}
-      onMachineFilterChange={setLaneMachineFilter}
+      onMachineFilterChange={changeLaneMachineFilter}
       hideEmptyState={showingWithoutComputer}
-      emptyMessage={machineFilterActive && !laneFilter.trim()
-        ? `No lanes on ${activeMachineFilterName ?? "that computer"}`
-        : undefined}
+      emptyMessage={laneListEmptyMessage}
     />
   );
 

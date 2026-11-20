@@ -17,6 +17,7 @@ import {
 import { LANES_MACHINE_FILTER_ALL } from "../../state/laneMachineFilterIds";
 import { SAVED_CHATS_MACHINE_PREFIX } from "../../../shared/cloudSavedChats";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
 import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
@@ -339,7 +340,12 @@ export function useLanesPageMachines({
     () => buildLaneMachineFilterEntries({
       machines: liveMachines.map((machine) => ({
         entryId: laneFilterEntryId(machine.machineId, isCloudMachine(machine)),
-        name: machine.isThisMachine ? THIS_MACHINE_NAME : machine.machineName,
+        // Every ADE Cloud computer is one machine to the person: never the
+        // disambiguated per-computer label ("ADE Cloud (instance-a)") the
+        // machine list builds when cloud names collide.
+        name: machine.isThisMachine
+          ? THIS_MACHINE_NAME
+          : isCloudMachine(machine) ? ADE_CLOUD_NAME : machine.machineName,
         isCloud: isCloudMachine(machine),
         isThisMachine: machine.isThisMachine,
         laneCount: laneCountByMachineId.get(machine.machineId) ?? 0,
