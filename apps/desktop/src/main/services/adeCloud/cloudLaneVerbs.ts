@@ -20,6 +20,8 @@ import { sameMachineKey } from "../../../shared/machineAddress";
 import { describeCloudMachineSize, cloudCatalogOf } from "../../../shared/adeCloud";
 import { getErrorMessage } from "../shared/utils";
 import type { CloudLaneBackup } from "../../../../../account-directory/src/cloud/contract";
+import type { CloudStatusDeletedLane } from "./cloudAccountStatus";
+import type { CloudApproval } from "./cloudAgentActions";
 import type { CloudLaneAccount } from "./cloudLaneAccount";
 import type { CloudInstance, CloudLogger, CloudProvider } from "./cloudProvider";
 
@@ -41,14 +43,7 @@ import type { CloudInstance, CloudLogger, CloudProvider } from "./cloudProvider"
  * never a pin.
  */
 
-/** A lane in `status` whose computer was deleted (`lanesComputerDeleted`). */
-export type CloudStatusDeletedLane = { laneId: string; name: string; branch: string | null; projectOrigin: string | null; deletedAt: string | null; why: string };
-
-/** Who asks (stamped by the RPC server), as `cloudAgentActions.ts` reads it. */
-type Approval = { by: "person" } | { by: "agent"; chatSessionId: string | null; viaAdeMcp?: boolean; automation?: boolean };
-
-/** `approve` of `cloudAgentActions.ts`, narrowed to the delete cards these verbs raise. */
-export type CloudLaneApprove = (approval: Approval, card: {
+export type CloudLaneApprove = (approval: CloudApproval, card: {
   action: "delete";
   title: string;
   /** A function runs only when a card is really posted (see `approve`). */
@@ -69,7 +64,7 @@ export type CloudLaneVerbDeps = {
   /** The full computers the last list read (their metadata), or null. */
   recentInstances: () => CloudInstance[] | null;
   approve: CloudLaneApprove;
-  readApproval: (args: Record<string, unknown>) => Approval;
+  readApproval: (args: Record<string, unknown>) => CloudApproval;
   /** `cloud.lane_launch`: a new computer for a lane (its own spend card). */
   laneLaunch: (args: Record<string, unknown>) => Promise<unknown>;
   /** This runtime's project origin (`github.com/owner/repo` once normalized), or null. */
@@ -150,8 +145,9 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
     machines?: Promise<CloudMachinesResult>;
     /** False: leave the backups out (`status` shows none). */
     backups?: boolean;
-  } = {}): Promise<CloudLanesAnswer & { chatRows: CloudSavedChatRow[]; keptIds: Set<string> }> => {
+  } = {}): Promise<CloudLanesAnswer & { chatRows: CloudSavedChatRow[]; keptIds: Set<string>; failed: Set<"kept" | "chats" | "backups"> }> => {
     const unread: string[] = [];
+    const failed = new Set<"kept" | "chats" | "backups">();
     // Every read at once. The computers decide: with no ADE Cloud the list
     // throws its sentence, and the other reads are dropped.
     const machinesRead = options.machines ?? deps.readMachines();
@@ -160,15 +156,18 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       machinesRead,
       deps.account().lanesWithoutComputer().catch((error: unknown) => {
         unread.push(`ADE couldn't read the lanes whose computer was deleted: ${getErrorMessage(error)}`);
+        failed.add("kept");
         return [] as CloudLaneWithoutComputer[];
       }),
       readChats().catch((error: unknown) => {
         unread.push(`ADE couldn't read the saved chats: ${getErrorMessage(error)}`);
+        failed.add("chats");
         return { chats: [] as CloudSavedChatRow[], complete: true };
       }),
       api
         ? api.laneBackups().catch((error: unknown) => {
             unread.push(`ADE couldn't read the lane backups: ${getErrorMessage(error)}`);
+            failed.add("backups");
             return [] as CloudLaneBackup[];
           })
         : Promise.resolve([] as CloudLaneBackup[]),
@@ -261,7 +260,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
         link: laneLink(laneId),
       });
     }
-    return { lanes: Array.from(entries.values()), unread, chatRows: chatRead.chats, keptIds: new Set(kept.map((lane) => lane.laneId)) };
+    return { lanes: Array.from(entries.values()), unread, chatRows: chatRead.chats, keptIds: new Set(kept.map((lane) => lane.laneId)), failed };
   };
 
   /** One lane by its id, name, branch or a lane link; a name two lanes share is refused with their ids. */
@@ -294,7 +293,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
   const findChat = async (chatId: string, machineKey: string | null): Promise<CloudSavedChatRow> => {
     const { chats } = await readChats();
     const found = chats.find((chat) => chat.chatId === chatId && (!machineKey || sameMachineKey(chat.machineKey, machineKey)));
-    if (!found) throw new Error(`ADE Cloud has no saved chat ${chatId}. ade cloud chats lists them.`);
+    if (!found) throw new Error(`ADE Cloud has no saved chat ${chatId} among your newest ${CHAT_PAGES * CHAT_PAGE}. Pass --machine-key, or see ade cloud chats.`);
     return found;
   };
 
@@ -303,8 +302,24 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
     const api = deps.api();
     if (!api) return null;
     for (const machineKey of lane.machineKeys) {
-      const branch = (await api.gitSummary(machineKey, lane.laneId).catch(() => null))?.branch?.trim();
+      const branch = (await api.gitSummary(machineKey, lane.laneId).catch((error: unknown) => {
+        logger.warn?.("cloud.lane_git_summary_read_failed", { error: getErrorMessage(error) });
+        return null;
+      }))?.branch?.trim();
       if (branch) return branch;
+    }
+    return null;
+  };
+
+  /** Which computer saved a CLI or shell copy, from at most `CHAT_PAGES` pages of the account's copies. */
+  const sessionMachineKey = async (api: CloudApiClient, sessionId: string): Promise<string | null> => {
+    let cursor: string | null = null;
+    for (let page = 0; page < CHAT_PAGES; page += 1) {
+      const listed = await api.savedSessions({ cursor });
+      const found = listed?.sessions.find((session) => session.sessionId === sessionId);
+      if (found) return found.machineKey;
+      cursor = listed?.nextCursor ?? null;
+      if (!cursor) return null;
     }
     return null;
   };
@@ -321,7 +336,12 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
    */
   const lanesComputerDeleted = async (machines: Promise<CloudMachinesResult>): Promise<CloudStatusDeletedLane[] | null> => {
     try {
-      const { lanes } = await readLanes({ machines, backups: false });
+      const { lanes, failed, unread } = await readLanes({ machines, backups: false });
+      // Either source unread: the list would be short, so status says it couldn't read it.
+      if (failed.has("kept") || failed.has("chats")) {
+        logger.warn?.("cloud.status_deleted_lanes_unread", { unread });
+        return null;
+      }
       return lanes
         .filter((lane) => lane.state === "computer_deleted")
         .map((lane) => ({
@@ -346,7 +366,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const project = text(args, "project");
       const projectKey = project ? normalizeGitRemoteIdentity(project) ?? project.toLowerCase() : null;
       let picked = lanes;
-      if (projectKey) picked = picked.filter((lane) => (lane.projectOrigin ?? "").toLowerCase() === projectKey);
+      if (projectKey) picked = picked.filter((lane) => normalizeGitRemoteIdentity(lane.projectOrigin) === projectKey);
       if (args.deleted === true) picked = picked.filter((lane) => lane.state === "computer_deleted");
       if (args.stale === true) {
         const cutoff = Date.now() - STALE_MS;
@@ -382,6 +402,8 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const { lane, keptIds } = await resolveLane(text(args, "lane"));
       const account = deps.account();
       if (!lane.computer) {
+        // The lane's chats are all that is left of it: deleting the lane deletes them (the server does it with its record).
+        if (keepChats) throw new Error(`${lane.name} has no computer, so its saved chats are the lane: deleting it deletes them. Read them first (ade cloud lanes show ${lane.laneId}), or keep the lane.`);
         const saved = lane.backup ? ` and the work ADE saved for it (${workLine({ ahead: lane.backup.commits, dirty: lane.backup.files > 0, files: lane.backup.files })})` : "";
         await deps.approve(approval, {
           action: "delete",
@@ -390,13 +412,32 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
           confirm: "Delete lane",
           personPlace: PERSON_PLACE,
         });
-        const result = await account.deleteLaneOfDeletedComputer({ laneId: lane.laneId, machineKeys: lane.machineKeys, kept: keptIds.has(lane.laneId) });
+        const kept = keptIds.has(lane.laneId);
+        const result = await account.deleteLaneOfDeletedComputer({ laneId: lane.laneId, machineKeys: lane.machineKeys, kept });
+        // A kept record takes its backups with it on the server; with no record, ADE deletes them here.
+        const api = deps.api();
+        let backupsLeft = false;
+        if (!kept && lane.backup && api) {
+          const backups = await api.laneBackups(lane.laneId, null).catch((error: unknown) => {
+            logger.warn?.("cloud.deleted_lane_backups_read_failed", { error: getErrorMessage(error) });
+            backupsLeft = true;
+            return [] as CloudLaneBackup[];
+          });
+          for (const backup of backups) {
+            await api.forgetLaneBackup(backup.machineKey, backup.laneId).catch((error: unknown) => {
+              logger.warn?.("cloud.deleted_lane_backup_forget_failed", { error: getErrorMessage(error) });
+              backupsLeft = true;
+            });
+          }
+        }
+        const partial = result.chatsLeft || backupsLeft;
         return {
-          outcome: result.chatsLeft ? "partial" : "deleted",
-          message: result.chatsLeft
-            ? `Deleted ${lane.name}, but ${result.chatsDeleted ? "not all of its chats" : "not its chats"}. Run it again in a moment.`
+          outcome: partial ? "partial" : "deleted",
+          message: partial
+            ? `Deleted ${lane.name}, but not all of its chats or saved work. Run it again in a moment.`
             : `Deleted ${lane.name}${result.chatsDeleted ? ` and its ${plural(result.chatsDeleted, "chat")}` : ""}.`,
           ...result,
+          backupsLeft,
         };
       }
       const instanceId = lane.computer.instanceId;
@@ -468,7 +509,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const branch = lane.branch ?? await savedBranchOf(lane);
       if (!branch) throw new Error(`ADE never learned ${lane.name}'s branch. Start a new lane on ADE Cloud instead.`);
       const here = normalizeGitRemoteIdentity(deps.projectOriginUrl());
-      if (lane.projectOrigin && here !== lane.projectOrigin) throw new Error(`${lane.name} is a lane of ${lane.projectOrigin}. Run this in a folder of that project.`);
+      if (lane.projectOrigin && here !== normalizeGitRemoteIdentity(lane.projectOrigin)) throw new Error(`${lane.name} is a lane of ${lane.projectOrigin}. Run this in a folder of that project.`);
       const size = text(args, "size");
       return await deps.laneLaunch({
         approval: args.approval,
@@ -499,7 +540,10 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const { lane } = await resolveLane(text(record(rawArgs), "lane"));
       const api = requireApi();
       for (const machineKey of lane.machineKeys) {
-        const summary = await api.gitSummary(machineKey, lane.laneId).catch(() => null);
+        const summary = await api.gitSummary(machineKey, lane.laneId).catch((error: unknown) => {
+          logger.warn?.("cloud.lane_git_summary_read_failed", { error: getErrorMessage(error) });
+          return null;
+        });
         if (summary) return { lane: { laneId: lane.laneId, name: lane.name }, summary };
       }
       return { lane: { laneId: lane.laneId, name: lane.name }, summary: null };
@@ -537,13 +581,9 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const sessionId = text(args, "sessionId");
       if (!sessionId) throw new Error("Pass the session id (ade cloud sessions).");
       const api = requireApi();
-      let machineKey = text(args, "machineKey");
-      if (!machineKey) {
-        const listed = await api.savedSessions({});
-        machineKey = listed?.sessions.find((session) => session.sessionId === sessionId)?.machineKey ?? null;
-      }
+      const machineKey = text(args, "machineKey") ?? await sessionMachineKey(api, sessionId);
       const copy = machineKey ? await api.savedSession(machineKey, sessionId) : null;
-      if (!copy) throw new Error(`ADE Cloud has no saved copy of session ${sessionId}. ade cloud sessions lists them.`);
+      if (!copy) throw new Error(`ADE Cloud has no saved copy of session ${sessionId}${machineKey ? "" : " among your newest copies; pass --machine-key"}. ade cloud sessions lists them.`);
       return copy;
     },
 
@@ -552,10 +592,8 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const sessionId = text(args, "sessionId");
       if (!sessionId) throw new Error("Pass the session id (ade cloud sessions).");
       const api = requireApi();
-      const machineKey = text(args, "machineKey")
-        ?? (await api.savedSessions({}))?.sessions.find((session) => session.sessionId === sessionId)?.machineKey
-        ?? null;
-      if (!machineKey) throw new Error(`ADE Cloud has no saved copy of session ${sessionId}.`);
+      const machineKey = text(args, "machineKey") ?? await sessionMachineKey(api, sessionId);
+      if (!machineKey) throw new Error(`ADE Cloud has no saved copy of session ${sessionId} among your newest copies. Pass --machine-key, or see ade cloud sessions.`);
       await deps.approve(deps.readApproval(args), {
         action: "delete",
         title: "Delete a saved terminal copy",

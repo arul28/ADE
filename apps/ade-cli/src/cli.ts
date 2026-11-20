@@ -22084,6 +22084,7 @@ function buildCloudPlan(args: string[]): CliPlan {
       const chatId = firstPositional(args);
       if (!chatId) throw new CliUsageError(`ade cloud chats ${verb} <chat id> (ade cloud chats lists them)`);
       if (verb === "read" || verb === "show") {
+        if (before != null && !Number.isFinite(Number(before))) throw new CliUsageError("ade cloud chats read <chat id> --before <number> (the number an older page names)");
         return cloudStep("chat read", "saved_chats_read", {
           chatId,
           ...(machineKey ? { machineKey } : {}),
@@ -22132,7 +22133,10 @@ function buildCloudPlan(args: string[]): CliPlan {
       throw new CliUsageError("ade cloud jobs [list | cancel <job id>]");
     }
     case "project":
-      return cloudStep("project", "project_overview", project ? { origin: project } : {}, "cloud-project");
+      // No --origin: this folder's project names it, so the call runs in that project (the account route has no folder).
+      return project
+        ? cloudStep("project", "project_overview", { origin: project }, "cloud-project")
+        : { kind: "execute", label: "cloud project", formatter: "cloud-project", steps: [actionStep("result", "cloud", "project_overview", {})] };
     case "ready":
       // Ready machines are gone: a new lane gets its own computer when it starts.
       throw new CliUsageError("ade cloud ready no longer exists: ADE makes a computer for each new lane. Use ade chat create --machine cloud --provider <p> --model <id> --prompt \"…\".");

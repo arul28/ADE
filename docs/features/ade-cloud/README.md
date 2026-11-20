@@ -1227,8 +1227,11 @@ Reads wake nothing and work from any folder (`ADE_ACTION_MACHINE_SCOPED`).
     saved computer), then one card: `Delete lane "X"?` with Delete lane,
     Keep for later (a free) and Cancel. The body names each lane's work not
     on GitHub. A full-auto chat goes on alone only for a computer it made
-    (`ade_made_by_chat`). Computer already deleted: its kept record (and the
-    server deletes the lane's backups with it), then its saved chats.
+    (`ade_made_by_chat`). Computer already deleted: its kept record (the
+    server deletes the lane's backups and saved chats with it), then any
+    chats left on its deleted computers. With no kept record, ADE deletes
+    those chats and the lane's backups itself. `--keep-chats` is refused
+    there: the chats are all that is left of the lane.
   - `lane_free`, `saved_chat_delete`, `session_delete`, `backup_forget` and
     `job_cancel` ask the same way. `lane_start` makes the lane's new computer
     through `lane_launch` and its card, on `origin/<branch>`, from a folder

@@ -180,18 +180,21 @@ export function createCloudLaneAccount(deps: CloudLaneAccountDeps) {
 
   /**
    * Deletes the saved chats of one machine key that `deletable` takes, a
-   * page at a time (each pass lists what is left, so the next page is the
-   * first page again). True when some are left past the page limit.
+   * page at a time. The cursor names the last row read (`updatedAt:chatId`),
+   * so a delete never moves the next page, and a page with nothing to delete
+   * still leads on to the rest. True when some are left past the page limit.
    */
   const clearSavedChats = async (client: CloudProvider, machineKey: string, deletable: (chat: CloudSavedChatRow) => boolean, count: () => void): Promise<boolean> => {
+    let cursor: string | null = null;
     for (let pass = 0; pass < SAVED_CHAT_PAGES; pass += 1) {
-      const page = await client.listSavedChats({ machineKey, limit: SAVED_CHAT_PAGE });
+      const page = await client.listSavedChats({ machineKey, limit: SAVED_CHAT_PAGE, cursor });
       const mine = page.chats.filter((chat) => sameMachineKey(chat.machineKey, machineKey) && deletable(chat));
       for (const chat of mine) {
         await client.deleteSavedChat({ machineKey: chat.machineKey, chatId: chat.chatId });
         count();
       }
-      if (!page.nextCursor || mine.length === 0) return false;
+      cursor = page.nextCursor;
+      if (!cursor) return false;
     }
     return true;
   };
@@ -370,7 +373,7 @@ export function createCloudLaneAccount(deps: CloudLaneAccountDeps) {
     return await client.listLanesWithoutComputer();
   };
 
-  /** Deleting a lane that has no computer: only its record goes (and, on the server, its backups). Its saved chats stay. */
+  /** Deleting a lane that has no computer: its record goes, and the server deletes its backups and its saved chats with it. */
   const forgetLaneWithoutComputer = async (args: { laneId: string }): Promise<{ forgotten: boolean }> => {
     const forgotten = await (await deps.client()).forgetLaneWithoutComputer(args.laneId);
     deps.changed();
