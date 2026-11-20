@@ -77,6 +77,8 @@ describe("checkRemoteAdeCommand", () => {
     ["read", "forgetting a lane's backup", ["cloud", "backups", "forget", "l1"]],
     ["read", "cancelling a cloud job", ["cloud", "jobs", "cancel", "j1"]],
     ["read", "a cloud read with an unknown flag's value as the verb", ["cloud", "chats", "--size", "large", "rm", "c1"]],
+    ["read", "a read verb as an unknown flag's value, before a write", ["cloud", "lanes", "--size", "list", "keep", "l1"]],
+    ["read", "an unknown flag after a read verb", ["cloud", "lanes", "show", "l1", "--keep-chats"]],
     ["read", "arming a chat wait", ["chat", "wait", "x", "--async"]],
     ["read", "cancelling a chat wait", ["chat", "wait", "--cancel", "w1"]],
     ["read", "reading an env file", ["files", "read", "--workspace", "l", "app/.env.local"]],

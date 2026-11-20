@@ -688,11 +688,14 @@ const CLOUD_ACCOUNT_READS: ReadonlyMap<string, ReadonlySet<string> | true> = new
 ]);
 /** The flags of those reads that take a value, so the value never reads as the verb. */
 const CLOUD_ACCOUNT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--project", "--origin", "--machine-key", "--cursor", "--before", "--project-root"]);
+/** The flags of those reads that take no value. */
+const CLOUD_ACCOUNT_SWITCH_FLAGS: ReadonlySet<string> = new Set(["--text", "--json", "--pretty", "--compact", "--stale", "--deleted", "--kept"]);
 
 /**
  * Whether the words after `cloud <noun>` are a read: no verb (the list) or a
- * read verb. A flag this check doesn't know may take a value that then reads
- * as the verb, which refuses: an allow list, as for `lanes share`.
+ * read verb. Every flag must be one these reads take: the CLI would eat an
+ * unknown flag's value (`--size list keep x` runs `keep`). An allow list, as
+ * for `lanes share`.
  */
 function isCloudAccountRead(noun: string, words: readonly string[]): boolean {
   const verbs = CLOUD_ACCOUNT_READS.get(noun);
@@ -701,12 +704,27 @@ function isCloudAccountRead(noun: string, words: readonly string[]): boolean {
     const word = words[index]!;
     if (word === "--") return false;
     if (word.startsWith("-")) {
-      if (!word.includes("=") && CLOUD_ACCOUNT_VALUE_FLAGS.has(word)) index += 1;
-      continue;
+      const equals = word.indexOf("=");
+      const name = equals > 0 ? word.slice(0, equals) : word;
+      if (CLOUD_ACCOUNT_VALUE_FLAGS.has(name)) {
+        if (equals < 0) index += 1;
+        continue;
+      }
+      if (CLOUD_ACCOUNT_SWITCH_FLAGS.has(name) && equals < 0) continue;
+      return false;
     }
-    return verbs?.has(word) ?? false;
+    // The first word is the verb; later words are its arguments (a lane, an id).
+    if (verbs?.has(word) !== true) return false;
+    return words.slice(index + 1).every((rest) => !rest.startsWith("-") || isKnownCloudReadFlag(rest));
   }
   return true;
+}
+
+/** A flag `isCloudAccountRead` allows after the verb (a value flag's value is a plain word). */
+function isKnownCloudReadFlag(word: string): boolean {
+  const equals = word.indexOf("=");
+  const name = equals > 0 ? word.slice(0, equals) : word;
+  return CLOUD_ACCOUNT_VALUE_FLAGS.has(name) || (equals < 0 && CLOUD_ACCOUNT_SWITCH_FLAGS.has(name));
 }
 
 /** The flags of the read form of `ade lanes share`, and whether each takes a value. */
