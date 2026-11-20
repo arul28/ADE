@@ -953,6 +953,28 @@ extension SyncService {
     await machines
   }
 
+  /// The chat a cloud launch started now runs on its lane's new computer.
+  /// This phone never paired that computer, and its project copy is not in
+  /// the account list it read at the last foreground. So it reads the
+  /// account again (machines, ADE Cloud computers, project copies) and
+  /// connects the computer, with no wake. Then the computer's roster lists
+  /// the chat in Work at once, not after the next app launch. True when the
+  /// computer has a live link.
+  @discardableResult
+  func connectLaunchedCloudComputer(instanceId: String?) async -> Bool {
+    async let projects: Void = AccountProjectStore.shared.refresh()
+    await readCloudForLaunchedChat()
+    await projects
+    guard let instanceId = instanceId.flatMap({ nonEmptyTrimmed($0) }),
+          let accountKey = cloudServerInstances.first(where: { $0.id == instanceId })?.machineKey
+    else { return false }
+    resolveCloudMachineKeys()
+    let fleetKey = cloudFleetKey(accountMachineKey: accountKey)
+    if fleetKey == focusedMachineKey { return connectionState == .connected }
+    guard let fleet = machineFleet else { return false }
+    return await fleet.connect(machineKey: fleetKey, timeout: .seconds(45), wake: false)
+  }
+
   /// A pull on Lanes or Work: the account's machines and ADE Cloud computers
   /// read again, so a computer made since the last look (from the web,
   /// another phone, New computer) lists in the same pull. A read already out

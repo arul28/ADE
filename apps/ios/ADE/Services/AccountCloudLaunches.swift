@@ -31,6 +31,32 @@ struct CloudLaunchStage: Decodable, Equatable {
   }
 }
 
+/// A message of a chat launch (`GET /cloud/launches/:id/messages`). Row 1 is
+/// the first message; the rest are what the person sent before the chat ran.
+struct CloudLaunchMessage: Decodable, Equatable, Identifiable {
+  var id: String { messageId }
+  let messageId: String
+  let seq: Int
+  let text: String
+  /// `queued`, `sending`, `delivered` or `failed`.
+  let state: String
+  let error: String?
+  /// ms since 1970.
+  let createdAt: Double?
+
+  private enum CodingKeys: String, CodingKey { case messageId, seq, text, state, error, createdAt }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    messageId = try c.decode(String.self, forKey: .messageId)
+    seq = c.lenient(Int.self, forKey: .seq) ?? 1
+    text = c.lenient(String.self, forKey: .text) ?? ""
+    state = c.lenient(String.self, forKey: .state) ?? "queued"
+    error = c.lenient(String.self, forKey: .error)
+    createdAt = c.lenient(Double.self, forKey: .createdAt)
+  }
+}
+
 /// What a launch waiting on a provider sign-in shows (`waiting_for_sign_in`).
 struct CloudLaunchSignIn: Decodable, Equatable {
   let provider: String
@@ -84,9 +110,11 @@ struct CloudLaunchRecord: Decodable, Equatable {
   let request: RemoteJSONValue?
   /// `needs_approval`: the page that confirms the computer's sign-in to the account.
   let approvalUrl: String?
+  /// When the server took the start (ms since 1970); nil from an older server.
+  let createdAt: Double?
 
   private enum CodingKeys: String, CodingKey {
-    case launchId, state, kind, projectOrigin, laneId, laneName, instanceId, stages, sessionId, error, signIn, provider, modelId, request, approval
+    case launchId, state, kind, projectOrigin, laneId, laneName, instanceId, stages, sessionId, error, signIn, provider, modelId, request, approval, createdAt
   }
   private struct Approval: Decodable { let url: String? }
   private struct Request: Decodable {
@@ -118,6 +146,7 @@ struct CloudLaunchRecord: Decodable, Equatable {
     prompt = chatRequest?.chat?.prompt
     request = c.lenient(RemoteJSONValue.self, forKey: .request)
     approvalUrl = c.lenient(Approval.self, forKey: .approval)?.url
+    createdAt = c.lenient(Double.self, forKey: .createdAt)
   }
 
   /// Still on its way to a running chat.
@@ -260,6 +289,23 @@ extension CloudServerClient {
     try decode(CloudLaunchRecord.self, from: try await send("GET", "cloud/launches/\(launchId)"))
   }
 
+  /// A chat launch's messages, in order (row 1 is the first message).
+  func launchMessages(_ launchId: String) async throws -> [CloudLaunchMessage] {
+    struct List: Decodable { let messages: [CloudLaunchMessage] }
+    return try decode(List.self, from: try await send("GET", "cloud/launches/\(segment(launchId))/messages")).messages
+  }
+
+  /// A message for a chat launch whose chat doesn't run yet. The same
+  /// `messageId` again is the same message; once the chat runs the server
+  /// refuses with `chat_ready`.
+  func addLaunchMessage(_ launchId: String, messageId: String, text: String) async throws -> CloudLaunchMessage {
+    let data = try JSONSerialization.data(withJSONObject: ["messageId": messageId, "text": text])
+    return try decode(
+      CloudLaunchMessage.self,
+      from: try await send("POST", "cloud/launches/\(segment(launchId))/messages", body: data, resendOnLostConnection: true)
+    )
+  }
+
   /// The account's launches still in progress, and failures of the last day.
   func activeLaunches() async throws -> [CloudLaunchRecord] {
     try decode(LaunchList.self, from: try await send("GET", "cloud/launches", query: [URLQueryItem(name: "active", value: "1")])).launches
@@ -381,6 +427,8 @@ final class AccountCloudLaunchStore: ObservableObject {
     var kind: String = "chat"
     var laneId: String?
     var laneName: String?
+    /// When this phone first knew the launch: its message's time on the launch's chat page.
+    var startedAt = Date()
 
     var isLane: Bool { kind == "lane" }
     var inProgress: Bool { startError == nil && (record?.inProgress ?? true) }
@@ -409,6 +457,11 @@ final class AccountCloudLaunchStore: ObservableObject {
   private var startingLaunchIds: Set<String> = []
   /// Finished or failed launches the person hid on this phone (until the account changes).
   @Published private var hiddenIds: Set<String> = []
+  /// Launches whose new computer this app run already connected (`connectWhenReady`).
+  private var connectedLaunchIds: Set<String> = []
+  /// Each chat launch's messages after the first, as the server last listed
+  /// them: the launch's page shows them as queued bubbles.
+  @Published private(set) var laterMessages: [String: [CloudLaunchMessage]] = [:]
   @Published private(set) var catalog: CloudModelCatalog?
   @Published private(set) var catalogError: String?
   /// Provider sign-ins ADE desktop carried to ADE Cloud (`carried` of
@@ -518,6 +571,7 @@ final class AccountCloudLaunchStore: ObservableObject {
       patch(entry.launchId) { $0.record = record }
     }
     guard generation == accountGeneration else { return }
+    connectWhenReady(using: sync)
     poll(using: sync)
   }
 
@@ -730,12 +784,65 @@ final class AccountCloudLaunchStore: ObservableObject {
     }
     guard generation == accountGeneration else { return }
     patch(launchId) { $0.record = record }
+    connectWhenReady(using: sync)
     poll(using: sync)
   }
 
   private func patch(_ launchId: String, _ change: (inout Entry) -> Void) {
     guard let index = entries.firstIndex(where: { $0.launchId == launchId }) else { return }
     change(&entries[index])
+  }
+
+  /// Reads a chat launch's messages again (its page shows the later ones).
+  func loadMessages(_ launchId: String, using sync: SyncService) async {
+    let generation = accountGeneration
+    guard let client = await sync.cloudServerClient() else { return }
+    guard let messages = try? await client.launchMessages(launchId), generation == accountGeneration else { return }
+    let later = messages.filter { $0.seq > 1 }.sorted { $0.seq < $1.seq }
+    if laterMessages[launchId] != later { laterMessages[launchId] = later }
+  }
+
+  /// Sends a message to a chat launch whose chat doesn't run yet: ADE Cloud
+  /// keeps it and the computer sends it after the first one. Answers the
+  /// sentence to show when the server refused it.
+  func addMessage(_ launchId: String, text: String, using sync: SyncService) async -> String? {
+    let generation = accountGeneration
+    guard let client = await sync.cloudServerClient() else { return "Sign in to ADE to send this message." }
+    let messageId = "msg_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(24)
+    do {
+      let message = try await client.addLaunchMessage(launchId, messageId: String(messageId), text: text)
+      guard generation == accountGeneration else { return nil }
+      var later = laterMessages[launchId] ?? []
+      if !later.contains(where: { $0.messageId == message.messageId }) {
+        later.append(message)
+        laterMessages[launchId] = later.sorted { $0.seq < $1.seq }
+      }
+      return nil
+    } catch {
+      return cloudServerFailureMessage(error)
+    }
+  }
+
+  /// Once a launch's chat runs (or a lane launch's computer has the lane),
+  /// the phone connects that new computer one time, so the chat lists in
+  /// Work while the app stays open (`connectLaunchedCloudComputer`).
+  private func connectWhenReady(using sync: SyncService) {
+    for entry in entries where !connectedLaunchIds.contains(entry.launchId) && !hiddenIds.contains(entry.launchId) {
+      guard entry.startError == nil, let record = entry.record, record.instanceId != nil else { continue }
+      let ready = entry.isLane
+        ? record.state == "running" || record.state == "done"
+        : record.sessionId != nil
+      guard ready else { continue }
+      connectedLaunchIds.insert(entry.launchId)
+      let launchId = entry.launchId
+      let instanceId = record.instanceId
+      let generation = accountGeneration
+      Task { @MainActor [weak self] in
+        let live = await sync.connectLaunchedCloudComputer(instanceId: instanceId)
+        // Not up yet: the next read of this launch tries again.
+        if !live, let self, generation == self.accountGeneration { self.connectedLaunchIds.remove(launchId) }
+      }
+    }
   }
 
   /// One loop for every launch in progress; it ends when none is left.
@@ -770,6 +877,7 @@ final class AccountCloudLaunchStore: ObservableObject {
             self.patch(entry.launchId) { $0.record = record }
           }
         }
+        if changed { self.connectWhenReady(using: sync) }
         delay = changed ? 3 : min(delay + 2, 10)
       }
       // After a reset a newer loop may own the handle: clear only this one's.
@@ -803,6 +911,8 @@ final class AccountCloudLaunchStore: ObservableObject {
     entries = []
     pendingFiles = [:]
     hiddenIds = []
+    connectedLaunchIds = []
+    laterMessages = [:]
     activeReadAt = nil
   }
 }

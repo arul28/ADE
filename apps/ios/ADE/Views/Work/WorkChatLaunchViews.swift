@@ -562,3 +562,27 @@ struct WorkChatLaunchDeliveryFailureNote: View {
     .accessibilityLabel("\(chatLaunchDeliveryFailureTitle). \(error)")
   }
 }
+
+// MARK: - Composer scroll edge
+
+extension View {
+  /// The soft scroll edge under a launch page's hint and prompt box, as the
+  /// chat's own composer has: the page fades out above the hint and is gone
+  /// behind it, so the setup card never reads through the hint's text.
+  func workLaunchComposerScrollEdge() -> some View {
+    background(alignment: .top) {
+      VStack(spacing: 0) {
+        LinearGradient(
+          colors: [ADEColor.pageBackground.opacity(0), ADEColor.pageBackground],
+          startPoint: .top,
+          endPoint: .bottom
+        )
+        .frame(height: 24)
+        ADEColor.pageBackground
+      }
+      .padding(.top, -24)
+      .ignoresSafeArea(.container, edges: .bottom)
+      .allowsHitTesting(false)
+    }
+  }
+}

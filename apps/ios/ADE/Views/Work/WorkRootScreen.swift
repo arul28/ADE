@@ -650,6 +650,21 @@ struct WorkRootListScreen: View, Equatable {
     return cloudLaunches.entries(forOrigin: "\(project.host)/\(project.owner)/\(project.name)")
   }
 
+  /// The launch rows the Work list shows: a launch whose chat already has its
+  /// own row (its computer's roster lists it) gives way to that row.
+  var listedCloudLaunchEntries: [AccountCloudLaunchStore.Entry] {
+    // A lane launch that finished: the lane and its chats list on their own.
+    let entries = cloudLaunchEntries.filter { entry in
+      !(entry.isLane && (entry.record?.state == "running" || entry.record?.state == "done"))
+    }
+    guard entries.contains(where: { $0.record?.sessionId != nil }) else { return entries }
+    let listed = Set(mergedSessions.map(\.id))
+    return entries.filter { entry in
+      guard let chatId = entry.record?.sessionId else { return true }
+      return !listed.contains(chatId)
+    }
+  }
+
   /// Whether New chat can start: the project's computer is live, or ADE
   /// Cloud can take it (every signed-in account has ADE Cloud).
   var canStartNewChat: Bool {
@@ -1655,7 +1670,16 @@ struct WorkRootListScreen: View, Equatable {
   /// drift on the data they hand the destination.
   @ViewBuilder
   private func sessionDestinationView(_ route: WorkSessionRoute, inColumn: Bool) -> some View {
-    if let remoteTerminal = route.remoteTerminal {
+    if let launchId = workCloudLaunchId(routeSessionId: route.sessionId) {
+      // A chat still starting on ADE Cloud: its page, until the chat runs.
+      WorkCloudLaunchPendingScreen(
+        launchId: launchId,
+        navigationChrome: inColumn ? .column : .pushedDetail,
+        onBack: inColumn ? { duoClearSelection() } : nil,
+        onChatReady: { chatId in await openLaunchedCloudChat(chatId) }
+      )
+      .id(route.openId)
+    } else if let remoteTerminal = route.remoteTerminal {
       // Another machine's terminal: it streams from its own machine.
       TerminalSessionScreen(
         session: remoteTerminal.session,
@@ -1811,12 +1835,13 @@ struct WorkRootListScreen: View, Equatable {
         selectedSessionTransitionId = nil
         await showNewChatRoute(WorkSessionRoute(sessionId: sessionId))
       },
-      onCloudChatReady: { chatId in
-        // A chat started on ADE Cloud runs: read the server's list so the
-        // chat routes to its lane's computer, then open it.
-        await syncService.readCloudForLaunchedChat()
+      onCloudLaunchStarted: { launchId in
+        // As a launch on a computer of your own: the chat's page opens now,
+        // with the message and the setup steps, and becomes the chat once
+        // its new computer runs it.
         selectedSessionTransitionId = nil
-        await openLaunchedCloudChat(chatId)
+        await Task.yield()
+        openCloudLaunch(launchId)
       }
     )
     .environmentObject(syncService)
@@ -1825,20 +1850,54 @@ struct WorkRootListScreen: View, Equatable {
 
   /// A chat a cloud launch just started lives on its lane's computer, not on
   /// this tab's machine: open its Work row, which routes to that computer,
-  /// once the fresh reads list it. A bare route would look the chat up on the
-  /// tab's machine and find nothing.
-  private func openLaunchedCloudChat(_ chatId: String) async {
-    for _ in 0..<20 {
-      if let row = mergedSessions.first(where: { $0.id == chatId }) {
-        // Off the new-chat page first, as `showNewChatRoute` does.
+  /// once the computer is connected and its roster lists it. A bare route
+  /// would look the chat up on the tab's machine and show "Session
+  /// unavailable", so this never opens one: it answers false and the
+  /// launch's page stays with a way to try again.
+  @discardableResult
+  func openLaunchedCloudChat(_ chatId: String) async -> Bool {
+    func listedRow() -> TerminalSessionSummary? {
+      mergedSessions.first { $0.id == chatId }
+    }
+    if listedRow() == nil {
+      let instanceId = cloudLaunches.entries.first { $0.record?.sessionId == chatId }?.record?.instanceId
+      await syncService.connectLaunchedCloudComputer(instanceId: instanceId)
+    }
+    // The roster lists the chat a moment after the link is live.
+    for _ in 0..<60 {
+      if Task.isCancelled { return false }
+      if let row = listedRow() {
+        // Off the new-chat page and the launch's page first, as `showNewChatRoute` does.
         path = NavigationPath()
         duoComposeRoute = nil
         openSession(row)
-        return
+        return true
       }
       try? await Task.sleep(for: .milliseconds(250))
     }
-    await showNewChatRoute(WorkSessionRoute(sessionId: chatId))
+    return false
+  }
+
+  /// Opens the page of a chat still starting on ADE Cloud: pushed on a phone,
+  /// in the detail column on a wide display. Its route is never saved as the
+  /// open route, because no machine knows its id.
+  func openCloudLaunch(_ launchId: String) {
+    let route = WorkSessionRoute(sessionId: workCloudLaunchRouteSessionId(launchId))
+    if duoLayout.isWide {
+      if duoPane.isOpen { duoPane.close() }
+      duoComposeRoute = nil
+      if let previous = duoSelectedRoute?.sessionId, previous != route.sessionId,
+         workCloudLaunchId(routeSessionId: previous) == nil {
+        WorkSeenStore.stamp([previous])
+      }
+      if duoViewMode == .board { duoViewModeRaw = DuoWorkViewMode.list.rawValue }
+      selectedSessionTransitionId = nil
+      duoSelectedRoute = route
+    } else {
+      var fresh = NavigationPath()
+      fresh.append(route)
+      path = fresh
+    }
   }
 
   /// The new-chat screen's handover: a pushed chat on every phone, the detail
@@ -1905,16 +1964,20 @@ struct WorkRootListScreen: View, Equatable {
           }
 
           // Chats starting on ADE Cloud for this project, from this phone or
-          // another device: each one's setup card until it runs.
-          ForEach(cloudLaunchEntries) { entry in
-            WorkCloudLaunchCard(entry: entry) {
-              guard let chatId = entry.record?.sessionId else { return }
-              Task { @MainActor in
-                await syncService.readCloudForLaunchedChat()
-                await openLaunchedCloudChat(chatId)
-              }
+          // another device: one launch row each, as a chat starting in a new
+          // lane lists, until the chat's own row lists.
+          ForEach(listedCloudLaunchEntries) { entry in
+            WorkCloudLaunchRow(
+              entry: entry,
+              duoRow: duoLayout.isWide,
+              selected: duoLayout.isWide && duoSelectedRoute?.sessionId == workCloudLaunchRouteSessionId(entry.launchId)
+            ) {
+              ADEHaptics.light()
+              openCloudLaunch(entry.launchId)
             }
-            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+            .workRowHairline(true)
+            .id(workCloudLaunchRouteSessionId(entry.launchId))
+            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           }
@@ -1951,7 +2014,7 @@ struct WorkRootListScreen: View, Equatable {
             .listRowSeparator(.hidden)
           }
 
-          if displaySessions.isEmpty {
+          if displaySessions.isEmpty && listedCloudLaunchEntries.isEmpty {
             ADEEmptyStateView(
               symbol: inputs.isLive ? "bubble.left.and.bubble.right" : "terminal",
               title: workSessionEmptyStateTitle(status: selectedStatus, searchText: searchText, hasFilters: hasActiveFilters),

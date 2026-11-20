@@ -113,6 +113,9 @@ struct WorkChatLaunchPendingScreen: View {
         .padding(.bottom, 16)
         .animation(ADEMotion.standard(reduceMotion: reduceMotion), value: snapshot.queuedMessages)
       }
+      // Open at the newest content, as a chat does, and keep it in view while the card grows.
+      .defaultScrollAnchor(.bottom, for: .initialOffset)
+      .defaultScrollAnchor(.bottom, for: .sizeChanges)
       .scrollDismissesKeyboard(.interactively)
       .onChange(of: snapshot.queuedMessages.count) { _, _ in
         withAnimation(ADEMotion.standard(reduceMotion: reduceMotion)) {
@@ -194,7 +197,7 @@ struct WorkChatLaunchPendingScreen: View {
     .padding(.horizontal, 12)
     .padding(.top, 6)
     .padding(.bottom, 8)
-    .background(ADEColor.pageBackground.opacity(0.001))
+    .workLaunchComposerScrollEdge()
   }
 
   private func composerHint(_ snapshot: ChatLaunchSnapshot) -> String {

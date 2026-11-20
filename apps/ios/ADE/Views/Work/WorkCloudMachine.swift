@@ -16,6 +16,8 @@ func cloudDesktopSignInSentence(label: String) -> String {
 
 struct WorkCloudLaunchCard: View {
   let entry: AccountCloudLaunchStore.Entry
+  /// False on the launch's own chat page, where the message shows as its bubble.
+  var showsPrompt: Bool = true
   /// The chat is running: open the project, where the chat lists.
   var onOpenChat: () -> Void = {}
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
@@ -78,7 +80,7 @@ struct WorkCloudLaunchCard: View {
         }
       }
 
-      if !entry.prompt.isEmpty {
+      if showsPrompt, !entry.prompt.isEmpty {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
           Text(entry.prompt)
             .font(.system(size: 13.5))
@@ -237,6 +239,716 @@ struct WorkCloudLaunchCard: View {
     case .waiting: return "Waiting for you"
     case .todo: return "Not started"
     }
+  }
+}
+
+// MARK: - A chat starting on ADE Cloud, in the Work list
+
+// A chat started on ADE Cloud has no session id until its new computer runs
+// it. Until then it lists in Work as a launch row, and it opens as the
+// launch's own chat page (the message, then the setup steps), the same way a
+// chat starting in a new lane on a computer of your own does. When the chat
+// runs, the page opens the real chat on its computer.
+
+private let workCloudLaunchRoutePrefix = "ade-cloud-launch:"
+
+/// The Work route id of a chat still starting on ADE Cloud. Never saved as the
+/// open route: no machine knows it.
+func workCloudLaunchRouteSessionId(_ launchId: String) -> String {
+  workCloudLaunchRoutePrefix + launchId
+}
+
+/// The launch id behind a Work route id, or nil for a real chat.
+func workCloudLaunchId(routeSessionId: String) -> String? {
+  guard routeSessionId.hasPrefix(workCloudLaunchRoutePrefix) else { return nil }
+  let id = String(routeSessionId.dropFirst(workCloudLaunchRoutePrefix.count))
+  return id.isEmpty ? nil : id
+}
+
+/// The row and page title: the first line of the message, else the lane.
+func workCloudLaunchTitle(_ entry: AccountCloudLaunchStore.Entry) -> String {
+  let firstLine = entry.prompt
+    .split(whereSeparator: \.isNewline)
+    .first
+    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+  if !firstLine.isEmpty {
+    return firstLine.count > 72 ? String(firstLine.prefix(72)) + "…" : firstLine
+  }
+  if let lane = nonEmptyTrimmed(entry.record?.laneName) ?? entry.laneName { return lane }
+  return entry.isLane ? "New computer" : "New chat"
+}
+
+/// The step a launch is at, in the words of the row's status line.
+func workCloudLaunchStatusLine(_ entry: AccountCloudLaunchStore.Entry, providerLabel: String) -> String {
+  let record = entry.record
+  if entry.startError != nil || record?.failed == true { return "Couldn't start" }
+  if record?.state == "needs_approval" { return "Confirm the computer's sign-in" }
+  if record?.state == "waiting_for_sign_in" { return "Sign in to \(providerLabel)" }
+  let steps = cloudSetupStepStates(record)
+  if entry.isLane {
+    if record?.state == "running" || record?.state == "done" { return "Lane ready" }
+    return steps.computer == .done ? "Checking out the branch" : "Starting the computer"
+  }
+  if record?.sessionId != nil || steps.send == .done { return "Opening the chat" }
+  if steps.computer != .done { return "Starting the computer" }
+  if steps.repo != .done { return "Cloning the repo" }
+  return "Starting the agent"
+}
+
+/// The launch's steps as the segmented rail a launching row draws.
+func workCloudLaunchRail(_ entry: AccountCloudLaunchStore.Entry) -> [ChatLaunchRailSegment] {
+  var steps = cloudSetupStepStates(entry.record)
+  if entry.startError != nil { steps.computer = .failed }
+  let running = entry.record?.state == "running" || entry.record?.state == "done"
+  let states: [(String, CloudSetupStepState)] = entry.isLane
+    ? [("computer", steps.computer), ("repo", steps.repo), ("lane", running ? .done : steps.send)]
+    : [("computer", steps.computer), ("repo", steps.repo), ("signIn", steps.signIn), ("send", steps.send)]
+  return states.map { id, state in
+    let status = workCloudStageStatus(state)
+    return ChatLaunchRailSegment(id: id, status: status, fill: chatLaunchRailFill(status: status, percent: nil))
+  }
+}
+
+/// A chat starting on ADE Cloud as one Work row: the provider mark, the
+/// message's first line, the lane and the step it is at, and the setup rail.
+struct WorkCloudLaunchRow: View {
+  let entry: AccountCloudLaunchStore.Entry
+  /// The Duo's (and an iPad's) wide sessions column.
+  var duoRow: Bool = false
+  var selected: Bool = false
+  let onOpen: () -> Void
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  @ObservedObject private var launches = AccountCloudLaunchStore.shared
+  private var syncService: SyncService { syncPublishes.service }
+
+  private var failed: Bool { entry.startError != nil || entry.record?.failed == true }
+  private var waitsForPerson: Bool {
+    entry.record?.state == "waiting_for_sign_in" || entry.record?.state == "needs_approval"
+  }
+  private var running: Bool { entry.record?.state == "running" || entry.record?.state == "done" }
+  private var providerLabel: String {
+    if let label = entry.record?.signIn?.label, !label.isEmpty { return label }
+    let id = entry.provider ?? entry.record?.provider
+    return launches.catalog?.providers.first { $0.provider == id }?.label ?? (id.map { $0.capitalized } ?? "your provider")
+  }
+  private var laneName: String {
+    nonEmptyTrimmed(entry.record?.laneName) ?? entry.laneName ?? "New lane"
+  }
+  private var statusLine: String { workCloudLaunchStatusLine(entry, providerLabel: providerLabel) }
+  private var statusTint: Color {
+    if failed { return ADEColor.warning }
+    if waitsForPerson { return ADEColor.warning }
+    return ADEColor.textSecondary
+  }
+
+  var body: some View {
+    Button(action: onOpen) {
+      HStack(alignment: .top, spacing: 10) {
+        WorkProviderBareLogo(
+          provider: entry.provider ?? entry.record?.provider,
+          fallbackSymbol: entry.isLane ? "cloud" : "bubble.left.and.bubble.right",
+          tint: ADEColor.accent,
+          size: 20
+        )
+        .fixedSize()
+        .padding(.top, 1)
+        VStack(alignment: .leading, spacing: 3) {
+          Text(workCloudLaunchTitle(entry))
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(duoRow ? 2 : 1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+          HStack(spacing: 6) {
+            HStack(spacing: 4) {
+              Image(systemName: "cloud")
+                .font(.caption2.weight(.semibold))
+              Text(laneName)
+                .font(.caption2)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            }
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 4) {
+              if failed || waitsForPerson {
+                Image(systemName: failed ? "exclamationmark.triangle.fill" : "hand.raised.fill")
+                  .font(.caption2)
+              } else if !running || entry.record?.sessionId == nil || !entry.isLane {
+                ProgressView().controlSize(.mini)
+              }
+              Text(statusLine)
+                .font(.caption2.weight(.semibold))
+                .lineLimit(1)
+            }
+            .foregroundStyle(statusTint)
+            .fixedSize()
+          }
+          if !failed {
+            WorkChatLaunchRowRail(segments: workCloudLaunchRail(entry))
+          }
+        }
+      }
+      .padding(.horizontal, duoRow ? 10 : 4)
+      .padding(.vertical, duoRow ? 11 : 10)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(
+        selected ? ADEColor.accent.opacity(duoRow ? 0.14 : 0.12) : .clear,
+        in: RoundedRectangle(cornerRadius: duoRow ? 14 : 12, style: .continuous)
+      )
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .contextMenu {
+      if failed {
+        Button {
+          Task { await launches.retry(entry.launchId, using: syncService) }
+        } label: {
+          Label("Retry", systemImage: "arrow.clockwise")
+        }
+        .disabled(entry.body == nil && entry.record?.request == nil)
+        Button {
+          launches.hide(entry.launchId)
+        } label: {
+          Label("Hide", systemImage: "eye.slash")
+        }
+      } else if running {
+        Button {
+          launches.hide(entry.launchId)
+        } label: {
+          Label("Hide", systemImage: "eye.slash")
+        }
+      } else if entry.record != nil {
+        Button(role: .destructive) {
+          Task { _ = await launches.cancel(entry.launchId, using: syncService) }
+        } label: {
+          Label("Cancel", systemImage: "xmark.circle")
+        }
+      }
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(workCloudLaunchTitle(entry)), ADE Cloud, \(laneName), \(statusLine)")
+    .accessibilityHint("Opens the chat's setup")
+    .adeInspectable("Work.CloudLaunch.Row", metadata: ["launchId": entry.launchId])
+  }
+}
+
+/// The page of a chat starting on ADE Cloud. It is the same page as a chat
+/// starting in a new lane of your own (`WorkChatLaunchPendingScreen`): the
+/// message as your bubble, the messages you add meanwhile, the setup card,
+/// and a composer whose sends wait for the agent. When the chat runs, it
+/// opens the real chat on its computer in this page's place.
+struct WorkCloudLaunchPendingScreen: View {
+  let launchId: String
+  var navigationChrome: WorkSessionNavigationChrome = .pushedDetail
+  /// The Duo's column: Back clears the column's selection.
+  var onBack: (() -> Void)? = nil
+  /// Opens the running chat on its computer. False when it is not listed yet.
+  let onChatReady: @MainActor (String) async -> Bool
+
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  @ObservedObject private var launches = AccountCloudLaunchStore.shared
+  private var syncService: SyncService { syncPublishes.service }
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var draft = ""
+  @State private var sending = false
+  @State private var composerFocused = false
+  @State private var noAttachments: [WorkChatInputAttachment] = []
+  @State private var errorMessage: String?
+  @State private var opening = false
+  @State private var openFailed = false
+
+  private var entry: AccountCloudLaunchStore.Entry? { launches.entries.first { $0.launchId == launchId } }
+  /// The chat to open: a chat launch the computer runs.
+  private var readyChatId: String? {
+    guard let entry, !entry.isLane else { return nil }
+    return entry.record?.sessionId
+  }
+  private var laterMessages: [CloudLaunchMessage] { launches.laterMessages[launchId] ?? [] }
+
+  var body: some View {
+    Group {
+      if let entry {
+        content(entry)
+      } else {
+        WorkChatOpeningSessionPlaceholder()
+      }
+    }
+    .workSessionNavigationChrome(
+      mode: navigationChrome,
+      title: entry.map(workCloudLaunchTitle) ?? "New chat",
+      subtitle: "ADE Cloud",
+      onBack: onBack,
+      trailingControls: { EmptyView() }
+    )
+    .task(id: readyChatId) { await openChat() }
+    // The messages again when the launch moves on (the computer claims them).
+    .task(id: "\(launchId)|\(entry?.record?.state ?? "")|\(entry?.record?.stages.count ?? 0)") {
+      guard entry?.isLane == false else { return }
+      await launches.loadMessages(launchId, using: syncService)
+    }
+  }
+
+  private func content(_ entry: AccountCloudLaunchStore.Entry) -> some View {
+    ScrollViewReader { proxy in
+      ScrollView {
+        VStack(alignment: .leading, spacing: 14) {
+          if !entry.prompt.isEmpty {
+            WorkChatMessageBubble(
+              message: WorkChatMessage(
+                id: "cloud-launch-prompt-\(entry.launchId)",
+                role: "user",
+                markdown: entry.prompt,
+                timestamp: workCloudLaunchStartedAt(entry),
+                turnId: nil,
+                itemId: nil,
+                attachments: nil
+              ),
+              maxUserBubbleWidth: 320,
+              onOpenFullOutput: {}
+            )
+          }
+          ForEach(laterMessages) { message in
+            WorkChatLaunchQueuedMessageView(message: ChatLaunchQueuedMessage(
+              id: message.messageId,
+              text: message.text,
+              createdAt: workCloudLaunchIso(ms: message.createdAt) ?? workCloudLaunchStartedAt(entry),
+              deliveryError: message.state == "failed" ? (message.error ?? "ADE Cloud couldn't send it.") : nil
+            ))
+            .transition(.opacity.combined(with: .move(edge: .bottom)))
+          }
+          WorkCloudLaunchSetupCard(entry: entry, opening: opening) {
+            Task { await openChat() }
+          }
+          .id("cloud-launch-card")
+          if openFailed {
+            Text("The chat runs on ADE Cloud, but this phone can't reach its computer yet. Tap Open chat to try again.")
+              .font(.caption)
+              .foregroundStyle(ADEColor.warning)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          if let errorMessage {
+            Text(errorMessage)
+              .font(.caption)
+              .foregroundStyle(ADEColor.warning)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 16)
+        .animation(ADEMotion.standard(reduceMotion: reduceMotion), value: laterMessages)
+      }
+      // Open at the newest content, as a chat does, and keep it in view while the card grows.
+      .defaultScrollAnchor(.bottom, for: .initialOffset)
+      .defaultScrollAnchor(.bottom, for: .sizeChanges)
+      .scrollDismissesKeyboard(.interactively)
+      .onChange(of: laterMessages.count) { _, _ in
+        withAnimation(ADEMotion.standard(reduceMotion: reduceMotion)) {
+          proxy.scrollTo("cloud-launch-card", anchor: .bottom)
+        }
+      }
+    }
+    .adeScreenBackground()
+    .environment(\.workChatProvider, entry.provider ?? entry.record?.provider)
+    .environment(\.workChatModelId, entry.modelId ?? entry.record?.modelId)
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      if !entry.isLane {
+        composer(entry)
+      }
+    }
+  }
+
+  // MARK: Composer
+
+  /// Sends wait on ADE Cloud until the agent runs, as on a launch of your own.
+  private func canType(_ entry: AccountCloudLaunchStore.Entry) -> Bool {
+    entry.startError == nil && entry.record?.inProgress == true
+  }
+
+  private func composer(_ entry: AccountCloudLaunchStore.Entry) -> some View {
+    let open = canType(entry)
+    let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    return VStack(alignment: .leading, spacing: 6) {
+      Text(composerHint(entry))
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+        .padding(.horizontal, 4)
+      ADEPlainGlassComposer(
+        text: $draft,
+        isFocused: $composerFocused,
+        attachments: $noAttachments,
+        placeholder: "Message",
+        acceptsPastedImages: false,
+        sendEnabled: open && !trimmed.isEmpty && !sending,
+        sending: sending,
+        sendAccessibilityLabel: "Queue message",
+        disabledSendAccessibilityLabel: "Enter a message to queue",
+        dictationTargetId: "cloud-launch-\(launchId)",
+        onSend: { Task { await sendQueuedMessage() } },
+        menu: { startDictation in
+          Menu {
+            if SpeechDictationService.isAvailable {
+              Button(action: startDictation) {
+                Label("Dictate", systemImage: "mic")
+              }
+            }
+          } label: {
+            Image(systemName: "ellipsis")
+              .font(.system(size: 15, weight: .semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(width: 36, height: 36)
+              .contentShape(Circle())
+              .frame(minWidth: 44, minHeight: 44)
+          }
+          .disabled(!open || !SpeechDictationService.isAvailable)
+          .accessibilityLabel("Composer options")
+        },
+        controls: { EmptyView() }
+      )
+      .disabled(!open)
+      .accessibilityHint("Queued until the agent starts")
+    }
+    .padding(.horizontal, 12)
+    .padding(.top, 6)
+    .padding(.bottom, 8)
+    .workLaunchComposerScrollEdge()
+  }
+
+  private func composerHint(_ entry: AccountCloudLaunchStore.Entry) -> String {
+    if entry.record?.state == "cancelled" { return "This chat was cancelled." }
+    if entry.startError != nil || entry.record?.failed == true { return "Setup failed. Retry it to send your messages." }
+    if entry.record?.sessionId != nil { return "The chat is running. It opens in a moment." }
+    return "Messages you send now are queued and go out once the agent starts. You can close the app."
+  }
+
+  @MainActor
+  private func sendQueuedMessage() async {
+    let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty, !sending else { return }
+    sending = true
+    errorMessage = nil
+    draft = ""
+    defer { sending = false }
+    if let refusal = await launches.addMessage(launchId, text: text, using: syncService) {
+      ADEHaptics.error()
+      let typedSince = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+      draft = typedSince.isEmpty ? text : "\(text)\n\n\(draft)"
+      errorMessage = "Couldn't send — \(refusal)"
+    } else {
+      ADEHaptics.light()
+    }
+  }
+
+  @MainActor
+  private func openChat() async {
+    guard let chatId = readyChatId, !opening else { return }
+    opening = true
+    openFailed = false
+    let opened = await onChatReady(chatId)
+    guard !Task.isCancelled else {
+      opening = false
+      return
+    }
+    opening = false
+    openFailed = !opened
+  }
+}
+
+/// ms since 1970 as the ISO time the transcript views read.
+func workCloudLaunchIso(ms: Double?) -> String? {
+  guard let ms, ms > 0 else { return nil }
+  return ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: ms / 1000))
+}
+
+/// When the launch started: the server's time, else when this phone first knew it.
+func workCloudLaunchStartedAt(_ entry: AccountCloudLaunchStore.Entry) -> String {
+  workCloudLaunchIso(ms: entry.record?.createdAt) ?? ISO8601DateFormatter().string(from: entry.startedAt)
+}
+
+/// The setup card of a chat starting on ADE Cloud, drawn with the parts of
+/// the launch card a chat starting in a new lane of your own shows
+/// (`WorkChatLaunchSetupCard`): the header with its time and lane, the
+/// segmented rail, one row per step, and the actions under a hairline. The
+/// sign-in step holds what the person does for it.
+struct WorkCloudLaunchSetupCard: View {
+  let entry: AccountCloudLaunchStore.Entry
+  var opening = false
+  var onOpenChat: () -> Void = {}
+
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  @ObservedObject private var launches = AccountCloudLaunchStore.shared
+  private var syncService: SyncService { syncPublishes.service }
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.openURL) private var openURL
+  @State private var busy: String?
+  @State private var cancelError: String?
+  @State private var cancelConfirmationPresented = false
+
+  private var record: CloudLaunchRecord? { entry.record }
+  private var steps: CloudSetupStepStates {
+    var states = cloudSetupStepStates(record)
+    if entry.startError != nil { states.computer = .failed }
+    return states
+  }
+  private var failed: Bool { entry.startError != nil || record?.failed == true }
+  private var running: Bool { record?.sessionId != nil || record?.state == "running" || record?.state == "done" }
+  private var providerLabel: String {
+    if let label = record?.signIn?.label, !label.isEmpty { return label }
+    let id = entry.provider ?? record?.provider
+    return launches.catalog?.providers.first { $0.provider == id }?.label ?? (id.map { $0.capitalized } ?? "your provider")
+  }
+  private var laneName: String { nonEmptyTrimmed(record?.laneName) ?? entry.laneName ?? "" }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      header
+      WorkChatLaunchProgressRail(segments: workCloudLaunchRail(entry))
+        .padding(.top, 12)
+        .padding(.bottom, 4)
+      VStack(alignment: .leading, spacing: 0) {
+        stepLine("cloud", "Start computer", steps.computer, detail: record?.state == "needs_approval" ? "Waiting for you" : nil)
+        if record?.state == "needs_approval", let link = record?.approvalUrl.flatMap(URL.init(string:)) {
+          HStack(spacing: 8) {
+            Text("Confirm the computer's sign-in to your account.")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+              .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            capsuleButton("Confirm", symbol: "checkmark", primary: true) { openURL(link) }
+          }
+          .padding(.leading, 32)
+          .padding(.bottom, 8)
+        }
+        WorkChatLaunchHairline()
+        if entry.isLane {
+          stepLine("arrow.triangle.branch", "Check out the branch", steps.repo)
+          WorkChatLaunchHairline()
+          stepLine("checkmark", "Lane ready", running ? .done : steps.send)
+        } else {
+          stepLine("icloud.and.arrow.down", "Clone repository", steps.repo)
+          WorkChatLaunchHairline()
+          stepLine("person.badge.key", "Sign in to \(providerLabel)", steps.signIn,
+                   detail: steps.signIn == .waiting ? "Waiting for you" : nil)
+          if steps.signIn == .waiting, let signIn = record?.signIn {
+            CloudSignInStepDetail(signIn: signIn, instanceId: record?.instanceId) {
+              await launches.refresh(entry.launchId, using: syncService)
+            }
+            .padding(.leading, 32)
+            .padding(.bottom, 8)
+          }
+          WorkChatLaunchHairline()
+          stepLine("sparkles", "Start agent", steps.send)
+        }
+      }
+      if failed {
+        Text(entry.startError ?? record?.error ?? "ADE Cloud didn't say why.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.warning)
+          .fixedSize(horizontal: false, vertical: true)
+          .textSelection(.enabled)
+          .padding(.top, 8)
+      }
+      if let cancelError {
+        Text("The chat wasn't cancelled. \(cancelError)")
+          .font(.caption)
+          .foregroundStyle(ADEColor.warning)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.top, 8)
+      }
+      footer
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .adeGlassCard(cornerRadius: 16, padding: 14)
+    .overlay {
+      if failed {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+          .strokeBorder(ADEColor.warning.opacity(0.28), lineWidth: 1)
+          .allowsHitTesting(false)
+      }
+    }
+    .animation(ADEMotion.quick(reduceMotion: reduceMotion), value: record)
+    .confirmationDialog(
+      entry.isLane ? "Stop making this computer?" : "Cancel this chat?",
+      isPresented: $cancelConfirmationPresented,
+      titleVisibility: .visible
+    ) {
+      Button(entry.isLane ? "Stop it" : "Cancel chat", role: .destructive) {
+        busy = "cancel"
+        cancelError = nil
+        Task {
+          cancelError = await launches.cancel(entry.launchId, using: syncService)
+          busy = nil
+        }
+      }
+      Button("Keep", role: .cancel) {}
+    } message: {
+      Text(entry.isLane
+        ? "ADE Cloud deletes the new computer. The lane stays."
+        : "ADE Cloud deletes the new computer. Your messages are not sent.")
+    }
+    .accessibilityElement(children: .contain)
+  }
+
+  // MARK: Header
+
+  private var phaseStatus: ChatLaunchStageStatus {
+    if failed { return .failed }
+    if running { return .done }
+    return .running
+  }
+
+  private var title: String {
+    if entry.isLane {
+      if failed { return "Couldn't make the computer" }
+      if running { return "Lane ready" }
+      return "Making a new computer"
+    }
+    if failed { return "Couldn't start the chat" }
+    if record?.sessionId != nil { return "Opening the chat" }
+    if record?.state == "needs_approval" { return "Confirm the computer" }
+    if record?.state == "waiting_for_sign_in" { return "Sign in to \(providerLabel) to go on" }
+    return "Setting up ADE Cloud"
+  }
+
+  private var header: some View {
+    HStack(alignment: .top, spacing: 10) {
+      WorkChatLaunchStageTile(
+        symbol: failed ? "exclamationmark.triangle.fill" : running ? "checkmark" : "cloud",
+        status: phaseStatus,
+        size: 26
+      )
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(failed ? ADEColor.warning : ADEColor.textPrimary)
+            .lineLimit(1)
+            .contentTransition(.opacity)
+          Spacer(minLength: 8)
+          WorkChatLaunchDurationText(
+            startedAt: workCloudLaunchStartedAt(entry),
+            endedAt: nil,
+            isLive: !failed && !running
+          )
+          .accessibilityLabel("Elapsed")
+        }
+        HStack(spacing: 6) {
+          if !laneName.isEmpty {
+            chip(mono: false) {
+              WorkLaneLogoMark(color: WorkChatLaunchTone.running, size: 9)
+              Text(laneName)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            }
+            .layoutPriority(1)
+            .accessibilityLabel("Lane \(laneName)")
+          }
+          chip(mono: false) {
+            Image(systemName: "cloud")
+              .font(.system(size: 8, weight: .semibold))
+              .foregroundStyle(ADEColor.textMuted)
+            Text("ADE Cloud")
+              .lineLimit(1)
+          }
+        }
+      }
+    }
+  }
+
+  private func chip<Content: View>(mono: Bool, @ViewBuilder _ content: () -> Content) -> some View {
+    HStack(spacing: 4) {
+      content()
+    }
+    .font(mono ? .caption2.monospaced() : .caption2.weight(.medium))
+    .foregroundStyle(ADEColor.textSecondary)
+    .padding(.horizontal, 7)
+    .padding(.vertical, 2.5)
+    .background(ADEColor.recessedBackground.opacity(0.5), in: Capsule(style: .continuous))
+    .overlay(Capsule(style: .continuous).strokeBorder(ADEColor.glassBorder, lineWidth: 1))
+  }
+
+  // MARK: Steps
+
+  private func stepLine(_ symbol: String, _ label: String, _ state: CloudSetupStepState, detail: String? = nil) -> some View {
+    WorkChatLaunchStageLine(symbol: symbol, status: workCloudStageStatus(state), label: label, detail: detail)
+      .accessibilityElement(children: .combine)
+  }
+
+  // MARK: Actions
+
+  @ViewBuilder
+  private var footer: some View {
+    let canCancel = !failed && !running && record != nil && record?.state != "cancelled"
+    let canRetry = failed && record?.state != "cancelled"
+    if canCancel || canRetry || running || failed {
+      VStack(alignment: .leading, spacing: 0) {
+        WorkChatLaunchHairline()
+          .padding(.top, 8)
+        HStack(spacing: 6) {
+          Spacer(minLength: 0)
+          if running && !entry.isLane && record?.sessionId != nil {
+            capsuleButton(opening ? "Opening…" : "Open chat", symbol: "bubble.left.and.bubble.right", primary: true, busy: opening, action: onOpenChat)
+          }
+          if canRetry {
+            capsuleButton("Retry", symbol: "arrow.clockwise", primary: true, busy: busy == "retry") {
+              busy = "retry"
+              Task {
+                await launches.retry(entry.launchId, using: syncService)
+                busy = nil
+              }
+            }
+            .disabled(entry.body == nil && record?.request == nil)
+          }
+          if failed || (running && entry.isLane) {
+            capsuleButton("Hide", symbol: "eye.slash", primary: false) { launches.hide(entry.launchId) }
+          }
+          if canCancel {
+            capsuleButton("Cancel", symbol: "xmark", primary: false, busy: busy == "cancel") {
+              cancelConfirmationPresented = true
+            }
+          }
+        }
+        .padding(.top, 6)
+      }
+    }
+  }
+
+  /// The launch card's text action: a capsule, tinted when primary.
+  private func capsuleButton(_ title: String, symbol: String, primary: Bool, busy isBusy: Bool = false, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      HStack(spacing: 4) {
+        if isBusy {
+          ProgressView().controlSize(.mini)
+        } else {
+          Image(systemName: symbol)
+            .font(.system(size: 9, weight: .bold))
+        }
+        Text(title)
+      }
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(primary ? WorkChatLaunchTone.running : ADEColor.textSecondary)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 6)
+      .background(primary ? WorkChatLaunchTone.running.opacity(0.12) : Color.clear, in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .strokeBorder(primary ? WorkChatLaunchTone.running.opacity(0.32) : ADEColor.glassBorder, lineWidth: 1)
+      )
+      .contentShape(Capsule(style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .disabled(busy != nil)
+  }
+}
+
+/// A cloud setup step's state as the launch card's stage status.
+func workCloudStageStatus(_ state: CloudSetupStepState) -> ChatLaunchStageStatus {
+  switch state {
+  case .todo: return .pending
+  case .running, .waiting: return .running
+  case .done: return .done
+  case .failed: return .failed
   }
 }
 

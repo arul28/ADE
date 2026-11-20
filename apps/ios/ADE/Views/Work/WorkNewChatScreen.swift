@@ -660,15 +660,13 @@ struct WorkNewChatScreen: View {
   /// open the chat (session id = launch id) right away; the host is still
   /// setting the lane up.
   let onLaunchStarted: @MainActor (ChatLaunchSnapshot) async -> Void
-  /// A chat started on ADE Cloud is running: open it (its chat id).
-  let onCloudChatReady: @MainActor (String) async -> Void
+  /// A chat started on ADE Cloud: open its page (its launch id), which shows
+  /// the setup steps and becomes the chat once its computer runs it.
+  let onCloudLaunchStarted: @MainActor (String) async -> Void
 
   @State private var selectedLaneId: String = ""
   @ObservedObject private var cloudLaunches = AccountCloudLaunchStore.shared
   @ObservedObject private var cloudStore = AccountCloudStore.shared
-  /// The launch this screen started on ADE Cloud: its setup card shows above
-  /// the composer until the chat runs.
-  @State private var cloudLaunchId: String?
   /// The machine the chat starts on. Nil = the primary (focused) machine.
   @State private var selectedMachineKey: String?
   /// That machine's lanes (namespaced ids), when it is not the primary one.
@@ -757,7 +755,7 @@ struct WorkNewChatScreen: View {
     onChatImported: @escaping @MainActor (AgentChatSessionSummary) async -> Void = { _ in },
     onRefreshLanes: @escaping @MainActor () async -> Void,
     onLaunchStarted: @escaping @MainActor (ChatLaunchSnapshot) async -> Void = { _ in },
-    onCloudChatReady: @escaping @MainActor (String) async -> Void = { _ in }
+    onCloudLaunchStarted: @escaping @MainActor (String) async -> Void = { _ in }
   ) {
     self.lanes = lanes
     self.preferredLaneId = preferredLaneId
@@ -768,7 +766,7 @@ struct WorkNewChatScreen: View {
     self.onChatImported = onChatImported
     self.onRefreshLanes = onRefreshLanes
     self.onLaunchStarted = onLaunchStarted
-    self.onCloudChatReady = onCloudChatReady
+    self.onCloudLaunchStarted = onCloudLaunchStarted
     // Restore the last-used model + access mode so a fresh New Chat screen opens
     // on the user's most recent choices. Seeding the @State initial values here
     // (rather than assigning in onAppear) avoids the provider/model onChange
@@ -1000,15 +998,6 @@ struct WorkNewChatScreen: View {
         // Pinned: the lane picker must stay reachable no matter how tall the
         // composer grows or whether the keyboard is up.
         // Left-aligned in one row, on the prompt box's own left edge.
-        if let cloudLaunchId, let entry = cloudLaunches.entries.first(where: { $0.launchId == cloudLaunchId }) {
-          WorkCloudLaunchCard(entry: entry) {
-            guard let chatId = entry.record?.sessionId else { return }
-            Task { await onCloudChatReady(chatId) }
-          }
-          .padding(.horizontal, 12)
-          .transition(.opacity)
-        }
-
         laneSelector
           .padding(.horizontal, 10)
 
@@ -1108,7 +1097,7 @@ struct WorkNewChatScreen: View {
     }
     .onAppear {
       // No computer of the person's own serves this project: start on ADE Cloud.
-      if selectedMachineKey == nil, cloudLaunchId == nil, workNewChatPrefersCloud(syncService: syncService) {
+      if selectedMachineKey == nil, workNewChatPrefersCloud(syncService: syncService) {
         selectMachine(workNewChatCloudOption())
       }
       // A lane of another machine opens the page on that machine.
@@ -1887,8 +1876,9 @@ struct WorkNewChatScreen: View {
 
   @MainActor
   /// Starts the chat on ADE Cloud through the account server: on a new cloud
-  /// lane, or on the picked cloud lane (with or without a computer). The
-  /// setup card above the composer follows it; the chat opens when it runs.
+  /// lane, or on the picked cloud lane (with or without a computer). Its page
+  /// opens at once, as a launch on a computer of your own does: the message,
+  /// the setup steps (with Retry when the start fails), then the chat.
   private func submitOnCloud(opener: String, rawText: String, attachments: [WorkChatInputAttachment]) async -> Bool {
     if let refusal = cloudStore.doingRefusal {
       errorMessage = refusal
@@ -1946,12 +1936,14 @@ struct WorkNewChatScreen: View {
       using: syncService
     )
     busy = false
-    withAnimation(.smooth(duration: 0.2)) { cloudLaunchId = launchId }
     if cloudLaunches.entries.first(where: { $0.launchId == launchId })?.startError == nil {
       ADEHaptics.success()
-      return true
+    } else {
+      ADEHaptics.error()
     }
-    return false
+    // The launch keeps the message: a failed start shows on its page with Retry.
+    await onCloudLaunchStarted(launchId)
+    return true
   }
 
   private func submit(openingMessage: String, attachments inputAttachments: [WorkChatInputAttachment]) async -> Bool {
