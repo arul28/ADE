@@ -35,9 +35,27 @@ runs:
         # failed. A beta also has its own build number, so it would miss the
         # build-folder cache and compile cold. Only an image with no release
         # of 27 falls back to a beta.
-        latest=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | grep -vi beta | sort -V | tail -1 || true)
+        # A release can lack the Metal toolchain too: the image's Xcode 27.3.0
+        # (Nov 2026) did. The newest release that has it wins; with none, the
+        # newest one downloads it.
+        releases=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | grep -vi beta | sort -V -r || true)
+        if [[ -z "$releases" ]]; then
+          releases=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V -r || true)
+        fi
+        latest=""
+        for app in $releases; do
+          if DEVELOPER_DIR="$app/Contents/Developer" xcrun -sdk iphoneos metal --version >/dev/null 2>&1; then
+            latest="$app"
+            break
+          fi
+        done
         if [[ -z "$latest" ]]; then
-          latest=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)
+          latest=$(printf '%s\n' $releases | head -1)
+          if [[ -n "$latest" ]]; then
+            echo "No Xcode 27 here has the Metal toolchain; downloading it for $latest."
+            sudo xcode-select -s "$latest/Contents/Developer"
+            xcodebuild -downloadComponent MetalToolchain
+          fi
         fi
         if [[ -n "$latest" ]]; then
           sudo xcode-select -s "$latest/Contents/Developer"
