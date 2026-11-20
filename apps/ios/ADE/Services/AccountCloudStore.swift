@@ -304,7 +304,8 @@ final class AccountCloudStore: ObservableObject {
       let result = try await client.queueMessage(machineKey: machineKey, chatId: chatId, messageId: messageId, text: text, attachments: attachments, sizeId: sizeId)
       guard generation == accountGeneration else { return .failed("The account changed. Send the message again.") }
       upsert(result.message, key: key)
-      if sizeId != nil { newComputerSizes[machineKey.lowercased()] = nil }
+      // A size picked while the send was out stays for the next send.
+      if let sizeId, newComputerSizes[machineKey.lowercased()] == sizeId { newComputerSizes[machineKey.lowercased()] = nil }
       accountCloudLog.notice("cloud_store queue=sent wake=\(result.wake?.state ?? "none", privacy: .public)")
       return .queued(result.message, wakeState: result.wake?.state ?? "waking")
     } catch CloudServerClient.Failure.noAccess {

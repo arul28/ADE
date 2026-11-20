@@ -14872,7 +14872,8 @@ export function AgentChatPane({
       // Queued: the chat shows it as its own queued row (`adeCloudChatQueue.ts`),
       // the box clears, and the chat stays selected with the launch's card.
       noteAdeCloudQueuedSend(chat, answer, { text, provider, modelId: modelId || null });
-      if (sizeId) pickNewComputerSize(chat.machineKey, null);
+      // A size picked while the send was out stays for the next send.
+      if (sizeId && peekNewComputerSize(chat.machineKey) === sizeId) pickNewComputerSize(chat.machineKey, null);
       // Text typed while the send was out stays in the box.
       if (draftStore.get() === sentDraft) {
         draftStore.set("");
