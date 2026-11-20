@@ -12,6 +12,7 @@ import type { ProductAnalyticsService } from "./productAnalyticsService";
 import { derivedEventId } from "./analyticsEventId";
 import { detectInstallSource } from "./installSource";
 import { classifyProviderAccountRefusal } from "../../../shared/providerAccountRefusal";
+import { isFreeModel } from "../../../shared/freeModels";
 
 type AgentTurnAnalytics = Pick<ProductAnalyticsService, "captureInternal">;
 
@@ -544,6 +545,19 @@ function failedTurnKind(event: AgentChatTurnSettledEvent): TurnFailureKind {
   return event.errorKind ?? (event.errorCategory ? TURN_ERROR_KIND[event.errorCategory] : "other");
 }
 
+/**
+ * The settled turn's model is a free one. The runtime reports a registry id
+ * (`opencode/opencode/big-pickle`) or OpenCode's own (`opencode/big-pickle`).
+ */
+function turnUsedFreeModel(model: string | null | undefined): boolean {
+  const id = model?.trim();
+  if (!id) return false;
+  if (isFreeModel({ id })) return true;
+  const slash = id.indexOf("/");
+  if (slash <= 0 || slash === id.length - 1) return false;
+  return isFreeModel({ id, openCodeProviderId: id.slice(0, slash), openCodeModelId: id.slice(slash + 1) });
+}
+
 export function captureAgentTurnSettledAnalytics(args: {
   analytics: AgentTurnAnalytics;
   projectId: string;
@@ -581,6 +595,28 @@ export function captureAgentTurnSettledAnalytics(args: {
       errorKind: event.status === "failed" ? failedTurnKind(event) : null,
     },
   });
+
+  // A chat on a free model (nothing signed in, or picked from the Free page):
+  // one fact per chat, on its first settled turn on one. The dedupe key holds
+  // it to one even when the chat changes models; the model itself stays in
+  // `$ai_generation` above.
+  if (turnUsedFreeModel(event.model)) {
+    analytics.captureInternal({
+      event: "ade_feature_used",
+      surface: "api",
+      projectId,
+      sessionId: event.sessionId,
+      dedupeKey: `free-model-chat:${event.sessionId}`,
+      minimumIntervalMs: 31 * 24 * 60 * 60_000,
+      properties: {
+        feature: "chat",
+        action: "free_model_used",
+        outcome,
+        provider: "opencode",
+        source: "runtime",
+      },
+    });
+  }
 
   analytics.captureInternal({
     event: "ade_work_session_completed",

@@ -1,5 +1,5 @@
 import { memo, useCallback, useRef } from "react";
-import { Star, Clock } from "@phosphor-icons/react";
+import { Star, Clock, Gift } from "@phosphor-icons/react";
 import type { ProviderFamily } from "../../../../shared/modelRegistry";
 import { ProviderLogo } from "../ProviderLogos";
 import { CustomToolMark } from "../CustomToolMark";
@@ -13,11 +13,13 @@ export type RailEntry =
   | { kind: "harnesses" }
   | { kind: "favorites" }
   | { kind: "recents" }
+  // Every model you can use with no plan, account or key (`shared/freeModels.ts`).
+  | { kind: "free" }
   | { kind: "provider"; family: ProviderFamily; label: string };
 
 export type AuthStatus = "ok" | "unauthed" | "limited";
 
-export type RailSelection = "harnesses" | "favorites" | "recents" | `provider:${ProviderFamily}`;
+export type RailSelection = "harnesses" | "favorites" | "recents" | "free" | `provider:${ProviderFamily}`;
 
 export type ModelPickerRailProps = {
   entries: readonly RailEntry[];
@@ -30,6 +32,7 @@ function entryKey(entry: RailEntry): RailSelection {
   if (entry.kind === "harnesses") return "harnesses";
   if (entry.kind === "favorites") return "favorites";
   if (entry.kind === "recents") return "recents";
+  if (entry.kind === "free") return "free";
   return `provider:${entry.family}`;
 }
 
@@ -123,7 +126,9 @@ const RailButton = memo(function RailButton({
         ? "Favorites"
         : entry.kind === "recents"
           ? "Recents"
-          : entry.label;
+          : entry.kind === "free"
+            ? "Free models"
+            : entry.label;
 
   const icon =
     // The one rail entry that is yours rather than a vendor's gets its own
@@ -135,6 +140,8 @@ const RailButton = memo(function RailButton({
       <Star size={16} weight={isSelected ? "fill" : "regular"} className="text-amber-400" />
     ) : entry.kind === "recents" ? (
       <Clock size={16} weight={isSelected ? "fill" : "regular"} className="text-fg/80" />
+    ) : entry.kind === "free" ? (
+      <Gift size={16} weight={isSelected ? "fill" : "regular"} className="text-sky-300" />
     ) : (
       <ProviderLogo family={entry.family} size={18} />
     );

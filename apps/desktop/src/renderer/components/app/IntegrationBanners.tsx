@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { issueWriteSourceLabel } from "../../../shared/githubOperationCredential";
-import { CloudSlash, GithubLogo, Robot } from "@phosphor-icons/react";
+import { CloudSlash, Gift, GithubLogo, Robot } from "@phosphor-icons/react";
 import type { NavigateFunction } from "react-router-dom";
 import type {
   GitHubAppInstallationStatus,
@@ -56,6 +56,12 @@ export type IntegrationBannersProps = {
   currentProjectRoot: string | null;
   githubStatus: GitHubStatus | null;
   hasAnyAiProvider: boolean;
+  /**
+   * Nothing is signed in on this machine and its free models are ready
+   * (`shared/freeModels.ts`): the free-models banner replaces the missing
+   * provider warning.
+   */
+  freeModelsReady?: boolean;
   aiStatusLoaded: boolean;
   /**
    * Relay leg of this machine's sync route health, pushed down from AppShell's
@@ -74,6 +80,7 @@ const AI_SETTINGS_ROUTE = settingsRouteFor("agents.providers");
 const GITHUB_ICON = <GithubLogo size={13} weight="fill" />;
 const RELAY_ICON = <CloudSlash size={13} weight="fill" />;
 const AI_ICON = <Robot size={13} weight="fill" />;
+const FREE_MODELS_ICON = <Gift size={13} weight="fill" />;
 
 /**
  * How long the relay control has to stay down before we say anything. Relay
@@ -133,6 +140,7 @@ export function IntegrationBanners({
   currentProjectRoot,
   githubStatus,
   hasAnyAiProvider,
+  freeModelsReady = false,
   aiStatusLoaded,
   relayHealth,
   navigate,
@@ -504,7 +512,20 @@ export function IntegrationBanners({
     // 3) No AI provider configured (MIGRATED). Not on an ADE Cloud tab: ADE
     // Cloud has no AI status of its own, and its computers use the account's
     // sign-ins and keys (Settings > ADE Cloud says what is missing).
-    if (currentProjectRoot && aiStatusLoaded && !hasAnyAiProvider && !isAdeCloudTargetId(machineId)) {
+    //
+    // Nothing signed in, but the free models work: say that instead, and name
+    // no provider (there are many).
+    if (currentProjectRoot && aiStatusLoaded && freeModelsReady && !isAdeCloudTargetId(machineId)) {
+      list.push({
+        id: "free-models",
+        tone: "accent",
+        icon: FREE_MODELS_ICON,
+        title: "Free models are ready",
+        detail: "Chat with a free model now, or sign in to an AI provider for more models.",
+        actions: [{ label: "Sign in", variant: "primary", onClick: () => navigate(AI_SETTINGS_ROUTE) }],
+        dismiss: { key: `free-models:${currentProjectRoot}`, fingerprint: "ready" },
+      });
+    } else if (currentProjectRoot && aiStatusLoaded && !hasAnyAiProvider && !isAdeCloudTargetId(machineId)) {
       list.push({
         id: "ai-provider",
         tone: "warning",
@@ -612,6 +633,7 @@ export function IntegrationBanners({
     githubStatus,
     aiStatusLoaded,
     hasAnyAiProvider,
+    freeModelsReady,
     navigate,
     loadAppStatus,
     loadedRoot,

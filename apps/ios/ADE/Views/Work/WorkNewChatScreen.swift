@@ -746,6 +746,16 @@ struct WorkNewChatScreen: View {
   /// replace it while the user has not picked anything here yet.
   private let openingSelection: WorkComposerPreferences.Selection
   @State private var hostLaunchDefaultsChecked = false
+  /// The free model ADE started this chat on because nothing is signed in on
+  /// the chosen machine. ADE chose it, not the person, so it is never saved as
+  /// the remembered model; any pick here clears it.
+  @State private var freeDefaultSelection: WorkComposerPreferences.Selection?
+  /// The person picked a model or a harness on this page.
+  @State private var modelPickedByPerson = false
+  /// The chosen machine's free-models answer, and the free model it would
+  /// start on (for the "Use a free model" action beside the account hint).
+  @State private var freeModelsStatus: WorkFreeModelsStatus?
+  @State private var freeDefaultModelId: String?
 
   init(
     lanes: [LaneSummary],
@@ -1134,8 +1144,12 @@ struct WorkNewChatScreen: View {
     }
     .onChange(of: composerSelection) { _, newValue in
       // Persist the full selection without deriving one setting from another.
+      // A free model ADE picked is not the person's choice: never remember it.
+      guard newValue != freeDefaultSelection else { return }
       WorkComposerPreferences.save(newValue)
     }
+    // A machine with nothing signed in starts the chat on a free model.
+    .task(id: freeDefaultTaskKey) { await applyFreeDefaultIfNeeded() }
     .onChange(of: sessionMode) { _, mode in
       guard mode == .cli else { return }
       // The CLI start records Linear links only. A GitHub choice made in chat
@@ -1173,6 +1187,8 @@ struct WorkNewChatScreen: View {
         harnessPresets: selectedMachineKey == nil ? harnessPresets : [],
         isBusy: false,
         onSelectPreset: { preset in
+          modelPickedByPerson = true
+          freeDefaultSelection = nil
           selectedPreset = preset
           selectedModelOption = nil
           modelId = preset.model
@@ -1193,7 +1209,11 @@ struct WorkNewChatScreen: View {
         // ADE Cloud lists its own models; an empty list until it arrives, never
         // the connected machine's.
         cloudCatalog: isCloudSelected ? (cloudLaunches.catalog ?? .pending) : nil,
+        // Free models are read and downloaded on the chosen machine only.
+        freeModelsMachine: selectedMachineHost.map { WorkFreeModelsMachine.host($0) } ?? .unreachable,
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
+          modelPickedByPerson = true
+          freeDefaultSelection = nil
           selectedPreset = nil
           selectedModelOption = option
           modelId = option.id
@@ -1209,6 +1229,103 @@ struct WorkNewChatScreen: View {
     .task(id: syncService.focusedHostInventoryMachineKey ?? "") {
       await loadHarnessPresets()
     }
+  }
+
+  /// The chosen machine's connection: the primary one, or the roster
+  /// connection to another machine. Nil for ADE Cloud and for a machine the
+  /// phone has no connection to.
+  private var selectedMachineHost: ProviderAccountsHost? {
+    guard !isCloudSelected else { return nil }
+    guard let selectedMachineKey else { return syncService }
+    return machineFleet.connection(for: selectedMachineKey)
+  }
+
+  private var freeDefaultTaskKey: String {
+    let phase = selectedMachineKey
+      .flatMap { machineFleet.connection(for: $0) }
+      .map { String(describing: $0.phase) }
+      ?? String(describing: syncService.connectionState)
+    return "\(selectedMachineKey ?? "focused")|\(phase)|\(sessionMode)"
+  }
+
+  /// Nothing signed in on the chosen machine: start on its free default (the
+  /// manifest's preferred free model it lists, else its first), unless the
+  /// person already picked something here. A machine with a provider signed
+  /// in, or an older one, leaves the page as it always was, and takes back a
+  /// free model ADE chose for another machine.
+  @MainActor
+  private func applyFreeDefaultIfNeeded() async {
+    guard let host = selectedMachineHost else {
+      freeModelsStatus = nil
+      freeDefaultModelId = nil
+      return
+    }
+    let status = await WorkFreeModelsStatusStore.shared.status(for: host)
+    guard !Task.isCancelled else { return }
+    freeModelsStatus = status
+    guard let status, status.nothingSignedIn else {
+      freeDefaultModelId = nil
+      revertFreeDefault()
+      return
+    }
+    let pick = await workFreeDefaultModelId(on: host, status: status)
+    guard !Task.isCancelled else { return }
+    freeDefaultModelId = pick
+    guard let pick, sessionMode == .chat, !modelPickedByPerson, selectedPreset == nil,
+          freeDefaultSelection == composerSelection || !workIsFreeModel(modelId)
+    else { return }
+    let selection = WorkComposerPreferences.Selection(
+      provider: "opencode",
+      modelId: pick,
+      runtimeMode: workDefaultRuntimeMode(provider: "opencode"),
+      reasoningEffort: "",
+      codexFastMode: false
+    )
+    // Set before the fields change, so the save on change sees it.
+    freeDefaultSelection = selection
+    selectedModelOption = nil
+    provider = selection.provider
+    modelId = selection.modelId
+    runtimeMode = selection.runtimeMode
+    reasoningEffort = ""
+    codexFastMode = false
+    machineModelHint = nil
+  }
+
+  /// Puts back what the page opened on when the free model ADE chose no
+  /// longer applies (another machine, someone signed in).
+  private func revertFreeDefault() {
+    guard let freeDefaultSelection, freeDefaultSelection == composerSelection else {
+      freeDefaultSelection = nil
+      return
+    }
+    self.freeDefaultSelection = nil
+    provider = openingSelection.provider
+    modelId = openingSelection.modelId
+    runtimeMode = openingSelection.runtimeMode
+    reasoningEffort = openingSelection.reasoningEffort
+    checkModelOnMachine()
+  }
+
+  /// A brand-new person whose chosen model has no account here: the hint
+  /// offers the machine's free model instead.
+  private var freeModelOfferId: String? {
+    guard freeModelsStatus?.isNewPerson == true, sessionMode == .chat,
+          let freeDefaultModelId, !workIsFreeModel(modelId) else { return nil }
+    return freeDefaultModelId
+  }
+
+  private func useFreeModel(_ id: String) {
+    modelPickedByPerson = true
+    freeDefaultSelection = nil
+    selectedPreset = nil
+    selectedModelOption = nil
+    provider = "opencode"
+    modelId = id
+    runtimeMode = workDefaultRuntimeMode(provider: "opencode")
+    reasoningEffort = ""
+    codexFastMode = false
+    machineModelHint = nil
   }
 
   @ViewBuilder
@@ -1256,11 +1373,21 @@ struct WorkNewChatScreen: View {
       // the container's width, so nothing above it can grow.
       .frame(maxWidth: .infinity, alignment: .leading)
       if let machineModelHint {
-        Text(machineModelHint)
-          .font(.caption)
-          .foregroundStyle(ADEColor.warning)
-          .lineLimit(2)
-          .padding(.horizontal, 4)
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+          Text(machineModelHint)
+            .font(.caption)
+            .foregroundStyle(ADEColor.warning)
+            .lineLimit(2)
+          if let freeId = freeModelOfferId {
+            Button("Use a free model") { useFreeModel(freeId) }
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.accent)
+              .buttonStyle(.plain)
+              .fixedSize()
+              .accessibilityIdentifier("Work.NewChat.UseFreeModel")
+          }
+        }
+        .padding(.horizontal, 4)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1624,6 +1751,8 @@ struct WorkNewChatScreen: View {
   /// default model and say so.
   private func checkModelOnMachine() {
     machineModelHint = nil
+    // A free model needs no account: it runs in the machine's OpenCode.
+    if workIsFreeModel(modelId) { return }
     let machineName = selectedMachineOption.name
     let mode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
     switch workNewChatModelCheck(
@@ -1930,7 +2059,7 @@ struct WorkNewChatScreen: View {
     }
     busy = true
     errorMessage = nil
-    WorkComposerPreferences.save(composerSelection)
+    if composerSelection != freeDefaultSelection { WorkComposerPreferences.save(composerSelection) }
     let launchId = await cloudLaunches.start(
       accountProjectId: project.id,
       origin: "\(project.host)/\(project.owner)/\(project.name)",
@@ -2002,7 +2131,8 @@ struct WorkNewChatScreen: View {
     let launchIssuesSnapshot = launchIssues
     // Anchor the "last time you sent a message" choice — covers the case where
     // the user sent with the restored/default selection without changing it.
-    WorkComposerPreferences.save(composerSelection)
+    // Not a free model ADE picked: that was never the person's choice.
+    if composerSelection != freeDefaultSelection { WorkComposerPreferences.save(composerSelection) }
     busy = true
     errorMessage = nil
     let wire = workRuntimeWireFields(provider: provider, mode: runtimeMode)
@@ -2647,8 +2777,20 @@ struct WorkNewChatPreviewHost: View {
   /// layout fixes are about, provable with no pairing.
   let usesGatewayModelFixture: Bool
 
-  init(usesGatewayModelFixture: Bool = false) {
+  init(usesGatewayModelFixture: Bool = false, freeModelsFixture: Bool = false) {
     self.usesGatewayModelFixture = usesGatewayModelFixture
+    if freeModelsFixture {
+      // A new person's computer: nothing signed in, so the page starts on the
+      // free default and never saves it as the remembered model.
+      WorkFreeModelsStatusStore.shared.pinPreview(
+        status: WorkFreeModelsPreviewData.status,
+        freeModelIds: WorkFreeModelsPreviewData.freeModelIds
+      )
+      if let catalog = WorkFreeModelsPreviewData.catalog(includeFree: true) {
+        SyncMenuSafePublisher.shared.service.seedPreviewChatModelCatalog(catalog)
+        WorkModelMentionDirectory.shared.record(catalog: catalog)
+      }
+    }
     MobileUsageQuotaStore.shared.pinPreviewSnapshot(WorkNewChatPreviewFixtures.quotaSnapshot())
     WorkUsageActivityCarousel.previewStats = WorkNewChatPreviewFixtures.stats()
     if usesGatewayModelFixture {

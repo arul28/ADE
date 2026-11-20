@@ -16128,6 +16128,15 @@ final class SyncService: ObservableObject {
     return cached.catalog
   }
 
+  #if DEBUG
+  /// Fixture screens: a catalog the model picker reads as this host's, with
+  /// no machine behind it.
+  func seedPreviewChatModelCatalog(_ catalog: AgentChatModelCatalog) {
+    chatModelCatalogCache[chatModelsCacheKey(provider: "catalog:preview")] =
+      ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: Date())
+  }
+  #endif
+
   @MainActor
   func getChatModelCatalog(
     mode: String = "refresh-stale",

@@ -44,6 +44,7 @@ import {
   hasConfiguredAiProvider,
   shouldRefreshAiStatusForChatEvent,
 } from "../../lib/aiProviderStatus";
+import { subscribeToolInstalled } from "../../lib/toolsCacheEvents";
 import { hasDismissedGithubReminder } from "../../lib/bannerDismiss";
 import {
   getStoredZoomLevel,
@@ -877,6 +878,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       refreshAiStatus({ force: detail?.force !== false });
     };
     window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
+    // OpenCode landing on this computer (downloaded at launch when there is no
+    // Claude or Codex) makes its free models ready.
+    const unsubscribeOpenCodeInstalled = isRemoteProject
+      ? () => undefined
+      : subscribeToolInstalled("opencode", () => refreshAiStatus({ force: true }));
     return () => {
       cancelled = true;
       window.clearTimeout(aiTimer);
@@ -884,6 +890,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
       unsubscribeChatEvents();
+      unsubscribeOpenCodeInstalled();
     };
   }, [currentProjectRoot, isRemoteProject, location.pathname, tabCopyPin?.key]);
 
@@ -1060,6 +1067,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const hasAnyAiProvider = useMemo(() => {
     return hasConfiguredAiProvider(aiStatus);
   }, [aiStatus]);
+  const freeModelsReady = aiStatus?.freeModels?.nothingSignedIn === true && aiStatus.opencodeBinaryInstalled === true;
 
   const commandPaletteBinding = useMemo(
     () => getEffectiveBinding(keybindings, "commandPalette.open", "Mod+K"),
@@ -1208,6 +1216,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           currentProjectRoot={currentProjectRoot}
           githubStatus={githubStatusScopeRef.current === githubStatusScope ? githubStatus : null}
           hasAnyAiProvider={hasAnyAiProvider}
+          freeModelsReady={freeModelsReady}
           aiStatusLoaded={aiStatusLoaded && aiStatus !== null}
           relayHealth={syncRelayHealth}
           navigate={navigate}

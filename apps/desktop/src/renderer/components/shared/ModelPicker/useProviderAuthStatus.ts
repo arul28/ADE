@@ -288,8 +288,30 @@ export function useProviderAuthStatus(options?: {
       if (!active || installed == null) return;
       setBinary({ opencodeBinaryInstalled: installed, binaryProbed: true });
     });
+    // A status re-read can find OpenCode newly downloaded (the Free page's
+    // "Get free models"). Follow it even when the caller passes its own auth
+    // status and the status effect below does not run.
+    const onUpdated = (event: Event) => {
+      const updatedRoot = (event as CustomEvent<AiStatusCacheUpdatedEventDetail>).detail?.projectRoot ?? null;
+      if (
+        updatedRoot !== (projectRoot ?? null)
+        && !(updatedRoot && projectRoot && arePathsEqual(updatedRoot, projectRoot))
+      ) {
+        return;
+      }
+      const updated = peekAiStatusCached(projectRoot, runtimePinRef.current);
+      if (!active || typeof updated?.opencodeBinaryInstalled !== "boolean") return;
+      const installed = opencodeBinaryInstalledFromStatus(updated);
+      setBinary((current) => (
+        current.binaryProbed && current.opencodeBinaryInstalled === installed
+          ? current
+          : { opencodeBinaryInstalled: installed, binaryProbed: true }
+      ));
+    };
+    window.addEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
     return () => {
       active = false;
+      window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
     };
   }, [binaryScopeKey, projectRoot, runtimePinKey]);
 

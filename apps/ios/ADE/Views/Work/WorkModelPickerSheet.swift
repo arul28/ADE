@@ -5,6 +5,18 @@ enum WorkModelPickerScope: Equatable {
   case personal
 }
 
+/// Which machine the Free page asks about free models and downloads OpenCode
+/// on: the chat's own machine, never a default one.
+enum WorkFreeModelsMachine {
+  /// The machine the picker's catalog comes from: the primary connection, or
+  /// the personal chat's machine.
+  case automatic
+  case host(ProviderAccountsHost)
+  /// No connection to the chat's machine: the Free page lists what the catalog
+  /// has and offers no download.
+  case unreachable
+}
+
 /// Mobile model picker — desktop-shaped Favorites / Recents / Providers layout.
 /// Mirrors `apps/desktop/src/renderer/components/shared/ModelPicker/`: a
 /// vertical rail on the leading edge picks the section (Favorites, Recents,
@@ -60,6 +72,7 @@ struct WorkModelPickerSheet: View {
   /// ADE Cloud's models, when the chat starts on ADE Cloud: the picker lists
   /// these instead of asking the connected machine, which may not exist.
   let cloudCatalog: CloudModelCatalog?
+  let freeModelsMachine: WorkFreeModelsMachine
 
   init(
     currentModelId: String,
@@ -82,9 +95,11 @@ struct WorkModelPickerSheet: View {
     copilotAutoTierPending: Bool = false,
     onSelectCopilotTiers: ((String, String?) -> Void)? = nil,
     cloudCatalog: CloudModelCatalog? = nil,
+    freeModelsMachine: WorkFreeModelsMachine = .automatic,
     onSelect: @escaping (WorkModelOption, String?, String, Bool) -> Void
   ) {
     self.cloudCatalog = cloudCatalog
+    self.freeModelsMachine = freeModelsMachine
     self.currentModelId = currentModelId
     self.currentProvider = currentProvider
     self.currentReasoningEffort = currentReasoningEffort
@@ -142,6 +157,14 @@ struct WorkModelPickerSheet: View {
   @State private var claudeLoginError: String?
   @State private var piLoginBusy = false
   @State private var piLoginError: String?
+  /// The scoped catalog's free models by source, cached with it.
+  @State private var scopedFreeGroups: [WorkFreeModelGroup] = []
+  /// The chat machine's free-models answer; nil = someone is signed in there.
+  @State private var freeStatus: WorkFreeModelsStatus?
+  /// The person tapped a rail entry, so a late status never moves them.
+  @State private var userPickedRail = false
+  @State private var freeCatalogRefreshing = false
+  @StateObject private var freeSetup = WorkFreeModelsSetup()
 
   private var catalog: [WorkModelCatalogGroup] {
     scopedCatalogGroups ?? []
@@ -151,14 +174,50 @@ struct WorkModelPickerSheet: View {
   @MainActor
   private func setHostGroups(_ groups: [WorkModelCatalogGroup]) {
     rawCatalogGroups = groups
-    scopedCatalogGroups = scopedCatalog(groups)
+    let scoped = scopedCatalog(groups)
+    scopedCatalogGroups = scoped
+    scopedFreeGroups = workFreeModelGroups(scoped)
   }
 
   /// Re-scope in place when a scoping input changes without the host catalog changing.
   @MainActor
   private func rescopeCatalog() {
     guard let rawCatalogGroups else { return }
-    scopedCatalogGroups = scopedCatalog(rawCatalogGroups)
+    let scoped = scopedCatalog(rawCatalogGroups)
+    scopedCatalogGroups = scoped
+    scopedFreeGroups = workFreeModelGroups(scoped)
+  }
+
+  /// The machine the Free page reads and downloads on.
+  private var freeModelsHost: ProviderAccountsHost? {
+    switch freeModelsMachine {
+    case .host(let host): return host
+    case .unreachable: return nil
+    case .automatic:
+      guard cloudCatalog == nil else { return nil }
+      if commandScope == .personal, let personalMachineKey, personalMachineKey != syncService.focusedMachineKey {
+        return syncService.machineFleet?.connection(for: personalMachineKey)
+      }
+      return syncService
+    }
+  }
+
+  /// The Free entry shows wherever free models are listed, or could be after
+  /// a download on the chat's machine. A surface that narrows the models
+  /// (a fixed list, a provider filter, ADE Cloud) only shows ones it has.
+  private var showsFreeEntry: Bool {
+    if !scopedFreeGroups.isEmpty { return true }
+    return cloudCatalog == nil && modelFilter == nil && availableModelIds == nil && freeModelsHost != nil
+  }
+
+  /// The Free page's source tab: the one picked, else the one holding the
+  /// current model, else the first.
+  private var activeFreeSource: String? {
+    if let selectedProviderTabKey, scopedFreeGroups.contains(where: { $0.source == selectedProviderTabKey }) {
+      return selectedProviderTabKey
+    }
+    return scopedFreeGroups.first(where: { group in group.models.contains { workModelIdsEquivalent($0.id, selectedModelId) } })?.source
+      ?? scopedFreeGroups.first?.source
   }
 
   private var flattenedModels: [WorkModelOption] {
@@ -191,6 +250,9 @@ struct WorkModelPickerSheet: View {
       entries.append(.custom)
     }
     entries.append(contentsOf: [.favorites, .recents])
+    if showsFreeEntry {
+      entries.append(.free)
+    }
     for group in catalog {
       entries.append(.providerGroup(key: group.key, label: groupLabel(group)))
     }
@@ -262,6 +324,7 @@ struct WorkModelPickerSheet: View {
               favoritesCount: picker.favorites.count,
               recentsCount: picker.recents.count,
               onSelect: { next in
+                userPickedRail = true
                 selection = next
                 selectedProviderTabKey = nil
                 if case .providerGroup(let key, _) = next {
@@ -305,8 +368,15 @@ struct WorkModelPickerSheet: View {
                 claudeLoginError: claudeLoginError,
                 onPiLogin: commandScope == .project ? { Task { await openPiLoginTerminal() } } : nil,
                 isPiLoginBusy: piLoginBusy,
-                piLoginError: piLoginError
+                piLoginError: piLoginError,
+                freeSetupPhase: freeSetup.phase,
+                freeCatalogRefreshing: freeCatalogRefreshing,
+                onGetFreeModels: {
+                  Task { await freeSetup.start(host: freeModelsHost, onReady: refreshFreeCatalog) }
+                },
+                onRefreshFreeModels: { Task { await refreshFreeCatalog() } }
               )
+              .task(id: freeSetupTaskKey) { await checkFreeSetupIfNeeded() }
             }
           }
           Divider().overlay(ADEKit.rule)
@@ -346,6 +416,9 @@ struct WorkModelPickerSheet: View {
     // survives, so neither can be assumed constant for the sheet's lifetime.
     .onChange(of: availableModelIds) { _, _ in rescopeCatalog() }
     .onChange(of: cursorAvailabilityMode) { _, _ in rescopeCatalog() }
+    // A machine with nothing signed in opens the picker on the Free page.
+    .task(id: freeModelsHost.map { WorkFreeModelsStatusStore.key(for: $0) } ?? "") { await loadFreeStatus() }
+    .onDisappear { freeSetup.stop() }
   }
 
   /// Falls back to the first available provider entry only when the user's
@@ -358,6 +431,8 @@ struct WorkModelPickerSheet: View {
     switch selection {
     case .favorites, .recents:
       return selection
+    case .free:
+      return showsFreeEntry ? selection : (firstProviderSelection() ?? .favorites)
     case .custom:
       return customHarnessesAvailable ? selection : (firstProviderSelection() ?? .favorites)
     case .providerGroup(let key, _):
@@ -412,6 +487,11 @@ struct WorkModelPickerSheet: View {
   private func pickInitialSelectionIfNeeded() {
     guard hasCatalog, !didPickInitialSelection else { return }
     didPickInitialSelection = true
+    // Favorites and Recents are empty for a person with nothing signed in.
+    if freeStatus?.nothingSignedIn == true, showsFreeEntry {
+      selection = .free
+      return
+    }
     if let activeGroupKey = catalogGroupContaining(modelId: currentModelId) {
       let label = catalog.first(where: { $0.key == activeGroupKey }).map(groupLabel) ?? activeGroupKey
       selection = .providerGroup(key: activeGroupKey, label: label)
@@ -443,6 +523,9 @@ struct WorkModelPickerSheet: View {
         let group = catalog.first(where: { $0.key == key })
         let providers = filteredProviders(for: group)
         pool = providers.flatMap { $0.models }
+      case .free:
+        let source = activeFreeSource
+        pool = scopedFreeGroups.first(where: { $0.source == source })?.models ?? []
       case .custom:
         pool = []
       }
@@ -452,7 +535,8 @@ struct WorkModelPickerSheet: View {
     return pool.filter { model in
       model.displayName.lowercased().contains(needle) ||
         model.id.lowercased().contains(needle) ||
-        model.tagline.lowercased().contains(needle)
+        model.tagline.lowercased().contains(needle) ||
+        workFreeModelMatchesSearch(model.id, needle: needle)
     }
   }
 
@@ -467,7 +551,7 @@ struct WorkModelPickerSheet: View {
     switch effectiveSelection {
     case .favorites, .recents:
       return [ModelPickerRowGroup(id: "_root", title: nil, models: visibleModels)]
-    case .providerGroup:
+    case .providerGroup, .free:
       return [ModelPickerRowGroup(id: "_root", title: nil, models: visibleModels)]
     case .custom:
       // The Custom pane renders presets, not model rows.
@@ -477,6 +561,11 @@ struct WorkModelPickerSheet: View {
 
   private var providerTabs: [WorkModelProvider] {
     guard !isSearching else { return [] }
+    if effectiveSelection == .free {
+      // Sources are the Free page's tabs; one source needs none.
+      guard scopedFreeGroups.count > 1 else { return [] }
+      return scopedFreeGroups.map { WorkModelProvider(key: $0.source, displayName: $0.label, models: $0.models) }
+    }
     guard case .providerGroup(let key, _) = effectiveSelection else { return [] }
     return catalog.first(where: { $0.key == key })?.providers.filter { !$0.models.isEmpty } ?? []
   }
@@ -772,6 +861,54 @@ struct WorkModelPickerSheet: View {
     }
   }
 
+  /// Reads the chat machine's free-models status. A machine with nothing
+  /// signed in moves the picker to the Free page, unless the person already
+  /// picked a rail entry.
+  @MainActor
+  private func loadFreeStatus() async {
+    guard let host = freeModelsHost else {
+      freeStatus = nil
+      return
+    }
+    let status = await WorkFreeModelsStatusStore.shared.status(for: host)
+    guard !Task.isCancelled else { return }
+    freeStatus = status
+    if status?.nothingSignedIn == true, !userPickedRail, showsFreeEntry, hasCatalog || didPickInitialSelection {
+      selection = .free
+    }
+  }
+
+  /// Runs while the Free page shows with nothing listed.
+  private var freeSetupTaskKey: String {
+    let empty = effectiveSelection == .free && scopedFreeGroups.isEmpty && !isSearching
+    return empty ? "free-empty:\(freeModelsHost.map { WorkFreeModelsStatusStore.key(for: $0) } ?? "")" : "free-listed"
+  }
+
+  @MainActor
+  private func checkFreeSetupIfNeeded() async {
+    guard effectiveSelection == .free, scopedFreeGroups.isEmpty, !isSearching else {
+      return
+    }
+    switch freeSetup.phase {
+    case .idle, .unsupported:
+      await freeSetup.check(host: freeModelsHost, onReady: refreshFreeCatalog)
+    default:
+      break
+    }
+  }
+
+  /// OpenCode is ready on the machine: read its models now, not when the
+  /// cached catalog next goes stale.
+  @MainActor
+  private func refreshFreeCatalog() async {
+    guard cloudCatalog == nil else { return }
+    freeCatalogRefreshing = true
+    defer { freeCatalogRefreshing = false }
+    if let fresh = try? await modelCatalog(mode: "force", refreshProvider: "opencode") {
+      apply(hostCatalog: fresh)
+    }
+  }
+
   @MainActor
   /// Groups whose models the host reads from the provider itself
   /// (`AgentChatModelCatalogRefreshProvider`); Claude and Codex always list.
@@ -952,6 +1089,8 @@ struct WorkModelPickerSheet: View {
 enum ModelPickerRailSelection: Equatable {
   case favorites
   case recents
+  /// Every free model on the chat's machine (`WorkFreeModels.swift`).
+  case free
   case providerGroup(key: String, label: String)
   /// The machine's saved Custom harnesses (`account.getMachineInventory`).
   /// Only offered when the surface can launch one.
@@ -961,6 +1100,7 @@ enum ModelPickerRailSelection: Equatable {
     switch (lhs, rhs) {
     case (.favorites, .favorites): return true
     case (.recents, .recents): return true
+    case (.free, .free): return true
     case (.custom, .custom): return true
     case (.providerGroup(let lk, _), .providerGroup(let rk, _)): return lk == rk
     default: return false
@@ -971,6 +1111,7 @@ enum ModelPickerRailSelection: Equatable {
 enum ModelPickerRailEntry: Identifiable, Equatable {
   case favorites
   case recents
+  case free
   case providerGroup(key: String, label: String)
   case custom
 
@@ -978,6 +1119,7 @@ enum ModelPickerRailEntry: Identifiable, Equatable {
     switch self {
     case .favorites: return "_favorites"
     case .recents: return "_recents"
+    case .free: return "_free"
     case .providerGroup(let key, _): return "provider:\(key)"
     case .custom: return "_custom"
     }
@@ -987,9 +1129,15 @@ enum ModelPickerRailEntry: Identifiable, Equatable {
     switch self {
     case .favorites: return .favorites
     case .recents: return .recents
+    case .free: return .free
     case .providerGroup(let key, let label): return .providerGroup(key: key, label: label)
     case .custom: return .custom
     }
+  }
+
+  var isProviderGroup: Bool {
+    if case .providerGroup = self { return true }
+    return false
   }
 }
 
@@ -1004,7 +1152,7 @@ struct ModelPickerRail: View {
     ScrollView(.vertical, showsIndicators: false) {
       VStack(alignment: .center, spacing: 4) {
         ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-          if index > 0, case .providerGroup = entry, case .recents = entries[index - 1] {
+          if index > 0, entry.isProviderGroup, !entries[index - 1].isProviderGroup {
             Divider()
               .overlay(ADEColor.glassBorder.opacity(0.8))
               .frame(width: 28)
@@ -1053,7 +1201,7 @@ struct ModelPickerRail: View {
     switch entry {
     case .favorites: return favoritesCount
     case .recents: return recentsCount
-    case .providerGroup, .custom: return nil
+    case .free, .providerGroup, .custom: return nil
     }
   }
 
@@ -1068,6 +1216,10 @@ struct ModelPickerRail: View {
       Image(systemName: isActive ? "clock.fill" : "clock")
         .font(.system(size: 16, weight: .medium))
         .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary)
+    case .free:
+      Image(systemName: isActive ? "gift.fill" : "gift")
+        .font(.system(size: 16, weight: .medium))
+        .foregroundStyle(isActive ? ADEColor.success : ADEColor.textSecondary)
     case .providerGroup(let key, _):
       WorkProviderBareLogo(
         provider: workRailLogoProvider(for: key),
@@ -1086,6 +1238,7 @@ struct ModelPickerRail: View {
     switch entry {
     case .favorites: return "Favorites (\(favoritesCount))"
     case .recents: return "Recents (\(recentsCount))"
+    case .free: return "Free models"
     case .providerGroup(_, let label): return label
     case .custom: return "Custom"
     }
@@ -1130,6 +1283,11 @@ struct ModelPickerContentPane: View {
   let onPiLogin: (() -> Void)?
   let isPiLoginBusy: Bool
   let piLoginError: String?
+  /// The Free page's setup, shown while it lists nothing.
+  var freeSetupPhase: WorkFreeModelsSetup.Phase = .idle
+  var freeCatalogRefreshing = false
+  var onGetFreeModels: () -> Void = {}
+  var onRefreshFreeModels: () -> Void = {}
 
   private var favoritesSet: Set<String> { Set(favorites) }
 
@@ -1143,7 +1301,7 @@ struct ModelPickerContentPane: View {
     switch selection {
     case .favorites, .recents:
       return .compact
-    case .providerGroup:
+    case .providerGroup, .free:
       return .detailed
     case .custom:
       return .compact
@@ -1429,6 +1587,10 @@ struct ModelPickerContentPane: View {
         Image(systemName: "clock.fill")
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textSecondary)
+      case .free:
+        Image(systemName: "gift.fill")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.success)
       case .providerGroup(let key, _):
         WorkProviderBareLogo(
           provider: workRailLogoProvider(for: key),
@@ -1452,6 +1614,7 @@ struct ModelPickerContentPane: View {
     switch selection {
     case .favorites: return "Favorites"
     case .recents: return "Recents"
+    case .free: return "Free"
     case .providerGroup(_, let label): return label
     case .custom: return "Custom"
     }
@@ -1459,6 +1622,20 @@ struct ModelPickerContentPane: View {
 
   @ViewBuilder
   private var emptyState: some View {
+    if selection == .free && !isSearching {
+      WorkFreeModelsSetupPane(
+        phase: freeSetupPhase,
+        isRefreshingCatalog: freeCatalogRefreshing,
+        onGet: onGetFreeModels,
+        onRefresh: onRefreshFreeModels
+      )
+    } else {
+      plainEmptyState
+    }
+  }
+
+  @ViewBuilder
+  private var plainEmptyState: some View {
     VStack(spacing: 8) {
       Spacer(minLength: 24)
       Image(systemName: emptyImage)
@@ -1482,6 +1659,7 @@ struct ModelPickerContentPane: View {
     switch selection {
     case .favorites: return "star"
     case .recents: return "clock"
+    case .free: return "gift"
     case .providerGroup(let key, _): return providerFamilyKey(key) == "pi" ? "terminal.fill" : "cpu"
     case .custom: return "slider.horizontal.3"
     }
@@ -1492,6 +1670,7 @@ struct ModelPickerContentPane: View {
     switch selection {
     case .favorites: return "No favorites yet."
     case .recents: return "No recent models."
+    case .free: return "No free models."
     case .providerGroup(let key, _):
       return providerFamilyKey(key) == "pi" ? "No Pi models are available." : "No models in this provider."
     case .custom: return "No custom harnesses."
@@ -1507,6 +1686,8 @@ struct ModelPickerContentPane: View {
       return "Tap the star on any model to pin it here. Favorites sync between desktop and mobile."
     case .recents:
       return "Models you pick here will appear in the recents list, on every paired surface."
+    case .free:
+      return "Free models need no account or key."
     case .providerGroup(let key, _):
       if providerFamilyKey(key) == "pi" {
         return "Use Pi’s native /login or configure a local Pi provider on the paired machine, then refresh."
@@ -1667,10 +1848,15 @@ struct ModelPickerListRow: View {
         size: 18
       )
       VStack(alignment: .leading, spacing: 1) {
-        Text(model.displayName)
-          .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
-          .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
-          .lineLimit(1)
+        HStack(spacing: 6) {
+          Text(model.displayName)
+            .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
+            .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
+            .lineLimit(1)
+          if let freeEntry {
+            WorkFreeModelBadgeTag(badge: freeEntry.badge)
+          }
+        }
         if let piContextLabel {
           Text(piContextLabel)
             .font(.caption2.weight(.medium))
@@ -1693,10 +1879,15 @@ struct ModelPickerListRow: View {
         size: 20
       )
       VStack(alignment: .leading, spacing: 1) {
-        Text(model.displayName)
-          .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
-          .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
-          .lineLimit(1)
+        HStack(spacing: 6) {
+          Text(model.displayName)
+            .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
+            .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
+            .lineLimit(1)
+          if let freeEntry {
+            WorkFreeModelBadgeTag(badge: freeEntry.badge)
+          }
+        }
         if let piContextLabel {
           Text(piContextLabel)
             .font(.caption2.weight(.medium))
@@ -1710,9 +1901,15 @@ struct ModelPickerListRow: View {
     .accessibilityLabel(modelAccessibilityLabel)
   }
 
+  /// A free model's badge, wherever the row shows.
+  private var freeEntry: WorkFreeModelEntry? {
+    workFreeModelEntry(modelId: model.id)
+  }
+
   private var modelAccessibilityLabel: String {
     [
       model.displayName,
+      freeEntry?.badge.label,
       piContextLabel,
       model.isAvailable ? "Available" : "Unavailable",
       isSelected ? "Selected" : nil,
@@ -1944,10 +2141,15 @@ struct ModelPickerCurrentModelBar: View {
 
       VStack(alignment: .leading, spacing: 2) {
         ADEEyebrow("Current model")
-        Text(model?.displayName ?? "Pick a model")
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
+        HStack(spacing: 6) {
+          Text(model?.displayName ?? "Pick a model")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          if let model, let entry = workFreeModelEntry(modelId: model.id) {
+            WorkFreeModelBadgeTag(badge: entry.badge)
+          }
+        }
         if let model, let piContextLabel = workPiModelContextLabel(for: model) {
           Text(piContextLabel)
             .font(.caption2.weight(.medium))

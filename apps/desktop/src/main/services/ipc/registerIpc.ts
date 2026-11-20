@@ -5858,6 +5858,7 @@ export function registerIpc({
         customProviders: status.customProviders,
         customModelSlugs: status.customModelSlugs,
         apiKeyStore: status.apiKeyStore,
+        ...(status.freeModels ? { freeModels: status.freeModels } : {}),
         features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
           feature,
           enabled: aiIntegrationService.getFeatureFlag(feature),

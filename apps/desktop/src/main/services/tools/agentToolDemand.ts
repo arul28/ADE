@@ -183,15 +183,22 @@ export function selectDemandedAgentTools(pinned: readonly string[], args: Demand
   // download would keep itself current forever.
   const usage = policy === "off" ? {} : readToolUsage(toolsRoot);
   const now = Date.now();
-  const fetch: string[] = [];
-  const skip: string[] = [];
+  const wanted = new Set<string>();
   for (const tool of pinned) {
+    if (policy === "off") continue;
     const usedAt = usage[tool];
     const recentlyUsed = usedAt !== undefined && now - usedAt < RECENT_TOOL_USE_MS;
-    const wanted = policy === "off"
-      ? false
-      : recentlyUsed || (policy === "signals" && (providerSignals(tool, env, home, platform) ?? false));
-    (wanted ? fetch : skip).push(tool);
+    if (recentlyUsed || (policy === "signals" && (providerSignals(tool, env, home, platform) ?? false))) wanted.add(tool);
   }
-  return { fetch, skip };
+  // A computer with no sign of Claude or Codex gets OpenCode anyway: its free
+  // models need no account and no key, so they are the only chat such a
+  // person can start. Only under `signals`: an ADE Cloud computer (`used`)
+  // has every sign-in copied onto it.
+  if (policy === "signals" && pinned.includes("opencode") && !wanted.has("claude-code") && !wanted.has("codex")) {
+    wanted.add("opencode");
+  }
+  return {
+    fetch: pinned.filter((tool) => wanted.has(tool)),
+    skip: pinned.filter((tool) => !wanted.has(tool)),
+  };
 }

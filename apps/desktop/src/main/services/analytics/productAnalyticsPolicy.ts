@@ -243,6 +243,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "remote_connect",
   "work_first_load",
   "mention_expanded",
+  // Feature "chat": a chat's first turn on a free model (`shared/freeModels.ts`),
+  // once per chat. Provider only, never the model id.
+  "free_model_used",
   "hooks_ignored",
   "plugins_ignored",
   "metadata_regenerated",

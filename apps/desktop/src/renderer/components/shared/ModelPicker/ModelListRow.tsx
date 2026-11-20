@@ -1,4 +1,6 @@
 import { memo, useCallback } from "react";
+import type { FreeModelBadge as FreeModelBadgeKind } from "../../../../shared/freeModels";
+import { FreeModelBadge } from "./FreeModelBadge";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { Brain, Check, ImageSquare, Lightning, SignIn, Star } from "@phosphor-icons/react";
 import {
@@ -102,6 +104,8 @@ export type ModelListRowProps = {
   onCopilotContextTierChange?: (modelId: string, next: "default" | "long_context") => void;
   /** The list is scoped to this row's provider, so the detail line need not name it. */
   omitProviderInDetail?: boolean;
+  /** A free model's tag (`shared/freeModels.ts`); absent for every other model. */
+  freeBadge?: FreeModelBadgeKind | null;
 };
 
 export const ModelListRow = memo(function ModelListRow({
@@ -130,6 +134,7 @@ export const ModelListRow = memo(function ModelListRow({
   copilotContextTier = "default",
   onCopilotContextTierChange,
   omitProviderInDetail = false,
+  freeBadge = null,
 }: ModelListRowProps) {
   const sub = subProviderLabel(model);
   const showCopilotContextChip = Boolean(onCopilotContextTierChange)
@@ -394,6 +399,7 @@ export const ModelListRow = memo(function ModelListRow({
                   Not signed in
                 </span>
               ) : null}
+              {freeBadge ? <FreeModelBadge badge={freeBadge} /> : null}
               {maxModeBadge ? (
                 <span
                   className="inline-flex shrink-0 items-center rounded-full bg-amber-500/[0.12] px-1.5 py-px text-[9px] font-semibold uppercase leading-none text-amber-300/85"

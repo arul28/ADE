@@ -1416,7 +1416,9 @@ shared-lane page (`/shared`) is open.
    - The swing runs on animation frames only until it settles (none under
      reduced motion).
    - Status is re-read on open, after a sign-in (a re-read requested during
-     one runs after it) and on focus; never polled.
+     one runs after it), on focus, and when the tools cache finishes
+     OpenCode (downloaded at launch on a computer with no Claude or Codex,
+     so its tile turns connected with no extra copy); never polled.
    - Project discovery starts in the background meanwhile.
 4. **Bring your projects in.** `discoverOnboardingProjects` reads Claude Code
    transcripts (one listing plus the newest transcript head per folder),

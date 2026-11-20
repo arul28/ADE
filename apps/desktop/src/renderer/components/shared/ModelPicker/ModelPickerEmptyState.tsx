@@ -32,7 +32,15 @@ export function ModelPickerEmptyState({
 }: ModelPickerEmptyStateProps) {
   // The harnesses tab draws its own empty state (it has its own call to
   // action), so it never reaches here.
-  if (!searchActive && selection !== "favorites" && selection !== "recents" && selection !== "harnesses") {
+  // The Free page draws `FreeModelsEmptyState` instead; this branch is for
+  // the provider pages only.
+  if (
+    !searchActive
+    && selection !== "favorites"
+    && selection !== "recents"
+    && selection !== "harnesses"
+    && selection !== "free"
+  ) {
     const family = selection.slice("provider:".length) as ProviderFamily;
     if (refreshErrorProvider) {
       return (
