@@ -13,6 +13,7 @@ import {
 import type { CtoAttentionState, KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, PrSummary, ProjectInfo, ProjectPathInspection, ProviderMode, RecentProjectSummary, TerminalSessionSummary } from "../../shared/types";
 import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
+import { LANES_MACHINE_FILTER_ALL, normalizeLanesMachineFilter } from "./laneMachineFilterIds";
 import { originUrlForBinding } from "../components/lanes/laneMachines";
 import { normalizeGitRemoteIdentity } from "../../shared/crossMachineHandoff";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
@@ -378,6 +379,14 @@ export type WorkProjectViewState = {
    * tab switch by construction — it has to live here to be preserved at all.
    */
   lanesFilter: string;
+  /**
+   * Which computer's lanes the Lanes sidebar lists (`laneMachineFilterIds`):
+   * `"all"`, a computer id (`machineIdOfSlot`, so two checkouts of one computer
+   * share it), or `ADE_CLOUD_MACHINE_ID` for every ADE Cloud computer (and
+   * the cloud lanes whose computer was deleted). A value whose entry is no longer listed reads as `"all"` where the
+   * list is built; the stored value stays, so it returns with that computer.
+   */
+  lanesMachineFilter: string;
   /** How the Lanes sidebar list is grouped: by what each lane needs, or as the stack tree. */
   lanesGroupBy: LanesSidebarGroupBy;
   /** State groups collapsed in the Lanes sidebar (e.g. "lanes-state:done"). */
@@ -516,6 +525,7 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workFocusGrid: false,
     workSeenAtBySessionId: {},
     lanesFilter: "",
+    lanesMachineFilter: LANES_MACHINE_FILTER_ALL,
     lanesGroupBy: "state",
     lanesCollapsedGroupIds: [],
     lanesCollapsedSectionIds: [],
@@ -657,6 +667,9 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workFocusGrid: candidate.workFocusGrid === true,
     workSeenAtBySessionId: normalizeWorkSeenAt(candidate.workSeenAtBySessionId),
     lanesFilter: typeof candidate.lanesFilter === "string" ? candidate.lanesFilter : "",
+    // Additive like the other lanes keys: an older blob has no computer filter
+    // and lands on "all".
+    lanesMachineFilter: normalizeLanesMachineFilter(candidate.lanesMachineFilter),
     // Additive like the other lanes keys: an older blob has no grouping and
     // lands on the State default.
     lanesGroupBy: candidate.lanesGroupBy === "list" ? "list" : "state",

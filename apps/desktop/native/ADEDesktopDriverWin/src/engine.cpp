@@ -893,7 +893,7 @@ Json Engine::screenshot(const Json& req) {
   Frame frame;
   std::string err;
   if (!captureLane(*lane, frame, only, &err)) {
-    if (mode_ == Mode::Private && err.find("handle is invalid") != std::string::npos) failLocked();
+    if (mode_ == Mode::Private && isLockedConsoleCaptureError(err)) failLocked();
     fail(code::kDisplayUnavailable, "No frame from the Windows screen: " + err);
   }
   if (!savePng(frame, path, &err)) fail(code::kInternalError, err);

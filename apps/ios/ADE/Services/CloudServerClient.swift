@@ -553,9 +553,12 @@ struct CloudServerClient {
 
   /// Holds a message for an existing cloud chat and wakes its computer. The
   /// same `messageId` again answers the same message (the client's send id).
-  func queueMessage(machineKey: String, chatId: String, messageId: String, text: String, attachments: [[String: Any]] = []) async throws -> CloudChatQueueResult {
+  /// `sizeId`: the size picked for the new computer when the chat's computer
+  /// was deleted; the server ignores it for a computer that is still there.
+  func queueMessage(machineKey: String, chatId: String, messageId: String, text: String, attachments: [[String: Any]] = [], sizeId: String? = nil) async throws -> CloudChatQueueResult {
     var payload: [String: Any] = ["messageId": messageId, "text": text]
     if !attachments.isEmpty { payload["attachments"] = attachments }
+    if let sizeId { payload["sizeId"] = sizeId }
     let body = try JSONSerialization.data(withJSONObject: payload)
     return try decode(
       CloudChatQueueResult.self,

@@ -31,11 +31,12 @@
  * can lose a start, a reused pid reads as alive, and a brain the computer
  * killed by restarting is not counted (it started before this boot).
  */
+import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { captureProblem, flushSentry, isSentryActive } from "../../../desktop/src/shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, type DiagnosticEvent } from "../../../desktop/src/shared/sentry/diagnostics";
-import { isPidAlive } from "../serviceManager/common";
+import { currentUid, isPidAlive, resolveRuntimeServiceName } from "../serviceManager/common";
 import { resolveWindowsServicePidPath } from "../serviceManager/installWindows";
 import { readWindowsServicePidRecord } from "../serviceManager/windowsSupervisor";
 import { BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE } from "../services/runtime/brainLoopWatchdog";
@@ -105,7 +106,11 @@ export function startBrainRestartLoopWatch(options: { runtimeDir: string; build:
   // This brain sends the report if it lives long enough; if it dies first,
   // the next one finds `loopFoundAt` and takes over.
   const delayMs = Math.max(0, Math.min(LOOP_QUIET_MS, loopFoundAtMs + LOOP_REPORT_MAX_DELAY_MS - nowMs));
-  setTimeout(() => sendLoopReport(startsPath), delayMs).unref();
+  // Asked now; the report waits for the answer (two seconds at most). In a
+  // loop that outlives each brain the report is due at once, so not waiting
+  // would drop the field exactly where it matters.
+  const launchdLastExit = readLaunchdLastExit().catch(() => null);
+  setTimeout(() => void launchdLastExit.then((lastExit) => sendLoopReport(startsPath, lastExit)), delayMs).unref();
 }
 
 function isRestartLoopEvent(event: DiagnosticEvent): boolean {
@@ -237,7 +242,7 @@ function countedStartsInWindow(starts: readonly BrainStart[], nowMs: number): nu
   }).length;
 }
 
-function sendLoopReport(startsPath: string): void {
+function sendLoopReport(startsPath: string, launchdLastExit: string | null): void {
   const nowMs = Date.now();
   const state = readStartsFile(startsPath);
   const foundAt = state.loopFoundAt;
@@ -261,7 +266,12 @@ function sendLoopReport(startsPath: string): void {
         "brain.restart_loop.supervisors": supervisorPids.size,
       },
       // Flat: Sentry keeps three levels of `extra`, so a nested `cause` would arrive as "[Object]".
-      extra: { restartCount: counted.length, foundAt, starts: starts.map(flattenStart) },
+      extra: {
+        restartCount: counted.length,
+        foundAt,
+        starts: starts.map(flattenStart),
+        ...(launchdLastExit ? { launchdLastExit } : {}),
+      },
     });
     // A brain in a loop may not live long enough for the SDK's own send.
     void flushSentry(2_000);
@@ -293,6 +303,48 @@ function mostCommon(values: readonly string[]): string {
     }
   }
   return best;
+}
+
+/**
+ * How launchd saw the last brain it started end, on macOS: its exit code or
+ * the signal that killed it. A brain launchd restarts writes nothing when it
+ * dies silently (a kill, a native crash), so every start in a loop there says
+ * `previousEnd: unknown`; launchd still knows (ADE-BRAIN-7Q). Null elsewhere,
+ * or when launchd does not answer within two seconds. Runs only in a brain
+ * whose start found a loop waiting for its report, once per start.
+ */
+async function readLaunchdLastExit(): Promise<string | null> {
+  if (process.platform !== "darwin") return null;
+  const label = resolveRuntimeServiceName();
+  const uid = currentUid();
+  // The domain the agent is in, as `isLaunchAgentRegistered` checks it.
+  for (const domain of [`gui/${uid}`, `user/${uid}`]) {
+    const answer = await launchctlPrint(`${domain}/${label}`);
+    if (answer != null) return launchdExitFacts(answer);
+  }
+  return null;
+}
+
+const LAUNCHD_EXIT_FIELDS = [
+  ["exit", "last exit code"],
+  ["signal", "last terminating signal"],
+  ["reason", "last exit reason"],
+] as const;
+
+function launchdExitFacts(printed: string): string | null {
+  const facts = LAUNCHD_EXIT_FIELDS.flatMap(([name, key]) => {
+    const value = printed.match(new RegExp(`^\\s*${key} = (.+)$`, "m"))?.[1]?.trim().slice(0, 120);
+    return value ? [`${name}=${value}`] : [];
+  });
+  return facts.length > 0 ? facts.join("; ") : null;
+}
+
+function launchctlPrint(target: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile("launchctl", ["print", target], { encoding: "utf8", timeout: 2_000 }, (error, stdout) => {
+      resolve(error || typeof stdout !== "string" ? null : stdout);
+    });
+  });
 }
 
 function flattenStart(start: BrainStart): Record<string, unknown> {

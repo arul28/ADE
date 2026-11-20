@@ -2308,6 +2308,45 @@ describe("ADE Cloud server launcher", () => {
     expect(listed.messages.map((message) => [message.messageId, message.state])).toEqual([[expect.any(String), "delivered"], ["m2", "delivered"]]);
   });
 
+  it("the follow-ups queued before the chat existed join the new chat's own queue once its computer has its key: the chat shows each one as the launch sends it, a failed one with its reason", async () => {
+    harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 4).toString("base64");
+    const messages = `/cloud/launches/${LAUNCH}/messages`;
+    const CLAIM = "claim-dddddddddddddddd";
+    await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    expect((await harness.send(OWNER, "POST", messages, { messageId: "m2", text: "Also fix the footer." })).status).toBe(201);
+    expect((await harness.send(OWNER, "POST", messages, { messageId: "m3", text: "And the header." })).status).toBe(201);
+    // The computer saved the new chat, as it does once the chat runs.
+    harness.exec(
+      "insert into cloud_chat_copies (user_id, machine_key, chat_id, lane_id, r2_key, updated_at) values (?, ?, ?, ?, ?, ?)",
+      OWNER, "key-new", "chat-1", launchBody.lane.id, `chats/${OWNER}/key-new/chat-1`, NOW,
+    );
+    const chatQueue = async () => ((await (await harness.send(OWNER, "GET", "/cloud/chats/key-new/chat-1/messages")).json()) as {
+      messages: Array<{ messageId: string; state: string; text: string; error: string | null }>;
+    }).messages.map((message) => [message.messageId, message.state, message.text, message.error]);
+
+    // The chat runs before the computer wrote its key (it does that off the launch's path): nothing to carry yet.
+    expect((await harness.send(OWNER, "PUT", `/cloud/launches/${LAUNCH}/stages`, { state: "running", sessionId: "chat-1" })).status).toBe(200);
+    expect(await chatQueue()).toEqual([]);
+    // The key arrives: the follow-ups join the chat. A later report of the chat carries nothing twice.
+    const carried = [["m2", "queued", "Also fix the footer.", null], ["m3", "queued", "And the header.", null]];
+    expect((await harness.send(OWNER, "PUT", "/cloud/instances/madenew12345/metadata", { metadata: { ade_machine_key: "key-new" } })).status).toBe(200);
+    expect(await chatQueue()).toEqual(carried);
+    expect((await harness.send(OWNER, "PUT", `/cloud/launches/${LAUNCH}/stages`, { state: "running", sessionId: "chat-1" })).status).toBe(200);
+    expect(await chatQueue()).toEqual(carried);
+    // The computer sends the launch's own rows and never claims the chat's copies.
+    expect(((await (await harness.send(OWNER, "GET", "/cloud/instances/madenew12345/messages")).json()) as { messages: unknown[] }).messages).toEqual([]);
+
+    expect((await harness.send(OWNER, "POST", `${messages}/m2/claim`, { claimId: CLAIM })).status).toBe(200);
+    expect((await harness.send(OWNER, "PUT", `${messages}/m2`, { claimId: CLAIM, state: "delivered" })).status).toBe(200);
+    expect((await harness.send(OWNER, "POST", `${messages}/m3/claim`, { claimId: CLAIM })).status).toBe(200);
+    expect((await harness.send(OWNER, "PUT", `${messages}/m3`, { claimId: CLAIM, state: "failed", error: "The agent refused it." })).status).toBe(200);
+    expect(await chatQueue()).toEqual([["m2", "delivered", "Also fix the footer.", null], ["m3", "failed", "And the header.", "The agent refused it."]]);
+    // The carried rows settle at the report, not at the next cron: a failed one no longer counts as open.
+    expect(harness.rows("select message_id, state from cloud_chat_messages where via_launch = 1 order by seq")).toEqual([
+      { message_id: "m2", state: "delivered" }, { message_id: "m3", state: "failed" },
+    ]);
+  });
+
   it.each<[string, (code: string) => Promise<Response>, number]>([
     ["a wrong code", () => join({ nonce: "x".repeat(43), userCode: USER_CODE }), 403],
     ["the code from another computer", (code) => join({ nonce: code, userCode: USER_CODE }, "otherbox1234"), 403],
@@ -3130,7 +3169,7 @@ describe("ADE Cloud without a computer", () => {
       .toBeGreaterThanOrEqual(NOW + CLOUD_CHAT_MESSAGE_TTL_MS);
   });
 
-  it("a send to a chat whose computer is gone continues it on one new computer: a second send rides the same launch", async () => {
+  it("a send to a chat whose computer is gone continues it on one new computer, at the size the person picked: a second send rides the same launch", async () => {
     harness.env.CLERK_SECRET_KEY = "sk_test";
     harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
     harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
@@ -3138,15 +3177,22 @@ describe("ADE Cloud without a computer", () => {
     seedComputer(harness, { machine_key: "key-gone", lane_id: LANE, lane_name: "Fix the login page", lane_project_origin: "https://github.com/acme/widgets", lane_branch: "ade/fix-login" });
     expect((await savePart(INSTANCE, "key-gone", 1, "{}\n")).status).toBe(200);
     harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
-    const send = (messageId: string) => harness.send(OWNER, "POST", "/cloud/chats/key-gone/c1/messages", { messageId, text: "Go on." });
+    const send = (messageId: string, extra: Record<string, unknown> = {}) =>
+      harness.send(OWNER, "POST", "/cloud/chats/key-gone/c1/messages", { messageId, text: "Go on.", ...extra });
 
-    const first = await send("m1");
+    // A size ADE Cloud doesn't offer is refused before anything is stored or started.
+    expect((await send("m0", { sizeId: "huge" })).status).toBe(400);
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(0);
+
+    const first = await send("m1", { sizeId: "medium" });
     expect(first.status).toBe(201);
     const { wake } = (await first.json()) as { wake: { state: string; launchId: string } };
     expect(wake).toEqual({ state: "launching", launchId: expect.any(String) });
-    const launch = harness.row("select lane_id, continue_machine_key, continue_chat_id, request_json from cloud_launches where launch_id = ?", wake.launchId);
+    const launch = harness.row("select lane_id, size_id, continue_machine_key, continue_chat_id, request_json from cloud_launches where launch_id = ?", wake.launchId);
     expect([launch.lane_id, launch.continue_machine_key, launch.continue_chat_id]).toEqual([LANE, "key-gone", "c1"]);
     expect(JSON.parse(String(launch.request_json)).lane).toEqual(expect.objectContaining({ id: LANE, existingBranch: "ade/fix-login" }));
+    // The picked size, kept as picked: ADE's own sizing never changes it.
+    expect([launch.size_id, JSON.parse(String(launch.request_json)).sizeChoice]).toEqual(["medium", "picked"]);
 
     // The second send finds the launch already continuing this chat: no second computer.
     const second = await send("m2");

@@ -35,8 +35,15 @@ struct Frame {
 };
 
 // Captures a rectangle of this session's desktop. Returns an error text on
-// failure (a locked console makes this fail with "The handle is invalid").
+// failure (a locked console makes this fail with ERROR_INVALID_HANDLE).
 bool captureScreenRect(const RECT& rect, Frame& out, bool drawCursor, std::string* error);
+
+// Whether a capture error text is the locked console's ERROR_INVALID_HANDLE.
+// Matched by the code the error text carries ("BitBlt failed (6): ..."), not
+// by Windows' message, which is in the PC's display language.
+inline bool isLockedConsoleCaptureError(const std::string& error) {
+  return error.find(" failed (" + std::to_string(ERROR_INVALID_HANDLE) + ")") != std::string::npos;
+}
 
 // Captures one window, including one that sits off every monitor.
 bool captureWindow(HWND hwnd, Frame& out, std::string* error);

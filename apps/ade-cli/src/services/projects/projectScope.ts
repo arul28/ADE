@@ -10,6 +10,7 @@ import type { BrainKeepAwakeService } from "../power/brainKeepAwakeService";
 import type { RuntimeDisposeReason } from "../runtime/startupTeardown";
 import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistry";
 import { captureProblem, sendSentryLog } from "../../../../desktop/src/shared/sentry/capture";
+import { markExpected } from "../../../../desktop/src/shared/expectedError";
 import { DIAGNOSTIC_ATTACH_TAG } from "../../../../desktop/src/shared/sentry/diagnostics";
 import { createReportOnce, PROJECT_REGISTRY_ATTACH, wasRemovedFromRegistry } from "./projectRegistryJournal";
 import { createPhaseClock, type PhaseClock } from "../../../../desktop/src/shared/phaseClock";
@@ -17,7 +18,10 @@ import { resolveBrainLoopWatchdogThresholdMs, trackBrainLoopWatchdogProjectOpen 
 import { logSlowProjectOpen } from "./projectFilesystemKind";
 import { QUEUED_OPEN_PHASE, type ProjectOpenStrikes } from "./projectOpenStrikes";
 
-type ScopeLogger = { warn: (event: string, meta?: Record<string, unknown>) => void };
+type ScopeLogger = {
+  warn: (event: string, meta?: Record<string, unknown>) => void;
+  info: (event: string, meta?: Record<string, unknown>) => void;
+};
 
 /**
  * How long a cold open waits its turn behind a project opening alone: the
@@ -60,6 +64,12 @@ type SwitchSyncHostOptions = {
    * because there is no host to bring up.
    */
   purpose?: "host" | "serve";
+  /**
+   * Who asked for the switch, written to the brain log when the host changes.
+   * A phone on one project while the machine hosts another sees every
+   * project-scoped request refused, so the log has to say why the host moved.
+   */
+  reason?: "client_switch" | "startup" | "most_recent_fallback";
 };
 
 const SYNC_HOST_COLD_BOOT_TIMEOUT_MS = 60_000;
@@ -564,8 +574,20 @@ export class ProjectScopeRegistry {
       if (movedTo && movedTo !== projectId) return await this.get(movedTo, options);
       // A window that knows the project only from the account names its
       // repository; this machine's one checkout of it is that project.
-      const sameRepository = this.projectRegistry.resolveRepositoryProjectId(projectId);
-      if (sameRepository) return await this.get(sameRepository, options);
+      const checkouts = this.projectRegistry.repositoryCheckouts(projectId);
+      if (checkouts?.length === 1) return await this.get(checkouts[0]!.projectId, options);
+      if (checkouts) {
+        // No checkout of that repository here, or two this machine will not
+        // guess between: an answer for the window, not a lost registration.
+        // "Unknown projectId" stays in the text for older callers that read it.
+        sendSentryLog("warn", "brain.repository_project_unresolved", {
+          checkouts: checkouts.length,
+          requestedBy: options.requestedBy ?? null,
+        });
+        throw markExpected(new Error(checkouts.length === 0
+          ? `This project is not on this ADE machine (Unknown projectId: ${projectId}). Open it on this machine once, then try again.`
+          : `This project has ${checkouts.length} copies on this ADE machine, and ADE does not guess which one you mean (Unknown projectId: ${projectId}). Open the copy you want from this machine's project list.`), "user");
+      }
       this.reportUnknownProjectId(projectId, options.requestedBy);
       throw new Error(`Unknown projectId: ${projectId}`);
     }
@@ -848,6 +870,10 @@ export class ProjectScopeRegistry {
     }
     if (this.syncHostProjectId === projectId) {
       this.syncHostProjectId = null;
+      this.options.logger?.info("project_scope.sync_host_released", {
+        projectId,
+        reason: entry.reason,
+      });
     }
     this.options.onDisposeProject?.(projectId);
     for (const listener of this.disposeListeners) {
@@ -965,7 +991,9 @@ export class ProjectScopeRegistry {
       });
     // This caller reads: it wants whatever owns sync on this machine, and a
     // project that follows another machine is a legitimate answer to that.
-    return record ? this.switchSyncHost(record.projectId, { purpose: "serve" }) : null;
+    return record
+      ? this.switchSyncHost(record.projectId, { purpose: "serve", reason: "most_recent_fallback" })
+      : null;
   }
 
   /**
@@ -1201,6 +1229,12 @@ export class ProjectScopeRegistry {
       // Publish authority only after the target has fully activated. Until
       // this assignment every failure/timeout still resolves to the old host.
       this.syncHostProjectId = projectId;
+      this.options.logger?.info("project_scope.sync_host_switched", {
+        from: previousHostId,
+        to: projectId,
+        reason: options.reason ?? null,
+        viewer: blocker != null,
+      });
       this.notifySyncScopeReady();
       return scope;
     } catch (error) {

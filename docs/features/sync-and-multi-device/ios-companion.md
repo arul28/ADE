@@ -1077,8 +1077,27 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   (`PUT /cloud/launches/:launch/files/:file`, from the bytes on the phone),
   then starts a server launch that names them (`AccountCloudLaunchStore.start`,
   `POST /cloud/launches`); a failed upload is the launch's start error, and
-  Retry sends the rest. The setup card (`WorkCloudLaunchCard`) shows the steps
-  above the composer.
+  Retry sends the rest. Only a start that never reached the server (no
+  client, a failed upload, a clear refusal) gives the draft back; any other
+  start opens the launch's page.
+- **The launch's page.** A started launch lists in Work as a row
+  (`WorkCloudLaunchRow`) and opens a page with the route
+  `ade-cloud-launch:<launch>` (`WorkCloudLaunchPendingScreen`,
+  `Views/Work/WorkCloudLaunchViews.swift`). The page uses the parts of a
+  normal chat launch (`WorkChatLaunchViews.swift`): the prompt bubble, the
+  setup card (`WorkCloudLaunchSetupCard`) and the queue composer. A message
+  sent there goes to `POST /cloud/launches/:launch/messages`; a retry of the
+  same text keeps its message id. While the page is the only page on the
+  phone's stack, the Work list keeps reading, so the new chat lists. Once the
+  launch has a session, the phone reads the account again and connects the
+  new computer (`SyncService.connectLaunchedCloudComputer`), then opens the
+  chat in place of the page with any unsent text as the chat's draft. It
+  never opens the chat after the person left the page.
+- **Follow-ups at handover.** The server copies the launch's later messages
+  into the new chat's own queue (`via_launch` rows) once the chat runs and its
+  computer has a machine key, from the stage report or from the key's
+  arrival. The chat's held messages then show each one, a failed one with its
+  reason.
 - **Saved chats.** `CloudServerClient.savedChats` reads pages of 200, at most
   5 pages. With no live link, a chat thread reads the saved copy through
   `AccountCloudStore` (`savedCloudChatAccountKey`). A saved subagent chat nests
@@ -1523,6 +1542,23 @@ drops a set after 30 s; the phone sends chunks only after
   frame per display frame (turn state, pending input and local echoes apply at
   once).
 - Hub navigation activates the chat's project before it opens the chat.
+- **The machine moved to another project.** A brain hosts one project's sync
+  at a time, and another device's switch, a restart or a fallback can move it
+  while the phone stays on its own (logged as `project_scope.sync_host_switched`
+  with its `reason`, and `sync_host.project_switch_requested` with the asking
+  device). The host serves a chat envelope stamped with a project it does not
+  host from that project's transcripts, like a cross-project chat. A
+  `chat_subscribe` it cannot serve at all gets a snapshot with `unavailable
+  { code, message }` (`project_not_open`, `project_mismatch`, `no_chat_scope`,
+  `transcript_read_failed`) for a phone that advertises
+  `chatSubscribeUnavailableV1`, so the chat shows the reason instead of waiting
+  out its watchdog; older phones get no answer, as before. The phone notices the
+  move from the catalog, the hello or a `changeset_ack` mismatch: after 15 s it
+  sends `project_switch_request` for its own project and reconnects, and the new
+  hello restores every chat and terminal subscription. It does this at most once
+  per machine every 10 minutes; a second move inside that window means two
+  devices want different projects, so it holds until the person picks one.
+  Diagnostics carry `hostedProjectIsActive` and `hostedProjectHeld`.
 - A `session_meta_updated` event with a mode change updates the summary
   through `applyChatSessionMetaModeUpdateIfNeeded`
   (`AgentChatSessionMetaModeUpdate`, all optional), so the mode pill updates

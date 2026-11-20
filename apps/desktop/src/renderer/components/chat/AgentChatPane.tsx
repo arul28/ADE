@@ -458,6 +458,8 @@ import { startAccountCloudChat } from "../../state/accountCloudLaunches";
 import { readAccountProjectList } from "../../state/useRepositoryCopies";
 import { useAdeCloudSignInNeed } from "./useAdeCloudSignInNeed";
 import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
+import { CloudLaneComputerDeletedBanner, cloudLaneComputerDeletedFacts } from "../cloudLane/CloudLaneComputerDeletedBanner";
+import { useCloudAccount } from "../../state/cloudAccountStore";
 import { useFollowLaneMoves } from "../cloudLane/useFollowLaneMoves";
 import { CloudLaneHeaderButton } from "../cloudLane/CloudLaneHeaderButton";
 import { CloudLaneDeletingSoonBand } from "../cloudLane/CloudLaneDeletingSoonBand";
@@ -497,7 +499,7 @@ import {
 import { chatNoticeReducer, noticeForChat, shownChatNotice, type ChatNotice } from "./chatNotice";
 import { SAVED_CHAT_COMPUTER_GONE_MESSAGE, savedChatComputerGone, savedChatLocation } from "../../state/cloudSavedChats";
 import { newClientSendId } from "../../../shared/adeCloud/chatQueue";
-import { adeCloudQueueHoldsMessage, markAdeCloudQueuedMessageDelivered, noteAdeCloudQueuedSend, useAdeCloudChatQueue } from "../../state/adeCloudChatQueue";
+import { adeCloudQueueHoldsMessage, markAdeCloudQueuedMessageDelivered, noteAdeCloudQueuedSend, peekNewComputerSize, pickNewComputerSize, useAdeCloudChatQueue } from "../../state/adeCloudChatQueue";
 import { CloudQueuedMessages, draftWithPutBack } from "./CloudQueuedMessages";
 import { CloudQueueSendCard, type CloudQueueSend } from "./CloudQueueSendCard";
 import { isAdeCloudComputer, useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
@@ -14884,7 +14886,8 @@ export function AgentChatPane({
   const sendThroughCloudQueue = useCallback(async (chat: { machineKey: string; chatId: string }): Promise<"sent" | "refused" | "unsupported"> => {
     const send = window.ade?.cloud?.sendChatMessage;
     if (!send) return "unsupported";
-    const text = draftStore.get().trim();
+    const sentDraft = draftStore.get();
+    const text = sentDraft.trim();
     if (attachments.length > 0 || contextAttachments.length > 0) {
       setError({ message: "Files can't go with this message while the chat moves to a new ADE Cloud computer. Send the text first, then the files once it is up.", kind: "hint" });
       return "refused";
@@ -14895,8 +14898,10 @@ export function AgentChatPane({
     const messageId = newClientSendId();
     const provider = selectedSession?.provider ?? null;
     setError(null);
+    // The size picked in the banner for the new computer; none is ADE's size.
+    const sizeId = peekNewComputerSize(chat.machineKey);
     try {
-      const answer = await send({ ...chat, messageId, text, provider, modelId: modelId || null });
+      const answer = await send({ ...chat, messageId, text, provider, modelId: modelId || null, ...(sizeId ? { sizeId } : {}) });
       if (answer.state === "unsupported") return "unsupported";
       if (answer.state === "refused") {
         setError({ message: answer.message, kind: "status" });
@@ -14905,8 +14910,13 @@ export function AgentChatPane({
       // Queued: the chat shows it as its own queued row (`adeCloudChatQueue.ts`),
       // the box clears, and the chat stays selected with the launch's card.
       noteAdeCloudQueuedSend(chat, answer, { text, provider, modelId: modelId || null });
-      draftStore.set("");
-      draftsPerSessionRef.current.delete(chat.chatId);
+      // A size picked while the send was out stays for the next send.
+      if (sizeId && peekNewComputerSize(chat.machineKey) === sizeId) pickNewComputerSize(chat.machineKey, null);
+      // Text typed while the send was out stays in the box.
+      if (draftStore.get() === sentDraft) {
+        draftStore.set("");
+        draftsPerSessionRef.current.delete(chat.chatId);
+      }
       setCloudQueueSend({ chatId: chat.chatId, wake: answer.wake.state, launchId: answer.wake.launchId ?? null, text });
       return "sent";
     } catch (sendError) {
@@ -16778,7 +16788,7 @@ export function AgentChatPane({
     // and a new computer continues this same chat, in this row. A server
     // without the queue gets the old way for a freed lane: a new chat there.
     const freedLane = selectedSessionId && !subagentView ? freedChatLaneRef.current : null;
-    const goneChat = selectedSessionId && !subagentView && !freedLane
+    const goneChat = selectedSessionId && !subagentView
       ? savedChatLocation(chatForeignPin, selectedSessionId, () => false)
       : null;
     if (freedLane || goneChat?.computerGone) {
@@ -19469,6 +19479,34 @@ export function AgentChatPane({
     activeComposerRuntimeBinding,
     Boolean(selectedSessionId) && !chatScope && cursorRuntime !== "cloud",
   );
+  // The open chat's ADE Cloud computer was deleted (its lane kept, or only its
+  // saved chats left): the banner says so and what the next message does, and
+  // its blocked form stops Send. The account is read only while that holds.
+  const chatGoneLocation = selectedSessionId && !subagentView && !chatScope
+    ? savedChatLocation(chatForeignPin, selectedSessionId, () => false)
+    : null;
+  const chatComputerDeleted = Boolean(selectedSessionId) && !subagentView
+    && (freedChatLaneRef.current != null || chatGoneLocation?.computerGone === true);
+  const deletedComputerAccount = useCloudAccount(chatComputerDeleted);
+  const deletedComputerLaneId = freedChatLaneRef.current?.laneId ?? chatGoneLocation?.row.laneId ?? selectedSession?.laneId ?? null;
+  // The queue needs the old computer's key (the saved chat's, else the kept lane's), as Send does.
+  const deletedComputerMachineKey = chatGoneLocation?.machineKey ?? freedChatLaneRef.current?.formerMachineKey ?? null;
+  const deletedComputerViaQueue = Boolean(window.ade?.cloud?.sendChatMessage) && Boolean(deletedComputerMachineKey);
+  const deletedComputerFacts = chatComputerDeleted && deletedComputerLaneId
+    ? cloudLaneComputerDeletedFacts({
+        laneId: deletedComputerLaneId,
+        laneName: chatGoneLocation?.row.laneName?.trim() || laneLabel?.trim() || "this lane",
+        kept: freedChatLaneRef.current,
+        computer: chatGoneLocation?.row.computer ?? null,
+        branch: (chatMachineLanes ?? lanes).find((lane) => lane.id === deletedComputerLaneId)?.branchRef ?? null,
+        account: deletedComputerAccount,
+        doBlock: adeCloud.doBlock,
+        defaultTier: rootAppStoreApi.getState().cloudDefaultTier,
+        viaQueue: deletedComputerViaQueue,
+        binding: projectBinding,
+        originUrl: originUrlForBinding(projectBinding),
+      })
+    : null;
   // A draft reads the launch defaults of the machine it will launch on, again
   // whenever that machine changes, a chat is created, or the window regains
   // focus (another client may have launched since).
@@ -19618,7 +19656,9 @@ export function AgentChatPane({
   // missing login does not hold it off (a failed turn still shows its card).
   const sessionRunsInACloud = Boolean(selectedSessionId) && composerCloudRuntime === "cloud";
   const providerSignInNeed = useMemo<(ProviderSignInNeed & { key: string }) | null>(() => {
-    if (!signInProvider || turnActive || subagentView || chatScope || draftSkipsLocalSignIn) return null;
+    // A chat whose ADE Cloud computer was deleted has no computer to sign in
+    // on: its next message goes through the account to a new computer.
+    if (!signInProvider || turnActive || subagentView || chatScope || draftSkipsLocalSignIn || chatComputerDeleted) return null;
     const machineKey = activeComposerRuntimeBinding?.key ?? "tab";
     // A failed sign-in asks for a login only when this chat runs on that login:
     // a custom provider or a key brings its own, so the harness's sign-out is
@@ -19639,7 +19679,7 @@ export function AgentChatPane({
       return { provider: signInLoginProvider, reason: "no-login", key: `${machineKey}:${signInLoginProvider}:no-login` };
     }
     return null;
-  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, chatScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
+  }, [activeComposerRuntimeBinding?.key, chatComputerDeleted, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, chatScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
   // Free models (`shared/freeModels.ts`), from the composer machine's status
   // like the sign-in check above.
   const onFreeCatalogLoaded = useCallback(() => setRuntimeCatalogVersion((version) => version + 1), []);
@@ -19763,7 +19803,10 @@ export function AgentChatPane({
    * Codex commands). Everything else is sent to the provider as a turn
    * and waits for the sign-in like a message.
    */
+  const deletedComputerBlocked = deletedComputerFacts?.blocked != null;
   const sendRunsWithoutSignIn = useCallback((text: string) => {
+    // A blocked deleted-computer chat has no computer to run anything on.
+    if (deletedComputerBlocked) return false;
     if (text === "/login") return providerSignInNeed != null;
     const hasExtras = attachments.length > 0 || contextAttachments.length > 0
       || iosElementContextItems.length > 0 || appControlContextItems.length > 0 || builtInBrowserContextItems.length > 0;
@@ -19778,7 +19821,7 @@ export function AgentChatPane({
         || /^\/goal(?:\s+(?:show|status|clear|reset|none))?$/i.test(text);
     }
     return false;
-  }, [appControlContextItems.length, attachments.length, builtInBrowserContextItems.length, claudeUsageAvailable, contextAttachments.length, iosElementContextItems.length, providerSignInNeed, selectedSessionId, sessionProvider]);
+  }, [appControlContextItems.length, attachments.length, builtInBrowserContextItems.length, claudeUsageAvailable, contextAttachments.length, deletedComputerBlocked, iosElementContextItems.length, providerSignInNeed, selectedSessionId, sessionProvider]);
   useEffect(() => {
     openSignInForLoginCommandRef.current = () => {
       if (!providerSignInNeed) return false;
@@ -21892,7 +21935,7 @@ export function AgentChatPane({
             onRemoveBuiltInBrowserContext={removeBuiltInBrowserContext}
             onOpenAiSettings={openProviderSignIn}
             aboveComposerSlot={composerAboveSlot}
-            sendBlockedReason={sendBlockedReason ?? signInSendBlockReason ?? adeCloudSignInBlockReason ?? adeCloudNotice?.message ?? null}
+            sendBlockedReason={sendBlockedReason ?? signInSendBlockReason ?? adeCloudSignInBlockReason ?? adeCloudNotice?.message ?? deletedComputerFacts?.blocked?.message ?? null}
             onSendBlocked={handleSendBlocked}
             sendBlockExempt={sendRunsWithoutSignIn}
             onOpenLinearSettings={openLinearSettings}
@@ -22585,6 +22628,14 @@ export function AgentChatPane({
           />
         ) : null}
         <ChatMachineWakeBanner style={RUNTIME_BANNER_STYLE} />
+        {deletedComputerFacts && cloudQueueSend?.chatId !== selectedSessionId ? (
+          <CloudLaneComputerDeletedBanner
+            facts={deletedComputerFacts}
+            onOpenSettings={openAdeCloudSettings}
+            sizeMachineKey={deletedComputerViaQueue ? deletedComputerMachineKey : null}
+            style={RUNTIME_BANNER_STYLE}
+          />
+        ) : null}
         {cloudQueueSend && cloudQueueSend.chatId === selectedSessionId ? (
           <CloudQueueSendCard
             send={cloudQueueSend}

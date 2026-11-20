@@ -27,7 +27,8 @@ import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { IPC } from "../../../shared/ipc";
 import { CloudApiError, createCloudApiClient } from "../../../shared/cloudApiClient";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer } from "../../../shared/adeCloudMachine";
-import { CLOUD_CHAT_MESSAGE_MAX_CHARS, cloudChatMessageSettingsOf, isCloudRefusalCode, type CloudCarriedSignIns, type CloudLaunchRecord, type CloudModelCatalog } from "../../../../../account-directory/src/cloud/contract";
+import { isCloudTierId } from "../../../shared/cloudTiers";
+import { CLOUD_CHAT_MESSAGE_MAX_CHARS, cloudChatMessageSettingsOf, isCloudRefusalCode, type CloudCarriedSignIns, type CloudLaneBackup, type CloudLaunchRecord, type CloudModelCatalog } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudRemoteSignInStatus } from "../../../shared/accountCloudLaunches";
 import { readCloudSignInEnd, type CloudSignInEndList, type CloudSignInSettingRead } from "./cloudSignInEndWarning";
 import type { CloudSignInEnd } from "../../../shared/cloudSignIns";
@@ -46,6 +47,7 @@ import {
   cloudAccessEnabled,
   cloudNoProviderSentence,
   cloudVaultFromBridge,
+  DESKTOP_CLOUD_TOKEN_WAIT_MS,
   readCloudAccessView,
   getCloudProvider,
   knownCloudProvider,
@@ -146,6 +148,8 @@ export function registerCloudIpc(args: {
   gitPreflight: (originUrl: string | null) => Promise<CloudGitPreflight>;
   /** This app's update track: a computer it makes follows the same one. */
   updateChannel: () => "stable" | "beta" | null;
+  /** The account's lane backups of one computer, with no wake (an asleep computer's work check). */
+  laneBackups: (machineKey: string) => Promise<CloudLaneBackup[]>;
 } {
   const { logger } = args;
   const account = () => getSharedAccountAuthService();
@@ -159,6 +163,7 @@ export function registerCloudIpc(args: {
     runningVersion: () => app.getVersion(),
     logger,
     onDirectoryUnavailable: (error) => logger.warn("cloud.account_directory_unavailable", { error: getErrorMessage(error) }),
+    tokenWaitMs: DESKTOP_CLOUD_TOKEN_WAIT_MS,
   });
   const directoryBaseUrl = credentials.directoryBaseUrl;
 
@@ -283,6 +288,7 @@ export function registerCloudIpc(args: {
     const provider = text(arg?.provider, 64);
     const modelId = text(arg?.modelId, 256);
     const settings = cloudChatMessageSettingsOf(arg?.settings);
+    const sizeId = isCloudTierId(arg?.sizeId) ? arg.sizeId : null;
     try {
       const result = await accountApi().sendChatMessage(machineKey, chatId, {
         messageId,
@@ -290,6 +296,7 @@ export function registerCloudIpc(args: {
         ...(provider ? { provider } : {}),
         ...(modelId ? { modelId } : {}),
         ...(settings ? { settings } : {}),
+        ...(sizeId ? { sizeId } : {}),
       });
       logger.info("cloud.chat_message_sent", { wake: result.wake.state });
       if (result.wake.state !== "awake") sendToAllWindows(IPC.cloudStatusChanged);
@@ -932,6 +939,7 @@ export function registerCloudIpc(args: {
     wakeForPair,
     gitPreflight,
     updateChannel: () => credentials.updateChannel?.() ?? null,
+    laneBackups: (machineKey) => accountApi().laneBackups(null, machineKey),
   };
 }
 

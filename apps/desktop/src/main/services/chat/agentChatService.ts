@@ -31032,7 +31032,9 @@ export function createAgentChatService(args: {
   };
 
   const ensureManagedSession = (sessionId: string): ManagedChatSession => {
-    if (typeof sessionId !== "string" || !sessionId.trim()) throw new Error("sessionId is required.");
+    // Only an action caller (an agent's tool call, a script) can leave the id
+    // out: the answer is to its call, not a defect here.
+    if (typeof sessionId !== "string" || !sessionId.trim()) throw new AdeExpectedError("sessionId is required.", "user");
     const existing = managedSessions.get(sessionId);
     if (existing) return existing;
 

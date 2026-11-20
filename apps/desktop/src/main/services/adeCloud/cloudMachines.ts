@@ -225,6 +225,9 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   let knownKeysRead: Promise<boolean> | null = null;
   /** From the last account read that worked, so a failed read doesn't bring deleted computers' rows back. */
   let lastDeletedInstanceIds: string[] = [];
+  /** The newest account read whose deletions are stored: an older one finishing late must not replace them. */
+  let accountReadsStarted = 0;
+  let storedAccountRead = 0;
   /**
    * The computers the last good read listed (id to machine key), and for
    * which account. Null before the first good read of this process: a
@@ -317,6 +320,10 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     const client = await deps.client();
     if (!client) return emptyResult("not_connected", (await deps.whyNoClient?.()) ?? null);
     const asked = startRead();
+    // The plan and hours do not depend on the list: asked together, so the
+    // list costs one server round trip, not two in a row inside its deadline.
+    const accountReadNumber = ++accountReadsStarted;
+    const accountRead = readAccount(client);
     let instances: CloudInstance[];
     try {
       instances = await client.listInstances();
@@ -325,8 +332,11 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       logger.warn?.("cloud.machines_read_failed", { error: getErrorMessage(error), refused });
       return emptyResult(refused ? "access_refused" : "unreachable", getErrorMessage(error));
     }
-    const account = await readAccount(client);
-    if (account) lastDeletedInstanceIds = account.deletedInstanceIds;
+    const account = await accountRead;
+    if (account && accountReadNumber > storedAccountRead) {
+      storedAccountRead = accountReadNumber;
+      lastDeletedInstanceIds = account.deletedInstanceIds;
+    }
     const catalog = cloudCatalogOf(account);
     const live = instances.filter((instance) => instance.status !== "deleted");
     recordRead(instances, asked);

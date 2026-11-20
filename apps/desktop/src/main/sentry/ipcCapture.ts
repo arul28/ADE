@@ -200,6 +200,9 @@ const SCREEN_RETRIED_WRITES: ReadonlySet<string> = new Set([
   "github.detectRepo",
   "proxy.status",
   "usage.noteQuotaDemand",
+  // A terminal view sends its size whenever its layout or visibility changes,
+  // with no keystroke: a pane opening or a window resizing, not a person.
+  "pty.resize",
 ]);
 
 /** A runtime action a person started, from its `domain.action` label. */

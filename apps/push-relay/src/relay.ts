@@ -494,12 +494,15 @@ async function loadSuppressions(
   const keys = [...new Set(dedupeKeys)];
   const suppressions = new Map<string, string>();
   if (keys.length === 0) return suppressions;
+  // A row past its retention suppresses nothing, however late the prune runs.
+  const cutoff = new Date(Date.now() - SUPPRESSION_RETENTION_HOURS * 60 * 60 * 1000).toISOString();
   const rows = (await env.DB
     .prepare(`
       select suppression_key, content_hash from publish_suppression
        where machine_key = ? and suppression_key in (${keys.map(() => "?").join(", ")})
+         and published_at >= ?
     `)
-    .bind(machineKey, ...keys)
+    .bind(machineKey, ...keys, cutoff)
     .all<SuppressionRow & { suppression_key: string }>()).results ?? [];
   for (const row of rows) suppressions.set(row.suppression_key, row.content_hash);
   return suppressions;
@@ -628,6 +631,23 @@ export async function pruneRelayState(env: PushRelayEnv): Promise<void> {
     .bind(budgetCutoff)
     .run();
   await pruneAttentionState(env);
+}
+
+/** How often one isolate prunes from requests; retention is hours to days. */
+const REQUEST_PRUNE_INTERVAL_MS = 60_000;
+const lastRequestPruneAt = new WeakMap<D1Database, number>();
+
+/**
+ * `pruneRelayState` from a request, at most once a minute per isolate and
+ * database: it is nine statements, for rows whose retention is hours or days.
+ * The hourly cron still runs it in full.
+ */
+async function pruneRelayStateFromRequest(env: PushRelayEnv): Promise<void> {
+  const now = Date.now();
+  const last = lastRequestPruneAt.get(env.DB);
+  if (last !== undefined && now - last < REQUEST_PRUNE_INTERVAL_MS) return;
+  lastRequestPruneAt.set(env.DB, now);
+  await pruneRelayState(env);
 }
 
 function phaseExpiration(phase: PushPhase, nowSeconds = Math.floor(Date.now() / 1000)): number {
@@ -949,7 +969,7 @@ async function handleDeviceUpsert(
   } else {
     await registrationStatement.run();
   }
-  await pruneRelayState(env);
+  await pruneRelayStateFromRequest(env);
   return json({ ok: true, deviceId, updatedAt: now });
 }
 
@@ -1142,7 +1162,7 @@ async function handlePublish(request: Request, env: PushRelayEnv, machineKey: st
   }
   // Publishes far outnumber device re-registrations, so prune here too or a
   // chatty machine holds expired suppression rows past their retention.
-  await pruneRelayState(env);
+  await pruneRelayStateFromRequest(env);
 
   return json({
     ok: true,

@@ -94,7 +94,8 @@ are in `apps/account-directory/src/cloud/contract.ts`.
 | Client calls for ADE with no computer (desktop and web) | `apps/desktop/src/shared/cloudApiClient.ts`, `apps/desktop/src/shared/adeCloud/chatQueue.ts`, `apps/desktop/src/shared/adeCloud/accountCalls.ts`, `apps/desktop/src/renderer/state/adeCloudChatQueue.ts`, `apps/desktop/src/main/services/adeCloud/adeCloudReadIpc.ts` |
 | A cloud computer's git identity | `apps/ade-cli/src/services/github/cloudGitIdentity.ts` |
 | Lane launch: the launch's steps and stage cards, the account status a launch checks first | `cloudLaneLaunchSteps.ts`, `cloudLaneComputerStages.ts`, `cloudAccountStatus.ts` |
-| Lane life: delete, keep the lane and free its computer, tier change, work check; the job events to every window | `cloudLaneLife.ts`, `registerCloudLaneLifeIpc.ts`, `broadcast.ts` |
+| Lane life: delete, keep the lane and free its computer, tier change, work check; the job events to every window | `cloudLaneAccount.ts` (the account side, shared by the desktop and the brain), `cloudLaneLife.ts`, `registerCloudLaneLifeIpc.ts`, `broadcast.ts` |
+| The account's lanes, saved chats, CLI copies, backups and server jobs from the CLI and agents (`ade cloud lanes`, `chats`, `sessions`, `backups`, `jobs`, `project`) | `cloudLaneVerbs.ts`; text in `apps/ade-cli/src/cliCloudLanes.ts` |
 | Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
 | The disk measure and Clear caches on a cloud computer | `cloudDiskUsage.ts` |
 | Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`, `apps/ade-cli/src/services/power/cloudIgnoredFiles.ts` |
@@ -941,7 +942,10 @@ the phone (`cloud.read`) and a brain with no project can read it.
   when the RPC server can stamp `viaAdeMcp` (the operator role and a process
   the MCP runner started, `isRunningRemoteRun`). A resize, a delete, a move, a
   cancel and loosening the limits always need the person. A read-only
-  connection is refused.
+  connection is refused. It can read the account with no wake: `ade cloud
+  status`, `list`, `hours`, `limits`, and the list and read forms of `lanes`,
+  `chats`, `sessions`, `backups`, `jobs` and `project`
+  (`remoteMcpCommandPolicy.ts`, `isCloudAccountRead`).
 - **The daily limit:** past the day's new computers for agents, the refusal
   names the limit and Settings › Integrations › ADE Cloud › What agents may do
   › New computers a day. A person is never counted.
@@ -1114,7 +1118,10 @@ Cloud"). The server keeps the rule (`cloud_automations`, migration 0030,
 ### The life of a lane's computer
 
 The main process runs these (`cloudLaneLife.ts`, `IPC.cloudLaneLifeCall`).
-Each call is account level: it names a computer of the account, never a pin.
+The account side (work check, delete, free, keep, lanes without a computer)
+is `cloudLaneAccount.ts`, which a brain's `cloud` actions use too
+(`cloudLaneVerbs.ts`). Each call is account level: it names a computer of the
+account, never a pin.
 
 - **Work check.** `ade cloud push-work --check --json` on the computer lists
   the lanes with uncommitted changes or commits no remote has
@@ -1126,6 +1133,12 @@ Each call is account level: it names a computer of the account, never a pin.
   lane that can't be read, or a fetch that fails, reads `failed`, never
   `clean`, and the computer is kept. `ade cloud work-state` runs the same
   check.
+  - **No wake for a saved computer.** When the computer is not running and
+    the server says it saved its lanes at rest (`backups.saved`; any start
+    clears it), the check reads the lanes' backups instead
+    (`GET /cloud/backups?machineKey=`): the newest backup of each lane with
+    commits or changed files is unpushed work. `checkedBy` says which way it
+    read. An asleep computer that saved nothing is still woken.
 - **Delete lane.** The computer goes, and the lane and its saved chats with
   it. ADE never refuses it. The work check runs first unless the person was
   already warned.
@@ -1134,7 +1147,9 @@ Each call is account level: it names a computer of the account, never a pin.
     the keys in `ade_former_machine_keys` (a moved lane) while the server says
     their computer is deleted. It reads at most 20 pages of 200; when chats
     stay, `chatsKept` is true and the toast says to remove the rest in Work.
-  - An agent's or the CLI's delete keeps the chats.
+  - `cloud.delete` (`ade cloud delete <machine>`) keeps the chats.
+    `cloud.lane_delete` (`ade cloud lanes delete <lane>`) deletes them, as
+    the desktop does, unless `--keep-chats`.
   - Each person's delete sends `ade_feature_used` `cloud_lane_deleted` with
     the outcome `completed`, `kept`, `partial` or `failed`.
 - **Manage lane on a cloud lane** opens a Computer tab
@@ -1142,19 +1157,37 @@ Each call is account level: it names a computer of the account, never a pin.
   free its computer (`freeCloudLaneWithConfirm`), Keep this computer while
   the idle cleanup warned, and the ADE Cloud page. Its Delete tab is the cloud
   delete with the keep-chats box.
-- **Lanes without a computer** (`CloudLanesWithoutComputerBlock.tsx`): one
-  folded block above the Work list and in the Lanes tab. It lists the lanes
-  the server kept without a computer (with "New computer" on the same branch)
-  and lanes whose computer was deleted with their chats kept. Each row gives
-  the server's reason in one line. Delete in the row's ⋯ menu removes the kept
-  record first (the server refuses it while a computer holds the lane again),
-  then every chat of that lane id. A gold dot marks a row not seen yet
-  (`ade.cloudLanesWithoutComputer.seen.v1`).
-  - On the iPhone (`CloudKeptLanes.swift`) the same block sits at the top of
-    the project's Lanes list and under the computers on the ADE Cloud page.
-    New computer starts a lane launch on the kept branch; its steps show in
-    the row, and a launch started on another device shows its card too.
-    Delete asks first, removes the kept record, then the lane's saved chats.
+- **A deleted computer looks like a sleeping one** (`cloudLanesWithoutComputer.tsx`,
+  `CloudLaneComputerDeletedBanner.tsx`). A lane whose computer was deleted,
+  kept by the server or listed only by its saved chats, stays a normal row
+  among the ADE Cloud lanes in Lanes and Work, with one quiet "Computer
+  deleted" mark. Its rows name the machine id `ade-cloud-deleted`, which
+  nothing routes to, so every lane action refuses them. Its lane page and its
+  chats show one inline banner: what happened, what the next message does,
+  and "Why?". The next message goes through the account's queue, which makes
+  a new computer and continues the same chat. The chat's banner has a size
+  chip for that computer. With no pick, the server starts it at Small, or
+  bigger if the project needed it before. A pick goes with the message
+  (`sizeId`), and the server starts the computer at that size and does not
+  change it. The pick belongs to the deleted computer's machine key, so all
+  of its chats share it, and a send that carries it clears it. When ADE Cloud can't start one (the account is blocked or signed
+  out, no hours or disk, no branch or repository), the banner turns to a
+  warning with the reason and Send is off. A lane with no chat offers New
+  computer on the same branch instead. Delete asks first, removes the kept
+  record (the server refuses it while a computer holds the lane again), then
+  every saved chat of that lane on its old computers, page by page; when
+  chats remain, it says so and keeps the row. After the server confirms a
+  delete, the lane leaves the list at once (`noteKeptLaneDeleted`), and a
+  saved-chats read that started before the delete can't list the lane or
+  its chats again (`noteCloudSavedChatsDeleted`). A lane on a deleted
+  computer whose chats are all gone leaves the list. The ADE Cloud page lists every
+  project's kept lanes (`CloudDashboard.tsx`).
+  - On the iPhone the same lanes are normal rows in the project's Lanes list
+    (`LaneKeptCloudRows.swift`), counted under Active. A tap opens the newest
+    saved chat, else the kept-lane page (`CloudKeptLaneActionsCard` in
+    `CloudKeptLanes.swift`): New computer on the same branch for a lane with
+    no saved chat, its saved chats, and Delete. The chat's line says what
+    happened and what its next message does (`CloudDeletedComputerFacts`).
     Everything goes through the account server, so it works with no machine
     of the person's own.
   - **Lane links to a kept lane** open its kept page, not "Lane shared with
@@ -1194,6 +1227,51 @@ Each call is account level: it names a computer of the account, never a pin.
   go to the launcher (`uploadLaunchFile`); later ones go to the clone after
   the hand-off (`uploadAttachment`). A cancel forgets the app's connection to
   the deleted computer. The brain writes the branch into `ade_lane_branch`.
+
+### Lanes, chats and saved work from the CLI
+
+`cloudLaneVerbs.ts` adds the account's views to the brain's `cloud` domain.
+Reads wake nothing and work from any folder (`ADE_ACTION_MACHINE_SCOPED`).
+
+- **One lane model.** `cloud.lanes` (`ade cloud lanes`) lists every lane of
+  the account once. A lane is on a computer (`awake`, `asleep`, `starting`,
+  `stopping`, `deleting`, `error`) or `computer_deleted`: the server kept the
+  lane, or only its saved chats are left. Each lane has its saved chat count,
+  its newest backup and a lane link. The list reads the computers, the kept
+  lanes, at most 5 pages of saved chats and the backups in parallel; a part
+  that fails goes in `unread`, never a throw. `--stale` keeps the lanes unused
+  for a week or due for cleanup, biggest disk first.
+- **A lane** is named by its name, id, branch or link (`lane_show`). A name
+  two lanes share is refused with their ids. An id is the whole selector or
+  a lane link's lane; a name that holds an id stays a name. A write named by
+  a name or branch needs the id while the kept lanes or saved chats can't be
+  read (a hidden second lane could have that name).
+- **Writes** are the delete class of `approve` (`CLOUD_APPROVED_ACTIONS`):
+  - `lane_delete`: on a computer, the work check runs first (no wake for a
+    saved computer), then one card: `Delete lane "X"?` with Delete lane,
+    Keep for later (a free) and Cancel. The body names each lane's work not
+    on GitHub. A person always decides, even for a computer the chat made:
+    the lane's saved chats go with it. A card that read an asleep computer's
+    backups stops the delete if the computer started meanwhile. A move run
+    by the server refuses a delete or free of either computer. Computer
+    already deleted: its kept record (the
+    server deletes the lane's backups and saved chats with it), then any
+    chats left on its deleted computers. With no kept record, ADE deletes
+    those chats and the lane's backups itself. `--keep-chats` is refused
+    there: the chats are all that is left of the lane.
+  - `lane_free`, `saved_chat_delete`, `session_delete`, `backup_forget` and
+    `job_cancel` ask the same way. `lane_start` makes the lane's new computer
+    through `lane_launch` and its card, on `origin/<branch>`, from a folder
+    of the lane's project. A lane whose repository ADE doesn't know is
+    refused.
+  - `lane_keep` (`POST /cloud/instances/:id/keep`) needs no card: it stops
+    the idle cleanup's delete, wakes nothing and uses no hours.
+- **Status.** `cloud.status` also returns `lanesComputerDeleted`, read beside
+  the computer list; null when it can't be read, and the text says so.
+  `lanesComputerDeletedPartial: true` when the saved chats were read only up
+  to the page limit, so a lane known only from older chats can be missing.
+- **A brain** holds no connections to the computers, so a delete or free
+  from the CLI forgets none; the desktop drops them on its next list read.
 
 ## Guidance for agents
 

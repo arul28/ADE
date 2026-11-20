@@ -1,8 +1,12 @@
 import type {
   AgentChatEventEnvelope,
+  SyncChatSubscribeSnapshotPayload,
+  SyncChatSubscribeUnavailable,
   SyncChatToolResultResponsePayload,
+  SyncPeerMetadata,
 } from "../../../../desktop/src/shared/types";
 import {
+  SYNC_CHAT_SUBSCRIBE_UNAVAILABLE_CAPABILITY,
   SYNC_FOLDED_REPLAY_CAPABILITY,
   SYNC_MOBILE_CHAT_SLIM_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
@@ -155,4 +159,24 @@ export async function readStoredToolResultResponse(args: {
 
 export function chatEventDeliveryKey(event: AgentChatEventEnvelope): string {
   return `${event.sessionId}:${event.sequence ?? -1}:${event.timestamp}:${event.event.type}`;
+}
+
+export const CHAT_TRANSCRIPT_READ_FAILED: SyncChatSubscribeUnavailable = {
+  code: "transcript_read_failed",
+  message: "The machine couldn’t read this chat’s transcript.",
+};
+
+/**
+ * The `chat_subscribe` answer for a chat this ingress cannot serve, or null
+ * for a peer that does not understand `unavailable` (older phones get no
+ * answer, as before, and their snapshot watchdog shows the failure).
+ */
+export function chatSubscribeUnavailableSnapshot(
+  metadata: Pick<SyncPeerMetadata, "capabilities"> | null | undefined,
+  sessionId: string,
+  unavailable: SyncChatSubscribeUnavailable,
+  capturedAt: string,
+): SyncChatSubscribeSnapshotPayload | null {
+  if (metadata?.capabilities?.includes(SYNC_CHAT_SUBSCRIBE_UNAVAILABLE_CAPABILITY) !== true) return null;
+  return { sessionId, capturedAt, truncated: false, events: [], unavailable };
 }

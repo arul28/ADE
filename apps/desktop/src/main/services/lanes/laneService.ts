@@ -1,7 +1,7 @@
 import { parseGitWorktreePorcelain, type GitWorktreeInfo } from "./gitWorktreePorcelain";
 import fs from "node:fs";
 import os from "node:os";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 import { DELETED_LANE_KEEP_DAYS } from "../../../shared/laneCleanup";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -6095,8 +6095,11 @@ export function createLaneService({
             });
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            logger.error("lane.delete.save_work_failed", { laneId, error: message });
-            throw new Error(`ADE could not save this lane's unsaved work, so it did not delete it: ${message}`);
+            // The error itself, not its text: a failure only the user can fix
+            // (a file Windows reserves, `NUL`) is marked so, and the log bridge
+            // and the action's capture both read that mark.
+            logger.error("lane.delete.save_work_failed", { laneId, error });
+            throw carryExpected(error, new Error(`ADE could not save this lane's unsaved work, so it did not delete it: ${message}`));
           }
           if (progress.savedWork) {
             logger.info("lane.delete.work_saved", {
@@ -7422,15 +7425,18 @@ export function createLaneService({
         "select id from lanes where project_id = ? and branch_ref = ? limit 1",
         [projectId, branchRef]
       );
+      // Both refusals name what the person does next (open that lane, or
+      // remove the other worktree): answers, not defects.
       if (existing?.id) {
-        throw new Error(`Lane already exists for branch '${branchRef}'`);
+        throw new AdeExpectedError(`Lane already exists for branch '${branchRef}'`, "user");
       }
 
       try {
         const checkedOutWorktree = await findGitWorktreeForBranch(branchRef);
         if (checkedOutWorktree && canonicalPath(checkedOutWorktree.path) !== canonicalProjectRoot) {
-          throw new Error(
-            `Branch '${branchRef}' is already checked out at '${checkedOutWorktree.path}'. That worktree becomes a lane on its own; remove or prune it before importing this branch again.`
+          throw new AdeExpectedError(
+            `Branch '${branchRef}' is already checked out at '${checkedOutWorktree.path}'. That worktree becomes a lane on its own; remove or prune it before importing this branch again.`,
+            "user",
           );
         }
       } catch (err) {
@@ -8884,8 +8890,9 @@ export function createLaneService({
                   }
                 } catch (error) {
                   const message = error instanceof Error ? error.message : String(error);
-                  logger.error("lane.reclaim.save_work_failed", { laneId: args.laneId, error: message });
-                  throw new Error(`ADE could not save this lane's uncommitted files, so it kept the folder: ${message}`);
+                  // As lane.delete.save_work_failed: the error, so its expected mark survives.
+                  logger.error("lane.reclaim.save_work_failed", { laneId: args.laneId, error });
+                  throw carryExpected(error, new Error(`ADE could not save this lane's uncommitted files, so it kept the folder: ${message}`));
                 }
               }
             }

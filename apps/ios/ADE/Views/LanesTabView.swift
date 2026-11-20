@@ -26,10 +26,10 @@ struct LanesRootInputs: Equatable {
   var machineStateKeys: [String] = []
   /// False while the focused machine is off past its reconnect window.
   var focusedListsWork = true
-  /// The open project's repository on the account server, and how many of
-  /// its ADE Cloud lanes ADE kept without a computer.
+  /// The open project's repository on the account server, and its ADE
+  /// Cloud lanes ADE kept without a computer (rows of the list), newest first.
   var cloudProjectOrigin: String?
-  var keptCloudLaneCount = 0
+  var keptCloudLanes: [CloudLaneWithoutComputer] = []
   /// Lane launches ("New computer") of this project the phone still shows.
   var keptCloudLaneLaunchCount = 0
 
@@ -58,9 +58,11 @@ struct LanesRootInputs: Equatable {
     focusedListsWork = sync.focusedMachineListsWork
     let origin = sync.cloudProjectOrigin
     cloudProjectOrigin = origin
-    keptCloudLaneCount = origin.map { origin in
-      AccountCloudStore.shared.lanesWithoutComputer.filter { $0.projectOrigin == origin }.count
-    } ?? 0
+    keptCloudLanes = origin.map { origin in
+      AccountCloudStore.shared.lanesWithoutComputer
+        .filter { $0.projectOrigin == origin }
+        .sorted { ($0.since ?? 0) > ($1.since ?? 0) }
+    } ?? []
     keptCloudLaneLaunchCount = origin.map { AccountCloudLaunchStore.shared.openLaneLaunches(origin: $0).count } ?? 0
   }
 }
@@ -72,7 +74,7 @@ struct LanesTabShell: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
-  /// The kept lanes and their launches decide whether their block shows.
+  /// The kept lanes are rows of the list; their launches show as cards above it.
   @ObservedObject private var cloudStore = AccountCloudStore.shared
   @ObservedObject private var cloudLaunches = AccountCloudLaunchStore.shared
   var isActive = true

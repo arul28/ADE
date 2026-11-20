@@ -630,12 +630,20 @@ export class ProjectRegistry {
    * checkouts of one repository.
    */
   resolveRepositoryProjectId(ref: ProjectId): ProjectId | null {
+    const matches = this.repositoryCheckouts(ref);
+    return matches?.length === 1 ? matches[0]!.projectId : null;
+  }
+
+  /**
+   * The registered checkouts of the repository `ref` names, or null when
+   * `ref` is not a repository key (or is also a project id here).
+   */
+  repositoryCheckouts(ref: ProjectId): ProjectRecord[] | null {
     const repoKey = accountRepoScopeKey(ref);
     if (!repoKey) return null;
     const records = this.list();
     if (records.some((record) => record.projectId === ref)) return null;
-    const matches = records.filter((record) => accountRepoScopeKey(record.gitOriginUrl) === repoKey);
-    return matches.length === 1 ? matches[0]!.projectId : null;
+    return records.filter((record) => accountRepoScopeKey(record.gitOriginUrl) === repoKey);
   }
 
   /**
@@ -709,7 +717,13 @@ export class ProjectRegistry {
   /** Check before creating directories or opening SQLite on any local entry point. */
   assertProjectDataAvailable(record: ProjectRecord | null): void {
     if (!record || !this.isProjectDataMissing(record)) return;
-    throw codedError(this.projectDataMissingMessage(record, { commandHints: true }), "project_data_missing");
+    // The person's own folder or `.ade` went missing (deleted, moved, a drive
+    // unplugged): the message says how to restore it, and the open flow shows
+    // the restore screen. An answer, not an ADE fault, wherever it is logged.
+    throw markExpected(
+      codedError(this.projectDataMissingMessage(record, { commandHints: true }), "project_data_missing"),
+      "environment",
+    );
   }
 
   private read(): ProjectRegistryFile {

@@ -869,7 +869,8 @@ private func workPreviewOversizedQuestion() -> WorkPendingQuestionModel {
       activeProjectRootPath: nil,
       onStarted: { _, _, _, _, _ in },
       onCliStarted: { _ in },
-      onRefreshLanes: {}
+      onRefreshLanes: {},
+      onCloudLaunchStarted: { _ in }
     )
     .environmentObject(WorkPreviewData.syncService)
     .environmentObject(WorkPreviewData.dictationController)

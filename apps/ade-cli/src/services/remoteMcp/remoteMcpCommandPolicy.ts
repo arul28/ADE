@@ -667,6 +667,9 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
   // `cloud limits` reads what agents may do alone; a preset or a value flag
   // (`--extra-disk`, `--per-day`) sets it, which is full access.
   if (command === "cloud" && sub === "limits" && args.slice(2).some((word) => !CLOUD_LIMITS_READ_FLAGS.has(word))) return refuse();
+  // The account's lanes, chats, CLI copies, backups and jobs: only their list
+  // and read forms. Delete, free, start, keep and cancel are full access.
+  if (command === "cloud" && sub && CLOUD_ACCOUNT_READS.has(sub)) return isCloudAccountRead(sub, args.slice(2)) ? { ok: true, args } : refuse();
   // `actions run` passed checkActionsCommand's read-only test before getting here.
   if (command === "actions" && sub === "run" && words[0] === "run") return { ok: true, args };
   if (sub && allowed.has(sub)) return { ok: true, args };
@@ -675,6 +678,54 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
 
 /** The only words the read form of `ade cloud limits` takes: output flags. */
 const CLOUD_LIMITS_READ_FLAGS: ReadonlySet<string> = new Set(["--text", "--json", "--pretty", "--compact"]);
+
+/** `ade cloud <noun>` reads with no wake: the verbs each noun reads with (no verb lists). */
+const CLOUD_ACCOUNT_READS: ReadonlyMap<string, ReadonlySet<string> | true> = new Map<string, ReadonlySet<string> | true>([
+  ...["lanes", "lane"].map((noun) => [noun, new Set(["list", "ls", "show", "git"])] as const),
+  ...["chats", "chat", "sessions", "session", "terminals"].map((noun) => [noun, new Set(["list", "ls", "read", "show"])] as const),
+  ...["backups", "backup", "jobs", "job"].map((noun) => [noun, new Set(["list", "ls"])] as const),
+  ["project", true],
+]);
+/** The flags of those reads that take a value, so the value never reads as the verb. */
+const CLOUD_ACCOUNT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--project", "--origin", "--machine-key", "--cursor", "--before", "--project-root"]);
+/** The flags of those reads that take no value. */
+const CLOUD_ACCOUNT_SWITCH_FLAGS: ReadonlySet<string> = new Set(["--text", "--json", "--pretty", "--compact", "--stale", "--deleted", "--kept"]);
+
+/**
+ * Whether the words after `cloud <noun>` are a read: no verb (the list) or a
+ * read verb. Every flag must be one these reads take: the CLI would eat an
+ * unknown flag's value (`--size list keep x` runs `keep`). An allow list, as
+ * for `lanes share`.
+ */
+function isCloudAccountRead(noun: string, words: readonly string[]): boolean {
+  const verbs = CLOUD_ACCOUNT_READS.get(noun);
+  if (verbs === true) return true;
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index]!;
+    if (word === "--") return false;
+    if (word.startsWith("-")) {
+      const equals = word.indexOf("=");
+      const name = equals > 0 ? word.slice(0, equals) : word;
+      if (CLOUD_ACCOUNT_VALUE_FLAGS.has(name)) {
+        if (equals < 0) index += 1;
+        continue;
+      }
+      if (CLOUD_ACCOUNT_SWITCH_FLAGS.has(name) && equals < 0) continue;
+      return false;
+    }
+    // The first word is the verb; later words are its arguments (a lane, an id).
+    if (verbs?.has(word) !== true) return false;
+    return words.slice(index + 1).every((rest) => !rest.startsWith("-") || isKnownCloudReadFlag(rest));
+  }
+  return true;
+}
+
+/** A flag `isCloudAccountRead` allows after the verb (a value flag's value is a plain word). */
+function isKnownCloudReadFlag(word: string): boolean {
+  const equals = word.indexOf("=");
+  const name = equals > 0 ? word.slice(0, equals) : word;
+  return CLOUD_ACCOUNT_VALUE_FLAGS.has(name) || (equals < 0 && CLOUD_ACCOUNT_SWITCH_FLAGS.has(name));
+}
 
 /** The flags of the read form of `ade lanes share`, and whether each takes a value. */
 const LANE_SHARE_LIST_FLAGS: ReadonlyMap<string, boolean> = new Map([
@@ -724,6 +775,7 @@ function describeReadOnlyCommands(): string {
     if (allowed === true) parts.push(command);
     else parts.push(`${command} ${[...allowed].join("|")}`);
   }
+  parts.push("cloud lanes|chats|sessions [list|show|read], cloud backups|jobs [list], cloud project");
   parts.push("actions run <a read-only action>");
   readOnlyDescription = parts.join(", ");
   return readOnlyDescription;

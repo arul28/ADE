@@ -110,9 +110,11 @@ export function machineShowsConnected(
 }
 
 /**
- * Whether the row looks like a connected machine's: online, or a cloud
- * computer that is only asleep. Looks only; every guard reads `online`.
+ * Whether the row looks like a connected machine's: online, a cloud computer
+ * that is only asleep, or a cloud computer that was deleted (its lane and
+ * chats stay, and the next message makes a new computer). Looks only; every
+ * guard reads `online`.
  */
-export function rowShowsConnected(row: { online: boolean; cloudResting?: boolean }): boolean {
-  return row.online || row.cloudResting === true;
+export function rowShowsConnected(row: { online: boolean; cloudResting?: boolean; computerGone?: boolean }): boolean {
+  return row.online || row.cloudResting === true || row.computerGone === true;
 }

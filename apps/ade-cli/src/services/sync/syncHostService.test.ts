@@ -32,6 +32,7 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import {
   SYNC_CHANGESET_ACK_WINDOW_CAPABILITY,
+  SYNC_CHAT_SUBSCRIBE_UNAVAILABLE_CAPABILITY,
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
   SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES,
   SYNC_INVALIDATION_TABLE_MAX_BYTES,
@@ -14096,6 +14097,7 @@ describe("chat_subscribe snapshots", () => {
       },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let capablePeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
 
     try {
       const port = await host.waitUntilListening();
@@ -14269,6 +14271,58 @@ describe("chat_subscribe snapshots", () => {
         events: [foreignEvent],
       });
 
+      // A phone whose active project is no longer the hosted one (the host
+      // moved under it) stamps the envelope, not the payload, with its
+      // project. It is served from that project's transcript, not dropped.
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "stale-active-project-subscribe",
+        projectId: "foreign-project-a",
+        payload: { sessionId: session.id },
+      }));
+      const staleActiveProjectSnapshot = await waitForEnvelope(
+        peer.envelopes,
+        "chat_subscribe",
+        "stale-active-project-subscribe",
+      );
+      expect(staleActiveProjectSnapshot.payload).toMatchObject({
+        sessionId: session.id,
+        events: [foreignEvent],
+      });
+
+      // A project this machine cannot serve chats for. A phone that reads
+      // `unavailable` is told why at once instead of waiting out its snapshot
+      // watchdog ("didn't answer"); an older phone gets no answer, as before.
+      capablePeer = await connectPeer(port, host.getBootstrapToken(), "ios-chat-unavailable", {
+        capabilities: [SYNC_CHAT_SUBSCRIBE_UNAVAILABLE_CAPABILITY],
+      });
+      for (const target of [peer, capablePeer]) {
+        target.ws.send(encodeSyncEnvelope({
+          type: "chat_subscribe",
+          requestId: "unservable-project-subscribe",
+          projectId: "unregistered-project",
+          payload: { sessionId: session.id },
+        }));
+      }
+      const unservable = await waitForEnvelope(
+        capablePeer.envelopes,
+        "chat_subscribe",
+        "unservable-project-subscribe",
+      );
+      expect(unservable.payload).toMatchObject({
+        sessionId: session.id,
+        events: [],
+        unavailable: { code: "project_mismatch" },
+      });
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "after-unservable-subscribe",
+        projectId: "foreign-project-a",
+        payload: { sessionId: session.id },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "after-unservable-subscribe");
+      expect(peer.envelopes.some((entry) => entry.requestId === "unservable-project-subscribe")).toBe(false);
+
       const foreignTranscriptSize = Buffer.byteLength(`${JSON.stringify(foreignEvent)}\n`, "utf8");
       peer.ws.send(encodeSyncEnvelope({
         type: "chat_history",
@@ -14429,6 +14483,7 @@ describe("chat_subscribe snapshots", () => {
       expect(appearedEventEnvelope.payload).toMatchObject(appearedEvent);
     } finally {
       peer?.ws.close();
+      capablePeer?.ws.close();
       await host.dispose();
       cleanup();
     }

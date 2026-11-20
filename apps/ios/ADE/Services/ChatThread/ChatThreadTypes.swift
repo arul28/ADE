@@ -345,6 +345,11 @@ struct ChatStreamTrace {
   var firstLiveEventAt: Date?
   var unsubscribes = 0
   var socketClosesWhileSubscribed = 0
+  /// Which scope the last subscribe named: `project` (none, the active
+  /// project), `foreign` (a `projectId`/`projectRootPath`), or `personal`.
+  var lastSubscribeScope = "none"
+  /// The code of the host's last `unavailable` answer, or `none`.
+  var unavailableCode = "none"
 
   mutating func noteSubscribe(sent: Bool, requestSnapshot: Bool, resume: String) {
     if sent { subscribesSent += 1 } else { subscribesFailedToSend += 1 }
@@ -383,6 +388,8 @@ struct ChatStreamTrace {
       "subscribesFailedToSend": String(subscribesFailedToSend),
       "lastSubscribeRequestedSnapshot": String(lastSubscribeRequestedSnapshot),
       "lastSubscribeResume": lastSubscribeResume,
+      "lastSubscribeScope": lastSubscribeScope,
+      "unavailableCode": unavailableCode,
       "lastSubscribeAgo": age(lastSubscribeAt),
       "snapshotsApplied": String(snapshotsApplied),
       "snapshotsDropped": String(snapshotsDropped),

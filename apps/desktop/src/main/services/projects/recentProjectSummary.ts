@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
@@ -363,15 +364,38 @@ const gitOriginCache = new Map<string, GitOriginCacheEntry>();
 export function readGitOriginUrlWithoutGit(projectRoot: string): string | undefined {
   try {
     const gitDir = resolveGitMetadataDirectory(projectRoot);
-    if (!gitDir) return undefined;
-    const text = fs.readFileSync(path.join(resolveGitConfigDirectory(gitDir), "config"), "utf8");
-    if (/^\s*\[\s*include/im.test(text) || /^\s*worktreeConfig\s*=\s*true\b/im.test(text)) return undefined;
-    const urls = originUrlLines(text);
-    // A quoted value, an inline comment or an escape needs git's own decoding.
-    return urls.length === 1 && !/["\\;#]/.test(urls[0]!) ? urls[0] : undefined;
+    return gitDir ? originFromConfig(readCheckoutGitConfig(gitDir)) : undefined;
   } catch {
     return undefined;
   }
+}
+
+type CheckoutGitConfig = {
+  configPath: string;
+  /** Null when the file is missing or unreadable. */
+  text: string | null;
+  /** False when git reads more than this file (includes, per-worktree config). */
+  selfContained: boolean;
+};
+
+const GIT_CONFIG_INDIRECTION = /^\s*\[\s*include|^\s*worktreeConfig\s*=\s*true\b/im;
+
+function readCheckoutGitConfig(gitDir: string): CheckoutGitConfig {
+  const configPath = path.join(resolveGitConfigDirectory(gitDir), "config");
+  let text: string | null = null;
+  try {
+    text = fs.readFileSync(configPath, "utf8");
+  } catch {
+    // No readable config: git reads only the global files.
+  }
+  return { configPath, text, selfContained: text == null || !GIT_CONFIG_INDIRECTION.test(text) };
+}
+
+function originFromConfig(config: CheckoutGitConfig): string | undefined {
+  if (config.text == null || !config.selfContained) return undefined;
+  const urls = originUrlLines(config.text);
+  // A quoted value, an inline comment or an escape needs git's own decoding.
+  return urls.length === 1 && !/["\\;#]/.test(urls[0]!) ? urls[0] : undefined;
 }
 
 /** Every `url` value in the config's `[remote "origin"]` sections, in order. */
@@ -399,8 +423,18 @@ function originUrlLines(configText: string): string[] {
  * loop for 50-160 ms per new project.
  */
 export function readGitOriginUrlFromConfigOrGit(projectRoot: string): string | null {
-  const fromFile = readGitOriginUrlWithoutGit(projectRoot);
+  // No git metadata, no checkout, so no origin (readGitConfigOriginUrl says the
+  // same). Starting git there only re-read the global config: a sync spawn on
+  // the brain's loop, once a minute per folder.
+  const gitDir = resolveGitMetadataDirectory(projectRoot);
+  if (!gitDir) return null;
+  const config = readCheckoutGitConfig(gitDir);
+  const fromFile = originFromConfig(config);
   if (fromFile !== undefined) return fromFile;
+  // git's answer stands until a config file it read changes.
+  const signature = gitOriginSpawnSignature(config);
+  const cached = signature ? gitOriginSpawnCache.get(projectRoot) : undefined;
+  if (cached && cached.signature === signature) return cached.url;
   const result = spawnSync("git", ["config", "--get", "remote.origin.url"], {
     cwd: projectRoot,
     encoding: "utf8",
@@ -408,9 +442,56 @@ export function readGitOriginUrlFromConfigOrGit(projectRoot: string): string | n
     timeout: 5_000,
     windowsHide: true,
   });
-  if (result.status !== 0) return null;
-  const value = typeof result.stdout === "string" ? result.stdout.trim() : "";
-  return value || null;
+  // A timeout or a git that would not start is no answer: ask again next time.
+  if (result.error || result.status == null) return null;
+  const value = result.status === 0 && typeof result.stdout === "string" ? result.stdout.trim() : "";
+  const url = value || null;
+  if (signature) {
+    if (gitOriginSpawnCache.size >= GIT_ORIGIN_CACHE_LIMIT) gitOriginSpawnCache.clear();
+    gitOriginSpawnCache.set(projectRoot, { signature, url });
+  }
+  return url;
+}
+
+/** What `git config --get remote.origin.url` answered for a checkout, by the config files it read. */
+const gitOriginSpawnCache = new Map<string, { signature: string; url: string | null }>();
+
+/**
+ * The size and mtime of every config file git reads for the origin: the
+ * checkout's own and the user's global ones. Null when any of them pulls in
+ * other files (includes, per-worktree config), which this cannot watch: git
+ * is asked every time then, as before.
+ */
+function gitOriginSpawnSignature(config: CheckoutGitConfig): string | null {
+  if (!config.selfContained) return null;
+  // git finds the global file through HOME; on Windows os.homedir() reads
+  // USERPROFILE, which Git Bash and some setups point elsewhere.
+  const home = process.env.HOME?.trim() || os.homedir();
+  const xdgConfigHome = process.env.XDG_CONFIG_HOME?.trim() || path.join(home, ".config");
+  const globalFiles = [
+    process.env.GIT_CONFIG_GLOBAL?.trim() || path.join(home, ".gitconfig"),
+    path.join(xdgConfigHome, "git", "config"),
+  ];
+  const parts: string[] = [];
+  for (const file of [config.configPath, ...globalFiles]) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(file);
+    } catch {
+      parts.push("-");
+      continue;
+    }
+    if (file !== config.configPath) {
+      if (!stat.isFile()) return null;
+      try {
+        if (GIT_CONFIG_INDIRECTION.test(fs.readFileSync(file, "utf8"))) return null;
+      } catch {
+        return null;
+      }
+    }
+    parts.push(`${stat.size}:${stat.mtimeMs}`);
+  }
+  return parts.join("|");
 }
 
 /**

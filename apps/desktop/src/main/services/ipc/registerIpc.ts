@@ -13111,7 +13111,7 @@ export function registerIpc({
   });
 
   // the provider: the account-wide key and new machines made on it (no pin; see the module).
-  const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient, wakeForPair: cloudWakeForPairFn, gitPreflight: cloudGitPreflightFn, updateChannel: cloudUpdateChannel } = registerCloudIpc({
+  const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient, wakeForPair: cloudWakeForPairFn, gitPreflight: cloudGitPreflightFn, updateChannel: cloudUpdateChannel, laneBackups: cloudLaneBackups } = registerCloudIpc({
     machineConnector: () => machineConnector,
     // Its items in this computer's brain, also with no project here: then the
     // brain opens only those (`accountVault.call`).
@@ -13206,6 +13206,7 @@ export function registerIpc({
     },
     machineConnector,
     remote: runtimeBridge.remoteForMain,
+    laneBackups: cloudLaneBackups,
     analytics: productAnalyticsService ?? null,
     logger: getMachineMainLogger(),
   });

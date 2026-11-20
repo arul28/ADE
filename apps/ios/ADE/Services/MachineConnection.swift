@@ -1195,6 +1195,27 @@ final class MachineConnection {
       noteSnapshotDropped(sessionId: sessionId, reason: "notSubscribed", rawEventCount: rawEventCount)
       return
     }
+    // Not a snapshot: the host could not serve this chat. Never apply its
+    // empty `events`, which would read as an empty chat; settle the request
+    // and show the host's reason (Retry asks again).
+    if let unavailable = dict["unavailable"] as? [String: Any] {
+      let code = unavailable["code"] as? String ?? "unknown"
+      let message = (unavailable["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      CrashReporting.breadcrumb("chat.stream", message: "fleet chat_subscribe unavailable", data: [
+        "machine": machineKey,
+        "session": sessionId,
+        "code": code,
+      ])
+      chatStreamTraces[sessionId, default: ChatStreamTrace()].unavailableCode = code
+      pendingSnapshotSessionIds.remove(sessionId)
+      snapshotWatchdogs.removeValue(forKey: sessionId)?.cancel()
+      stalledChatSessionIds.insert(sessionId)
+      if let key = chatThreadKey(sessionId: sessionId) {
+        registry.markSnapshotStalled(key, message: message?.isEmpty == false ? message : nil)
+      }
+      onChange?()
+      return
+    }
     let hostSupportsChatLogV2 = supportsChatLogV2
     let decoded = await Task.detached(priority: .userInitiated) {
       chatThreadDecodeSnapshot(dict, hostSupportsChatLogV2: hostSupportsChatLogV2)

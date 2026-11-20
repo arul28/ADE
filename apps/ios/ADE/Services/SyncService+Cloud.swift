@@ -657,6 +657,7 @@ extension SyncService {
     cloudServerLastReadFailed = false
     cloudServerInstances = []
     cloudSavedChats = []
+    cloudDeletedLaneTicks = [:]
     // The last account's chat launches from this phone go too.
     AccountCloudLaunchStore.shared.reset()
     // And its ADE Cloud account state, held messages and saved transcripts.
@@ -693,9 +694,22 @@ extension SyncService {
     await cloudServerReadTask?.value
   }
 
+  /// The server deleted this lane and its saved chats: they leave the lists
+  /// now, and a read that started before the delete can't bring them back.
+  func noteCloudLaneDeleted(_ laneId: String) {
+    cloudLaneDeleteTick &+= 1
+    cloudDeletedLaneTicks[laneId] = cloudLaneDeleteTick
+    guard cloudSavedChats.contains(where: { $0.laneId == laneId }) else { return }
+    cloudSavedChats.removeAll { $0.laneId == laneId }
+    objectWillChange.send()
+    resolveCloudMachineKeys()
+  }
+
   private func readCloudServer() async {
     guard let client = await cloudServerClient(),
           let owner = AccountService.shared.currentPairingAuthorization else { return }
+    // Lanes deleted after this tick are newer than this read's answer.
+    let startTick = cloudLaneDeleteTick
     // The account's state (hours, deleting soon, lanes without a computer)
     // reads beside the computers, on the same trigger.
     async let accountState: Void = AccountCloudStore.shared.refresh(client: client, owner: owner)
@@ -748,7 +762,14 @@ extension SyncService {
         Task { await AccountService.shared.loadMachines() }
       }
     }
-    if let chats { cloudSavedChats = chats }
+    if let chats {
+      cloudSavedChats = chats.filter { row in
+        guard let laneId = row.laneId, let tick = cloudDeletedLaneTicks[laneId] else { return true }
+        return tick <= startTick
+      }
+      // The deletes this read started after are the server's answer now.
+      cloudDeletedLaneTicks = cloudDeletedLaneTicks.filter { $0.value > startTick }
+    }
     guard instances != nil || chats != nil else { return }
     // Every computer that saves chats is an ADE Cloud computer: its work
     // always lists. A connected computer's cloud list says the same.
@@ -947,11 +968,39 @@ extension SyncService {
   /// account's machines, both fresh. The launch made a new computer, and a
   /// machine list from before it would route the chat to a "deleted" copy.
   func readCloudForLaunchedChat() async {
-    refreshCloudServerIfStale(force: true)
     async let machines: Void = AccountService.shared.loadMachines()
-    await cloudServerReadTask?.value
+    // A read already out may have started before the launch: it ends, then a new one runs.
+    await refreshCloudServerInstances()
     await machines
   }
+
+  /// The chat a cloud launch started now runs on its lane's new computer.
+  /// This phone never paired that computer, and its project copy is not in
+  /// the account list it read at the last foreground. So it reads the
+  /// account again (machines, ADE Cloud computers, project copies), each
+  /// read started after the launch ran, and connects the computer, with no
+  /// wake. Then the computer's roster lists the chat in Work at once, not
+  /// after the next app launch. True when the computer has a live link.
+  @discardableResult
+  func connectLaunchedCloudComputer(instanceId: String) async -> Bool {
+    async let projects: Void = AccountProjectStore.shared.refresh()
+    await readCloudForLaunchedChat()
+    await projects
+    guard let accountKey = cloudServerInstances.first(where: { $0.id == instanceId })?.machineKey else { return false }
+    resolveCloudMachineKeys()
+    let fleetKey = cloudFleetKey(accountMachineKey: accountKey)
+    if fleetKey == focusedMachineKey {
+      // The focused computer has its own link (the fleet's connect does not cover it).
+      if connectionState != .connected { await reconnectIfPossible() }
+      // The person may have picked another computer meanwhile: only this one counts.
+      return focusedMachineKey == fleetKey && connectionState == .connected
+    }
+    guard let fleet = machineFleet else { return false }
+    return await fleet.connect(machineKey: fleetKey, timeout: Self.launchedComputerConnectTimeout, wake: false)
+  }
+
+  /// How long a launch's new computer may take to answer its first connect.
+  private static let launchedComputerConnectTimeout: Duration = .seconds(45)
 
   /// A pull on Lanes or Work: the account's machines and ADE Cloud computers
   /// read again, so a computer made since the last look (from the web,

@@ -82,6 +82,9 @@ export type CloudStatusComputer = {
 };
 
 /** `cloud.status`: the whole account in one read, with no wake and no spend. */
+/** A lane in `status` whose computer was deleted: `why` is the reason in one sentence. */
+export type CloudStatusDeletedLane = { laneId: string; name: string; branch: string | null; projectOrigin: string | null; deletedAt: string | null; why: string };
+
 export type CloudAccountStatus = {
   canStartLane: CloudCanStartLane;
   plan: {
@@ -140,6 +143,15 @@ export type CloudAccountStatus = {
   computers: { inUse: number; awake: number } | null;
   /** Every computer of the account, lanes first. */
   lanes: CloudStatusComputer[];
+  /**
+   * The lanes whose computer was deleted (the idle cleanup, the plan, a person
+   * who kept the lane): the lane and its chats stay, and its next message makes
+   * a new computer on its branch. Null when ADE couldn't read them; optional,
+   * as an older ADE sends none.
+   */
+  lanesComputerDeleted?: CloudStatusDeletedLane[] | null;
+  /** True when `lanesComputerDeleted` came from only the newest saved chats: a lane known only from older ones can be missing. */
+  lanesComputerDeletedPartial?: boolean;
   /** The lane sizes ADE Cloud offers now, Small first; rates are the catalog's. */
   sizes: Array<{ id: CloudTierId; label: string; kind: "standard" | "full"; cpu: number; memoryGb: number; hoursRate: number; isDefault: boolean }>;
   /** The size a new lane starts with when none is named; null when this ADE can't read the person's saved choice. */

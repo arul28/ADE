@@ -261,6 +261,8 @@ struct WorkSessionDestinationView: View {
   /// Observed so a mute toggled anywhere (Work-list row menu, settings) flows
   /// into `headerMenuModel` and re-renders the equatable-gated header menu.
   @ObservedObject private var pushNotificationService = PushNotificationService.shared
+  // The send gate reads the account's access and kept lanes (`cloudNewComputerBlockedReason`).
+  @ObservedObject private var accountCloud = AccountCloudStore.shared
   @Environment(\.dismiss) var dismiss
   @Environment(\.scenePhase) private var scenePhase
   @Environment(\.duoLayout) private var duoLayout
@@ -733,7 +735,17 @@ struct WorkSessionDestinationView: View {
     session != nil || initialSession != nil
   }
 
+  /// Why a message can't make a new computer for this chat, whose ADE Cloud
+  /// computer was deleted (ADE Cloud refuses work for the account now: read
+  /// only, out of hours); nil when it can, and for every other chat. The
+  /// chat's state line shows the same sentence.
+  var cloudNewComputerBlockedReason: String? {
+    guard !personalChat else { return nil }
+    return cloudLaneNewComputerProblem(fleetKey: sessionCloudMachineKey, sync: syncService, store: accountCloud)
+  }
+
   var canSendChatMessages: Bool {
+    if cloudNewComputerBlockedReason != nil { return false }
     // A chat on a sleeping ADE Cloud computer: the account holds the send and
     // wakes the computer, so there is no live link to require.
     if !personalChat, syncService.chatSendsThroughCloudAccount(sessionId: sessionId) { return true }
@@ -1813,6 +1825,7 @@ struct WorkSessionDestinationView: View {
       .onAppear {
         ChatOpenCloseTiming.destinationAppeared(sessionId: sessionId)
         chatDestinationVisible = true
+        syncService.noteChatDestinationAppeared(sessionId: sessionId)
         // Install remote routing synchronously with presentation so the first
         // user interaction cannot race the async load task and accidentally
         // fall back to the active project.
@@ -2002,6 +2015,7 @@ struct WorkSessionDestinationView: View {
       }
       .onDisappear {
         chatDestinationVisible = false
+        syncService.noteChatDestinationDisappeared(sessionId: sessionId)
         detachThreadModel()
         // The next appearance re-retains the stream (cancelling the delayed
         // unsubscribe scheduled below) and resumes it if it closed.
@@ -2020,6 +2034,10 @@ struct WorkSessionDestinationView: View {
         let wasPersonalChat = personalChat
         if wasCrossProject || wasPersonalChat {
           Task { @MainActor in
+            // The same chat opened again while this screen left (a
+            // notification tap, a Hub cover): that screen owns the stream
+            // and the routing scope now.
+            guard !syncService.chatDestinationIsVisible(sessionId: sessionId) else { return }
             try? await syncService.unsubscribeFromChatEvents(sessionId: sessionId)
             // Preserve routing through the unsubscribe payload, then drop it
             // so a later ordinary project chat with the same id cannot inherit
@@ -2031,7 +2049,9 @@ struct WorkSessionDestinationView: View {
             }
           }
         } else if let currentSession = session ?? initialSession,
-                  isChatSession(currentSession) {
+                  isChatSession(currentSession),
+                  // As above: a screen already showing this chat keeps it.
+                  !syncService.chatDestinationIsVisible(sessionId: sessionId) {
           syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
         }
       }
@@ -2560,6 +2580,9 @@ struct WorkSessionDestinationView: View {
         : nil,
       transcriptLoadState: transcriptLoadState,
       onRetryTranscript: {
+        // Idempotent: puts back a routing scope lost since the chat opened,
+        // so the retried subscribe names the chat's project again.
+        registerChatCommandScope()
         thread.retry()
       },
       providerSignInAllowed: providerSignInAllowed,
@@ -2598,6 +2621,7 @@ struct WorkSessionDestinationView: View {
     )
     chatView.ctoLive = ctoLiveModel
     chatView.modelPickerCloudCatalog = restingCloudModelCatalog
+    chatView.sendBlockedReason = cloudNewComputerBlockedReason
     return chatView
   }
 

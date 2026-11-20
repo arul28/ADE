@@ -608,6 +608,17 @@ import {
 } from "./cliAppleFormat";
 import { formatCloudStatus } from "./cliCloudStatus";
 import {
+  formatCloudBackups,
+  formatCloudChatRead,
+  formatCloudChats,
+  formatCloudJobs,
+  formatCloudLane,
+  formatCloudLaneGit,
+  formatCloudLanes,
+  formatCloudProject,
+  formatCloudSessions,
+} from "./cliCloudLanes";
+import {
   REMOTE_MCP_HELP,
   buildRemoteMcpPlan,
   formatRemoteMcpResult,
@@ -1103,6 +1114,15 @@ export type FormatterId =
   | "cloud-hours"
   | "cloud-invite"
   | "cloud-result"
+  | "cloud-lanes"
+  | "cloud-lane"
+  | "cloud-lane-git"
+  | "cloud-chats"
+  | "cloud-chat-read"
+  | "cloud-sessions"
+  | "cloud-backups"
+  | "cloud-jobs"
+  | "cloud-project"
   | "mcp-servers"
   | "mcp-servers-remove"
   | "history-list"
@@ -5150,6 +5170,29 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade cloud status --text                     Everything in one read: can a new lane start (and why not),
                                                     plan, hours, disk, computers, each lane, sizes, agent limits
     $ ade cloud list --text                       Computers, state, size, how fast each uses hours
+
+  Lanes, chats and saved work (reads wake nothing; each delete asks you first)
+
+    $ ade cloud lanes --text                      Every lane, one list: on a computer (awake, asleep) or its
+                                                    computer deleted (the lane and chats stay; its next message
+                                                    makes a new computer). --stale: unused a week or due for
+                                                    cleanup, biggest disk first. --deleted, --project <origin>
+    $ ade cloud lanes <lane> --text               One lane and its saved chats (<lane>: name, id, branch or link)
+    $ ade cloud lanes delete <lane>               Delete the lane, its computer and its saved chats (--keep-chats).
+                                                    ADE checks its work first; the card also offers Keep for later
+    $ ade cloud lanes free <lane>                 Keep for later: push its work, remove its computer, keep the lane
+    $ ade cloud lanes start <lane> [--size medium]
+                                                    A new computer for a lane whose computer was deleted, on its branch
+    $ ade cloud lanes keep <lane>                 Stop the idle cleanup's delete (no wake, no hours)
+    $ ade cloud lanes git <lane> --text           Its Git summary as the computer saved it
+    $ ade cloud chats [read|delete <chat id>]     The account's saved chats (readable with the computer asleep or deleted)
+    $ ade cloud sessions [read|delete <id>]       Saved CLI and shell copies
+    $ ade cloud backups [forget <lane id>]        Work not on GitHub that ADE saved for each lane
+    $ ade cloud jobs [cancel <id>]                Launches, moves and copies ADE's server runs now
+    $ ade cloud project [--origin <origin>]       One project's whole ADE Cloud view
+
+  Computers
+
     $ ade cloud hours --text                      Plan, hours left, reset date, earned hours
     $ ade cloud work-state --text                 On a cloud computer: which lanes have work not on GitHub yet
     $ ade cloud invite --text                     Your invite link: friends joined, rewards left, hours earned
@@ -5184,8 +5227,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade lanes create --machine cloud --name <n>  The lane alone on its own new computer, no chat
 
   ade cloud alone is ade cloud status. status, list, hours, limits (reading
-  them), invite, sleep and wake are the account's and work from any folder; the rest
-  run in this folder's project. A new lane, create and copy are refused at
+  them), invite, sleep, wake, the reads of lanes, chats, sessions, backups,
+  jobs and project, and lanes keep are the account's and work from any folder;
+  the rest run in this folder's project. A new lane, create and copy are refused at
   once when status says no new lane can start, with the same sentence.
 
   Invites: a friend who enters your link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} extra free cloud hours, and
@@ -21929,6 +21973,10 @@ function buildCloudPlan(args: string[]): CliPlan {
   const name = readValue(args, ["--name"]);
   const to = readValue(args, ["--to"]);
   const reason = readValue(args, ["--reason"]);
+  const project = readValue(args, ["--project", "--origin"]);
+  const machineKey = readValue(args, ["--machine-key"]);
+  const cursor = readValue(args, ["--cursor"]);
+  const before = readValue(args, ["--before"]);
   // `ade cloud` alone is the whole picture, like `ade cloud status`.
   const sub = firstPositional(args) ?? "status";
   const target = () => {
@@ -22020,11 +22068,115 @@ function buildCloudPlan(args: string[]): CliPlan {
         ...(extraDisk != null ? { extraDiskMonthCents: cloudExtraDiskFlagCents(extraDisk) } : {}),
       }, "cloud-result", true);
     }
+    case "lanes":
+    case "lane":
+      return buildCloudLanesPlan(args, { project, size: shape });
+    case "chats":
+    case "chat": {
+      const verb = firstPositional(args) ?? "list";
+      if (verb === "list" || verb === "ls") {
+        return cloudStep("chats", "saved_chats_list", {
+          ...(machineKey ? { machineKey } : {}),
+          ...(project ? { projectKey: project } : {}),
+          ...(cursor ? { cursor } : {}),
+        }, "cloud-chats");
+      }
+      const chatId = firstPositional(args);
+      if (!chatId) throw new CliUsageError(`ade cloud chats ${verb} <chat id> (ade cloud chats lists them)`);
+      if (verb === "read" || verb === "show") {
+        if (before != null && !Number.isFinite(Number(before))) throw new CliUsageError("ade cloud chats read <chat id> --before <number> (the number an older page names)");
+        return cloudStep("chat read", "saved_chats_read", {
+          chatId,
+          ...(machineKey ? { machineKey } : {}),
+          ...(before != null ? { before: Number(before) } : {}),
+        }, "cloud-chat-read");
+      }
+      if (verb === "delete" || verb === "rm") return cloudStep("chat delete", "saved_chat_delete", { chatId, ...(machineKey ? { machineKey } : {}) }, "cloud-result", true);
+      throw new CliUsageError("ade cloud chats [list | read <chat id> | delete <chat id>]");
+    }
+    case "sessions":
+    case "session":
+    case "terminals": {
+      const verb = firstPositional(args) ?? "list";
+      if (verb === "list" || verb === "ls") {
+        return cloudStep("sessions", "sessions_list", { ...(machineKey ? { machineKey } : {}), ...(project ? { project } : {}), ...(cursor ? { cursor } : {}) }, "cloud-sessions");
+      }
+      const sessionId = firstPositional(args);
+      if (!sessionId) throw new CliUsageError(`ade cloud sessions ${verb} <session id> (ade cloud sessions lists them)`);
+      if (verb === "read" || verb === "show") return cloudStep("session read", "session_read", { sessionId, ...(machineKey ? { machineKey } : {}) }, "cloud-sessions");
+      if (verb === "delete" || verb === "rm") return cloudStep("session delete", "session_delete", { sessionId, ...(machineKey ? { machineKey } : {}) }, "cloud-result", true);
+      throw new CliUsageError("ade cloud sessions [list | read <session id> | delete <session id>]");
+    }
+    case "backups":
+    case "backup": {
+      const verb = firstPositional(args) ?? "list";
+      if (verb === "list" || verb === "ls") {
+        const laneId = firstPositional(args);
+        return cloudStep("backups", "backups_list", laneId ? { laneId } : {}, "cloud-backups");
+      }
+      if (verb === "forget" || verb === "delete" || verb === "rm") {
+        const laneId = firstPositional(args);
+        if (!laneId) throw new CliUsageError("ade cloud backups forget <lane id> (ade cloud backups lists them)");
+        return cloudStep("backup forget", "backup_forget", { laneId, ...(machineKey ? { machineKey } : {}) }, "cloud-result", true);
+      }
+      throw new CliUsageError("ade cloud backups [list [lane id] | forget <lane id>]");
+    }
+    case "jobs":
+    case "job": {
+      const verb = firstPositional(args) ?? "list";
+      if (verb === "list" || verb === "ls") return cloudStep("jobs", "jobs_list", {}, "cloud-jobs");
+      if (verb === "cancel" || verb === "stop") {
+        const jobId = firstPositional(args);
+        if (!jobId) throw new CliUsageError("ade cloud jobs cancel <job id> (ade cloud jobs lists them)");
+        return cloudStep("job cancel", "job_cancel", { jobId }, "cloud-result", true);
+      }
+      throw new CliUsageError("ade cloud jobs [list | cancel <job id>]");
+    }
+    case "project":
+      // No --origin: this folder's project names it, so the call runs in that project (the account route has no folder).
+      return project
+        ? cloudStep("project", "project_overview", { origin: project }, "cloud-project")
+        : { kind: "execute", label: "cloud project", formatter: "cloud-project", steps: [actionStep("result", "cloud", "project_overview", {})] };
     case "ready":
       // Ready machines are gone: a new lane gets its own computer when it starts.
       throw new CliUsageError("ade cloud ready no longer exists: ADE makes a computer for each new lane. Use ade chat create --machine cloud --provider <p> --model <id> --prompt \"…\".");
     default:
-      throw new CliUsageError(`Unknown cloud command "${sub}". Use: status, list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, prepare-stop, push-work, work-state.`);
+      throw new CliUsageError(`Unknown cloud command "${sub}". Use: status, lanes, chats, sessions, backups, jobs, project, list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, prepare-stop, push-work, work-state.`);
+  }
+}
+
+/** The lane verbs: `ade cloud lanes` lists; `show|delete|free|start|keep|git <lane>`; a lane alone is `show`. */
+const CLOUD_LANE_VERBS = new Set(["list", "ls", "show", "delete", "rm", "free", "start", "keep", "git"]);
+
+/**
+ * `ade cloud lanes …`: every lane of the account, one list, on a computer or
+ * with its computer deleted. A lane is named by its name, id, branch or link.
+ */
+function buildCloudLanesPlan(args: string[], flags: { project: string | null; size: string | null }): CliPlan {
+  const first = firstPositional(args);
+  const verb = !first ? "list" : CLOUD_LANE_VERBS.has(first) ? first : "show";
+  if (verb === "list" || verb === "ls") {
+    return cloudStep("lanes", "lanes", {
+      ...(flags.project ? { project: flags.project } : {}),
+      ...(args.includes("--deleted") || args.includes("--kept") ? { deleted: true } : {}),
+      ...(args.includes("--stale") ? { stale: true } : {}),
+    }, "cloud-lanes");
+  }
+  const lane = verb === "show" && first !== "show" ? first : firstPositional(args);
+  if (!lane) throw new CliUsageError(`ade cloud lanes ${verb} <lane>: its name, id, branch or link (ade cloud lanes lists them)`);
+  switch (verb) {
+    case "show":
+      return cloudStep("lane", "lane_show", { lane }, "cloud-lane");
+    case "git":
+      return cloudStep("lane git", "lane_git", { lane }, "cloud-lane-git");
+    case "keep":
+      return cloudStep("lane keep", "lane_keep", { lane });
+    case "free":
+      return cloudStep("lane free", "lane_free", { lane }, "cloud-result", true);
+    case "start":
+      return cloudStep("lane start", "lane_start", { lane, ...(flags.size ? { size: flags.size } : {}) }, "cloud-result", true);
+    default:
+      return cloudStep("lane delete", "lane_delete", { lane, ...(args.includes("--keep-chats") ? { keepChats: true } : {}) }, "cloud-result", true);
   }
 }
 
@@ -31353,6 +31505,7 @@ async function runServe(
       // for a target that never takes over.
       const hosted = await scopeRegistry.switchSyncHost(projectId, {
         deactivatePreviousHost: true,
+        reason: "client_switch",
       });
       if (hosted) releaseProjectlessHostLease();
       await scopeRegistry.deactivateInactiveSyncHosts();
@@ -33061,7 +33214,7 @@ async function runServe(
       // ADE_PROJECT_ROOT selects the project whose sync scope this brain
       // should serve. It may already follow another machine, so resolve it as
       // a reader and let the scope's blocker determine whether it is a viewer.
-      activeScope = await scopeRegistry.switchSyncHost(preferredSyncProjectId, { purpose: "serve" });
+      activeScope = await scopeRegistry.switchSyncHost(preferredSyncProjectId, { purpose: "serve", reason: "startup" });
     } else {
       activeScope = await scopeRegistry.resolveActiveSyncHost((record) => {
         if (reportedMissingSyncProjectIds.has(record.projectId)) return;
@@ -40896,6 +41049,24 @@ function formatTextOutput(
       return formatCloudInvite(value);
     case "cloud-result":
       return formatCloudResult(value);
+    case "cloud-lanes":
+      return formatCloudLanes(value);
+    case "cloud-lane":
+      return formatCloudLane(value);
+    case "cloud-lane-git":
+      return formatCloudLaneGit(value);
+    case "cloud-chats":
+      return formatCloudChats(value);
+    case "cloud-chat-read":
+      return formatCloudChatRead(value);
+    case "cloud-sessions":
+      return formatCloudSessions(value);
+    case "cloud-backups":
+      return formatCloudBackups(value);
+    case "cloud-jobs":
+      return formatCloudJobs(value);
+    case "cloud-project":
+      return formatCloudProject(value);
     case "mcp-servers":
       return formatMcpServers(value);
     case "mcp-servers-remove":

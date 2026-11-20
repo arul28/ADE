@@ -89,7 +89,10 @@ import {
 } from "../../../shared/adeCloud";
 import type { PermissionLevel } from "../../../shared/permissionLadder";
 import { getErrorMessage } from "../shared/utils";
-import type { CloudLogger } from "./cloudProvider";
+import type { CloudLogger, CloudProvider } from "./cloudProvider";
+import type { CloudApiClient } from "../../../shared/cloudApiClient";
+import type { CloudLaneAccount } from "./cloudLaneAccount";
+import { buildCloudLaneVerbs } from "./cloudLaneVerbs";
 import type { CloudMoveResult } from "./cloudMachineCopy";
 import type { CloudBrainMaker, CloudMakeInput } from "./cloudBrainMaker";
 import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
@@ -184,6 +187,16 @@ export type CloudAgentActionDeps = {
   projectRoot?: string | null;
   /** One coarse outcome per cache clear (cloudLaneAnalytics.ts); never the computer. */
   analytics?: CloudLaneAnalyticsCapture;
+  /**
+   * The account's lanes, saved chats, CLI copies, backups and server jobs
+   * (`cloudLaneVerbs.ts`): the shared lane core, the provider and the account
+   * server. Null where this ADE can't reach the account.
+   */
+  lanes?: {
+    account: () => CloudLaneAccount;
+    client: () => Promise<CloudProvider>;
+    api: () => CloudApiClient | null;
+  } | null;
   logger?: CloudLogger;
 };
 
@@ -368,7 +381,12 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
        */
       action: "spend" | "delete" | "person_only";
       title: string;
-      body: string;
+      /**
+       * The card's text. A function is read only when a card is really
+       * posted: a lane delete's work check, which may wake an asleep
+       * computer, never runs for a caller ADE refuses or answers alone.
+       */
+      body: string | (() => Promise<string>);
       confirm: string;
       madeByThisChat?: boolean;
       /** Starts a new machine (make, copy, move): counts against the day's limit. */
@@ -395,9 +413,15 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       cost?: string;
       /** False: it spends money, not hours (paid extra disk), so the hours check doesn't apply. */
       usesHours?: false;
+      /**
+       * A second yes on the card (a lane delete's "Keep for later"): the
+       * person picks it instead of `confirm`, and the answer's `choice` says
+       * so. Never picked for a caller nobody watches: that one gets `confirm`.
+       */
+      alternative?: { label: string };
     },
-  ): Promise<{ counted: () => void; release: () => void; unattended: boolean; maker: CloudAgentMaker | null; limitRefusal: string | null }> => {
-    const nothing = { counted: () => undefined, release: () => undefined, unattended: false, maker: null, limitRefusal: null };
+  ): Promise<{ counted: () => void; release: () => void; unattended: boolean; maker: CloudAgentMaker | null; limitRefusal: string | null; choice: "confirm" | "alternative" }> => {
+    const nothing = { counted: () => undefined, release: () => undefined, unattended: false, maker: null, limitRefusal: null, choice: "confirm" as const };
     const noChatToAsk = () => new CloudDeclined(`${card.title} uses hours or deletes something, so it needs your yes, and ADE has no chat to ask you in. ${card.personPlace ?? "Run it from an ADE chat, or do it in ADE: Settings › ADE Cloud, the lane's row."}`);
     if (approval.by === "person") return nothing;
     const chatSessionId = approval.chatSessionId;
@@ -514,17 +538,18 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         held = false;
         reservedHere -= 1;
       };
-      return { counted: () => { release(); countMadeHere(); }, release, unattended: true, maker, limitRefusal: null };
+      return { counted: () => { release(); countMadeHere(); }, release, unattended: true, maker, limitRefusal: null, choice: "confirm" as const };
     }
     if (!chatSessionId || !approvals) {
       throw noChatToAsk();
     }
+    const body = typeof card.body === "function" ? await card.body() : card.body;
     let response: Awaited<ReturnType<CloudChatApprovals["requestChatInput"]>>;
     try {
       response = await approvals.requestChatInput({
       chatSessionId,
       title: card.title,
-      body: card.body,
+      body,
       timeoutMs: APPROVAL_TIMEOUT_MS,
       allowsFreeform: false,
       // Only the person answers: an agent's `chat.respondToInput` is refused.
@@ -532,11 +557,12 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       questions: [{
         id: "decision",
         header: "ADE Cloud",
-        question: `${card.title}? ${card.body}`,
+        question: `${card.title}? ${body}`,
         allowsFreeform: false,
         options: [
           { label: card.confirm, value: "yes" },
-          { label: "No", value: "no" },
+          ...(card.alternative ? [{ label: card.alternative.label, value: "alternative" }] : []),
+          { label: card.alternative ? "Cancel" : "No", value: "no" },
         ],
       }],
       });
@@ -547,6 +573,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     const answer = response.answers.decision?.[0] ?? "";
     // The person said yes to an agent's ask: still an agent's new machine.
     if (response.decision === "accept" && answer === "yes") return { ...nothing, maker: "chat" };
+    if (response.decision === "accept" && answer === "alternative" && card.alternative) return { ...nothing, maker: "chat", choice: "alternative" };
     throw new CloudDeclined(response.timedOut
       ? `${card.title}: nobody answered in 5 minutes, so nothing was done.`
       : `${card.title}: the person said no, so nothing was done.`);
@@ -609,7 +636,25 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     return shape.id;
   };
 
-  return {
+  const noLanes = (): never => {
+    throw new Error("This ADE can't reach your ADE account's lanes. Sign in to ADE, then try again.");
+  };
+  const laneVerbs = buildCloudLaneVerbs({
+    account: () => deps.lanes?.account() ?? noLanes(),
+    client: () => deps.lanes?.client() ?? noLanes(),
+    api: () => deps.lanes?.api() ?? null,
+    readMachines,
+    recentInstances: () => deps.machines.recentInstances(60_000),
+    approve,
+    readApproval,
+    laneLaunch: (args: Record<string, unknown>) => actions.lane_launch(args),
+    projectOriginUrl: () => deps.projectOriginUrl?.() ?? null,
+    analytics: deps.analytics,
+    logger,
+  });
+
+  const actions = {
+    ...laneVerbs.actions,
     async list(rawArgs?: unknown) {
       const all = await readMachines();
       // The web app's Settings › ADE Cloud reads the account's own list (no key in it), like this desktop's main.
@@ -630,7 +675,15 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
      * spends nothing. Never throws for "no ADE Cloud": `canStartLane` says why.
      */
     async status(): Promise<CloudAccountStatus> {
-      const result = await deps.machines.list();
+      const listing = deps.machines.list();
+      // The lanes whose computer was deleted, read beside the list and from it (no second list).
+      const lanesComputerDeleted = deps.lanes
+        ? laneVerbs.lanesComputerDeleted(listing.then((listed) => {
+            if (listed.state !== "ok") throw new Error(listed.message ?? "ADE Cloud isn't there.");
+            return listed;
+          }))
+        : Promise.resolve(null);
+      const result = await listing;
       const defaultSize = readDefaultTier();
       const limits = result.state === "ok" ? await deps.limits.read().catch((error: unknown) => {
         logger.warn?.("cloud.agent_limits_read_failed", { error: getErrorMessage(error) });
@@ -640,7 +693,9 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const listedToday = result.state === "ok"
         ? countAgentMadeToday(deps.machines.recentInstances(60_000) ?? [], Date.now())
         : 0;
-      return buildCloudAccountStatus({ result, limits, defaultSize, newComputersToday: agentNewComputersToday(listedToday) });
+      const status = buildCloudAccountStatus({ result, limits, defaultSize, newComputersToday: agentNewComputersToday(listedToday) });
+      const gone = await lanesComputerDeleted;
+      return { ...status, lanesComputerDeleted: gone?.lanes ?? null, ...(gone?.partial ? { lanesComputerDeletedPartial: true } : {}) };
     },
 
     async create(rawArgs?: unknown) {
@@ -1196,5 +1251,5 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       return (await deps.limits.save?.(cloudAgentLimitsChanges(current, next))) ?? await deps.limits.write(next);
     },
   };
+  return actions;
 }
-

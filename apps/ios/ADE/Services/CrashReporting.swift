@@ -317,10 +317,26 @@ enum CrashReporting {
     // at all: the stack is SwiftUI working through view updates (ADE-IOS-27,
     // 8 seconds after launch) and says nothing about which state kept
     // changing. The publish counts and the app's age do.
-    if let hang = ADEHangContext.shared.snapshot(at: event.timestamp) {
+    if var hang = ADEHangContext.shared.snapshot(at: event.timestamp) {
+      // A phone in Low Power Mode or running hot is slowed down: a 4 s SwiftUI
+      // update with no ADE frame on a throttled CPU (ADE-IOS-2M came at 5%
+      // battery) reads differently from one on a cool, charged phone.
+      let process = ProcessInfo.processInfo
+      hang["low_power_mode"] = process.isLowPowerModeEnabled
+      hang["thermal_state"] = thermalStateName(process.thermalState)
       var context = event.context ?? [:]
       context["ade_hang"] = hang
       event.context = context
+    }
+  }
+
+  private static func thermalStateName(_ state: ProcessInfo.ThermalState) -> String {
+    switch state {
+    case .nominal: return "nominal"
+    case .fair: return "fair"
+    case .serious: return "serious"
+    case .critical: return "critical"
+    @unknown default: return "unknown"
     }
   }
 
@@ -472,17 +488,25 @@ enum ADEAppHangStack {
 
   private static let idleRunLoopLibraries: Set<String> = ["CoreFoundation", "libsystem_kernel.dylib"]
 
-  /// True when the run loop is busy in iOS's accessibility settings loader
-  /// (`libAccessibility` / `AccessibilitySettingsLoader`) and no ADE code runs
-  /// inside the run loop.
+  /// True when the run loop is busy in iOS's own accessibility loading (its
+  /// settings bundle, ADE-IOS-25, or `AXBinaryMonitor` scanning the images
+  /// loaded at launch, ADE-IOS-2X) and no ADE code runs inside the run loop.
+  /// Accessibility reading ADE's views (SwiftUI below the accessibility
+  /// frame, as when VoiceOver walks a large list) is ours, and is kept.
   static func isAccessibilityLoad(_ frames: [Frame]) -> Bool {
     guard let runLoopEntry = frames.firstIndex(where: { library($0) == "GraphicsServices" }) else { return false }
     let insideRunLoop = frames[frames.index(after: runLoopEntry)...]
-    guard !insideRunLoop.contains(where: \.inApp) else { return false }
-    return insideRunLoop.contains { accessibilityLoaderLibraries.contains(library($0)) }
+    guard !insideRunLoop.contains(where: \.inApp),
+          let loader = insideRunLoop.firstIndex(where: { accessibilityLoaderLibraries.contains(library($0)) }) else {
+      return false
+    }
+    return !frames[loader...].contains { viewLibraries.contains(library($0)) }
   }
 
-  private static let accessibilityLoaderLibraries: Set<String> = ["libAccessibility.dylib", "AccessibilitySettingsLoader"]
+  private static let accessibilityLoaderLibraries: Set<String> = [
+    "libAccessibility.dylib", "AccessibilitySettingsLoader", "AXCoreUtilities",
+  ]
+  private static let viewLibraries: Set<String> = ["SwiftUI", "SwiftUICore", "AttributeGraph"]
 
   private static func library(_ frame: Frame) -> String {
     guard let package = frame.package else { return "" }

@@ -270,6 +270,14 @@ export type CrossMachineLaneRow = {
    * false for the guards. A deleted computer's saved chats never set it.
    */
   cloudResting?: boolean;
+  /**
+   * The machine was an ADE Cloud computer that has been deleted: its lane and
+   * saved chats stay listed and look like an asleep computer's
+   * (`rowShowsConnected`), with one "Computer deleted" mark. A send in one of
+   * its chats makes a new computer through the account's queue; nothing is
+   * ever sent to the machine. `online` stays false.
+   */
+  computerGone?: boolean;
   isThisMachine: boolean;
   /** True for the tab-bound machine whose lanes already render in the primary list. */
   isActiveBinding: boolean;
@@ -925,6 +933,7 @@ export function buildCrossMachineLaneRows(input: {
         machineName: entry.machineName,
         online: entry.online,
         ...(cloudResting ? { cloudResting: true } : {}),
+        ...(entry.computerGone === true ? { computerGone: true } : {}),
         isThisMachine: machineIdOfSlot(entry.machineId) === THIS_MACHINE_ID,
         isActiveBinding: false,
         sessions: sessionsByLaneId?.get(lane.id) ?? [],
@@ -1023,7 +1032,7 @@ export function resolveCrossMachineLaneMarkers(
         machineKey: row.machineId,
         name: row.machineName,
       }, cloudLaneComputers),
-      // A sleeping cloud computer is not marked offline: a send wakes it.
+      // A sleeping (or deleted) cloud computer is not marked offline: a send wakes it, or makes a new one.
       online: rowShowsConnected(row),
       // Always the resting form. Offline is expressed by `online: false`, which
       // dims the glyph and the whole row — a shape change on top of that would

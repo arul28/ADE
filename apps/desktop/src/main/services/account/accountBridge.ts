@@ -30,7 +30,7 @@ import {
 } from "../../../shared/accountDirectory";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
-import { expectedErrorKind, markExpected, type ExpectedErrorKind } from "../../../shared/expectedError";
+import { carryExpected, expectedErrorKind, markExpected, type ExpectedErrorKind } from "../../../shared/expectedError";
 import { createFileLogger, type Logger } from "../logging/logger";
 import { logMachineEvent } from "../logging/machineLogger";
 import os from "node:os";
@@ -652,7 +652,12 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
         const code = error instanceof LaneShareGrantError && (error.code === "signed_out" || error.code === "no_directory")
           ? error.code
           : "unavailable";
-        throw new Error(encodeCodedErrorMessage(code, error instanceof Error ? error.message : "The account directory could not be reached."));
+        // The directory not answering is marked `network` where it is thrown
+        // (`sendLaneShareDirectoryRequest`); the coded rethrow keeps that mark.
+        throw carryExpected(
+          error,
+          new Error(encodeCodedErrorMessage(code, error instanceof Error ? error.message : "The account directory could not be reached.")),
+        );
       }
     },
     // The relay this machine itself uses may be a configured one.

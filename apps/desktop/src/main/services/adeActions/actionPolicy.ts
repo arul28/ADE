@@ -476,7 +476,12 @@ export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): bo
  */
 export const ADE_ACTION_MACHINE_SCOPED = {
   // `saved_chat_machine`: which asleep computer saved a chat (`ade chat send` to it).
-  cloud: ["access", "status", "list", "hours", "limits", "sleep", "wake", "referral", "invite_redeem", "cloud_sign_in_status", "saved_chat_machine", ...CLOUD_SIGN_IN_WRITES],
+  // The account's lanes, saved chats, copies, backups and jobs are read from any folder
+  // (`ade cloud lanes|chats|sessions|backups|jobs|project`); `lane_keep` only restarts an idle clock.
+  cloud: [
+    "access", "status", "list", "hours", "limits", "sleep", "wake", "referral", "invite_redeem", "cloud_sign_in_status", "saved_chat_machine", ...CLOUD_SIGN_IN_WRITES,
+    "lanes", "lane_show", "lane_git", "lane_keep", "saved_chats_list", "saved_chats_read", "sessions_list", "session_read", "backups_list", "jobs_list", "project_overview",
+  ],
   account_vault: ["get", "set", "remove"],
   // The account's sign-ins, from a window with no project here (`providerLogins.call`).
   provider_logins: PROVIDER_LOGIN_ACTIONS,
@@ -1229,6 +1234,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "copy", "move", "delete", "make_status", "limits", "set_limits",
     // Which asleep computer saved a chat, and its project there: no wake, no messages.
     "saved_chat_machine",
+    // The account's lanes (on a computer, or its computer deleted), saved chats, CLI
+    // copies, lane backups and server jobs: reads wake nothing. Every write but
+    // `lane_keep` is a delete and asks the person on a card in the caller's chat.
+    "lanes", "lane_show", "lane_git", "lane_keep", "lane_delete", "lane_free", "lane_start",
+    "saved_chats_list", "saved_chats_read", "saved_chat_delete",
+    "sessions_list", "session_read", "session_delete",
+    "backups_list", "backup_forget", "jobs_list", "job_cancel", "project_overview",
     // A new lane on its own new computer (`ade chat create --machine cloud`).
     "lane_launch", "lane_launch_status", "lane_launch_cancel",
     // An agent asks the person for a tier change: a card in its chat; it changes nothing.

@@ -171,6 +171,17 @@ export const SYNC_FOLDED_REPLAY_CAPABILITY = "foldedReplay";
  */
 export const SYNC_MOBILE_CHAT_SLIM_CAPABILITY = "mobileChatSlimV1";
 
+/**
+ * Hello capability a phone declares when it understands a `chat_subscribe`
+ * answer carrying `unavailable` (see `SyncChatSubscribeSnapshotPayload`). A
+ * host that cannot serve a subscribe (a project scope it refuses, a request
+ * with no scope, a transcript it cannot read) answers such a peer with the
+ * reason instead of staying silent. A peer that does not declare it gets no
+ * answer, as before: an older phone would read an empty snapshot as an empty
+ * chat.
+ */
+export const SYNC_CHAT_SUBSCRIBE_UNAVAILABLE_CAPABILITY = "chatSubscribeUnavailableV1";
+
 export type SyncPayloadEncoding = "json" | "base64";
 
 export type SyncPeerPlatform = "macOS" | "linux" | "windows" | "iOS" | "unknown";
@@ -2469,6 +2480,18 @@ export type SyncChatSubscribeSnapshotPayload = {
    * lane was). Clients show the chat as deleted. Absent means found.
    */
   sessionFound?: boolean;
+  /**
+   * Set when the host could not serve this subscribe at all. `events` is then
+   * empty and is NOT a snapshot: the client keeps what it has, shows
+   * `message`, and offers Retry. Sent only to peers that declare
+   * `SYNC_CHAT_SUBSCRIBE_UNAVAILABLE_CAPABILITY`.
+   */
+  unavailable?: SyncChatSubscribeUnavailable;
+};
+
+export type SyncChatSubscribeUnavailable = {
+  code: "project_not_open" | "project_mismatch" | "no_chat_scope" | "transcript_read_failed";
+  message: string;
 };
 
 export type SyncChatUnsubscribePayload = {

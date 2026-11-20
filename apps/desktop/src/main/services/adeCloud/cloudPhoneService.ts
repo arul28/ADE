@@ -497,7 +497,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     const message = typeof answer.body?.message === "string"
       ? answer.body.message
       : typeof error === "object" && typeof error?.message === "string" ? error.message : null;
-    deps.logger?.warn?.("cloud_phone.call_failed", { doing, status: answer.status, code });
+    // The answer's keys (never its values): a 200 with no result says what NoMac sent instead.
+    deps.logger?.warn?.("cloud_phone.call_failed", { doing, status: answer.status, code, bodyKeys: answer.body ? Object.keys(answer.body).slice(0, 12) : null });
     return new CloudPhoneError(message ? `${doing}: ${message}` : `${doing} failed (${code}).`, code);
   }
 
@@ -573,6 +574,17 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     return phone;
   }
 
+  /** A tool call NoMac held past 45 s answers `running` with its id: read it back until it ends, within `by`. */
+  async function calledThrough(phone: Held, first: Awaited<ReturnType<typeof nomac>>, doing: string, by: number): Promise<Awaited<ReturnType<typeof nomac>>> {
+    let answer = first;
+    while (answer.status === 200 && answer.body?.state === "running" && typeof answer.body.id === "string") {
+      if (Date.now() >= by) throw new CloudPhoneError(`${doing} is still running after 15 minutes.`, "tool_timeout");
+      await sleep(CALL_POLL_MS);
+      answer = await nomac(phone, "GET", `/calls/${encodeURIComponent(answer.body.id)}`);
+    }
+    return answer;
+  }
+
   /** Runs one of the phone's tools to its end: a call past 45 s is read back, a build past 40 s is followed as a job. */
   async function tool(name: string, args: Record<string, unknown>, doing: string, chatSessionId: string | null): Promise<CloudPhoneToolAnswer> {
     let phone = await ensure({ chatSessionId });
@@ -585,18 +597,15 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       answer = await nomac(phone, "POST", `/tools/${name}`, args, newKey());
     }
     if (answer.status === 200) touched(phone);
-    while (answer.status === 200 && answer.body?.state === "running" && typeof answer.body.id === "string") {
-      if (Date.now() >= by) throw new CloudPhoneError(`${doing} is still running after 15 minutes.`, "tool_timeout");
-      await sleep(CALL_POLL_MS);
-      answer = await nomac(phone, "GET", `/calls/${encodeURIComponent(answer.body.id)}`);
-    }
+    answer = await calledThrough(phone, answer, doing, by);
     if (answer.status !== 200 || !answer.body?.result) throw failureOf(answer, doing);
     let result = answerOf(answer.body);
     // A long build answers with a job; job_status waits up to 40 s a call.
     let job = JOB_PATTERN.exec(result.text)?.[1] ?? null;
     while (job) {
       if (Date.now() >= by) throw new CloudPhoneError(`${doing} is still running after 15 minutes.`, "tool_timeout");
-      const next = await nomac(phone, "POST", "/tools/job_status", { job_id: job }, newKey());
+      // job_status is a tool call too: one that runs past 45 s is read back like any other.
+      const next = await calledThrough(phone, await nomac(phone, "POST", "/tools/job_status", { job_id: job }, newKey()), doing, by);
       if (next.status !== 200 || !next.body?.result) throw failureOf(next, doing);
       touched(phone);
       result = answerOf(next.body);
