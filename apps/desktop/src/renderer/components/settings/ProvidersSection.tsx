@@ -33,6 +33,7 @@ import { providerBrand } from "./providers/providerBrand";
 import { ProviderTileView, providerListMark } from "./providers/ProviderTileView";
 import { connectionKeyFor, providerSignIn } from "./providers/providerSignInCommands";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import { refreshRuntimeCatalogsForMachine } from "../shared/ModelPicker/sharedCatalogFetch";
 import { checkProviderSignIn } from "../../lib/providerSignInCheck";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
@@ -512,6 +513,16 @@ function MachineProvidersSection({
     const [nextStatus, nextProjectConfig] = await Promise.all([statusRead, configRead, keysRead, cursorRead]);
     if (nextStatus && nextProjectConfig && editingLocalProvider == null && savingLocalProvider == null) {
       setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus));
+    }
+    // A forced read follows a change on this machine (a setup, a key, a
+    // sign-in, a refresh). The chat's "@" menu and model picker hold their own
+    // copy of this machine's model list, so read those again too, in the
+    // background. An OpenCode inventory read re-probes OpenCode there as well.
+    if (nextStatus && (options?.force || options?.refreshOpenCodeInventory)) {
+      void refreshRuntimeCatalogsForMachine(
+        pin,
+        options.refreshOpenCodeInventory ? { refreshProvider: "opencode" } : undefined,
+      );
     }
     return nextStatus;
   }, [editingLocalProvider, pin, projectCall, projectConfigEditable, projectPin, savingLocalProvider]);
@@ -1070,6 +1081,9 @@ function MachineProvidersSection({
       invalidateAiDiscoveryCache();
       showToast({ tone: "success", title: `${descriptor?.label ?? provider} ${disabled ? "disabled" : "enabled"}` });
       await refreshStatus({ force: false, silent: true });
+      // The project's copy owns the switch, and its chats' model lists drop or
+      // regain the provider.
+      void refreshRuntimeCatalogsForMachine(projectPin);
     } catch (err) {
       toastActionError("Couldn't update the provider", err);
     } finally {

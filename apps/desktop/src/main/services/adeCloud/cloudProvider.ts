@@ -8,7 +8,7 @@
  * `cloudAccess.ts`.
  */
 
-import type { CloudAccountState, CloudDiskLaneUse, CloudDiskUsageReport, CloudFreeUnlockResult, CloudSustainedCpuReport } from "../../../shared/adeCloud";
+import type { CloudAccountState, CloudComputerStatus, CloudDiskLaneUse, CloudDiskUsageReport, CloudFreeUnlockResult, CloudSustainedCpuReport } from "../../../shared/adeCloud";
 import type {
   CloudSavedChatDeleteArgs,
   CloudSavedChatList,
@@ -119,6 +119,11 @@ export type CloudProvider = {
    * restarts with no wake and no hours. Optional: only ADE's server has it.
    */
   keepIdleComputer?(id: string): Promise<void>;
+  /**
+   * A lane computer's live status for its status menu (`GET .../status`):
+   * never wakes it. Null from an older server. Optional: only ADE's server has it.
+   */
+  computerStatus?(id: string): Promise<CloudComputerStatus | null>;
   /** Wakes a sleeping machine or starts a stopped one. Every wake is use; none is allowed at 0 hours. Answers with the new status. */
   startInstance(id: string): Promise<string>;
   /** Stops the machine (no memory kept). Only an explicit start brings it back. */

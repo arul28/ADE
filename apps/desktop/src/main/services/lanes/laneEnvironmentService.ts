@@ -966,9 +966,15 @@ export function createLaneEnvironmentService({
       const resolvedSetupScript = resolveSetupScriptConfig(config.setupScript);
       if (resolvedSetupScript) {
         const commandCount = resolvedSetupScript.commands.length + (resolvedSetupScript.scriptPath ? 1 : 0);
+        if (resolvedSetupScript.macosOnlyOnLinux) {
+          // Still run: such templates usually fall back on Linux, just slower. The label says how to fix it.
+          logger.warn("lane_env_init.setup_script_macos_on_linux", { laneId: lane.id, tool: resolvedSetupScript.macosOnlyOnLinux });
+        }
         planned.push({
           kind: "setup-script",
-          label: `Run setup script (${commandCount} command(s))`,
+          label: resolvedSetupScript.macosOnlyOnLinux
+            ? `Run setup script (${commandCount} command(s), written for macOS: add Linux commands to the template)`
+            : `Run setup script (${commandCount} command(s))`,
           run: () => runSetupScript(lane.worktreePath, resolvedSetupScript, laneVars, lane.id),
         });
       }

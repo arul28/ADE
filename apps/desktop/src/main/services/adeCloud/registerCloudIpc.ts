@@ -9,6 +9,7 @@ import {
   cloudMadeByMetadata,
   type CloudAccountState,
   type CloudAgentLimits,
+  type CloudComputerStatus,
   type CloudShapeId,
   isCloudInstanceId,
   isPaidPlanId,
@@ -763,6 +764,25 @@ export function registerCloudIpc(args: {
     logger.info("cloud.idle_kept", {});
     sendToAllWindows(IPC.cloudStatusChanged);
     return { ok: true };
+  });
+
+  /**
+   * A lane computer's live status, for the status menu on a cloud lane's chat
+   * header: read when the menu opens, never on a timer, and never a wake.
+   * Account level, by the computer's ADE Cloud id, like the list. Null when it
+   * can't be read (an older server, no ADE Cloud access).
+   */
+  ipcMain.handle(IPC.cloudComputerStatus, async (event, arg: { instanceId?: unknown }): Promise<CloudComputerStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudComputerStatus)) return null;
+    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
+    if (!isCloudInstanceId(instanceId)) return null;
+    try {
+      const provider = await requireCloudProvider(credentials);
+      return (await provider.computerStatus?.(instanceId)) ?? null;
+    } catch (error) {
+      logger.warn("cloud.computer_status_read_failed", { error: getErrorMessage(error) });
+      return null;
+    }
   });
 
   ipcMain.handle(IPC.cloudOpenBillingPortal, async (event): Promise<{ opened: boolean }> => {

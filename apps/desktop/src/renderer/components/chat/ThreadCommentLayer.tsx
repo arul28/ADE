@@ -154,10 +154,8 @@ export function ThreadCommentLayer({
   onCreateIssue?: (text: string) => void;
 }) {
   const actions = useThreadCommentActions(sessionId, pin);
-  const sessionIdRef = useRef(sessionId);
-  sessionIdRef.current = sessionId;
   const [draft, setDraft] = useState<Draft | null>(null);
-  // Read after an await, so a failed save can tell whether a newer box is open.
+  // Read from callbacks that outlive a render (closing the box keeps its text).
   const draftRef = useRef(draft);
   draftRef.current = draft;
   // What the open box holds right now, kept when the box closes because the user left.
@@ -505,7 +503,9 @@ export function ThreadCommentLayer({
       return;
     }
     // The comment shows (highlight, margin card, send badge) the moment it is
-    // saved; the host's answer only confirms it. A refusal puts the box back.
+    // saved; the host's answer only confirms it. A failed save keeps the
+    // comment in the list, marked "Couldn't save." with Retry and Discard (and
+    // a "!" on the composer's comments button); it rides no send meanwhile.
     const saving = draft;
     const fields = {
       messageKey: saving.messageKey,
@@ -518,17 +518,7 @@ export function ThreadCommentLayer({
     try {
       settle(await withChatPin(pin ?? null, (chatPin) => api.create({ sessionId, ...fields }, chatPin)));
     } catch (error) {
-      settle(null);
-      // Reopen the box with the text and the reason, unless another comment
-      // was started since (that box is the user's now) or the user left this
-      // chat; then the text waits for the next box on the same words.
-      if (draftRef.current || saving.sessionId !== sessionIdRef.current) {
-        keepUnsavedDraftBody(saving, body);
-        return;
-      }
-      draftBodyRef.current = body;
-      setDraft({ ...saving, body });
-      setDraftError(threadCommentErrorText(error));
+      settle(null, threadCommentErrorText(error));
     }
   };
 

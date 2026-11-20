@@ -623,7 +623,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input:
         "object { template: { id: string, name: string, description?, envFiles?: [{ source, dest, vars? }], dependencies?: [{ command: string[], cwd? }], "
         + "copyPaths?: [{ source, dest? }], envVars?: Record<string,string>, portRange?: { start, end }, "
-        + "setupScript?: { commands?: string[], unixCommands?: string[], windowsCommands?: string[], scriptPath?, unixScriptPath?, windowsScriptPath?, injectPrimaryPath?: boolean } } }",
+        + "setupScript?: { commands?: string[], unixCommands?: string[], macosCommands?: string[], linuxCommands?: string[], windowsCommands?: string[], scriptPath?, unixScriptPath?, macosScriptPath?, linuxScriptPath?, windowsScriptPath?, injectPrimaryPath?: boolean } } }",
       example: "ade lanes templates save --json '{\"id\":\"web\",\"name\":\"Web\",\"dependencies\":[{\"command\":[\"npm\",\"install\"],\"cwd\":\"apps/web\"}]}'",
     },
     applyTemplate: {

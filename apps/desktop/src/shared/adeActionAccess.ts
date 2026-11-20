@@ -919,6 +919,11 @@ const UNREPLAYED_READS = new Set<string>([
  * a person asked: they don't wake a sleeping cloud computer or keep one awake.
  */
 const BACKGROUND_WRITES = new Set<string>([
+  // Opening a provider's page in Settings loads its CLI facts on its own.
+  "ai.acpProviderDiagnostics",
+  // Warm-ups a composer sends while a person types: the send loads what it needs.
+  "chat.prewarmDraft",
+  "chat.warmupModel",
   // Reads the repository's origin from git; a composer asks it on mount.
   "github.detectRepo",
   "pr.reconcileOnFocus",

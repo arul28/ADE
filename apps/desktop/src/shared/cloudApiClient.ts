@@ -28,6 +28,8 @@ import {
   type AccountLaneIndexPutResult,
   type AccountLaneIndexRow,
   type CloudAccess,
+  type CloudComputerActivityReport,
+  type CloudComputerStatus,
   type CloudBackupKind,
   type CloudBackupReport,
   type CloudBackupReportState,
@@ -250,6 +252,11 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
 
     /* ---- One computer ---- */
     computer: (instanceId: string) => request<CloudInstance>("GET", instancePath(instanceId)),
+    /** A lane computer's live status for its status menu; never wakes it. Null on an older server (or a computer it doesn't know). */
+    computerStatus: (instanceId: string) => orNullOn404(() => request<CloudComputerStatus>("GET", `${instancePath(instanceId)}/status`)),
+    /** From the computer's brain: its work started or stopped, or its count of agents changed. Null on an older server. */
+    reportActivity: (instanceId: string, report: CloudComputerActivityReport) =>
+      orNullOn404(() => request<{ ok: true }>("POST", `${instancePath(instanceId)}/activity`, { body: report })),
     sleep: (instanceId: string) => request<{ status: string }>("POST", `${instancePath(instanceId)}/sleep`, { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     /** The server restarts the computer on the newest ADE for its channel. */
     update: (instanceId: string) => request<{ status: string }>("POST", `${instancePath(instanceId)}/update`, { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }),

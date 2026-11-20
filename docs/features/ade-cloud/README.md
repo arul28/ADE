@@ -52,6 +52,37 @@ server's sentence (`cloudRefusalMessage` in `provider.ts` cleans a provider
 refusal); `CLOUD_ACCESS_REFUSED` means the account was refused. The shapes
 are in `apps/account-directory/src/cloud/contract.ts`.
 
+### The provider: Agent 37
+
+ADE Cloud computers are Agent 37 instances. The account server talks to its
+API in `apps/account-directory/src/cloud/provider.ts` (`api.agent37.com`, exec
+on `sandbox.agent37.app`, secret `AGENT37_API_KEY`); the image is built there
+too (`infra/ade-cloud/README.md`). Users never see the name. Read Agent 37's
+own docs before changing anything that depends on how an instance behaves:
+
+- Docs index, for agents: https://www.agent37.com/docs/llms.txt
+- Lifecycle (what a stop, restart, update and resize keep):
+  https://www.agent37.com/docs/agents-api/instance-lifecycle.md
+- Auto-sleep (what counts as activity, checkpoints, what a wake keeps):
+  https://www.agent37.com/docs/agents-api/instance-auto-sleep.md
+- The instance object and its statuses:
+  https://www.agent37.com/docs/agents-api/instances/object.md
+- Logs (with `health`: restart count, out-of-memory) and metrics:
+  https://www.agent37.com/docs/agents-api/logs.md,
+  https://www.agent37.com/docs/agents-api/metrics.md
+- Webhooks (`instance.status.updated`):
+  https://www.agent37.com/docs/agents-api/webhooks.md
+
+Facts from those docs that ADE's design leans on:
+
+- Only traffic to the instance's own URLs (or an exec) counts as activity.
+  An agent's outgoing calls don't, which is why the brain pings its wake URL
+  while work runs (`cloudKeepAwake.ts`), with the provider's own 5-minute
+  timer as the backstop.
+- A sleep usually keeps memory, but not always: an instance moved to another
+  host, or asleep long enough, boots fresh. Files stay; processes don't.
+- An `update` recreates the container: memory is gone, the home folder stays.
+
 ## Access
 
 - `getCloudProvider(deps)` returns ADE Cloud for a signed-in ADE account, or

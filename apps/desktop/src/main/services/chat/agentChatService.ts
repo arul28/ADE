@@ -1507,7 +1507,7 @@ import {
   openCodeEventSessionId,
   type OpenCodeTurnMapper,
 } from "./openCodeEventMapper";
-import { lastOpenCodeDiscoveredLocalModels, peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
+import { lastOpenCodeDiscoveredLocalModels, openCodeInventoryGeneration, peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
 import { launchModelRequiredMessage, unknownModelHint } from "../../../shared/launchModelRule";
 import { inspectLocalProvider } from "../ai/localModelDiscovery";
 import { resolveDroidExecutable } from "../ai/droidExecutable";
@@ -76640,6 +76640,22 @@ export function createAgentChatService(args: {
     modelManifestGeneration += 1;
     modelCatalogManifestStale = true;
   });
+  // What else the cached catalog was built from: who is signed in (every
+  // sign-in path bumps the login generation), this project's OpenCode
+  // inventory and whether OpenCode is installed, and the providers switched
+  // off. Any of them moving makes the cache stale, so a provider set up after
+  // the catalog was read shows on the next read instead of after the TTL.
+  // Each part is a counter or a memoized read; no process starts here.
+  const modelCatalogInputsKey = (loginGeneration: number): string => [
+    loginGeneration,
+    openCodeInventoryGeneration(projectRoot),
+    resolveOpenCodeBinaryPath() ? "oc" : "-",
+    [...(projectConfigService.get().effective.ai?.disabledProviders ?? [])].sort().join(","),
+  ].join("|");
+  let modelCatalogBuiltInputsKey: string | null = null;
+  const modelCatalogInputsChanged = (): boolean =>
+    modelCatalogBuiltInputsKey !== null
+    && modelCatalogBuiltInputsKey !== modelCatalogInputsKey(providerLoginGeneration());
 
   const managedSessionSupportsFastMode = (managed: ManagedChatSession): boolean =>
     sessionSupportsFastMode(managed.session, modelCatalogCache);
@@ -76705,7 +76721,7 @@ export function createAgentChatService(args: {
     refreshProvider?: AgentChatModelCatalogRefreshProvider,
     cursorSource?: AgentChatCursorModelSource,
   ): boolean => {
-    if (!modelCatalogCache || modelCatalogManifestStale) return true;
+    if (!modelCatalogCache || modelCatalogManifestStale || modelCatalogInputsChanged()) return true;
     if (refreshProvider === "cursor") {
       if (!modelCatalogContainsRefreshProvider(modelCatalogCache, refreshProvider, cursorSource)) return true;
       // Stale unless every source the request covers was itself refreshed
@@ -77226,6 +77242,8 @@ export function createAgentChatService(args: {
   const buildModelCatalog = async (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
     // A manifest that lands mid-build must leave the result stale, not fresh.
     const manifestGenerationAtStart = modelManifestGeneration;
+    // Likewise a sign-in that lands mid-build.
+    const loginGenerationAtStart = providerLoginGeneration();
     const mode = catalogArgs?.mode ?? "refresh-stale";
     const refreshProvider = catalogArgs?.refreshProvider;
     if (mode === "cached" && modelCatalogCache) {
@@ -77294,6 +77312,10 @@ export function createAgentChatService(args: {
         descriptors: [] as ModelDescriptor[],
       };
     })();
+
+    // Read after the inventory step, so this build's own probe of OpenCode
+    // does not mark the catalog it is building stale.
+    const inputsKeyAtBuild = modelCatalogInputsKey(loginGenerationAtStart);
 
     const descriptorInfo = new Map<string, { provider: ModelProviderGroup; info: AgentChatModelInfo }>();
     const descriptors: ModelDescriptor[] = [];
@@ -77556,6 +77578,7 @@ export function createAgentChatService(args: {
       })),
     };
     modelCatalogCache = catalog;
+    modelCatalogBuiltInputsKey = inputsKeyAtBuild;
     if (modelManifestGeneration === manifestGenerationAtStart) modelCatalogManifestStale = false;
     if (mode !== "cached" && shouldMarkModelCatalogProviderFresh(catalog, refreshProvider, catalogArgs?.cursorSource)) {
       markModelCatalogProviderFresh(refreshProvider, Date.now(), catalogArgs?.cursorSource);

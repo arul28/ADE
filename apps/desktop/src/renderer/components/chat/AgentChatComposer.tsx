@@ -159,8 +159,9 @@ import {
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
 import { ensureRuntimeCatalogDescriptors, resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
-import { fetchSharedRuntimeCatalog } from "../shared/ModelPicker/sharedCatalogFetch";
-import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
+import { fetchSharedRuntimeCatalog, refreshRuntimeCatalogScope } from "../shared/ModelPicker/sharedCatalogFetch";
+import { getSharedRuntimeCatalog, runtimeCatalogScopeNeedsRefresh } from "../shared/ModelPicker/runtimeCatalogCache";
+import { useRuntimeCatalogVersion } from "../shared/ModelPicker/useRuntimeCatalogVersion";
 import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../shared/ModelPicker/runtimeCatalogCache";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import {
@@ -428,13 +429,24 @@ const HEIC_CONVERSION_MESSAGES: Record<HeicConversionErrorCode, string> = {
   failed: HEIC_CONVERSION_FAILED_MESSAGE,
 };
 
+/** A dropped or slow link to the machine the file was going to: worth one more try, nothing to report. */
+const ATTACH_CONNECTION_TROUBLE_TEXT = /didn't hear back in time|connection was interrupted|connection closed|connection failed recently|timed out|can't reach|manually disconnected|websocket is not open|fell behind/i;
+
+function isAttachConnectionTrouble(message: string): boolean {
+  return message.endsWith("the connection dropped. Try again.");
+}
+
 function attachmentErrorMessage(error: unknown, filename: string): string {
   if (error instanceof AttachmentConversionError) {
     return HEIC_CONVERSION_MESSAGES[error.code];
   }
-  const raw = error instanceof Error ? error.message : error;
-  const reason = typeof raw === "string" ? stripElectronErrorWrapper(raw) : "";
-  return `Unable to attach "${filename || "file"}".${reason ? ` ${reason}` : ""}`;
+  const reason = ipcErrorMessage(error) || (typeof error === "string" ? stripElectronErrorWrapper(error) : "");
+  const name = filename || "the file";
+  // "Connection was interrupted before ADE could confirm…" is ambiguous, but a
+  // retry stages a fresh copy: the worst a landed first try leaves is an
+  // unused file on that machine, never a second attachment.
+  if (ATTACH_CONNECTION_TROUBLE_TEXT.test(reason)) return `Couldn't attach ${name} — the connection dropped. Try again.`;
+  return `Couldn't attach ${name}.${reason ? ` ${reason}` : " Try again."}`;
 }
 
 // Every rich-composer chip carries `data-composer-chip`. Chips are
@@ -466,6 +478,37 @@ const COMPOSER_ATTACHMENT_RING_CLASSES = [
   "ring-1",
   "ring-[color:color-mix(in_srgb,var(--chat-accent)_60%,transparent)]",
 ];
+// An image still uploading (or one that failed) holds its place in the prompt
+// as this token, put at the caret when it was pasted. It serializes to nothing;
+// when the upload lands the real chip replaces it in place, so the caret and
+// whatever was typed since stay put. `data-composer-pending-id` is the
+// pending record's id, the same record the tray tile draws.
+const COMPOSER_PENDING_ATTACHMENT_CHIP_SELECTOR = "[data-composer-chip='attachment-pending']";
+
+function findPendingAttachmentChip(editor: HTMLElement, pendingId: string): HTMLElement | null {
+  for (const chip of Array.from(editor.querySelectorAll<HTMLElement>(COMPOSER_PENDING_ATTACHMENT_CHIP_SELECTOR))) {
+    if (chip.dataset.composerPendingId === pendingId) return chip;
+  }
+  return null;
+}
+
+function collectPendingAttachmentChipIds(editor: HTMLElement): Set<string> {
+  const ids = new Set<string>();
+  editor.querySelectorAll<HTMLElement>(COMPOSER_PENDING_ATTACHMENT_CHIP_SELECTOR).forEach((chip) => {
+    if (chip.dataset.composerPendingId) ids.add(chip.dataset.composerPendingId);
+  });
+  return ids;
+}
+
+/** Removes a chip and the space put after it. */
+function removeChipWithTrailingSpace(chip: HTMLElement): void {
+  const next = chip.nextSibling;
+  chip.remove();
+  if (next?.nodeType === Node.TEXT_NODE && next.textContent?.startsWith(" ")) {
+    next.textContent = next.textContent.slice(1);
+  }
+}
+
 /** How long a queued chip waits for its attachment to land in the tray. */
 const ATTACHMENT_CHIP_QUEUE_TTL_MS = 15_000;
 const COMPOSER_IMAGE_CHIP_GLYPH_SVG =
@@ -479,6 +522,8 @@ const COMPOSER_IMAGE_CHIP_GLYPH_SVG =
 type AttachmentChipPlacement =
   | { kind: "offset"; offset: number; refocus: boolean }
   | { kind: "afterChip"; path: string; fallback: AttachmentChipPlacement }
+  /** Replace the uploading token for this pending record; none if the user deleted it. */
+  | { kind: "pending"; pendingId: string; fallback: AttachmentChipPlacement }
   | { kind: "end" };
 
 function collectAttachmentChipPaths(editor: HTMLElement): Set<string> {
@@ -3078,6 +3123,15 @@ function AgentChatComposerImpl({
   // Chip paths present after the last reconcile; an edit that drops one
   // removes that attachment.
   const attachmentChipPathsRef = useRef<Set<string>>(new Set());
+  // Uploading tokens (`COMPOSER_PENDING_ATTACHMENT_CHIP_SELECTOR`). The ids put
+  // in the editor: one missing when its upload lands was deleted, and gets no chip.
+  const pendingAttachmentChipIdsRef = useRef<Set<string>>(new Set());
+  // Tokens to put in once a textarea composer has become the rich editor.
+  const queuedPendingAttachmentChipsRef = useRef<Array<{ pendingId: string; offset: number | null }>>([]);
+  const pendingImageAttachmentsRef = useRef(pendingImageAttachments);
+  pendingImageAttachmentsRef.current = pendingImageAttachments;
+  // What "Retry" runs for each failed pending image: the same bytes, the same token.
+  const pendingImageRetriesRef = useRef<Map<string, () => void>>(new Map());
   const pastedTextLineCountsRef = useRef<Map<string, number>>(new Map());
   const pastedTextFilesRef = useRef<WeakMap<File, number>>(new WeakMap());
   const armedAttachmentChipRef = useRef<HTMLElement | null>(null);
@@ -3161,6 +3215,11 @@ function AgentChatComposerImpl({
       ...queuedAttachmentChipsRef.current.filter((entry) => entry.path !== path),
       { path, placement, queuedAt: Date.now() },
     ];
+    // Typing in the textarea while this uploaded: the rich editor keeps the caret there.
+    const textarea = textareaRef.current;
+    if (textarea && document.activeElement === textarea && richPromotionCaretRef.current == null) {
+      richPromotionCaretRef.current = textarea.selectionEnd ?? textarea.value.length;
+    }
     setSmartLinkEditorEnabled(true);
   }, []);
   // The CTO identity session cannot queue: the host turns a queued delivery
@@ -3372,7 +3431,10 @@ function AgentChatComposerImpl({
   }, [draft, attachments]);
   const pendingDraftEditIntentRef = useRef<ComposerDraftEditIntent | null>(null);
   const fileAddInProgressRef = useRef(false);
-  const addFileAttachmentsRef = useRef<(files: FileList | File[] | null | undefined) => void>(() => {});
+  const addFileAttachmentsRef = useRef<(
+    files: FileList | File[] | null | undefined,
+    options?: { chipPlacement?: AttachmentChipPlacement; retryPending?: ChatAttachmentPendingImage },
+  ) => Promise<void> | void>(() => {});
   const chatRuntimeScope = useChatRuntimeScope();
   const attachmentMachineBinding = composerMachineBinding ?? (projectChatPane ? chatRuntimeScope.binding : null);
   const latestComposerMachineBindingRef = useRef(attachmentMachineBinding);
@@ -3388,28 +3450,21 @@ function AgentChatComposerImpl({
   }, [modelCatalogScopeKey]);
   // The runtime catalog (OpenCode/DeepSeek reasoning tiers, aliases) is loaded by
   // the model picker on open. The `@model` menu and chip read it without the
-  // picker ever opening, so fetch it here once per scope; the tick below
-  // re-renders the menu and any existing chips when it lands.
-  const [runtimeCatalogTick, setRuntimeCatalogTick] = useState(0);
+  // picker ever opening, so fetch it here once per scope. The tick is the
+  // bucket's shared version: it moves on ANY load or invalidation of this
+  // machine's catalog (the picker, Settings › Providers, the "@" refresh
+  // below), and re-renders the menu and any existing chips when it does.
+  const runtimeCatalogTick = useRuntimeCatalogVersion(modelCatalogScopeKey);
   const modelRuntimePinRef = useRef(modelRuntimePin);
   modelRuntimePinRef.current = modelRuntimePin;
   useEffect(() => {
-    let cancelled = false;
+    if (getSharedRuntimeCatalog(modelCatalogScopeKey)) return;
     const pin = modelRuntimePinRef.current;
-    const load = async () => {
-      if (!getSharedRuntimeCatalog(modelCatalogScopeKey)) {
-        const result = await fetchSharedRuntimeCatalog({
-          scopeKey: modelCatalogScopeKey,
-          mode: "cached",
-          ...(pin ? { pin } : {}),
-        });
-        if (cancelled || result.status !== "ok") return;
-      }
-      ensureRuntimeCatalogDescriptors(modelCatalogScopeKey, true);
-      if (!cancelled) setRuntimeCatalogTick((tick) => tick + 1);
-    };
-    void load();
-    return () => { cancelled = true; };
+    void fetchSharedRuntimeCatalog({
+      scopeKey: modelCatalogScopeKey,
+      mode: "cached",
+      ...(pin ? { pin } : {}),
+    });
   }, [modelCatalogScopeKey]);
   // DOM callbacks (chip hydration) read the latest lookup without re-binding.
   const describeChipModelRef = useRef(describeChipModel);
@@ -3423,6 +3478,28 @@ function AgentChatComposerImpl({
     // loads, which the descriptor lookups above read from module state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableModelIds, mentionModelIds, modelCatalogScopeKey, runtimeCatalogTick]);
+  // "@" lists this machine's models. When its catalog was never read (an
+  // asleep computer, a cold start) or something on the machine changed since
+  // (a provider set up), read it again while the menu is open and say so in a
+  // quiet row. A read only: it never wakes a sleeping computer.
+  const modelMentionMenuOpen = commandMenuTrigger?.type === "at";
+  const [modelMentionsLoading, setModelMentionsLoading] = useState(false);
+  useEffect(() => {
+    if (!modelMentionMenuOpen || !runtimeCatalogScopeNeedsRefresh(modelCatalogScopeKey)) return;
+    let cancelled = false;
+    const pin = modelRuntimePinRef.current;
+    setModelMentionsLoading(true);
+    void refreshRuntimeCatalogScope({
+      scopeKey: modelCatalogScopeKey,
+      ...(pin ? { pin } : {}),
+    }).finally(() => {
+      if (!cancelled) setModelMentionsLoading(false);
+    });
+    return () => {
+      cancelled = true;
+      setModelMentionsLoading(false);
+    };
+  }, [modelCatalogScopeKey, modelMentionMenuOpen]);
   // A model chip being edited: which chip, which part, which option is lit.
   const [modelChipEdit, setModelChipEdit] = useState<{
     chip: HTMLElement;
@@ -4149,14 +4226,34 @@ function AgentChatComposerImpl({
     options: { markCancelled?: boolean } = {},
   ) => {
     if (options.markCancelled) cancelledPendingImageAttachmentsRef.current.add(id);
+    pendingImageRetriesRef.current.delete(id);
     setPendingImageAttachments((current) => {
       return current.filter((entry) => entry.id !== id);
     });
   }, []);
 
+  /** Remove (or cancel) a pending image: its tile and its token in the prompt go together. */
   const removePendingImageAttachment = useCallback((id: string) => {
     dropPendingImageAttachment(id, { markCancelled: true });
   }, [dropPendingImageAttachment]);
+
+  /**
+   * A pending image whose save failed stays, tile and token, marked failed,
+   * until the user retries or removes it. `retry` runs the same upload again
+   * for the same record.
+   */
+  const failPendingImageAttachment = useCallback((id: string, error: string, retry: () => void) => {
+    pendingImageRetriesRef.current.set(id, retry);
+    setPendingImageAttachments((current) => current.map((entry) => (entry.id === id ? { ...entry, error } : entry)));
+  }, []);
+
+  const retryPendingImageAttachment = useCallback((id: string) => {
+    const retry = pendingImageRetriesRef.current.get(id);
+    if (!retry) return;
+    pendingImageRetriesRef.current.delete(id);
+    setPendingImageAttachments((current) => current.map((entry) => (entry.id === id ? { ...entry, error: null } : entry)));
+    retry();
+  }, []);
 
   const handleRemoveAttachment = useCallback((path: string) => {
     clearPreviewForPath(path);
@@ -4289,22 +4386,36 @@ function AgentChatComposerImpl({
    */
   const addFileAttachments = async (
     files: FileList | File[] | null | undefined,
-    options: { chipPlacement?: AttachmentChipPlacement } = {},
+    options: {
+      chipPlacement?: AttachmentChipPlacement;
+      /** Retry of this failed pending image (one file): same tile, same token. */
+      retryPending?: ChatAttachmentPendingImage;
+    } = {},
   ) => {
+    const retryPending = options.retryPending ?? null;
+    // A retry that cannot start stays failed, with the reason, rather than "Saving" forever.
+    const failRetry = (message: string) => {
+      if (retryPending) failPendingImageAttachment(retryPending.id, message, () => void addFileAttachmentsRef.current(files, options));
+    };
     if (attachmentPersistenceUnavailableReason) {
       setAttachError(attachmentPersistenceUnavailableReason);
+      failRetry(attachmentPersistenceUnavailableReason);
       return;
     }
     if (!canAttach) {
       setAttachError(attachBlockedReason ?? "Attachments are unavailable right now.");
+      failRetry(attachBlockedReason ?? "Attachments are unavailable right now.");
       return;
     }
     if (!files?.length) return;
-    if (parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
-    if (fileAddInProgressRef.current) return;
-    fileAddInProgressRef.current = true;
-    setAttachError(null);
-    setAttachRetryFiles(null);
+    // A retry already holds its slot, and runs beside a batch still in flight.
+    if (!retryPending) {
+      if (parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
+      if (fileAddInProgressRef.current) return;
+      fileAddInProgressRef.current = true;
+      setAttachError(null);
+      setAttachRetryFiles(null);
+    }
     const retryable: File[] = [];
     let chipPlacement: AttachmentChipPlacement = options.chipPlacement ?? { kind: "end" };
     const attachmentOwnerBinding = attachmentMachineBinding;
@@ -4321,9 +4432,10 @@ function AgentChatComposerImpl({
       for (const file of Array.from(files)) {
         if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
           setAttachError("Files were not attached because the selected project or machine changed. Attach them again.");
+          if (retryPending) dropPendingImageAttachment(retryPending.id);
           break;
         }
-        if (parallelChatMode && initialSlotCount + addedInBatch >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
+        if (!retryPending && parallelChatMode && initialSlotCount + addedInBatch >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
           setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
           break;
         }
@@ -4343,12 +4455,18 @@ function AgentChatComposerImpl({
         );
         if (rejection) {
           setAttachError(rejection);
+          if (retryPending) dropPendingImageAttachment(retryPending.id);
           continue;
         }
 
+        // An image gets its tile and its token in the prompt at once, with the
+        // local picture, and both follow the upload: done, or failed with Retry.
         const pendingImage = isImageAttachment
-          ? addPendingImageAttachment(sourceAttachmentName, isHeicUpload ? null : createObjectPreviewUrl(file))
+          ? retryPending ?? addPendingImageAttachment(sourceAttachmentName, isHeicUpload ? null : createObjectPreviewUrl(file))
           : null;
+        const fileChipPlacement = pendingImage && !retryPending
+          ? placePendingAttachmentChip(pendingImage, chipPlacement)
+          : chipPlacement;
         try {
           // The two transports differ only in HOW the bytes reach the host.
           // Each yields the same three facts, and everything after — the
@@ -4413,22 +4531,41 @@ function AgentChatComposerImpl({
             type: attachmentType,
             ...(isPastedTextAttachmentFile(file) ? { intent: "user_prompt" as const } : {}),
           });
-          queueAttachmentChip(staged.path, chipPlacement);
+          queueAttachmentChip(staged.path, fileChipPlacement);
           chipPlacement = { kind: "afterChip", path: staged.path, fallback: chipPlacement };
           if (pendingImage) dropPendingImageAttachment(pendingImage.id);
           addedInBatch += 1;
         } catch (error) {
-          // The pending placeholder always comes down, whatever went wrong.
-          // A staging failure that left a spinner up would read as "still
-          // working" forever.
+          const message = attachmentErrorMessage(error, sourceAttachmentName);
+          if (pendingImage && cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
+            cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
+            continue;
+          }
+          // A pending image never stays "Saving" after a failure: it turns
+          // failed (tile and token) with Retry, which stages the same bytes
+          // again. A HEIC that cannot convert never will, so it goes.
+          if (pendingImage && !(error instanceof AttachmentConversionError)) {
+            failPendingImageAttachment(
+              pendingImage.id,
+              message,
+              () => void addFileAttachmentsRef.current([file], { chipPlacement: fileChipPlacement, retryPending: pendingImage }),
+            );
+            continue;
+          }
           if (pendingImage) dropPendingImageAttachment(pendingImage.id);
-          setAttachError(attachmentErrorMessage(error, sourceAttachmentName));
+          setAttachError(message);
           if (!(error instanceof AttachmentConversionError)) retryable.push(file);
         }
       }
+    } catch (error) {
+      // Only a retry has a tile to mark; a batch's probe failing reads as before.
+      if (!retryPending) throw error;
+      failRetry(attachmentErrorMessage(error, retryPending.name));
     } finally {
-      fileAddInProgressRef.current = false;
-      setAttachRetryFiles(retryable.length ? retryable : null);
+      if (!retryPending) {
+        fileAddInProgressRef.current = false;
+        setAttachRetryFiles(retryable.length ? retryable : null);
+      }
     }
   };
   addFileAttachmentsRef.current = addFileAttachments;
@@ -4456,21 +4593,20 @@ function AgentChatComposerImpl({
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
-    const pendingImage = addPendingImageAttachment("clipboard.png", null);
-    const attachmentOwnerBinding = attachmentMachineBinding;
-    const attachmentApi = agentChatApiRef.current;
-    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, !projectChatPane);
+    // The paste event's own copy of the picture, when it carried one, shows at
+    // once; otherwise the clipboard read below fills it in a moment later.
+    const [eventImage] = fallbackFiles ?? [];
+    const pendingImage = addPendingImageAttachment(
+      "clipboard.png",
+      eventImage?.type.startsWith("image/") && !isHeicAttachment(eventImage.name, eventImage.type) ? createObjectPreviewUrl(eventImage) : null,
+    );
+    const pendingChipPlacement = placePendingAttachmentChip(pendingImage, chipPlacement);
     let clipboardWasEmpty = false;
     try {
       const image = await window.ade.app.readClipboardImage();
       if (!image) {
         dropPendingImageAttachment(pendingImage.id);
         clipboardWasEmpty = true;
-        return;
-      }
-      if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
-        dropPendingImageAttachment(pendingImage.id);
-        setAttachError("Clipboard image was not attached because the selected project or machine changed. Paste it again.");
         return;
       }
       // The picture shows at once. On a slow link to the chat's machine the
@@ -4480,9 +4616,37 @@ function AgentChatComposerImpl({
       setPendingImageAttachments((current) => current.map((entry) => (
         entry.id === pendingImage.id ? { ...entry, previewUrl: localPreview } : entry
       )));
+      await uploadClipboardImage(image, localPreview, pendingImage, pendingChipPlacement);
+    } catch (error) {
+      // Reading this computer's clipboard failed: nothing to retry with.
+      dropPendingImageAttachment(pendingImage.id);
+      setAttachError(attachmentErrorMessage(error, "the clipboard image"));
+    } finally {
+      fileAddInProgressRef.current = false;
+      if (clipboardWasEmpty && fallbackFiles?.length) void addFileAttachments(fallbackFiles);
+    }
+  };
+
+  /**
+   * Save clipboard bytes on the chat's machine and hand the file to the
+   * parent. A failure leaves the pending image failed, tile and token, with a
+   * Retry that saves the same bytes again (a fresh temp file: a first save
+   * that landed unseen is never attached twice).
+   */
+  const uploadClipboardImage = async (
+    image: { data: string; mimeType: string; filename?: string | null },
+    localPreview: string,
+    pendingImage: ChatAttachmentPendingImage,
+    pendingChipPlacement: AttachmentChipPlacement,
+  ) => {
+    const attachmentOwnerBinding = attachmentMachineBinding;
+    const attachmentApi = agentChatApiRef.current;
+    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, !projectChatPane);
+    const filename = image.filename || "clipboard.png";
+    try {
       const { path: tempPath } = await withChatPin(attachmentApiPin, (chatPin) => attachmentApi.saveTempAttachment({
         data: image.data,
-        filename: image.filename || "clipboard.png",
+        filename,
       }, chatPin));
       if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
         dropPendingImageAttachment(pendingImage.id);
@@ -4495,19 +4659,22 @@ function AgentChatComposerImpl({
       }
       rememberPreviewUrl(tempPath, localPreview);
       onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, image.mimeType) });
-      queueAttachmentChip(tempPath, chipPlacement);
+      queueAttachmentChip(tempPath, pendingChipPlacement);
       dropPendingImageAttachment(pendingImage.id);
     } catch (error) {
-      dropPendingImageAttachment(pendingImage.id);
-      // The host's reason (a clipboard image it could not fit under the
-      // ceiling, say) is the useful part; a bare "Unable to attach" hid it.
-      const reason = error instanceof Error ? stripElectronErrorWrapper(error.message) : "";
-      setAttachError(reason || "Unable to attach clipboard image.");
-    } finally {
-      fileAddInProgressRef.current = false;
-      if (clipboardWasEmpty && fallbackFiles?.length) void addFileAttachments(fallbackFiles);
+      if (cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
+        cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
+        return;
+      }
+      failPendingImageAttachment(
+        pendingImage.id,
+        attachmentErrorMessage(error, filename),
+        () => void uploadClipboardImageRef.current(image, localPreview, pendingImage, pendingChipPlacement),
+      );
     }
   };
+  const uploadClipboardImageRef = useRef(uploadClipboardImage);
+  uploadClipboardImageRef.current = uploadClipboardImage;
 
   const addImageUrlAttachment = useCallback((url: string): boolean => {
     if (!canAttach) return false;
@@ -5201,22 +5368,95 @@ function AgentChatComposerImpl({
     return chip;
   }, [updateAttachmentChipNode]);
 
+  /** Draw an uploading token in its record's state: the picture, then Retry and × once it failed. */
+  const updatePendingAttachmentChipNode = useCallback((chip: HTMLElement, pending: ChatAttachmentPendingImage) => {
+    const failed = Boolean(pending.error);
+    const state = failed ? "failed" : "uploading";
+    const preview = pending.previewUrl ?? "";
+    if (chip.dataset.composerPendingState === state && chip.dataset.composerPendingPreview === preview) return;
+    chip.dataset.composerPendingState = state;
+    chip.dataset.composerPendingPreview = preview;
+    chip.title = failed ? pending.error ?? "" : `Attaching ${pending.name}`;
+    chip.setAttribute("aria-label", failed ? `${pending.name} didn't attach` : `Attaching ${pending.name}`);
+    chip.className = cn(COMPOSER_MENTION_CHIP_CLASS, failed ? "border-amber-400/45 text-amber-100/90" : "opacity-70");
+    const icon = document.createElement("span");
+    icon.setAttribute("aria-hidden", "true");
+    if (preview) {
+      icon.className = cn(COMPOSER_ATTACHMENT_THUMB_CLASS, failed && "opacity-60");
+      const image = document.createElement("img");
+      image.src = preview;
+      image.alt = "";
+      image.draggable = false;
+      image.className = "h-full w-full object-cover";
+      icon.append(image);
+    } else {
+      icon.className = COMPOSER_TOKEN_CHIP_ICON_CLASS;
+      icon.innerHTML = COMPOSER_IMAGE_CHIP_GLYPH_SVG;
+    }
+    const labelNode = document.createElement("span");
+    labelNode.className = "truncate";
+    labelNode.textContent = failed ? "Image" : "Image…";
+    const parts: HTMLElement[] = [icon, labelNode];
+    if (failed) {
+      const retry = document.createElement("span");
+      retry.dataset.composerPendingRetry = "true";
+      retry.className = "ml-1 cursor-pointer rounded px-0.5 font-medium text-amber-50 hover:bg-fg/10";
+      retry.textContent = "Retry";
+      retry.title = `Try attaching ${pending.name} again`;
+      const remove = document.createElement("span");
+      remove.dataset.composerPendingRemove = "true";
+      remove.className = "cursor-pointer rounded px-0.5 text-amber-100/60 hover:bg-fg/10 hover:text-amber-50";
+      remove.textContent = "×";
+      remove.title = `Remove ${pending.name}`;
+      parts.push(retry, remove);
+    }
+    chip.replaceChildren(...parts);
+  }, []);
+
+  const createPendingAttachmentChipNode = useCallback((pending: ChatAttachmentPendingImage): HTMLElement => {
+    const chip = document.createElement("span");
+    chip.contentEditable = "false";
+    chip.dataset.composerChip = "attachment-pending";
+    // Serializes to nothing: the draft gains the real token only when the image lands.
+    chip.dataset.composerChipText = "";
+    chip.dataset.composerPendingId = pending.id;
+    updatePendingAttachmentChipNode(chip, pending);
+    return chip;
+  }, [updatePendingAttachmentChipNode]);
+
   /**
    * Insert a chip at a placement, with a space after it so typing continues
    * outside the pill, and a space before it when it would otherwise glue onto
-   * a word. Moves the caret past it only when the editor has (or should get)
-   * focus — a chip landing while the user is elsewhere must not steal it.
+   * a word. A chip for an upload replaces that upload's token in place, and
+   * none goes in when the user deleted the token.
+   *
+   * The caret moves past the chip only when it sits where the chip goes (or
+   * `caret: "after"`, a paste putting its own token at the caret). A chip that
+   * lands while the user types elsewhere never moves the caret; one landing
+   * while the user is outside the editor never takes focus, unless the paste
+   * came from the editor (`refocus`) and nothing else will put the caret back.
    */
   const insertAttachmentChipAt = useCallback((
     editor: HTMLElement,
     chip: HTMLElement,
     placement: AttachmentChipPlacement,
-  ) => {
+    options: { caret?: "after" } = {},
+  ): boolean => {
     let range: Range | null = null;
     let refocus = false;
     let target: AttachmentChipPlacement | null = placement;
     while (target && !range) {
-      if (target.kind === "afterChip") {
+      if (target.kind === "pending") {
+        const placeholder = findPendingAttachmentChip(editor, target.pendingId);
+        const wasPlaced = pendingAttachmentChipIdsRef.current.delete(target.pendingId);
+        if (placeholder) {
+          placeholder.replaceWith(chip);
+          return true;
+        }
+        // The user deleted the token: the attachment stays in the tray only.
+        if (wasPlaced) return false;
+        target = target.fallback;
+      } else if (target.kind === "afterChip") {
         const previous = findAttachmentChip(editor, target.path);
         if (previous) {
           range = document.createRange();
@@ -5241,6 +5481,17 @@ function AgentChatComposerImpl({
       range.selectNodeContents(editor);
       range.collapse(false);
     }
+    const focused = document.activeElement === editor;
+    const selection = window.getSelection();
+    const live = focused && selection?.rangeCount ? selection.getRangeAt(0) : null;
+    const textBefore = live || richPromotionCaretRef.current != null ? serializeComposerDom(editor).text : "";
+    const insertOffset = textBefore ? serializedComposerOffsetAt(editor, range.startContainer, range.startOffset, textBefore) : 0;
+    const caretAtInsertPoint = Boolean(
+      live
+      && live.collapsed
+      && editor.contains(live.startContainer)
+      && serializedComposerOffsetAt(editor, live.startContainer, live.startOffset, textBefore) === insertOffset,
+    );
     const fragment = document.createDocumentFragment();
     const before = characterBeforeRange(range);
     if (before && !/\s/.test(before)) fragment.append(document.createTextNode(" "));
@@ -5248,17 +5499,53 @@ function AgentChatComposerImpl({
     const after = document.createTextNode(" ");
     fragment.append(after);
     range.insertNode(fragment);
-    if (refocus || document.activeElement === editor) {
-      if (document.activeElement !== editor) editor.focus({ preventScroll: true });
+    // A textarea that just became the rich editor puts its caret back at a
+    // text offset after this; text put in before that offset moves it along.
+    const promotionCaret = richPromotionCaretRef.current;
+    if (promotionCaret != null && insertOffset <= promotionCaret) {
+      richPromotionCaretRef.current = promotionCaret + serializeComposerDom(editor).text.length - textBefore.length;
+    }
+    const takeFocus = !focused && refocus && promotionCaret == null;
+    if ((focused && (options.caret === "after" || caretAtInsertPoint)) || takeFocus) {
+      if (!focused) editor.focus({ preventScroll: true });
       const caret = document.createRange();
       caret.setStart(after, 1);
       caret.collapse(true);
-      const selection = window.getSelection();
       selection?.removeAllRanges();
       selection?.addRange(caret);
       richSelectionRef.current = caret.cloneRange();
     }
+    return true;
   }, []);
+
+  /**
+   * Put an upload's token where its chip will go: at the caret for a paste or
+   * a drop, now. A textarea composer becomes the rich editor first, and the
+   * token goes in once it has (the layout effect drains the queue). Returns
+   * the placement the finished chip uses: replace this token.
+   */
+  const placePendingAttachmentChip = (
+    pending: ChatAttachmentPendingImage,
+    placement: AttachmentChipPlacement,
+  ): AttachmentChipPlacement => {
+    const wrapped: AttachmentChipPlacement = { kind: "pending", pendingId: pending.id, fallback: placement };
+    const editor = richEditorRef.current;
+    if (useRichComposer && editor) {
+      const focused = document.activeElement === editor;
+      if (!insertAttachmentChipAt(editor, createPendingAttachmentChipNode(pending), placement, focused && placement.kind === "offset" ? { caret: "after" } : {})) {
+        return placement;
+      }
+      pendingAttachmentChipIdsRef.current.add(pending.id);
+      onDraftChange(serializeComposerDom(editor).text);
+      return wrapped;
+    }
+    queuedPendingAttachmentChipsRef.current.push({
+      pendingId: pending.id,
+      offset: placement.kind === "offset" ? placement.offset : null,
+    });
+    promoteToRichEditor();
+    return wrapped;
+  };
 
   /**
    * Keep the editor's attachment chips in step with the tray. Returns true when
@@ -5270,6 +5557,8 @@ function AgentChatComposerImpl({
    *  2. A plain-text token whose attachment exists becomes a chip — a restored
    *     draft, a pasted token. One with no such attachment stays text.
    *  3. Queued chips whose attachment has landed are inserted.
+   *  4. Uploading tokens take their pending record's state; one whose record
+   *     is gone (removed, cancelled) leaves, unless its chip is still queued.
    */
   const reconcileAttachmentChipsInEditor = useCallback((editor: HTMLElement): boolean => {
     const current = attachmentsRef.current;
@@ -5345,13 +5634,27 @@ function AgentChatComposerImpl({
         continue;
       }
       if (findAttachmentChip(editor, entry.path)) continue;
-      insertAttachmentChipAt(editor, createAttachmentChipNode(current[index]!, labels[index]!), entry.placement);
-      changed = true;
+      if (insertAttachmentChipAt(editor, createAttachmentChipNode(current[index]!, labels[index]!), entry.placement)) changed = true;
     }
     queuedAttachmentChipsRef.current = pending;
+
+    const pendingById = new Map(pendingImageAttachmentsRef.current.map((entry) => [entry.id, entry]));
+    const stillQueued = new Set(pending.flatMap((entry) => (entry.placement.kind === "pending" ? [entry.placement.pendingId] : [])));
+    editor.querySelectorAll<HTMLElement>(COMPOSER_PENDING_ATTACHMENT_CHIP_SELECTOR).forEach((chip) => {
+      const id = chip.dataset.composerPendingId ?? "";
+      const record = pendingById.get(id);
+      if (record) {
+        updatePendingAttachmentChipNode(chip, record);
+        return;
+      }
+      if (stillQueued.has(id)) return;
+      removeChipWithTrailingSpace(chip);
+      pendingAttachmentChipIdsRef.current.delete(id);
+      changed = true;
+    });
     attachmentChipPathsRef.current = collectAttachmentChipPaths(editor);
     return changed;
-  }, [createAttachmentChipNode, getRichCursorTextOffset, insertAttachmentChipAt, restoreRichCaretAtTextOffset, updateAttachmentChipNode]);
+  }, [createAttachmentChipNode, getRichCursorTextOffset, insertAttachmentChipAt, restoreRichCaretAtTextOffset, updateAttachmentChipNode, updatePendingAttachmentChipNode]);
 
   const disarmAttachmentChip = useCallback(() => {
     const armed = armedAttachmentChipRef.current;
@@ -5396,7 +5699,14 @@ function AgentChatComposerImpl({
     for (const path of previous) {
       if (!present.has(path)) handleRemoveAttachment(path);
     }
-  }, [handleRemoveAttachment]);
+    // Deleting an uploading token cancels that upload (or drops a failed one), tile and all.
+    const pendingPresent = collectPendingAttachmentChipIds(editor);
+    for (const id of pendingAttachmentChipIdsRef.current) {
+      if (pendingPresent.has(id)) continue;
+      pendingAttachmentChipIdsRef.current.delete(id);
+      removePendingImageAttachment(id);
+    }
+  }, [handleRemoveAttachment, removePendingImageAttachment]);
 
   const openAttachmentChipPreview = useCallback((path: string) => {
     const attachment = attachmentsRef.current.find((entry) => entry.path === path);
@@ -6088,6 +6398,23 @@ function AgentChatComposerImpl({
       richSelectionRef.current = range.cloneRange();
     }
 
+    // Uploading tokens for images pasted while this was a textarea, at the
+    // offsets the caret had then (the caret just came back to the same place).
+    const queuedPendingChips = queuedPendingAttachmentChipsRef.current;
+    if (queuedPendingChips.length) {
+      queuedPendingAttachmentChipsRef.current = [];
+      for (const entry of queuedPendingChips) {
+        const record = pendingImageAttachmentsRef.current.find((candidate) => candidate.id === entry.pendingId);
+        if (!record || findPendingAttachmentChip(editor, record.id)) continue;
+        const placement: AttachmentChipPlacement = entry.offset == null
+          ? { kind: "end" }
+          : { kind: "offset", offset: entry.offset, refocus: false };
+        if (insertAttachmentChipAt(editor, createPendingAttachmentChipNode(record), placement)) {
+          pendingAttachmentChipIdsRef.current.add(record.id);
+        }
+      }
+    }
+
     const pendingModelToken = pendingModelChipTokenRef.current;
     if (pendingModelToken) {
       pendingModelChipTokenRef.current = null;
@@ -6102,7 +6429,7 @@ function AgentChatComposerImpl({
     if (next === lastSerializedDraftRef.current) return;
     lastSerializedDraftRef.current = next;
     onDraftChange(next);
-  }, [appControlContextItems, askQuestionActive, attachments, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, hydrateMentionChipsInEditor, imagePreviewUrls, insertNodeAtTextOffset, iosElementContextItems, mentionLabels, onDraftChange, openModelChipSegment, reconcileAttachmentChipsInEditor, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
+  }, [appControlContextItems, askQuestionActive, attachments, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, createPendingAttachmentChipNode, draft, hydrateMentionChipsInEditor, imagePreviewUrls, insertAttachmentChipAt, insertNodeAtTextOffset, iosElementContextItems, mentionLabels, onDraftChange, openModelChipSegment, pendingImageAttachments, reconcileAttachmentChipsInEditor, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
 
   // Linked hover glow, composer side: the chip(s) of the hovered tray item
   // light up. An armed chip (first Backspace of a safe delete) keeps its ring.
@@ -7939,6 +8266,7 @@ function AgentChatComposerImpl({
     })
     : null;
   const hasPendingImageAttachments = pendingImageAttachments.length > 0;
+  const failedPendingImageAttachments = pendingImageAttachments.filter((attachment) => attachment.error);
   // Off for a reason the pane can explain: the button takes the press anyway.
   const sendPressableWhileBlocked = sendBlocked && Boolean(onSendBlocked);
   const sendEnabled = !busy
@@ -7969,6 +8297,7 @@ function AgentChatComposerImpl({
   function sendButtonTitle(): string {
     if (composerInputLocked) return composerInputLockMessage ?? "Resolve the pending request before sending.";
     if (sendBlocked && sendBlockedReason) return sendBlockedReason;
+    if (failedPendingImageAttachments.length) return "An image didn't attach. Retry or remove it first.";
     if (hasPendingImageAttachments) return "Finish attaching images";
     if (parallelChatMode) {
       if (parallelModelSlots.length < 2) return "Add at least two models";
@@ -8905,13 +9234,14 @@ function AgentChatComposerImpl({
       onMentionSearch={onSearchMentions}
       onPrSearch={onSearchPullRequests}
       modelOptions={modelMentionOptions}
+      modelsLoading={modelMentionsLoading}
       recentModelIds={modelRecents}
       anchor={commandMenuAnchor}
       onSelect={handleCommandMenuSelectLatest}
       onClose={closeCommandMenu}
       onNoMatches={dismissCommandMenu}
     />
-  ), [closeCommandMenu, commandMenuAnchor, commandMenuSlashCommands, commandMenuTrigger, dismissCommandMenu, handleCommandMenuSelectLatest, modelMentionOptions, modelRecents, onSearchAttachments, onSearchMentions, onSearchPullRequests]);
+  ), [closeCommandMenu, commandMenuAnchor, commandMenuSlashCommands, commandMenuTrigger, dismissCommandMenu, handleCommandMenuSelectLatest, modelMentionOptions, modelMentionsLoading, modelRecents, onSearchAttachments, onSearchMentions, onSearchPullRequests]);
   const attachmentPreviewDialog = useMemo(() => (
     <ChatAttachmentPreviewDialog
       target={attachmentChipPreview}
@@ -9283,6 +9613,43 @@ function AgentChatComposerImpl({
                 </div>
               </div>
             ) : null}
+            {failedPendingImageAttachments.length ? (() => {
+              // One line for the images that didn't attach; each tile and its
+              // token in the prompt also has Retry and Remove.
+              const [first] = failedPendingImageAttachments;
+              const title = failedPendingImageAttachments.length === 1
+                ? first!.error!
+                : `Couldn't attach ${failedPendingImageAttachments.length} images. Try again.`;
+              return (
+                <Banner
+                  layout="inline"
+                  style={{ margin: "0 12px" }}
+                  model={{
+                    id: "chat-composer-attach-pending-failed",
+                    tone: "error",
+                    title,
+                    actions: [
+                      {
+                        label: "Try again",
+                        onClick: () => {
+                          for (const attachment of failedPendingImageAttachments) retryPendingImageAttachment(attachment.id);
+                        },
+                      },
+                      {
+                        label: "Remove",
+                        onClick: () => {
+                          for (const attachment of failedPendingImageAttachments) removePendingImageAttachment(attachment.id);
+                        },
+                      },
+                    ],
+                    // A dropped link is the person's to retry, not ADE's failure to hear about.
+                    report: failedPendingImageAttachments.every((attachment) => isAttachConnectionTrouble(attachment.error ?? ""))
+                      ? false
+                      : { surface: "chat_composer_attach" },
+                  }}
+                />
+              );
+            })() : null}
             {attachError ? (
               <Banner
                 layout="inline"
@@ -9315,7 +9682,7 @@ function AgentChatComposerImpl({
                   ],
                   // Attachments that can't be stored on that machine are a setup
                   // choice, not a failure for ADE to hear about.
-                  report: attachError === attachmentPersistenceUnavailableReason
+                  report: attachError === attachmentPersistenceUnavailableReason || isAttachConnectionTrouble(attachError)
                     ? false
                     : { surface: "chat_composer_attach" },
                   dismiss: {
@@ -9386,6 +9753,7 @@ function AgentChatComposerImpl({
                 }
               }}
               onRemovePendingImageAttachment={removePendingImageAttachment}
+              onRetryPendingImageAttachment={retryPendingImageAttachment}
               onFocusPrompt={focusComposerInput}
               highlightedPath={hoveredAttachmentPath}
               onHoverAttachment={setHoveredAttachmentPath}
@@ -9702,6 +10070,14 @@ function AgentChatComposerImpl({
                       event.stopPropagation();
                       const machineKey = machineToken.slice(machineToken.indexOf(":") + 1);
                       setMachineChipPopover({ machineKey, anchor: machineChip });
+                      return;
+                    }
+                    const pendingChip = target?.closest?.<HTMLElement>(COMPOSER_PENDING_ATTACHMENT_CHIP_SELECTOR);
+                    if (pendingChip?.dataset.composerPendingId) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      if (target?.dataset.composerPendingRetry === "true") retryPendingImageAttachment(pendingChip.dataset.composerPendingId);
+                      else if (target?.dataset.composerPendingRemove === "true") removePendingImageAttachment(pendingChip.dataset.composerPendingId);
                       return;
                     }
                     const attachmentChip = target?.closest?.<HTMLElement>(COMPOSER_ATTACHMENT_CHIP_SELECTOR);

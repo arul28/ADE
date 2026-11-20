@@ -227,6 +227,7 @@ import { manualCompactDependsOnChat, resolveContextCompactControl } from "../../
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
 } from "../shared/ModelPicker/runtimeCatalogCache";
+import { useRuntimeCatalogVersion } from "../shared/ModelPicker/useRuntimeCatalogVersion";
 import { runtimeCatalogModelIds, useCursorCloudModelEligibility } from "./useCursorCloudModelEligibility";
 import { reconcileDraftModelControls } from "./draftModelControls";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
@@ -4875,7 +4876,6 @@ export function AgentChatPane({
   const handleModelPickerOpenRequestHandled = useCallback(() => {
     setModelPickerOpenRequest(undefined);
   }, []);
-  const [runtimeCatalogVersion, setRuntimeCatalogVersion] = useState(0);
   /**
    * Runtime-catalog bucket for this pane's composer — the binding key of the
    * machine that will run the turn (prompt-box picker or the chat's owner).
@@ -4892,6 +4892,10 @@ export function AgentChatPane({
   const [modelCatalogScopeKey, setModelCatalogScopeKey] = useState(
     () => chatScope?.modelCatalogScopeKey ?? projectBinding?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE,
   );
+  // Moves whenever ANY surface loads or invalidates this machine's catalog
+  // (the picker, the "@" menu, Settings › Providers), so the id memos below
+  // re-read it however it arrived.
+  const runtimeCatalogVersion = useRuntimeCatalogVersion(modelCatalogScopeKey);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const { getReasoningForFamily } = useReasoningByFamily();
   const [fastMode, setFastMode] = useState(false);
@@ -21690,9 +21694,6 @@ export function AgentChatPane({
                 ...(restingModelPicker || !modelPickerProviderAuthStatus ? {} : { providerAuthStatus: modelPickerProviderAuthStatus }),
                 ...(modelPickerProviderRuntimeMissing && !restingModelPicker ? { providerRuntimeMissing: modelPickerProviderRuntimeMissing } : {}),
               })}
-            onRuntimeCatalogRefreshed={() => {
-              setRuntimeCatalogVersion((version) => version + 1);
-            }}
             allowCliOnlyModels={workDraftKind === "cli" && !cursorCloudSessionActive}
             reasoningEffort={subagentComposerModel ? subagentComposerModel.effort : reasoningEffort}
             effectiveReasoningEffort={subagentComposerModel ? subagentComposerModel.effort : effectiveReasoningEffort}
@@ -22507,7 +22508,11 @@ export function AgentChatPane({
             }}
           />
         ) : null}
-        <ChatMachineWakeBanner style={RUNTIME_BANNER_STYLE} />
+        {/* Asleep and waking show on the header's cloud button; this is the failed wake (or asleep with no such button). */}
+        <ChatMachineWakeBanner
+          style={RUNTIME_BANNER_STYLE}
+          headerLaneId={compactShell || hideSurfaceHeader ? null : selectedSession?.laneId ?? laneId ?? null}
+        />
         {cloudQueueSend && cloudQueueSend.chatId === selectedSessionId ? (
           <CloudQueueSendCard
             send={cloudQueueSend}

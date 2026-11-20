@@ -2,12 +2,20 @@ import path from "node:path";
 
 import type { LaneSetupScriptConfig } from "../../../shared/types";
 import { laneSetupScriptHasWork } from "../../../shared/types";
+import { macosOnlyToolIn } from "../../../shared/laneSetupPlatform";
 
 export type ResolvedSetupScript = {
   commands: string[];
   scriptPath?: string;
   injectPrimaryPath: boolean;
+  /**
+   * Set on Linux when the commands that run were written for macOS (shared
+   * macOS/Linux commands that call macOS-only tools, with no Linux commands):
+   * they still run, and the setup step says how to fix the template.
+   */
+  macosOnlyOnLinux?: string;
 };
+
 
 /**
  * Pick the platform-appropriate setup commands / script path out of a setup
@@ -25,26 +33,32 @@ export function resolveSetupScriptConfig(
   if (!laneSetupScriptHasWork(cfg)) return null;
 
   const isWindows = platform === "win32";
+  const isMac = platform === "darwin";
+  const isLinux = platform === "linux";
 
-  // Platform-specific commands take precedence
-  const commands = (isWindows
-    ? (cfg.windowsCommands ?? cfg.commands ?? [])
-    : (cfg.unixCommands ?? cfg.commands ?? [])
-  )
+  // The most specific list wins: this OS's own, then macOS/Linux, then any OS.
+  const platformCommands = isWindows
+    ? cfg.windowsCommands
+    : (isMac ? cfg.macosCommands : isLinux ? cfg.linuxCommands : undefined) ?? cfg.unixCommands;
+  const commands = (platformCommands ?? cfg.commands ?? [])
     .map((command) => command.trim())
     .filter((command) => command.length > 0);
 
   const scriptPath = (isWindows
     ? (cfg.windowsScriptPath ?? cfg.scriptPath)
-    : (cfg.unixScriptPath ?? cfg.scriptPath)
+    : ((isMac ? cfg.macosScriptPath : isLinux ? cfg.linuxScriptPath : undefined) ?? cfg.unixScriptPath ?? cfg.scriptPath)
   )?.trim();
 
   if (commands.length === 0 && !scriptPath) return null;
+
+  const usesSharedOnLinux = isLinux && !cfg.linuxCommands?.length;
+  const macosTool = usesSharedOnLinux ? macosOnlyToolIn(commands) : null;
 
   return {
     commands,
     ...(scriptPath ? { scriptPath } : {}),
     injectPrimaryPath: cfg.injectPrimaryPath ?? false,
+    ...(macosTool ? { macosOnlyOnLinux: macosTool } : {}),
   };
 }
 

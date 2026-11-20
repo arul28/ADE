@@ -150,6 +150,17 @@ let workComposerAttachmentUploadTimeoutNanoseconds: UInt64 = SyncRequestTimeout.
 /// cannot say two different things about one message.
 let workChatAttachmentUploadTimedOutMessage = "Couldn't send. Tap to retry."
 
+/// What a tray tile says when its background upload failed. The tile turns
+/// `.failed` the moment the upload does, and a tap uploads it again.
+let workChatAttachmentUploadFailedMessage = "Couldn't upload. Tap to retry."
+
+extension Notification.Name {
+  /// Posted on the main actor when a background upload fails;
+  /// `userInfo["id"]` is the attachment's `UUID`. The input tray marks that
+  /// attachment failed at once instead of letting it look fine until send.
+  static let workComposerAttachmentUploadFailed = Notification.Name("com.ade.ios.workComposerAttachmentUploadFailed")
+}
+
 func workChatAttachmentUploadTimedOutError(_ filename: String) -> NSError {
   NSError(
     domain: "ADE",
@@ -362,8 +373,23 @@ final class WorkComposerAttachmentUploads {
         entries[id]?.abandoned = false
         entries[id]?.settled = true
         entries[id]?.failure = error.localizedDescription
+        NotificationCenter.default.post(
+          name: .workComposerAttachmentUploadFailed,
+          object: nil,
+          userInfo: ["id": id]
+        )
       }
     }
+  }
+
+  /// Forgets a failed upload so the next `begin` for this id starts a fresh
+  /// one. The tray's Retry calls this before putting the attachment back to
+  /// `.ready`. A first try that landed unseen leaves only an unused temp file
+  /// on the host; the send references the new one.
+  func retry(_ id: UUID) {
+    guard let entry = entries[id], entry.settled, entry.ref == nil else { return }
+    entries[id] = nil
+    order.removeAll { $0 == id }
   }
 
   /// The ref for an attachment, waiting for an in-flight upload — for at most

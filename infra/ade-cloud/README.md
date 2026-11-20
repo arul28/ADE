@@ -86,6 +86,12 @@ This folder is where the provider's name is allowed: the template is built on
 Agent 37 with its cloud build (`npx agent37 templates build`), into the
 workspace the key belongs to. No local Docker is needed.
 
+Agent 37's docs (index for agents: https://www.agent37.com/docs/llms.txt;
+templates: https://www.agent37.com/docs/agents-api/templates.md; custom
+images: https://www.agent37.com/docs/agents-api/custom-image.md). The
+instance facts ADE relies on are summarized in
+`docs/features/ade-cloud/README.md` ("The provider: Agent 37").
+
 ```sh
 AGENT37_API_KEY=sk_live_... infra/ade-cloud/build-template.sh            # template "ade", latest ADE
 AGENT37_API_KEY=sk_live_... infra/ade-cloud/build-template.sh ade-a1-test # a trial template

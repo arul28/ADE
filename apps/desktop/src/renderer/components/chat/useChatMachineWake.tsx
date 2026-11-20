@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 import { isCloudConnectionTarget, isSavedChatsMachineId, savedChatComputerGone } from "../../state/cloudSavedChats";
 import { useCloudViewOnScreen } from "../../state/crossMachineLanes";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { cloudComputerResting, useCloudComputer } from "../remoteTargets/useCloudComputer";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { clearCloudMachineWakeFailure, useCloudMachineWakeFailure, useCloudMachineWakeInFlight } from "../../lib/cloudMachineWake";
@@ -222,14 +223,25 @@ export function useChatMachineWake(): ChatMachineWake {
 }
 
 /**
- * The opened chat's own line while its ADE Cloud computer is asleep (with
- * Wake), while it wakes, and why the last wake failed. Nothing for a machine
- * that is up or not a cloud computer. The list row stays as it is; the progress lives here.
+ * The opened chat's line for a failed wake of its ADE Cloud computer (with
+ * Try again). Asleep and waking are not problems, so a lane computer shows
+ * them on the chat header's cloud button instead (`CloudLaneHeaderButton`),
+ * and sending a message still wakes it. Only where that button isn't shown
+ * (`headerLaneId` null: no header, or a cloud computer that holds no lane)
+ * does this line say asleep (with Wake) and waking. Nothing for a machine
+ * that is up or not a cloud computer.
  */
-export function ChatMachineWakeBanner({ style }: { style?: CSSProperties }) {
+export function ChatMachineWakeBanner({ style, headerLaneId }: {
+  style?: CSSProperties;
+  /** The lane the chat header's cloud button is for, or null when the chat shows no header. */
+  headerLaneId: string | null;
+}) {
   const machine = useChatMachineWake();
+  const { computers } = useAdeCloudLaneComputers();
+  const onHeader = headerLaneId != null && computers.some((computer) => computer.laneId === headerLaneId);
   if (machine.gone || !machine.resting) return null;
   if (machine.waking) {
+    if (onHeader) return null;
     return (
       <Banner
         layout="inline"
@@ -239,7 +251,8 @@ export function ChatMachineWakeBanner({ style }: { style?: CSSProperties }) {
     );
   }
   if (!machine.error) {
-    // Asleep and nobody woke it yet: say so, and offer the wake here.
+    if (onHeader) return null;
+    // Asleep, nobody woke it yet, and no header button says so: offer the wake here.
     return (
       <Banner
         layout="inline"
@@ -247,7 +260,7 @@ export function ChatMachineWakeBanner({ style }: { style?: CSSProperties }) {
         model={{
           id: "chat-machine-asleep",
           tone: "info",
-          title: "This lane's ADE Cloud computer is asleep",
+          title: "This ADE Cloud computer is asleep",
           detail: "Wake it to keep working. Sending a message wakes it too.",
           actions: [{ label: "Wake", onClick: () => void machine.wake() }],
         }}

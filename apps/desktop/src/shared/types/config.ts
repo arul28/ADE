@@ -168,12 +168,20 @@ export type LaneSetupScriptConfig = {
   commands?: string[];
   /** Unix-specific setup commands (takes precedence on macOS/Linux) */
   unixCommands?: string[];
+  /** macOS-only setup commands (take precedence over `unixCommands` on macOS) */
+  macosCommands?: string[];
+  /** Linux-only setup commands (take precedence over `unixCommands` on Linux, e.g. ADE Cloud) */
+  linuxCommands?: string[];
   /** Windows-specific setup commands (takes precedence on Windows) */
   windowsCommands?: string[];
   /** Path to a script file relative to project root (fallback) */
   scriptPath?: string;
   /** Path to a Unix-specific script file (takes precedence on macOS/Linux) */
   unixScriptPath?: string;
+  /** Path to a macOS-only script file (takes precedence over `unixScriptPath` on macOS) */
+  macosScriptPath?: string;
+  /** Path to a Linux-only script file (takes precedence over `unixScriptPath` on Linux) */
+  linuxScriptPath?: string;
   /** Path to a Windows-specific script file (takes precedence on Windows) */
   windowsScriptPath?: string;
   /**
@@ -207,9 +215,13 @@ export function laneSetupScriptHasWork(
   return (
     hasCommand(script.commands)
     || hasCommand(script.unixCommands)
+    || hasCommand(script.macosCommands)
+    || hasCommand(script.linuxCommands)
     || hasCommand(script.windowsCommands)
     || hasPath(script.scriptPath)
     || hasPath(script.unixScriptPath)
+    || hasPath(script.macosScriptPath)
+    || hasPath(script.linuxScriptPath)
     || hasPath(script.windowsScriptPath)
   );
 }

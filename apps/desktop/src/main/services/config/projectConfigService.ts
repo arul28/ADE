@@ -1142,17 +1142,25 @@ function coerceLaneSetupScript(value: unknown): LaneSetupScriptConfig | undefine
 
   const commands = readCommands(value.commands);
   const unixCommands = readCommands(value.unixCommands);
+  const macosCommands = readCommands(value.macosCommands);
+  const linuxCommands = readCommands(value.linuxCommands);
   const windowsCommands = readCommands(value.windowsCommands);
   const scriptPath = readPath(value.scriptPath);
   const unixScriptPath = readPath(value.unixScriptPath);
+  const macosScriptPath = readPath(value.macosScriptPath);
+  const linuxScriptPath = readPath(value.linuxScriptPath);
   const windowsScriptPath = readPath(value.windowsScriptPath);
 
   const parsed: LaneSetupScriptConfig = {
     ...(commands ? { commands } : {}),
     ...(unixCommands ? { unixCommands } : {}),
+    ...(macosCommands ? { macosCommands } : {}),
+    ...(linuxCommands ? { linuxCommands } : {}),
     ...(windowsCommands ? { windowsCommands } : {}),
     ...(scriptPath ? { scriptPath } : {}),
     ...(unixScriptPath ? { unixScriptPath } : {}),
+    ...(macosScriptPath ? { macosScriptPath } : {}),
+    ...(linuxScriptPath ? { linuxScriptPath } : {}),
     ...(windowsScriptPath ? { windowsScriptPath } : {}),
     ...(asBool(value.injectPrimaryPath) === true ? { injectPrimaryPath: true } : {}),
   };

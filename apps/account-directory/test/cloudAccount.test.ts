@@ -4400,3 +4400,90 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
   });
 });
 
+
+describe("ADE Cloud computer status (the provider's webhook and the brain's activity)", () => {
+  const SECRET_BYTES = Buffer.from("status-webhook-test-key-32-bytes");
+  const SECRET = `whsec_${SECRET_BYTES.toString("base64")}`;
+  const MIN = 60_000;
+
+  const event = (status: string, previous: string | null, at: number, id = INSTANCE) => JSON.stringify({
+    type: "instance.status.updated",
+    timestamp: new Date(at).toISOString(),
+    data: { id, status, previous_status: previous, status_reason: null, name: "ADE · lane", metadata: {} },
+  });
+  const signature = (deliveryId: string, timestamp: number, body: string, key: Buffer = SECRET_BYTES) =>
+    `v1,${createHmac("sha256", key).update(`${deliveryId}.${timestamp}.${body}`).digest("base64")}`;
+  const deliver = (deliveryId: string, body: string, options: { timestamp?: number; sign?: string } = {}) => {
+    const timestamp = options.timestamp ?? Math.floor(clock / 1000);
+    return handleCloudRequest(new Request("https://directory.test/cloud/agent37/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "webhook-id": deliveryId,
+        "webhook-timestamp": String(timestamp),
+        "webhook-signature": options.sign ?? signature(deliveryId, timestamp, body),
+      },
+      body,
+    }), harness.env);
+  };
+  const health = (restartCount: number, memory = "healthy") => harness.net.reply({
+    logs: "",
+    truncated: false,
+    health: { running: true, restart_count: restartCount, exit_code: null, oom_suspected: false, resource_verdict: { memory, cpu: "healthy", disk: "healthy", overall: memory } },
+    fetched_at: Math.floor(clock / 1000),
+  });
+  const events = () => harness.rows("select delivery_id, status, at, restart_count from cloud_instance_events order by at");
+  const status = async () => (await (await harness.send(OWNER, "GET", `/cloud/instances/${INSTANCE}/status`)).json()) as Record<string, unknown>;
+
+  beforeEach(() => {
+    harness.env.AGENT37_WEBHOOK_SECRET = SECRET;
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { status: "running", status_changed_at: NOW - 2 * HOUR, awake_since: NOW - 2 * HOUR });
+    provide(harness);
+  });
+
+  it("keeps a signed change once, for the account's computers only, and refuses a forged, tampered or stale one", async () => {
+    const woke = event("running", "starting", NOW - 10 * MIN);
+    harness.net.once.push({ match: new RegExp(`GET ${SANDBOX}/instances/${INSTANCE}/logs`), reply: health(3) });
+    expect((await deliver("evt_1", woke)).status).toBe(200);
+    // The same delivery again is taken once.
+    expect(await (await deliver("evt_1", woke)).json()).toEqual({ ok: true, kept: false });
+    expect(events()).toEqual([{ delivery_id: "evt_1", status: "running", at: NOW - 10 * MIN, restart_count: 3 }]);
+
+    const asleep = event("sleeping", "running", NOW - MIN);
+    expect((await deliver("evt_forged", asleep, { sign: signature("evt_forged", Math.floor(NOW / 1000), asleep, Buffer.from("another-key")) })).status).toBe(401);
+    expect((await deliver("evt_tampered", asleep, { sign: signature("evt_tampered", Math.floor(NOW / 1000), woke) })).status).toBe(401);
+    const stale = Math.floor(NOW / 1000) - 600;
+    expect((await deliver("evt_stale", asleep, { timestamp: stale, sign: signature("evt_stale", stale, asleep) })).status).toBe(401);
+    expect((await deliver("evt_unsigned", asleep, { sign: "" })).status).toBe(401);
+    // Another workspace instance (not one of ADE's computers) is answered and not kept.
+    expect((await deliver("evt_other", event("running", null, NOW - MIN, "zzzzz99999"))).status).toBe(200);
+    expect(events().map((row) => row.delivery_id)).toEqual(["evt_1"]);
+
+    // Out of order: an older change arriving late never wins over the newer one.
+    expect((await deliver("evt_old", event("sleeping", "running", NOW - 30 * MIN))).status).toBe(200);
+    harness.net.once.push({ match: new RegExp(`GET ${SANDBOX}/instances/${INSTANCE}/logs`), reply: health(5, "pressure") });
+    expect(await status()).toEqual(expect.objectContaining({
+      status: "running",
+      awakeSince: NOW - 10 * MIN,
+      restarts: 2,
+      memory: "pressure",
+      outOfMemory: false,
+    }));
+  });
+
+  it("shows the brain's activity of this stretch awake, never an older report", async () => {
+    harness.net.once.push({ match: new RegExp(`GET ${SANDBOX}/instances/${INSTANCE}/logs`), reply: health(1) });
+    await deliver("evt_1", event("running", "sleeping", NOW - 10 * MIN));
+    const report = (body: Row) => harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/activity`, body);
+    const idle = { busy: false, idleSince: NOW - 2 * MIN, sleepsAt: NOW + MIN, runningAgents: 0, reportedAt: NOW - MIN };
+    expect((await report(idle)).status).toBe(200);
+    // Sent late: an older report doesn't replace the newer one.
+    expect((await report({ busy: true, idleSince: null, sleepsAt: null, runningAgents: 2, reportedAt: NOW - 5 * MIN })).status).toBe(200);
+    expect((await report({ busy: "yes", runningAgents: 1, reportedAt: NOW })).status).toBe(400);
+    expect((await status()).activity).toEqual(idle);
+    // A report from before the computer woke says nothing about now.
+    harness.exec("update cloud_computer_activity set reported_at = ? where instance_id = ?", NOW - 20 * MIN, INSTANCE);
+    expect((await status()).activity).toBeNull();
+  });
+});

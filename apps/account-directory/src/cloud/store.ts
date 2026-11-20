@@ -33,6 +33,8 @@ import { machineCopiesGoneStatements } from "../accountProjects/store";
 export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   DB: D1Database;
   AGENT37_API_KEY?: string;
+  /** Secret. The provider's status webhook signing secret (`whsec_…`, `computerStatus.ts`). Unset: the webhook answers 503. */
+  AGENT37_WEBHOOK_SECRET?: string;
   /** `1`: ADE Cloud makes no new computers or launches (the owner's kill switch); existing computers keep working. */
   CLOUD_CREATES_PAUSED?: string;
   /** Secret. The bearer of the owner's block and unblock routes (`safety.ts`). Unset: those routes answer 503. */

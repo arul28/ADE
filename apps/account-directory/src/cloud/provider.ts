@@ -216,6 +216,37 @@ export type CloudBilling = {
 
 export type CloudEvent = { type: string; at: number };
 
+type Pressure = "healthy" | "pressure" | "critical";
+
+/** The provider's health readout of a computer's container (`GET .../logs`); null fields when it has none. */
+export type CloudInstanceHealth = {
+  running: boolean;
+  /** Boots beyond its first start; wakes from sleep count too. */
+  restartCount: number | null;
+  oomSuspected: boolean;
+  memory: Pressure | null;
+};
+
+/** The newest point of each series (`GET .../metrics`), in bytes, with the configured limits. */
+export type CloudInstanceMetrics = {
+  diskBytes: { value: number; at: number } | null;
+  memoryBytes: { value: number; at: number } | null;
+  limits: { diskBytes: number | null; memoryBytes: number | null };
+};
+
+const pressureOf = (value: unknown): Pressure | null =>
+  value === "healthy" || value === "pressure" || value === "critical" ? value : null;
+
+/** The last `[unixSeconds, value]` pair of a series, in ms, or null. */
+function lastPoint(series: unknown): { value: number; at: number } | null {
+  if (!Array.isArray(series) || series.length === 0) return null;
+  const point = series[series.length - 1] as unknown;
+  if (!Array.isArray(point)) return null;
+  const at = num(point[0]);
+  const value = num(point[1]);
+  return at != null && value != null ? { value, at: at * 1000 } : null;
+}
+
 export type CloudProvider = ReturnType<typeof createCloudProvider>;
 
 export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetch) {
@@ -429,6 +460,39 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
         if (error instanceof CloudProviderError && error.status === 404) return false;
         throw error;
       }
+    },
+
+    /**
+     * The container's health readout, from its logs endpoint with one line of
+     * log (the readout is what ADE reads). Works in any state and never wakes
+     * a sleeping computer. Null when there is no container.
+     */
+    async instanceHealth(id: string): Promise<CloudInstanceHealth | null> {
+      const body = await request(`${SANDBOX_BASE_URL}/instances/${encodeURIComponent(id)}/logs?tail=1`, {
+        method: "GET",
+        headers: { "x-agent37-key": key },
+      }) as Record<string, unknown> | null;
+      const health = body?.health && typeof body.health === "object" ? body.health as Record<string, unknown> : null;
+      if (!health) return null;
+      const verdict = health.resource_verdict && typeof health.resource_verdict === "object" ? health.resource_verdict as Record<string, unknown> : null;
+      return {
+        running: health.running === true,
+        restartCount: num(health.restart_count),
+        oomSuspected: health.oom_suspected === true,
+        memory: pressureOf(verdict?.memory),
+      };
+    },
+
+    /** The last hour of CPU, memory and disk (one point a minute); only the newest points are kept. Never wakes it. */
+    async instanceMetrics(id: string): Promise<CloudInstanceMetrics> {
+      const body = await api("GET", `${instancePath(id, "metrics")}?hours=1`) as Record<string, unknown> | null;
+      const series = body?.series && typeof body.series === "object" ? body.series as Record<string, unknown> : {};
+      const limits = body?.limits && typeof body.limits === "object" ? body.limits as Record<string, unknown> : {};
+      return {
+        diskBytes: lastPoint(series.disk_bytes),
+        memoryBytes: lastPoint(series.memory_bytes),
+        limits: { diskBytes: num(limits.disk_bytes), memoryBytes: num(limits.memory_bytes) },
+      };
     },
 
     /** Runs `sh -c command`. A non-zero exit is a result, not an error. Exec wakes a sleeping computer. */

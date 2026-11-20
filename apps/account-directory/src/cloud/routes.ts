@@ -45,6 +45,7 @@ import {
   type CloudLaneFacts,
 } from "./lanesWithoutComputer";
 import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage";
+import { handleAgent37Webhook, isAgent37WebhookRequest, parseActivityReport, readComputerStatus, recordActivity } from "./computerStatus";
 import { ignoredFilesStatement, keepIdleComputer, parseIgnoredFiles, recordIdleUse } from "./idleCleanup";
 import {
   CLOUD_BLOCKED_READ_ROUTES,
@@ -1124,7 +1125,7 @@ async function handleStop(env: CloudEnv, computer: ComputerRow, provider: CloudP
  * while it is running and says it is idle, and only when it is behind the
  * image a passed check allowed.
  */
-async function handleUpdate(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, { now }: CloudRequestContext): Promise<Response> {
+async function handleUpdate(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, { now, waitUntil }: CloudRequestContext): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const reason = body.reason === undefined || body.reason === "manual" ? "manual" : body.reason === "idle" ? "idle" : null;
@@ -1152,6 +1153,20 @@ async function handleUpdate(request: Request, env: CloudEnv, computer: ComputerR
   try {
     // Saved with the update: whether this image sends a boot report decides its rollback, whatever the channel says later.
     const expectsReport = automaticTemplate(targets, channel) === templateVersion;
+    if (reason === "idle" && waitUntil) {
+      // The computer asking is the one the update restarts: its link drops
+      // mid-request, which can cancel this request before the power log and
+      // the update's free window are written. The update runs on its own;
+      // the computer only needs to know it started.
+      waitUntil(startCloudUpdate(env, provider, computer, { reason, target: templateVersion, expectsReport, now }).then(
+        () => undefined,
+        (error: unknown) => {
+          if (error instanceof CloudUpdateInProgressError) return;
+          reportCloudFailure("cloud.idle_update_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+        },
+      ));
+      return json({ status: "updating", templateVersion, started: true });
+    }
     const started = await startCloudUpdate(env, provider, computer, { reason, target: templateVersion, expectsReport, now });
     return json({ ...started, started: true });
   } catch (error) {
@@ -1390,6 +1405,15 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
     return json({ ok: true });
   },
   // The computer's own report of hours near full CPU with no chat turn or agent working: a line in the owner's daily report.
+  // The computer's brain: its work started or stopped, or its count of agents changed (never on a timer).
+  "POST activity": async (request, env, computer, _provider, { now, waitUntil }) => {
+    const report = parseActivityReport(await readJson(request), now);
+    if (!report) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+    await recordActivity(env, computer.instance_id, report, waitUntil);
+    return json({ ok: true });
+  },
+  // A lane's status menu, read when it opens: never wakes the computer (`computerStatus.ts`).
+  "GET status": async (_request, env, computer, provider, { now }) => json(await readComputerStatus(env, provider, computer, now)),
   "POST cpu-report": async (request, env, computer, _provider, { now }) => {
     const report = parseSustainedCpuReport(await readJson(request), now);
     if (!report) return badRequest(UNREADABLE_REQUEST_MESSAGE);
@@ -1820,6 +1844,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   }
   // NoMac's webhook: its own signature is the proof, never an account token.
   if (isNomacWebhookRequest(path, request.method)) return handleNomacWebhook(request, env, Date.now(), waitUntil);
+  // The provider's status webhook: its Standard Webhooks signature is the proof, never an account token.
+  if (isAgent37WebhookRequest(path, request.method)) return handleAgent37Webhook(request, env, Date.now(), { provider: providerFor(env), waitUntil });
   // The new computer's join has no account token yet: its one-time code is the proof.
   if (isLaunchJoinRequest(path, request.method)) {
     return providerCall(() => handleLaunchJoin(request, env, path, { provider: providerFor(env), now: Date.now() }));

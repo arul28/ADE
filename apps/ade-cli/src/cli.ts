@@ -30884,6 +30884,10 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
+  // The computer's own word on its work, for a lane's status menu
+  // (`cloudActivityReporter.ts`): fed by each busy read, made once the account
+  // client exists below.
+  let cloudActivityReporter: import("./services/account/cloudActivityReporter").CloudActivityReporter | null = null;
   const readCloudBusy = cloudKeepAwakeModule && isAdeCloudComputer()
     ? async () => {
         const sources = { projectRegistry, scopeRegistry };
@@ -30896,6 +30900,7 @@ async function runServe(
           setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
           holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
         }, Date.now());
+        cloudActivityReporter?.note({ busy, facts, nextWakeAt });
         // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
         // one goes to the account server, which wakes the machine for it.
         return { busy, reasons, nextWakeAt, waitingOnPerson, laneSetups: facts.laneSetups ?? 0 };
@@ -31078,6 +31083,18 @@ async function runServe(
         : null),
     });
   };
+  if (readCloudBusy && cloudInstanceId) {
+    const { createCloudActivityReporter } = await import("./services/account/cloudActivityReporter");
+    cloudActivityReporter = createCloudActivityReporter({
+      instanceId: cloudInstanceId,
+      send: async (instanceId, report) => {
+        const api = await accountCloudApi();
+        if (!api) throw new Error("not signed in to an ADE account");
+        await api.reportActivity(instanceId, report);
+      },
+      logger: headlessProjectLogger,
+    });
+  }
   // ADE Cloud: the rest save, the queue of messages for its chats, and the
   // person's use during the idle cleanup (cloudComputerRest.ts). The save and
   // the queue are attached below, once the registries and sign-in runners exist.
@@ -31127,6 +31144,15 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
+  // A person's use through another machine restarts the idle clock the status menu reads too.
+  if (cloudKeepAwake && cloudActivityReporter) {
+    const keepAwakeNoteUse = cloudKeepAwake.noteUse;
+    const reporter = cloudActivityReporter;
+    cloudKeepAwake.noteUse = async () => {
+      reporter.noteUse();
+      await keepAwakeNoteUse();
+    };
+  }
   // Work the busy list can't see (a first clone, a push). Held while it runs
   // and counted as use when it ends: the checks come once a minute, so work
   // that fits between two of them would otherwise leave no trace, and the

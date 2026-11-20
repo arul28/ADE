@@ -290,6 +290,8 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   let wasBusy = false;
   /** Asked the server to sleep this machine; the next check runs after a wake, or a failed ask. */
   let askedToSleep = false;
+  /** When the open idle-sleep ask went out; a wake long after it means the ask worked. */
+  let sleepAskedAt: number | null = null;
   /** The boot report reached the server (or there is none to send); one in flight at a time. */
   let bootReported = !options.reportBooted;
   let bootReporting = false;
@@ -418,11 +420,22 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         return;
       }
       // The report counts only for a sleep with no use since it: `usedSinceTick` is false here.
+      sleepAskedAt = now();
       await options.requestIdleSleep(instanceId, { backupReportId });
       options.logger?.info("cloud.idle_sleep_requested", { idleMs: at - lastBusyAt });
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // The server sleeps the machine while this ask is still open, so its
+      // answer is lost and the ask times out seconds after the next wake. A
+      // gap that long means the machine slept: the ask worked.
+      if (sleepAskedAt != null && now() - sleepAskedAt > intervalMs * SLEEP_GAP_INTERVALS) {
+        options.logger?.info("cloud.idle_sleep_answer_lost_to_sleep", { askedMsAgo: now() - sleepAskedAt });
+        return;
+      }
       // The provider's own timer still sleeps it a couple of minutes later.
-      options.logger?.warn("cloud.idle_sleep_failed", { error: error instanceof Error ? error.message : String(error) });
+      options.logger?.warn("cloud.idle_sleep_failed", { error: message });
+    } finally {
+      sleepAskedAt = null;
     }
   };
 

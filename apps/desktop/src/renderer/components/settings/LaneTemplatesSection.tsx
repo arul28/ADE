@@ -16,6 +16,7 @@ import {
 } from "./primitives";
 import "./machineSettings.css";
 import { laneSetupScriptHasWork } from "../../../shared/types";
+import { macosOnlyToolIn } from "../../../shared/laneSetupPlatform";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { showToast } from "../app/toast/toastStore";
 import type {
@@ -143,6 +144,10 @@ type SetupScriptForm = {
   injectPrimaryPath: boolean;
   unixCommands: string;
   unixScriptPath: string;
+  macosCommands: string;
+  macosScriptPath: string;
+  linuxCommands: string;
+  linuxScriptPath: string;
   windowsCommands: string;
   windowsScriptPath: string;
 };
@@ -154,6 +159,10 @@ function setupScriptFormFrom(script: LaneSetupScriptConfig | undefined): SetupSc
     injectPrimaryPath: script?.injectPrimaryPath ?? false,
     unixCommands: script?.unixCommands?.join("\n") ?? "",
     unixScriptPath: script?.unixScriptPath ?? "",
+    macosCommands: script?.macosCommands?.join("\n") ?? "",
+    macosScriptPath: script?.macosScriptPath ?? "",
+    linuxCommands: script?.linuxCommands?.join("\n") ?? "",
+    linuxScriptPath: script?.linuxScriptPath ?? "",
     windowsCommands: script?.windowsCommands?.join("\n") ?? "",
     windowsScriptPath: script?.windowsScriptPath ?? "",
   };
@@ -167,13 +176,19 @@ function setupScriptFormFrom(script: LaneSetupScriptConfig | undefined): SetupSc
 function setupScriptFromForm(form: SetupScriptForm): LaneSetupScriptConfig | undefined {
   const commands = parseLines(form.commands);
   const unixCommands = parseLines(form.unixCommands);
+  const macosCommands = parseLines(form.macosCommands);
+  const linuxCommands = parseLines(form.linuxCommands);
   const windowsCommands = parseLines(form.windowsCommands);
   const script: LaneSetupScriptConfig = compact({
     commands: commands.length > 0 ? commands : undefined,
     unixCommands: unixCommands.length > 0 ? unixCommands : undefined,
+    macosCommands: macosCommands.length > 0 ? macosCommands : undefined,
+    linuxCommands: linuxCommands.length > 0 ? linuxCommands : undefined,
     windowsCommands: windowsCommands.length > 0 ? windowsCommands : undefined,
     scriptPath: form.scriptPath.trim() || undefined,
     unixScriptPath: form.unixScriptPath.trim() || undefined,
+    macosScriptPath: form.macosScriptPath.trim() || undefined,
+    linuxScriptPath: form.linuxScriptPath.trim() || undefined,
     windowsScriptPath: form.windowsScriptPath.trim() || undefined,
     injectPrimaryPath: form.injectPrimaryPath || undefined,
   });
@@ -541,9 +556,13 @@ function SetupScriptPreview({ script }: { script: LaneSetupScriptConfig }) {
   const lines: string[] = [];
   if (script.commands?.length) lines.push(script.commands.join("; "));
   if (script.unixCommands?.length) lines.push(`macOS/Linux: ${script.unixCommands.join("; ")}`);
+  if (script.macosCommands?.length) lines.push(`macOS: ${script.macosCommands.join("; ")}`);
+  if (script.linuxCommands?.length) lines.push(`Linux: ${script.linuxCommands.join("; ")}`);
   if (script.windowsCommands?.length) lines.push(`Windows: ${script.windowsCommands.join("; ")}`);
   if (script.scriptPath) lines.push(script.scriptPath);
   if (script.unixScriptPath) lines.push(`macOS/Linux: ${script.unixScriptPath}`);
+  if (script.macosScriptPath) lines.push(`macOS: ${script.macosScriptPath}`);
+  if (script.linuxScriptPath) lines.push(`Linux: ${script.linuxScriptPath}`);
   if (script.windowsScriptPath) lines.push(`Windows: ${script.windowsScriptPath}`);
   return (
     <>
@@ -598,8 +617,12 @@ function TemplateEditor({
   // already hold something, so an existing template never hides its own config.
   const hasPlatformVariants =
     (initial.setupScript?.unixCommands?.length ?? 0) > 0 ||
+    (initial.setupScript?.macosCommands?.length ?? 0) > 0 ||
+    (initial.setupScript?.linuxCommands?.length ?? 0) > 0 ||
     (initial.setupScript?.windowsCommands?.length ?? 0) > 0 ||
     !!initial.setupScript?.unixScriptPath ||
+    !!initial.setupScript?.macosScriptPath ||
+    !!initial.setupScript?.linuxScriptPath ||
     !!initial.setupScript?.windowsScriptPath;
 
   const hasAdvanced =
@@ -829,9 +852,17 @@ function SetupScriptFields({
     injectPrimaryPath,
     unixCommands,
     unixScriptPath,
+    macosCommands,
+    macosScriptPath,
+    linuxCommands,
+    linuxScriptPath,
     windowsCommands,
     windowsScriptPath,
   } = value;
+  // Shared commands that call a macOS-only tool also run on Linux (ADE Cloud) unless Linux has its own.
+  const macosTool = linuxCommands.trim()
+    ? null
+    : macosOnlyToolIn(parseLines(unixCommands.trim() ? unixCommands : commands));
   return (
     <Field
       label="Setup script"
@@ -890,10 +921,18 @@ function SetupScriptFields({
           />
         </div>
 
+        {macosTool ? (
+          <div style={{ ...hintStyle, marginTop: 0, color: COLORS.warning }}>
+            <code style={codeStyle}>{macosTool}</code> only exists on macOS, and these commands also run on Linux,
+            including ADE Cloud. Add Linux commands below so cloud lanes don&apos;t take the slow path.
+          </div>
+        ) : null}
+
         {/* Per-platform variants — the script that runs depends on the OS */}
-        <SettingsDisclosure summary="Different commands on Windows" defaultOpen={defaultOpen}>
+        <SettingsDisclosure summary="Different commands per OS" defaultOpen={defaultOpen || macosTool != null}>
           <div style={{ ...hintStyle, marginTop: 0 }}>
-            When set, these run instead of the commands above on that platform.
+            When set, these run instead of the commands above on that OS. macOS-only and Linux-only commands
+            win over the shared macOS and Linux ones.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div>
@@ -911,6 +950,44 @@ function SetupScriptFields({
                   value={unixScriptPath}
                   onChange={(next) => onChange({ unixScriptPath: next })}
                   placeholder="scripts/setup-lane.sh"
+                  mono
+                />
+              </div>
+            </div>
+            <div>
+              <div style={subLabelStyle}>macOS only</div>
+              <textarea
+                style={{ ...textareaStyle, minHeight: 48 }}
+                value={macosCommands}
+                onChange={(e) => onChange({ macosCommands: e.target.value })}
+                placeholder="cp -cR $PRIMARY_WORKTREE_PATH/node_modules node_modules"
+                rows={2}
+              />
+              <div style={{ marginTop: 8 }}>
+                <div style={subLabelStyle}>Script file</div>
+                <SettingsTextField
+                  value={macosScriptPath}
+                  onChange={(next) => onChange({ macosScriptPath: next })}
+                  placeholder="scripts/setup-lane-mac.sh"
+                  mono
+                />
+              </div>
+            </div>
+            <div>
+              <div style={subLabelStyle}>Linux only (ADE Cloud)</div>
+              <textarea
+                style={{ ...textareaStyle, minHeight: 48 }}
+                value={linuxCommands}
+                onChange={(e) => onChange({ linuxCommands: e.target.value })}
+                placeholder="npm ci --prefer-offline"
+                rows={2}
+              />
+              <div style={{ marginTop: 8 }}>
+                <div style={subLabelStyle}>Script file</div>
+                <SettingsTextField
+                  value={linuxScriptPath}
+                  onChange={(next) => onChange({ linuxScriptPath: next })}
+                  placeholder="scripts/setup-lane-linux.sh"
                   mono
                 />
               </div>

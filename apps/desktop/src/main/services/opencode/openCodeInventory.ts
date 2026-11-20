@@ -266,8 +266,31 @@ function writePersistedInventoryFile(file: PersistedInventoryFile): void {
   }
 }
 
+// ── Change generation ─────────────────────────────────────────────────────
+//
+// A chat's model catalog is built from this inventory and cached beside it.
+// It compares this generation to the one it was built under, so a probe that
+// found new models (another runtime's, Settings') or a cleared cache (a key or
+// login changed) marks the catalog stale instead of leaving the old list up.
+let inventoryGlobalGeneration = 0;
+const inventoryRootGenerations = new Map<string, number>();
+
+/** Moves when this project's inventory changes, or every project's is cleared. */
+export function openCodeInventoryGeneration(projectRoot: string): string {
+  return `${inventoryGlobalGeneration}:${inventoryRootGenerations.get(projectRoot) ?? 0}`;
+}
+
+function sameInventory(previous: PersistedInventoryEntry | undefined, entry: CacheEntry): boolean {
+  if (!previous || previous.stale) return false;
+  return JSON.stringify(previous.modelIds) === JSON.stringify(entry.modelIds)
+    && JSON.stringify(previous.providers) === JSON.stringify(entry.providers.map(stripEphemeralCredentialSource));
+}
+
 function persistEntry(entry: CacheEntry): void {
   const file = readPersistedInventoryFile();
+  if (!sameInventory(file.entries[entry.projectRoot], entry)) {
+    inventoryRootGenerations.set(entry.projectRoot, (inventoryRootGenerations.get(entry.projectRoot) ?? 0) + 1);
+  }
   writePersistedInventoryFile({
     version: PERSISTED_INVENTORY_VERSION,
     entries: {
@@ -350,9 +373,16 @@ function hydrateFromPersisted(projectRoot: string, entry: PersistedInventoryEntr
  * still draw the picker until then.
  */
 export function clearOpenCodeInventoryCache(): void {
+  const hadMemory = inventoryCache != null;
   inventoryCache = null;
   const file = readPersistedInventoryFile();
-  if (!Object.values(file.entries).some((entry) => !entry.stale)) return;
+  if (!Object.values(file.entries).some((entry) => !entry.stale)) {
+    // Only a real drop moves the generation: a status read with no OpenCode
+    // installed clears an already empty cache on every read.
+    if (hadMemory) inventoryGlobalGeneration += 1;
+    return;
+  }
+  inventoryGlobalGeneration += 1;
   writePersistedInventoryFile({
     version: PERSISTED_INVENTORY_VERSION,
     entries: Object.fromEntries(

@@ -12,6 +12,9 @@ ADE works with no computer of your own: every account has ADE Cloud, one
 machine next to the person's own computers. Any work on machines, ADE Cloud,
 the account, or web and iOS with no computer also loads
 `docs/ARCHITECTURE.md` section 1.1 and `docs/features/ade-cloud/README.md`.
+ADE Cloud computers run on Agent 37: work that depends on how a cloud
+computer sleeps, wakes, restarts or updates also reads that README's "The
+provider: Agent 37" section, which links Agent 37's own docs.
 
 ---
 

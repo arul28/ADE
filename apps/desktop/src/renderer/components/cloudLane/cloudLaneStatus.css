@@ -1,0 +1,64 @@
+/* A cloud lane's chat header button: its state mark, and the status header of its menu. */
+
+.adecl-power { position: relative; display: inline-flex; }
+/* The state mark, bottom right of the cloud. Still: it only changes when the state does. */
+.adecl-power > i[data-power] {
+  position: absolute;
+  right: -3px;
+  bottom: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.adecl-power > i[data-power="awake"] { background: var(--adec-lamp); }
+.adecl-power > i[data-power="asleep"] { background: transparent; border: 1.5px solid color-mix(in srgb, #fff 75%, transparent); }
+.adecl-power > i[data-power="waking"],
+.adecl-power > i[data-power="stopping"] { background: var(--adec-500); animation: adecl-power-step 1.6s step-end infinite; }
+.adecl-power > i[data-power="trouble"] { background: var(--kit-crit); }
+/* Due for deletion: the idle cleanup's dot, top right. */
+.adecl-power > i[data-due] {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--kit-warn, #f59e0b);
+}
+@keyframes adecl-power-step { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .adecl-power > i[data-power] { animation: none; }
+}
+html[data-motion="reduced"] .adecl-power > i[data-power] { animation: none; }
+
+.adecl-status-menu { width: 356px; max-width: calc(100vw - 24px); }
+.adecl-status-head { display: grid; gap: 4px; padding: 8px 9px 9px; }
+.adecl-status-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.adecl-status-title b {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+.adecl-status-state { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--kit-text-2); }
+.adecl-status-state i { width: 6px; height: 6px; border-radius: 50%; box-sizing: border-box; }
+.adecl-status-state[data-power="awake"] i { background: var(--adec-lamp); }
+.adecl-status-state[data-power="asleep"] i { border: 1.5px solid var(--kit-text-3); }
+.adecl-status-state[data-power="waking"] i,
+.adecl-status-state[data-power="stopping"] i { background: var(--adec-500); }
+.adecl-status-state[data-power="trouble"] i { background: var(--kit-crit); }
+.adecl-status-row { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 11.5px; color: var(--kit-text-2); }
+.adecl-status-row > span { white-space: nowrap; }
+.adecl-status-line { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--kit-text-2); }
+.adecl-status-line small { color: var(--kit-text-3); font-size: 10.5px; }
+[data-tone="ok"] > .adecl-status-ic { color: var(--kit-ok); }
+.adecl-status-row [data-tone="warn"], .adecl-status-line[data-tone="warn"] { color: var(--kit-warn); }
+.adecl-status-row [data-tone="crit"], .adecl-status-line[data-tone="crit"] { color: var(--kit-crit); }
+.adecl-status-ic { display: inline-flex; flex: none; }
+.adecl-status-actions { display: flex; flex-wrap: wrap; gap: 2px; }
+.adecl-status-actions > .ade-cx-menu-item { width: auto; flex: 1 1 auto; justify-content: center; gap: 7px; padding: 0 8px; white-space: nowrap; }

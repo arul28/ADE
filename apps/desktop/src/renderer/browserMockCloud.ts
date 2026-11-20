@@ -118,6 +118,18 @@ const SHAPES = {
   xlarge: { type: "vm", cpu: 4, memoryGb: 16, shapeId: "4x16", rate: 8 },
 } as const;
 
+/**
+ * The lane a mock computer holds. checkout-redesign is the lane
+ * `?mockCloudLaneMachine=1` pairs (`browserMock.ts`). `?mockCloudChatLane=awake`
+ * (or `asleep`) puts the demo's selected chat lane (`lane-auth`) on an awake (or
+ * asleep) computer, so its chat header shows the cloud button and its menu.
+ */
+function mockLaneIdOf(spec: LaneSpec): string {
+  const chatLane = param("mockCloudChatLane");
+  if ((chatLane === "awake" && spec.id === "k3j9x0a1") || (chatLane === "asleep" && spec.id === "m2q8w1b2")) return "lane-auth";
+  return spec.id === "k3j9x0a1" ? "cloud-lane-checkout" : `lane-${spec.id}`;
+}
+
 function machine(spec: LaneSpec, now: number): CloudLaneMachine {
   const shape = SHAPES[spec.tier];
   const repo = Math.min(spec.diskGb, Math.max(0.4, spec.diskGb * 0.18));
@@ -142,6 +154,7 @@ function machine(spec: LaneSpec, now: number): CloudLaneMachine {
     diskFull: null,
     update: null,
     lastActiveAtMs: spec.lastActiveAgoMs == null ? null : now - spec.lastActiveAgoMs,
+    awakeSinceMs: spec.state === "running" ? now - 42 * 60_000 : null,
     diskUsage: {
       measuredAt: now - 3 * HOUR,
       totalGb: spec.diskGb,
@@ -154,7 +167,7 @@ function machine(spec: LaneSpec, now: number): CloudLaneMachine {
       ],
     },
     laneWork: { checkedAt: now - 3 * HOUR, unpushed: spec.unpushed ?? false, prState: spec.pr ?? null },
-    lane: spec.lane ? { laneId: `lane-${spec.id}`, laneName: spec.lane, projectOrigin: "github.com/acme/web" } : null,
+    lane: spec.lane ? { laneId: mockLaneIdOf(spec), laneName: spec.lane, projectOrigin: "github.com/acme/web" } : null,
   };
 }
 
@@ -644,6 +657,29 @@ export function applyBrowserMockCloud(ade: any): void {
         for (const listener of statusListeners) listener();
       }
       return { opened: false, change: downgrade ? "next_period" : "now", ...(cleanup ? { freeing: cleanup.instanceIds } : {}) };
+    },
+    // A lane's status menu: an awake computer with one agent working (`?mockCloudIdle=1`: idle, sleeping soon), with a restart and memory pressure.
+    computerStatus: async (instanceId: string) => {
+      const box = machines.find((entry) => entry.instanceId === instanceId);
+      if (!box) return null;
+      const at = Date.now();
+      const running = box.state === "running";
+      const idle = param("mockCloudIdle") === "1";
+      return {
+        instanceId,
+        status: box.status,
+        awakeSince: box.awakeSinceMs ?? null,
+        activity: running
+          ? idle
+            ? { busy: false, idleSince: at - 60_000, sleepsAt: at + 2 * 60_000, runningAgents: 0, reportedAt: at - 60_000 }
+            : { busy: true, idleSince: null, sleepsAt: null, runningAgents: 1, reportedAt: at - 5 * 60_000 }
+          : null,
+        restarts: running ? 1 : null,
+        memory: running ? "pressure" as const : null,
+        outOfMemory: false,
+        disk: { usedBytes: Math.round((box.diskUsage?.totalGb ?? 4) * 0.6 * 1024 ** 3), limitBytes: (box.resources?.diskGb ?? 4) * 1024 ** 3, at },
+        readAt: at,
+      };
     },
     keepIdleComputer: async (instanceId: string) => {
       console.info("[browser mock] cloud.keepIdleComputer", instanceId);

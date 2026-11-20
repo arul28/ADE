@@ -1,4 +1,8 @@
-import type { AgentChatModelCatalog, AgentChatModelCatalogRefreshProvider } from "../../../../shared/types";
+import type {
+  AgentChatModelCatalog,
+  AgentChatModelCatalogRefreshProvider,
+  OpenProjectBinding,
+} from "../../../../shared/types";
 import type { ModelDescriptor, ProviderFamily } from "../../../../shared/modelRegistry";
 import type { RuntimeCatalogModelDescriptor } from "./modelCatalog";
 
@@ -106,6 +110,14 @@ type RuntimeCatalogScopeState = {
   // evicted or reset finds a different serial (or none) and is dropped instead
   // of resurrecting a machine the window has stopped tracking.
   serial: number;
+  // The machine this bucket describes and the pin that reached it, so a
+  // change on that machine (a provider set up in Settings) can find and
+  // re-read every bucket for it. Null until a fetch names one.
+  machine: string | null;
+  pin: OpenProjectBinding | null;
+  // Set when something on the machine changed after `catalog` was read. The
+  // catalog stays visible; the next reader re-reads it.
+  invalidated: boolean;
 };
 
 // Scopes are bounded by the project bindings a window has open, so this cap is
@@ -114,6 +126,99 @@ const MAX_RUNTIME_CATALOG_SCOPES = 8;
 const runtimeCatalogScopes = new Map<string, RuntimeCatalogScopeState>();
 const sharedRuntimeCatalogRequests = new Map<string, Promise<SharedCatalogFetchResult>>();
 let nextRuntimeCatalogScopeSerial = 1;
+
+// ── Change signal ──────────────────────────────────────────────────────────
+//
+// Every surface that derives model rows from a bucket (the "@" menu, the
+// picker, the effort control) re-reads when that bucket's version moves, so
+// ANY load or invalidation for a machine reaches all of them, not only the
+// surface that started it. Versions come from one counter and outlive their
+// bucket, so an evicted-then-recreated bucket never repeats a version.
+let runtimeCatalogVersionCounter = 0;
+const runtimeCatalogVersions = new Map<string, number>();
+const runtimeCatalogListeners = new Set<(scopeKey: string) => void>();
+
+function notifyRuntimeCatalogChanged(scopeKey: string): void {
+  runtimeCatalogVersions.set(scopeKey, ++runtimeCatalogVersionCounter);
+  for (const listener of runtimeCatalogListeners) {
+    try {
+      listener(scopeKey);
+    } catch {
+      // A listener's failure is its own.
+    }
+  }
+}
+
+/** This bucket's change version; moves on every catalog write or invalidation. */
+export function runtimeCatalogScopeVersion(scopeKey: string): number {
+  return runtimeCatalogVersions.get(scopeKey) ?? 0;
+}
+
+/** Hear every bucket change (the key that changed). Returns the unsubscribe. */
+export function subscribeRuntimeCatalog(listener: (scopeKey: string) => void): () => void {
+  runtimeCatalogListeners.add(listener);
+  return () => {
+    runtimeCatalogListeners.delete(listener);
+  };
+}
+
+/**
+ * Which machine a pin reaches. A remote pin names its computer; a local pin and
+ * no pin are This computer (a Work composer always passes a pin, so a null pin
+ * here is a Settings page or a picker with no machine).
+ */
+export function runtimeCatalogMachineForPin(pin: OpenProjectBinding | null | undefined): string {
+  return pin?.kind === "remote" ? `remote:${pin.targetId}` : "this";
+}
+
+/** Remember which machine a bucket describes (and the pin that reaches it). */
+export function noteRuntimeCatalogScopePin(scopeKey: string, pin: OpenProjectBinding | null | undefined): void {
+  const scope = peekRuntimeCatalogScope(scopeKey);
+  if (!scope) return;
+  scope.machine = runtimeCatalogMachineForPin(pin);
+  scope.pin = pin ?? null;
+}
+
+/**
+ * Mark one bucket as out of date: something on its machine changed (a provider
+ * installed, signed in, or got a key). The catalog stays on screen, every
+ * provider's freshness is dropped so the next rail open re-reads it, and the
+ * change signal tells every surface to look again.
+ */
+export function invalidateRuntimeCatalogScope(scopeKey: string): void {
+  const scope = peekRuntimeCatalogScope(scopeKey);
+  if (!scope) return;
+  scope.invalidated = true;
+  scope.providerRefreshedAt.clear();
+  scope.cursorSourceRefreshedAt.clear();
+  notifyRuntimeCatalogChanged(scopeKey);
+}
+
+/**
+ * True when a reader should fetch this bucket again before trusting it: it has
+ * no catalog, or its machine changed since the catalog was read. A catalog the
+ * host only aged past its TTL does not count; the rail's refresh covers that.
+ */
+export function runtimeCatalogScopeNeedsRefresh(scopeKey: string): boolean {
+  const scope = peekRuntimeCatalogScope(scopeKey);
+  return !scope?.catalog || scope.invalidated;
+}
+
+/** The buckets this window holds for one machine, with the pin each was read through. */
+export function runtimeCatalogScopesForMachine(
+  pin: OpenProjectBinding | null | undefined,
+): Array<{ scopeKey: string; pin: OpenProjectBinding | null }> {
+  const machine = runtimeCatalogMachineForPin(pin);
+  const matches: Array<{ scopeKey: string; pin: OpenProjectBinding | null }> = [];
+  for (const [scopeKey, scope] of runtimeCatalogScopes) {
+    if (!scope.catalog) continue;
+    const sameKey = pin ? scopeKey === pin.key : scopeKey === DEFAULT_RUNTIME_CATALOG_SCOPE;
+    if (sameKey || scope.machine === machine) {
+      matches.push({ scopeKey, pin: scope.pin ?? (sameKey ? pin ?? null : null) });
+    }
+  }
+  return matches;
+}
 
 function peekRuntimeCatalogScope(scopeKey: string): RuntimeCatalogScopeState | undefined {
   return runtimeCatalogScopes.get(scopeKey);
@@ -128,6 +233,9 @@ function runtimeCatalogScope(scopeKey: string): RuntimeCatalogScopeState {
     // unpinned surface reads, so dropping it would refetch the common case.
     if (key === DEFAULT_RUNTIME_CATALOG_SCOPE) continue;
     runtimeCatalogScopes.delete(key);
+    // A bucket can be created during a render (a descriptor lookup), so the
+    // eviction is announced after it rather than inside it.
+    queueMicrotask(() => notifyRuntimeCatalogChanged(key));
   }
   const created: RuntimeCatalogScopeState = {
     catalog: null,
@@ -136,6 +244,9 @@ function runtimeCatalogScope(scopeKey: string): RuntimeCatalogScopeState {
     cursorSourceRefreshedAt: new Map(),
     descriptorsById: new Map(),
     serial: nextRuntimeCatalogScopeSerial++,
+    machine: null,
+    pin: null,
+    invalidated: false,
   };
   runtimeCatalogScopes.set(scopeKey, created);
   return created;
@@ -190,6 +301,7 @@ export function rememberRuntimeCatalogScopeParse(
 export function resetModelPickerRuntimeCatalogForTests(): void {
   runtimeCatalogScopes.clear();
   sharedRuntimeCatalogRequests.clear();
+  runtimeCatalogVersions.clear();
 }
 
 export function getSharedRuntimeCatalog(
@@ -312,6 +424,10 @@ export function rememberRuntimeCatalog(
   }
 
   scope.catalog = catalog;
+  // A cached read, or a host answer it flags stale, can be the very list the
+  // invalidation was about, so only a fresh answer clears the mark.
+  if (args.mode !== "cached" && catalog.stale !== true) scope.invalidated = false;
+  notifyRuntimeCatalogChanged(scopeKey);
   const cursorFlavor = args.refreshProvider === "cursor" ? args.cursorSource : undefined;
   // Cached catalogs can include ADE's static OpenCode rows without a live
   // probe. Only a force, or a refresh-stale the host already marked not-stale,

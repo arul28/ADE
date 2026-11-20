@@ -821,6 +821,15 @@ struct WorkChatInputAttachmentTray: View {
 
   var body: some View {
     trayContent
+      // A background upload that failed shows on its tile right away, not at send.
+      .onReceive(NotificationCenter.default.publisher(for: .workComposerAttachmentUploadFailed)) { note in
+        guard let id = note.userInfo?["id"] as? UUID,
+              let index = attachments.firstIndex(where: { $0.id == id }),
+              attachments[index].isReady,
+              attachments[index].hostRef == nil
+        else { return }
+        attachments[index].state = .failed(workChatAttachmentUploadFailedMessage)
+      }
       .onChange(of: openRequest?.wrappedValue) { _, requested in
         guard let requested else { return }
         openRequest?.wrappedValue = nil
@@ -885,7 +894,11 @@ struct WorkChatInputAttachmentTray: View {
         HStack(spacing: 8) {
           ForEach(attachments) { attachment in
             WorkChatInputAttachmentThumb(attachment: attachment) {
-              open(attachment)
+              if canRetryUpload(attachment) {
+                retryUpload(attachment)
+              } else {
+                open(attachment)
+              }
             } onRemove: {
               attachments.removeAll { $0.id == attachment.id }
             }
@@ -899,6 +912,18 @@ struct WorkChatInputAttachmentTray: View {
       .accessibilityElement(children: .contain)
       .accessibilityLabel(attachmentCountLabel)
     }
+  }
+
+  /// A tile whose background upload failed still holds its bytes: a tap
+  /// uploads it again (the composer's upload task starts once it is `.ready`).
+  private func canRetryUpload(_ attachment: WorkChatInputAttachment) -> Bool {
+    attachment.errorMessage == workChatAttachmentUploadFailedMessage && attachment.uploadData != nil
+  }
+
+  private func retryUpload(_ attachment: WorkChatInputAttachment) {
+    guard let index = attachments.firstIndex(where: { $0.id == attachment.id }) else { return }
+    WorkComposerAttachmentUploads.shared.retry(attachment.id)
+    attachments[index].state = .ready
   }
 
   /// Images keep the existing full-screen image sheet; documents and videos get
@@ -991,6 +1016,12 @@ private struct WorkChatInputAttachmentThumb: View {
               .scaledToFill()
               .frame(width: side, height: side)
               .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+              .opacity(attachment.errorMessage == nil ? 1 : 0.45)
+            if attachment.errorMessage != nil {
+              Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(ADEColor.warning)
+            }
           } else if attachment.kind != .image, attachment.errorMessage == nil, !attachment.isLoading {
             documentFace
           } else {
