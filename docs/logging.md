@@ -934,7 +934,12 @@ Account directory (`apps/account-directory/src/cloud/`, Worker logs):
   `cloud.chat_message_wake_failed`, `cloud.chat_message_unreadable`,
   `cloud.chat_message_rate_limited`; the sweep `cloud.chat_messages_swept`,
   `cloud.chat_messages_sweep_failed`; the moves `cloud.chat_moved` and
-  `cloud.session_moved` (a continued CLI's copy and messages).
+  `cloud.session_moved` (a continued CLI's copy and messages). The
+  follow-ups a person queued on a new chat's launch join that chat's queue
+  once its computer has a machine key: `cloud.launch_messages_carried`
+  (count), `cloud.launch_messages_not_carried` (reason `no_machine_key` or
+  `no_keys`). Sentry, one issue: `cloud.launch_messages_carry_failed` (the
+  error's type name only).
 - Saved copies: `cloud.session_account_full`, `cloud.session_bucket_missing`,
   `cloud.session_copy_unreadable`, `cloud.git_summary_unreadable`,
   `cloud.capsule_account_full`, `cloud.capsule_bucket_missing`,

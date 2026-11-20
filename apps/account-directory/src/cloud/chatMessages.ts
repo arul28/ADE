@@ -23,7 +23,7 @@ import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedTe
 import { addLaunchMessage, cancelLaunchMessageStatement, LAUNCH_MESSAGE_ID, launchMessageOf } from "./launchMessages";
 import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, r2KeyOf, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
 import { openJson, sealJson, userKeys, type UserKeys } from "./seal";
-import { logCloud, type CloudEnv, type ComputerRow } from "./store";
+import { logCloud, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 import { copyRow, openSummary, type CopyRow } from "./chats";
 import { cliSessionCopy } from "./sessionCopies";
 
@@ -156,7 +156,7 @@ export async function carryLaunchMessagesForComputer(env: CloudEnv, instanceId: 
     `).bind(instanceId).first<LaunchRow>();
     if (launch?.session_id) await carryLaunchMessagesToChat(env, launch, launch.session_id, now);
   } catch (error) {
-    logCloud("cloud.launch_messages_carry_failed", { instanceId, error: error instanceof Error ? error.name : "unknown" });
+    reportCloudFailure("cloud.launch_messages_carry_failed", { instanceId, error: error instanceof Error ? error.name : "unknown" });
   }
 }
 
