@@ -336,7 +336,10 @@ enum WorkSeenStore {
   static func stamp(_ sessionIds: [String], at date: Date = Date(), defaults: UserDefaults = .standard) {
     guard !sessionIds.isEmpty else { return }
     var raw = (defaults.dictionary(forKey: key) as? [String: Double]) ?? [:]
-    for id in sessionIds where !id.isEmpty { raw[id] = date.timeIntervalSince1970 }
+    // A chat still starting on ADE Cloud has a route id no machine knows: nothing to mark.
+    for id in sessionIds where !id.isEmpty && workCloudLaunchId(routeSessionId: id) == nil {
+      raw[id] = date.timeIntervalSince1970
+    }
     if raw.count > limit {
       raw = Dictionary(uniqueKeysWithValues: raw.sorted { $0.value > $1.value }.prefix(limit).map { ($0.key, $0.value) })
     }

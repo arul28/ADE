@@ -153,7 +153,7 @@ struct CloudKeptLanesBlock: View {
         }
       }
       ForEach(following) { entry in
-        WorkCloudLaunchCard(entry: entry)
+        WorkCloudLaunchSetupCard(entry: entry)
       }
     }
   }
@@ -292,7 +292,7 @@ struct CloudKeptLaneRow: View {
         .padding(.leading, 4)
       }
       if let launch {
-        WorkCloudLaunchCard(entry: launch)
+        WorkCloudLaunchSetupCard(entry: launch)
       }
     }
     .confirmationDialog(

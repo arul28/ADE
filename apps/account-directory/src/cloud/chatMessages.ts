@@ -23,7 +23,7 @@ import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedTe
 import { addLaunchMessage, cancelLaunchMessageStatement, LAUNCH_MESSAGE_ID, launchMessageOf } from "./launchMessages";
 import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, r2KeyOf, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
 import { openJson, sealJson, userKeys, type UserKeys } from "./seal";
-import { logCloud, type CloudEnv, type ComputerRow } from "./store";
+import { logCloud, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 import { copyRow, openSummary, type CopyRow } from "./chats";
 import { cliSessionCopy } from "./sessionCopies";
 
@@ -100,6 +100,63 @@ function signInOf(row: ChatMessageRow): CloudLaunchSignIn | null {
     return JSON.parse(row.sign_in_json) as CloudLaunchSignIn;
   } catch {
     return null;
+  }
+}
+
+/**
+ * A new chat's launch got its chat (the computer reported its session id).
+ * The messages the person queued on the launch after the first one join
+ * that chat's queue as rows the launch carries (`via_launch`), so the chat
+ * shows where each one is, a failed one too, after the launch's own page is
+ * gone. They read their state from the launch's messages and the computer
+ * never claims them (it sends the launch's own). A continue launch's rows
+ * exist already. The same message again changes nothing.
+ */
+export async function carryLaunchMessagesToChat(env: CloudEnv, launch: LaunchRow, sessionId: string, now: number): Promise<void> {
+  if (launch.kind === "lane" || launch.continue_chat_id || !launch.instance_id) return;
+  // Only the ones not carried yet: each report of the chat, and the computer's key arriving, try again.
+  const messages = (await env.DB.prepare(`
+    select lm.message_id, lm.text, lm.provider, lm.model_id from cloud_launch_messages lm
+    where lm.launch_id = ? and lm.seq > 1
+      and not exists (select 1 from cloud_chat_messages m where m.launch_id = lm.launch_id and m.message_id = lm.message_id and m.via_launch = 1)
+    order by lm.seq
+  `).bind(launch.launch_id).all<{ message_id: string; text: string; provider: string | null; model_id: string | null }>()).results ?? [];
+  if (messages.length === 0) return;
+  const computer = await env.DB.prepare("select machine_key from cloud_computers where instance_id = ? and user_id = ?")
+    .bind(launch.instance_id, launch.user_id).first<{ machine_key: string | null }>();
+  const keys = await userKeys(env, launch.user_id, now);
+  if (!computer?.machine_key || !keys) {
+    logCloud("cloud.launch_messages_not_carried", { userId: launch.user_id, launchId: launch.launch_id, reason: keys ? "no_machine_key" : "no_keys" });
+    return;
+  }
+  const chat = { machine_key: computer.machine_key, chat_id: sessionId };
+  for (const message of messages) {
+    await insertRow(env, keys, launch.user_id, chat, {
+      messageId: message.message_id,
+      text: message.text,
+      attachments: [],
+      provider: message.provider,
+      modelId: message.model_id,
+      settings: null,
+    }, { instanceId: null, launchId: launch.launch_id, viaLaunch: true }, now);
+  }
+  logCloud("cloud.launch_messages_carried", { userId: launch.user_id, launchId: launch.launch_id, count: messages.length });
+}
+
+/**
+ * A computer's machine key arrived (it writes it after the launch's path):
+ * its chat launch's follow-ups that waited for the key join the chat now.
+ * Never fails its caller; it logs.
+ */
+export async function carryLaunchMessagesForComputer(env: CloudEnv, instanceId: string, now: number): Promise<void> {
+  try {
+    const launch = await env.DB.prepare(`
+      select * from cloud_launches where instance_id = ? and kind = 'chat' and session_id is not null and continue_chat_id is null
+      order by created_at desc limit 1
+    `).bind(instanceId).first<LaunchRow>();
+    if (launch?.session_id) await carryLaunchMessagesToChat(env, launch, launch.session_id, now);
+  } catch (error) {
+    reportCloudFailure("cloud.launch_messages_carry_failed", { instanceId, error: error instanceof Error ? error.name : "unknown" });
   }
 }
 
@@ -404,7 +461,7 @@ async function insertRow(
   env: CloudEnv,
   keys: UserKeys,
   userId: string,
-  chat: QueueTarget,
+  chat: Pick<QueueTarget, "machine_key" | "chat_id">,
   input: SendInput,
   where: { instanceId: string | null; launchId: string | null; viaLaunch: boolean },
   now: number,

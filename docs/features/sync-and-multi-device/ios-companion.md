@@ -1055,8 +1055,27 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   (`PUT /cloud/launches/:launch/files/:file`, from the bytes on the phone),
   then starts a server launch that names them (`AccountCloudLaunchStore.start`,
   `POST /cloud/launches`); a failed upload is the launch's start error, and
-  Retry sends the rest. The setup card (`WorkCloudLaunchCard`) shows the steps
-  above the composer.
+  Retry sends the rest. Only a start that never reached the server (no
+  client, a failed upload, a clear refusal) gives the draft back; any other
+  start opens the launch's page.
+- **The launch's page.** A started launch lists in Work as a row
+  (`WorkCloudLaunchRow`) and opens a page with the route
+  `ade-cloud-launch:<launch>` (`WorkCloudLaunchPendingScreen`,
+  `Views/Work/WorkCloudLaunchViews.swift`). The page uses the parts of a
+  normal chat launch (`WorkChatLaunchViews.swift`): the prompt bubble, the
+  setup card (`WorkCloudLaunchSetupCard`) and the queue composer. A message
+  sent there goes to `POST /cloud/launches/:launch/messages`; a retry of the
+  same text keeps its message id. While the page is the only page on the
+  phone's stack, the Work list keeps reading, so the new chat lists. Once the
+  launch has a session, the phone reads the account again and connects the
+  new computer (`SyncService.connectLaunchedCloudComputer`), then opens the
+  chat in place of the page with any unsent text as the chat's draft. It
+  never opens the chat after the person left the page.
+- **Follow-ups at handover.** The server copies the launch's later messages
+  into the new chat's own queue (`via_launch` rows) once the chat runs and its
+  computer has a machine key, from the stage report or from the key's
+  arrival. The chat's held messages then show each one, a failed one with its
+  reason.
 - **Saved chats.** `CloudServerClient.savedChats` reads pages of 200, at most
   5 pages. With no live link, a chat thread reads the saved copy through
   `AccountCloudStore` (`savedCloudChatAccountKey`). A saved subagent chat nests

@@ -42,11 +42,17 @@ enum CloudNoComputerPreviews {
     case "duo-cloud-refused-account_blocked":
       return AnyView(CloudChatFixture(state: .refused("ADE Cloud is turned off for this account. Contact ADE support if you think this is a mistake.")))
     case "duo-cloud-new-chat":
-      return AnyView(CloudNewChatFixture(refusal: nil, launch: nil))
-    case "duo-cloud-new-chat-setup":
-      return AnyView(CloudNewChatFixture(refusal: nil, launch: "waiting"))
+      return AnyView(CloudNewChatFixture(refusal: nil))
+    case "duo-cloud-new-chat-setup", "duo-cloud-launch-page":
+      return AnyView(CloudLaunchPageFixture(state: "waiting"))
+    case "duo-cloud-launch-page-making":
+      return AnyView(CloudLaunchPageFixture(state: "making"))
+    case "duo-cloud-launch-rows":
+      return AnyView(CloudLaunchRowsFixture())
+    case "duo-cloud-lane-launch-card":
+      return AnyView(CloudLaneLaunchCardFixture())
     case "duo-cloud-new-chat-refused":
-      return AnyView(CloudNewChatFixture(refusal: "This account has no ADE Cloud hours left this period. Your lanes and chats stay readable.", launch: nil))
+      return AnyView(CloudNewChatFixture(refusal: "This account has no ADE Cloud hours left this period. Your lanes and chats stay readable."))
     case "duo-cloud-models":
       return AnyView(CloudModelsFixture())
     case "duo-cloud-lanes":
@@ -73,13 +79,27 @@ enum CloudNoComputerFixtureData {
     """#)
   }
 
-  static func launch(_ state: String) -> AccountCloudLaunchStore.Entry {
-    let stages = #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"done"}]"#
-    let record = #"{"launchId":"l_wait","state":"waiting_for_sign_in","projectOrigin":"github.com/octocat/hello-world","laneName":"Fix the README typo","instanceId":"i_wait","stages":\#(stages),"signIn":{"provider":"claude","label":"Claude","kind":"url_paste","jobId":"j1","url":"https://claude.ai/oauth/authorize","needsPastedCode":true,"reason":"Open the sign-in page, approve, then paste the code it shows."},"request":{"chat":{"provider":"claude","modelId":"anthropic/claude-sonnet-4-5","prompt":"Fix the README typo"}}}"#
+  /// A launch waiting on the Claude sign-in (`waiting`), making its computer
+  /// (`making`), or failed (`failed`).
+  static func launch(_ state: String, prompt: String = "Fix the README typo") -> AccountCloudLaunchStore.Entry {
+    let stages: String
+    let fields: String
+    switch state {
+    case "making":
+      stages = #"[{"id":"computer","status":"running"}]"#
+      fields = #""state":"making""#
+    case "failed":
+      stages = #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"failed"}]"#
+      fields = #""state":"failed","error":"GitHub refused the clone: the repository is private and the computer has no access.""#
+    default:
+      stages = #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"done"}]"#
+      fields = #""state":"waiting_for_sign_in","signIn":{"provider":"claude","label":"Claude","kind":"url_paste","jobId":"j1","url":"https://claude.ai/oauth/authorize","needsPastedCode":true,"reason":"Open the sign-in page, approve, then paste the code it shows."}"#
+    }
+    let record = #"{"launchId":"l_\#(state)",\#(fields),"projectOrigin":"github.com/octocat/hello-world","laneName":"Fix the README typo","instanceId":"i_\#(state)","stages":\#(stages),"request":{"chat":{"provider":"claude","modelId":"anthropic/claude-sonnet-4-5","prompt":"Fix the README typo"}}}"#
     return AccountCloudLaunchStore.Entry(
       launchId: state,
       origin: "github.com/octocat/hello-world",
-      prompt: "Fix the README typo",
+      prompt: prompt,
       provider: "claude",
       modelId: "anthropic/claude-sonnet-4-5",
       record: decode(record),
@@ -157,10 +177,10 @@ private struct CloudChatFixture: View {
 }
 
 /// The new-chat screen's machine row with ADE Cloud picked (no computer of
-/// the person's own), its footnote, and the setup card of a started chat.
+/// the person's own) and its footnote. A started chat opens its own page
+/// (`CloudLaunchPageFixture`).
 private struct CloudNewChatFixture: View {
   let refusal: String?
-  let launch: String?
 
   private var options: [WorkNewChatMachineOption] {
     [
@@ -180,10 +200,6 @@ private struct CloudNewChatFixture: View {
       }
       .safeAreaInset(edge: .bottom, spacing: 0) {
         VStack(spacing: 8) {
-          if let launch {
-            WorkCloudLaunchCard(entry: CloudNoComputerFixtureData.launch(launch))
-              .padding(.horizontal, 12)
-          }
           HStack(spacing: 8) {
             WorkNewChatMachineDropdown(options: options, selected: options[1], onSelect: { _ in })
             Text("New lane")
@@ -223,7 +239,7 @@ private struct CloudNewChatFixture: View {
       AccountCloudLaunchStore.shared.seedPreview(
         catalog: CloudNoComputerFixtureData.catalog,
         catalogError: nil,
-        entries: launch.map { [CloudNoComputerFixtureData.launch($0)] } ?? []
+        entries: []
       )
     }
   }
@@ -271,6 +287,101 @@ private struct CloudLanesFixture: View {
         }
       }
       .navigationTitle("Lanes")
+    }
+  }
+}
+/// The page a chat started on ADE Cloud opens: the message as a bubble, then
+/// the setup steps, as a chat starting in a new lane of your own shows.
+private struct CloudLaunchPageFixture: View {
+  let state: String
+
+  var body: some View {
+    NavigationStack {
+      WorkCloudLaunchPendingScreen(launchId: state, onChatReady: { _ in false })
+    }
+    .task {
+      AccountCloudLaunchStore.shared.seedPreview(
+        catalog: CloudNoComputerFixtureData.catalog,
+        catalogError: nil,
+        entries: [CloudNoComputerFixtureData.launch(state, prompt: "Yo so look at this app, I wanna make a better and free version of photo roulette. Right now the UI is too busy; make the game screen simpler.")]
+      )
+    }
+  }
+}
+
+/// A kept lane's "New computer" on Lanes: the same setup card as a chat
+/// launch's page, with the lane's steps (one making, one ready).
+private struct CloudLaneLaunchCardFixture: View {
+  @ObservedObject private var launches = AccountCloudLaunchStore.shared
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(spacing: 14) {
+          ForEach(launches.entries) { entry in
+            WorkCloudLaunchSetupCard(entry: entry)
+          }
+        }
+        .padding(16)
+      }
+      .adeScreenBackground()
+      .navigationTitle("Lanes")
+    }
+    .task {
+      AccountCloudLaunchStore.shared.seedPreview(
+        catalog: CloudNoComputerFixtureData.catalog,
+        catalogError: nil,
+        entries: [Self.lane("making"), Self.lane("running")]
+      )
+    }
+  }
+
+  private static func lane(_ state: String) -> AccountCloudLaunchStore.Entry {
+    let stages = state == "making"
+      ? #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"running"}]"#
+      : #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"done"}]"#
+    let record = #"{"launchId":"lane_\#(state)","kind":"lane","state":"\#(state)","projectOrigin":"github.com/octocat/hello-world","laneName":"Fix flaky upload test","instanceId":"i_lane_\#(state)","stages":\#(stages)}"#
+    return AccountCloudLaunchStore.Entry(
+      launchId: "lane_\(state)",
+      origin: "github.com/octocat/hello-world",
+      prompt: "",
+      record: CloudNoComputerFixtureData.decode(record),
+      kind: "lane",
+      laneName: "Fix flaky upload test"
+    )
+  }
+}
+
+/// Work's list with chats starting on ADE Cloud: one launch row each, the
+/// same row size as the chats under it.
+private struct CloudLaunchRowsFixture: View {
+  @ObservedObject private var launches = AccountCloudLaunchStore.shared
+
+  var body: some View {
+    NavigationStack {
+      List {
+        ForEach(launches.entries) { entry in
+          WorkCloudLaunchRow(entry: entry, onOpen: {})
+            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+      }
+      .listStyle(.plain)
+      .scrollContentBackground(.hidden)
+      .background(ADEColor.pageBackground.ignoresSafeArea())
+      .navigationTitle("Work")
+    }
+    .task {
+      AccountCloudLaunchStore.shared.seedPreview(
+        catalog: CloudNoComputerFixtureData.catalog,
+        catalogError: nil,
+        entries: [
+          CloudNoComputerFixtureData.launch("making", prompt: "Make the game screen simpler"),
+          CloudNoComputerFixtureData.launch("waiting", prompt: "Yo so look at this app, I wanna make a better and free version of photo roulette."),
+          CloudNoComputerFixtureData.launch("failed", prompt: "Add a leaderboard"),
+        ]
+      )
     }
   }
 }

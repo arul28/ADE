@@ -512,6 +512,8 @@ struct WorkChatLaunchRowRail: View, Equatable {
 struct WorkChatLaunchQueuedMessageView: View {
   let message: ChatLaunchQueuedMessage
   var maxBubbleWidth: CGFloat = 320
+  /// The host sends a failed message again; ADE Cloud does not.
+  var retries = true
 
   var body: some View {
     VStack(alignment: .trailing, spacing: 4) {
@@ -530,23 +532,27 @@ struct WorkChatLaunchQueuedMessageView: View {
         onOpenFullOutput: {}
       )
       if let error = message.deliveryError {
-        WorkChatLaunchDeliveryFailureNote(error: error)
+        WorkChatLaunchDeliveryFailureNote(error: error, retries: retries)
       }
     }
     .frame(maxWidth: .infinity, alignment: .trailing)
   }
 }
 
-/// "Couldn't send — retrying" plus the host's delivery error.
+/// "Couldn't send — retrying" (or "Couldn't send" where nothing sends it
+/// again) plus the delivery error.
 struct WorkChatLaunchDeliveryFailureNote: View {
   let error: String
+  var retries = true
+
+  private var title: String { retries ? chatLaunchDeliveryFailureTitle : "Couldn't send" }
 
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: 5) {
-      Image(systemName: "arrow.clockwise")
+      Image(systemName: retries ? "arrow.clockwise" : "exclamationmark.triangle.fill")
         .font(.system(size: 9, weight: .bold))
       VStack(alignment: .leading, spacing: 1) {
-        Text(chatLaunchDeliveryFailureTitle)
+        Text(title)
           .font(.caption2.weight(.semibold))
         Text(error)
           .font(.caption2)
@@ -559,6 +565,160 @@ struct WorkChatLaunchDeliveryFailureNote: View {
     .foregroundStyle(ADEColor.warning)
     .padding(.horizontal, 4)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(chatLaunchDeliveryFailureTitle). \(error)")
+    .accessibilityLabel("\(title). \(error)")
+  }
+}
+
+// MARK: - Card parts
+
+/// The launch card's small capsule label: the lane, the base branch, ADE Cloud.
+struct WorkChatLaunchChip<Content: View>: View {
+  let mono: Bool
+  let content: Content
+
+  init(mono: Bool = false, @ViewBuilder content: () -> Content) {
+    self.mono = mono
+    self.content = content()
+  }
+
+  var body: some View {
+    HStack(spacing: 4) {
+      content
+    }
+    .font(mono ? .caption2.monospaced() : .caption2.weight(.medium))
+    .foregroundStyle(ADEColor.textSecondary)
+    .padding(.horizontal, 7)
+    .padding(.vertical, 2.5)
+    .background(ADEColor.recessedBackground.opacity(0.5), in: Capsule(style: .continuous))
+    .overlay(Capsule(style: .continuous).strokeBorder(ADEColor.glassBorder, lineWidth: 1))
+  }
+}
+
+/// The launch card's text action: a capsule, tinted when primary, a spinner
+/// in place of its symbol while busy.
+struct WorkChatLaunchCapsuleButton: View {
+  let title: String
+  let symbol: String
+  var primary = false
+  var busy = false
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 4) {
+        if busy {
+          ProgressView()
+            .controlSize(.mini)
+        } else {
+          Image(systemName: symbol)
+            .font(.system(size: 9, weight: .bold))
+        }
+        Text(title)
+      }
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(primary ? WorkChatLaunchTone.running : ADEColor.textSecondary)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 6)
+      .background(primary ? WorkChatLaunchTone.running.opacity(0.12) : Color.clear, in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .strokeBorder(primary ? WorkChatLaunchTone.running.opacity(0.32) : ADEColor.glassBorder, lineWidth: 1)
+      )
+      .contentShape(Capsule(style: .continuous))
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+// MARK: - Queue composer
+
+/// The composer of a chat whose agent has not started: a hint over the app's
+/// shared glass prompt box (so it reads as the chat it turns into). Sends
+/// queue on the launch; it holds no attachments.
+struct WorkChatLaunchQueueComposer: View {
+  @Binding var draft: String
+  @Binding var focused: Bool
+  let hint: String
+  let canType: Bool
+  let sending: Bool
+  let dictationTargetId: String
+  let onSend: () -> Void
+  @State private var noAttachments: [WorkChatInputAttachment] = []
+
+  var body: some View {
+    let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    VStack(alignment: .leading, spacing: 6) {
+      Text(hint)
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+        .padding(.horizontal, 4)
+      ADEPlainGlassComposer(
+        text: $draft,
+        isFocused: $focused,
+        attachments: $noAttachments,
+        placeholder: "Message",
+        acceptsPastedImages: false,
+        sendEnabled: canType && !trimmed.isEmpty && !sending,
+        sending: sending,
+        sendAccessibilityLabel: "Queue message",
+        disabledSendAccessibilityLabel: "Enter a message to queue",
+        dictationTargetId: dictationTargetId,
+        onSend: onSend,
+        menu: { startDictation in
+          Menu {
+            if SpeechDictationService.isAvailable {
+              Button(action: startDictation) {
+                Label("Dictate", systemImage: "mic")
+              }
+            }
+          } label: {
+            Image(systemName: "ellipsis")
+              .font(.system(size: 15, weight: .semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(width: 36, height: 36)
+              .contentShape(Circle())
+              .frame(minWidth: 44, minHeight: 44)
+          }
+          .disabled(!canType || !SpeechDictationService.isAvailable)
+          .accessibilityLabel("Composer options")
+        },
+        controls: { EmptyView() }
+      )
+      .disabled(!canType)
+      .accessibilityHint("Queued until the agent starts")
+    }
+    .padding(.horizontal, 12)
+    .padding(.top, 6)
+    .padding(.bottom, 8)
+    .workLaunchComposerScrollEdge()
+  }
+}
+
+/// A refused queued message back in the composer, ahead of anything typed since.
+func workChatLaunchRestoredDraft(_ text: String, typedSince draft: String) -> String {
+  draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? text : "\(text)\n\n\(draft)"
+}
+
+// MARK: - Composer scroll edge
+
+extension View {
+  /// The soft scroll edge under a launch page's hint and prompt box, as the
+  /// chat's own composer has: the page fades out above the hint and is gone
+  /// behind it, so the setup card never reads through the hint's text.
+  func workLaunchComposerScrollEdge() -> some View {
+    background(alignment: .top) {
+      VStack(spacing: 0) {
+        LinearGradient(
+          colors: [ADEColor.pageBackground.opacity(0), ADEColor.pageBackground],
+          startPoint: .top,
+          endPoint: .bottom
+        )
+        .frame(height: 24)
+        ADEColor.pageBackground
+      }
+      .padding(.top, -24)
+      .ignoresSafeArea(.container, edges: .bottom)
+      .allowsHitTesting(false)
+    }
   }
 }

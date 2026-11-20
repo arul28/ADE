@@ -23,7 +23,7 @@ import { routeCtoCopy } from "./ctoCopy";
 import { handleInternalEventWake, isInternalEventWakeRequest, routeEventWakeSubscription, type EventWakeOutcome } from "./eventWakes";
 import { routeJiraIssue, routeJiraSearch, routeLinearQuery } from "./integrations";
 import { routeCloudLimits } from "./limits";
-import { routeChatMessages, routeComputerMessages, type ChatWake } from "./chatMessages";
+import { carryLaunchMessagesForComputer, routeChatMessages, routeComputerMessages, type ChatWake } from "./chatMessages";
 import { routeSessionCopies } from "./sessionCopies";
 import { routeGitSummaries } from "./gitSummaries";
 import { routeForkCapsules } from "./forkCapsules";
@@ -1457,6 +1457,8 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
     const lane = laneFactsStatement(env, computer.instance_id, computer, metadata);
     if (lane) statements.push(lane);
     if (statements.length) await env.DB.batch(statements);
+    // Its chat launch's follow-ups waited for this key to join the chat.
+    if (machineKey && machineKey !== computer.machine_key) await carryLaunchMessagesForComputer(env, computer.instance_id, Date.now());
     return json({ ok: true });
   },
 };

@@ -2447,6 +2447,13 @@ final class AccountService: ObservableObject {
   /// Load the caller's machines from the directory Worker. Degrades quietly:
   /// no base URL → `.unconfigured`; unreachable → `.unreachable`; the local
   /// pairing flow is never blocked on this.
+  /// The order of machine reads: each read takes the next number when it
+  /// starts, and a read older than the last one applied never writes. Two
+  /// reads can be out at once (a pull and a launch's read), and an older
+  /// answer must not hide a computer a newer one listed.
+  private var machinesReadsStarted = 0
+  private var machinesReadApplied = 0
+
   func loadMachines() async {
 #if DEBUG
     // A fixture screen keeps its seeded machines.
@@ -2468,6 +2475,8 @@ final class AccountService: ObservableObject {
     if machines.isEmpty {
       machinesState = .loading
     }
+    machinesReadsStarted += 1
+    let readOrder = machinesReadsStarted
     do {
       let fetched = try await directory.fetchMachines(
         baseURL: baseURL,
@@ -2480,7 +2489,9 @@ final class AccountService: ObservableObject {
           ).token
         }
       )
-      guard isPairingCommitAuthorized(initialSession.authorization) else { return }
+      guard isPairingCommitAuthorized(initialSession.authorization),
+            readOrder > machinesReadApplied else { return }
+      machinesReadApplied = readOrder
       machines = fetched
       rememberFleetKeys(of: fetched, ownerId: requestedOwnerId)
       SyncService.shared?.adoptVerifiedAccountRelayMetadata(
@@ -2489,10 +2500,10 @@ final class AccountService: ObservableObject {
       )
       machinesState = .loaded
     } catch let error as AccountDirectoryClient.DirectoryError {
-      guard isPairingCommitAuthorized(initialSession.authorization) else { return }
+      guard isPairingCommitAuthorized(initialSession.authorization), readOrder > machinesReadApplied else { return }
       machinesState = .unreachable(error.localizedDescription)
     } catch {
-      guard isPairingCommitAuthorized(initialSession.authorization) else { return }
+      guard isPairingCommitAuthorized(initialSession.authorization), readOrder > machinesReadApplied else { return }
       machinesState = .unreachable("Couldn't load your machines.")
     }
   }
