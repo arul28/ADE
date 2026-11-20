@@ -388,9 +388,9 @@ function refusedBeforeSend(error: unknown): boolean {
  * The chat API, with reads answered from the saved copy while the chat's
  * machine isn't connected (or its connection is gone). A send to a computer
  * this window never connected to reaches it by its machine key (`reach`); a
- * send to a computer that no longer exists says so plainly. A chat whose lane
- * is kept without a computer never sends here: the chat pane gives that lane a
- * new computer and starts a new chat on it.
+ * send to a computer that no longer exists says so plainly. A chat whose
+ * computer was deleted never sends here: the chat pane hands the message to
+ * the account's queue, and a new computer continues the chat.
  */
 export function withSavedChatReads(
   api: AgentChatApi,

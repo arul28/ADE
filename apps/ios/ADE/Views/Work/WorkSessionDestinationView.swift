@@ -733,7 +733,17 @@ struct WorkSessionDestinationView: View {
     session != nil || initialSession != nil
   }
 
+  /// Why a message can't make a new computer for this chat, whose ADE Cloud
+  /// computer was deleted (ADE Cloud refuses work for the account now: read
+  /// only, out of hours); nil when it can, and for every other chat. The
+  /// chat's state line shows the same sentence.
+  var cloudNewComputerBlockedReason: String? {
+    guard !personalChat else { return nil }
+    return cloudLaneNewComputerProblem(fleetKey: sessionCloudMachineKey, sync: syncService, store: AccountCloudStore.shared)
+  }
+
   var canSendChatMessages: Bool {
+    if cloudNewComputerBlockedReason != nil { return false }
     // A chat on a sleeping ADE Cloud computer: the account holds the send and
     // wakes the computer, so there is no live link to require.
     if !personalChat, syncService.chatSendsThroughCloudAccount(sessionId: sessionId) { return true }
@@ -2609,6 +2619,7 @@ struct WorkSessionDestinationView: View {
     )
     chatView.ctoLive = ctoLiveModel
     chatView.modelPickerCloudCatalog = restingCloudModelCatalog
+    chatView.sendBlockedReason = cloudNewComputerBlockedReason
     return chatView
   }
 

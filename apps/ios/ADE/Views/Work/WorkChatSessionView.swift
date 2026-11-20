@@ -340,16 +340,20 @@ extension View {
   /// computer; only doing (a send, a terminal, a Git action) does. A
   /// computer the server lists awake is connected with no wake, and
   /// `onAwake` runs once it answers. Any other machine changes nothing.
+  /// `context` says what a deleted computer's line offers: a chat's next
+  /// message, or a lane page's New computer.
   func showsCloudLaneState(
     fleetKey: String?,
+    context: CloudLaneLineContext = .chat,
     onAwake: (() async -> Void)? = nil
   ) -> some View {
-    modifier(CloudLaneStateModifier(fleetKey: fleetKey, onAwake: onAwake))
+    modifier(CloudLaneStateModifier(fleetKey: fleetKey, context: context, onAwake: onAwake))
   }
 }
 
 private struct CloudLaneStateModifier: ViewModifier {
   let fleetKey: String?
+  let context: CloudLaneLineContext
   let onAwake: (() async -> Void)?
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
 
@@ -362,7 +366,7 @@ private struct CloudLaneStateModifier: ViewModifier {
     content
       .safeAreaInset(edge: .top, spacing: 0) {
         if syncPublishes.service.isCloudFleetKey(fleetKey) {
-          CloudLaneStateLines(fleetKey: fleetKey)
+          CloudLaneStateLines(fleetKey: fleetKey, context: context)
         }
       }
       .task(id: "\(fleetKey ?? "")#\(serverStatus)") {
@@ -847,6 +851,10 @@ struct WorkChatSessionView: View {
   let transportHealth: SyncTransportHealth
   let composerDraftRestore: WorkChatComposerDraftRestore?
   var inputLockMessage: String? = nil
+  /// Why a send can't go now, from the chat's host screen (an ADE Cloud
+  /// chat whose deleted computer ADE can't make again). The composer can't
+  /// send and says this; the same sentence is the line above the chat.
+  var sendBlockedReason: String? = nil
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
@@ -1438,12 +1446,15 @@ struct WorkChatSessionView: View {
     // Existing chats accept messages while live, and can still accept them
     // during reconnects when desktop advertised chat.send as queueable. Pending
     // input is gated separately so the host receives a structured answer.
-    composerInputGate.canSend
+    sendBlockedReason == nil && composerInputGate.canSend
   }
 
   var composerFeedback: String? {
     if let inputLockMessage {
       return inputLockMessage
+    }
+    if let sendBlockedReason {
+      return sendBlockedReason
     }
     if sending && !sendWillQueue {
       return "Sending message to machine..."

@@ -85,6 +85,9 @@ export type LaneSidebarRowProps = {
    * row without one shows no mark.
    */
   shareTarget?: { laneId: string; pin: OpenProjectBinding | null } | null;
+  /** A quiet mark on line two ("Computer deleted", "Deleting soon"), with `noteTitle` on hover. */
+  noteLabel?: string | null;
+  noteTitle?: string | null;
   onSelect: (laneId: string, event: React.MouseEvent) => void;
   onContextMenu: (laneId: string, event: React.MouseEvent) => void;
   onOpenPr: (pr: LaneTabPrTag) => void;
@@ -239,6 +242,8 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
     disabledReason = null,
     foreign = false,
     shareTarget = null,
+    noteLabel = null,
+    noteTitle = null,
     onSelect,
     onContextMenu,
     onOpenPr,
@@ -252,7 +257,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
   const showBranch = Boolean(branch) && branch !== lane.name;
   // Nothing left for line two: the row is one line rather than an empty band.
   const secondLineEmpty = !deleting && !creating && !showBranch && !rebaseLine
-    && !lane.linearIssue && (lane.devicesOpen ?? []).length === 0;
+    && !lane.linearIssue && (lane.devicesOpen ?? []).length === 0 && !noteLabel;
   const lastActivityAt = laneLastActivityAt(lane, agents);
   const devicesOpen = lane.devicesOpen ?? [];
   // The lane color lives on the name only, as in the Work list.
@@ -410,6 +415,11 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
                 hasPr={laneHasCurrentPr(prs)}
                 resolveCatchUpTarget={resolveCatchUpTarget}
               />
+            ) : null}
+            {noteLabel ? (
+              <span className="shrink-0 text-[10px] font-medium text-muted-fg/55" title={noteTitle ?? undefined} data-testid="lane-sidebar-note">
+                {noteLabel}
+              </span>
             ) : null}
             {lane.linearIssue ? <LaneLinearChip issue={lane.linearIssue} /> : null}
             {devicesOpen.length > 0 ? (

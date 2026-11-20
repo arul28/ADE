@@ -55,11 +55,12 @@ extension LanesTabView {
           openLanesTray
             .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
         }
-        // This project's ADE Cloud lanes ADE kept without a computer (and a
-        // new computer for one while it comes up). Not mounted when there are
-        // none: a List gives even an empty row its height.
-        if let origin = inputs.cloudProjectOrigin, inputs.keptCloudLaneCount + inputs.keptCloudLaneLaunchCount > 0 {
-          CloudKeptLanesBlock(origin: origin, refreshToken: refreshFeedbackToken, insets: EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+        // A New computer for one of this project's kept ADE Cloud lanes while
+        // it comes up (the kept lanes are rows below), and the reads that
+        // follow them. Not mounted when there are none: a List gives even an
+        // empty row its height.
+        if let origin = inputs.cloudProjectOrigin, inputs.keptCloudLanes.count + inputs.keptCloudLaneLaunchCount > 0 {
+          CloudKeptLaneLaunchCards(origin: origin, refreshToken: refreshFeedbackToken)
             .adeFlatRow(insets: EdgeInsets(), separator: .hidden)
         }
       }
@@ -214,12 +215,14 @@ extension LanesTabView {
     }
   }
 
-  /// A selected lane can be this machine's or another machine's row.
+  /// A selected lane can be this machine's or another machine's row, or a
+  /// lane ADE Cloud kept without a computer (its kept-lane page).
   func duoLaneIsAvailable(_ laneId: String) -> Bool {
     laneSnapshots.contains { $0.lane.id == laneId }
       || remoteLanes.machines.contains { machine in
         machine.snapshots.contains { $0.lane.id == laneId }
       }
+      || inputs.keptCloudLanes.contains { $0.laneId == laneId }
   }
 }
 

@@ -20,6 +20,20 @@ enum CloudNoComputerPreviews {
       return AnyView(CloudChatFixture(state: .waking))
     case "duo-cloud-chat-deleted":
       return AnyView(CloudChatFixture(state: .deleted))
+    case "duo-cloud-chat-deleted-kept":
+      // A kept lane: what happened, its branch and the queue's size.
+      return AnyView(CloudChatFixture(state: .deleted, deleted: CloudDeletedComputerFacts(
+        fate: cloudComputerFateSentence(.idle, deletedAt: 1_763_424_000_000),
+        branch: "fix-flaky-upload-test",
+        sizeLabel: cloudQueueSizeLabel(account: nil)
+      )))
+    case "duo-cloud-chat-deleted-blocked":
+      return AnyView(CloudChatFixture(state: .deleted, deleted: CloudDeletedComputerFacts(
+        fate: cloudComputerFateSentence(.plan, deletedAt: 1_763_424_000_000),
+        branch: "fix-flaky-upload-test",
+        sizeLabel: cloudQueueSizeLabel(account: nil),
+        blocked: "This account has no ADE Cloud hours left this period. Your lanes and chats stay readable."
+      )))
     case "duo-cloud-chat-queued":
       return AnyView(CloudChatFixture(state: .waking, queued: [
         CloudChatQueuedMessage(messageId: "m1", state: "queued", text: "Run the tests again and fix what fails."),
@@ -114,6 +128,7 @@ enum CloudNoComputerFixtureData {
 private struct CloudChatFixture: View {
   let state: CloudLaneState
   var deletingDays: Int?
+  var deleted: CloudDeletedComputerFacts = .unknown
   var queued: [CloudChatQueuedMessage] = []
 
   var body: some View {
@@ -128,7 +143,7 @@ private struct CloudChatFixture: View {
         .padding(16)
       }
       .safeAreaInset(edge: .top, spacing: 0) {
-        CloudLaneStateLinesContent(state: state, deletingDays: deletingDays)
+        CloudLaneStateLinesContent(state: state, deletingDays: deletingDays, deletingSizeLabel: cloudQueueSizeLabel(account: nil), deleted: deleted)
       }
       .safeAreaInset(edge: .bottom, spacing: 0) {
         VStack(spacing: 0) {

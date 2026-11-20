@@ -3,7 +3,7 @@ import UIKit
 
 // ADE Cloud inside the normal Work flow: the provider sign-in step a launch
 // or a woken chat waits on, and the lines a cloud lane's chat shows about its
-// computer (asleep, waking, refused, deleting soon). A launch's row, page and
+// computer (asleep, waking, deleted, refused, deleting soon). A launch's row, page and
 // setup card are in `WorkCloudLaunchViews.swift`. Nothing here wakes a
 // computer by being shown.
 
@@ -189,6 +189,8 @@ func cloudDeletingSoonDays(deletesAt: Double, now: Date = Date()) -> Int {
 /// Keep it. Lives in the pane's top inset, never across the fold.
 struct CloudLaneStateLines: View {
   let fleetKey: String?
+  /// A chat says what its next message does; a lane page what New computer does.
+  var context: CloudLaneLineContext = .chat
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @ObservedObject private var store = AccountCloudStore.shared
   private var syncService: SyncService { syncPublishes.service }
@@ -198,9 +200,15 @@ struct CloudLaneStateLines: View {
   var body: some View {
     let instance = syncService.cloudServerInstance(fleetKey: fleetKey)
     let deleting = store.deletingSoon(instanceId: instance?.id)
+    let state = cloudLaneState(fleetKey: fleetKey, sync: syncService, store: store)
     CloudLaneStateLinesContent(
-      state: cloudLaneState(fleetKey: fleetKey, sync: syncService, store: store),
+      state: state,
       deletingDays: deleting.map { cloudDeletingSoonDays(deletesAt: $0.deletesAt) },
+      deletingSizeLabel: cloudQueueSizeLabel(account: store.account),
+      deleted: state == .deleted
+        ? cloudDeletedComputerFacts(fleetKey: fleetKey, sync: syncService, store: store) ?? .unknown
+        : .unknown,
+      context: context,
       keeping: keeping,
       keepError: keepError,
       onDismissFailure: {
@@ -225,10 +233,18 @@ struct CloudLaneStateLinesContent: View {
   let state: CloudLaneState?
   /// Days until the idle cleanup deletes the computer; nil when none is due.
   let deletingDays: Int?
+  /// The size a message after that delete starts the new computer at ("Small").
+  var deletingSizeLabel: String? = nil
+  /// What the `.deleted` line says: what happened and what makes the new
+  /// computer, or why ADE can't make one.
+  var deleted: CloudDeletedComputerFacts = .unknown
+  var context: CloudLaneLineContext = .chat
   var keeping = false
   var keepError: String?
   var onDismissFailure: () -> Void = {}
   var onKeep: () -> Void = {}
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var whyOpen = false
 
   var body: some View {
     VStack(spacing: 6) {
@@ -246,11 +262,7 @@ struct CloudLaneStateLinesContent: View {
           detail: "You're reading the saved copy. Sending a message wakes this lane's computer."
         )
       case .deleted?:
-        line(
-          symbol: "icloud.slash",
-          title: "This lane's cloud computer was deleted",
-          detail: "You're reading the saved copy. Your next message continues this chat on a new computer."
-        )
+        deletedLine
       case .awake?, nil:
         EmptyView()
       }
@@ -278,13 +290,64 @@ struct CloudLaneStateLinesContent: View {
       }
       Spacer(minLength: 0)
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 10)
-    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .padding(.horizontal, 12)
-    .padding(.top, 6)
+    .stateLineChrome()
     .accessibilityElement(children: .combine)
     .adeInspectable("CloudLane.State")
+  }
+
+  /// The computer was deleted: what happened and what the next message (or
+  /// New computer) does, with a "Why?" that opens two lines in place. When
+  /// ADE can't make a new computer, the reason instead, in the warning tone.
+  private var deletedLine: some View {
+    let blocked = deleted.blocked != nil
+    return HStack(alignment: .top, spacing: 10) {
+      Image(systemName: blocked ? "exclamationmark.icloud" : "icloud.slash")
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(blocked ? ADEColor.warning : ADEColor.textSecondary)
+        .frame(width: 18)
+        .accessibilityHidden(true)
+      VStack(alignment: .leading, spacing: 1) {
+        Text(deleted.title)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .fixedSize(horizontal: false, vertical: true)
+        Text(deleted.detail(context))
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+        if !blocked {
+          Button {
+            if reduceMotion {
+              whyOpen.toggle()
+            } else {
+              withAnimation(.snappy(duration: 0.2)) { whyOpen.toggle() }
+            }
+          } label: {
+            Text("Why?")
+              .font(.caption.weight(.semibold))
+              .padding(.vertical, 4)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.borderless)
+          .tint(ADEColor.accent)
+          .accessibilityValue(whyOpen ? "Open" : "Closed")
+          .adeInspectable("CloudLane.Why")
+          if whyOpen {
+            Text(CloudDeletedComputerFacts.whySentence)
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+              .fixedSize(horizontal: false, vertical: true)
+              .transition(.opacity)
+          }
+        }
+      }
+      Spacer(minLength: 0)
+    }
+    .stateLineChrome()
+    // One element: the title and what happened, then Why? (activating it
+    // opens the two lines, which then read as part of it).
+    .accessibilityElement(children: .combine)
+    .adeInspectable(blocked ? "CloudLane.Blocked" : "CloudLane.Deleted")
   }
 
   private func deletingSoonLine(days: Int) -> some View {
@@ -294,7 +357,7 @@ struct CloudLaneStateLinesContent: View {
         .foregroundStyle(ADEColor.warning)
         .accessibilityHidden(true)
       VStack(alignment: .leading, spacing: 2) {
-        Text("This lane's cloud computer is deleted in \(days) \(days == 1 ? "day" : "days") because it is unused. Your work is pushed first.")
+        Text("This lane's cloud computer is deleted in \(days) \(days == 1 ? "day" : "days") because it is unused. Your work is pushed first. After that, your next message makes a new computer\(deletingSizeLabel.map { " at \($0)" } ?? "").")
           .font(.subheadline)
           .foregroundStyle(ADEColor.textPrimary)
           .fixedSize(horizontal: false, vertical: true)
@@ -313,13 +376,20 @@ struct CloudLaneStateLinesContent: View {
       .disabled(keeping)
       .adeInspectable("CloudLane.KeepIt")
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 10)
-    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .padding(.horizontal, 12)
-    .padding(.top, 6)
+    .stateLineChrome()
     .accessibilityElement(children: .contain)
     .adeInspectable("CloudLane.DeletingSoon")
+  }
+}
+
+private extension View {
+  /// One state line's glass card, inset from the pane's edges.
+  func stateLineChrome() -> some View {
+    padding(.horizontal, 14)
+      .padding(.vertical, 10)
+      .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .padding(.horizontal, 12)
+      .padding(.top, 6)
   }
 }
 

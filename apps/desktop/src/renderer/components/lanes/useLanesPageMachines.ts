@@ -6,6 +6,7 @@ import { useTabCopyPin } from "../../state/repositoryScope";
 import {
   buildLaneMachineFilterEntries,
   createLaneMachineRouter,
+  foreignLaneKey,
   laneFilterEntryId,
   machineBlockedReason,
   machineChipFor,
@@ -17,12 +18,28 @@ import {
 import { LANES_MACHINE_FILTER_ALL } from "../../state/laneMachineFilterIds";
 import { SAVED_CHATS_MACHINE_PREFIX } from "../../../shared/cloudSavedChats";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
+import { ADE_CLOUD_MACHINE_ID, ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
 import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { useCloudViewOnScreen } from "../../state/crossMachineLanes";
 import { isCloudConnectionTarget, isSavedChatsMachineId } from "../../state/cloudSavedChats";
+import {
+  COMPUTER_DELETED_ROW_NOTE,
+  keptLaneSummary,
+  useCloudLaneRowNotes,
+  useCloudLanesWithoutComputerRows,
+  type CloudLaneRowNote,
+  type CloudLaneWithoutComputerRow,
+} from "../cloudLane/cloudLanesWithoutComputer";
+
+/**
+ * The machine id of every ADE Cloud lane whose computer was deleted, in the
+ * page's row keys (`ade-cloud-deleted:<laneId>`). No machine has this id, so
+ * no call can be routed to it: `resolveLaneTarget` refuses these rows.
+ */
+export const DELETED_CLOUD_COMPUTER_MACHINE_ID = "ade-cloud-deleted";
+const DELETED_CLOUD_COMPUTER_REASON = "This lane's ADE Cloud computer was deleted.";
 
 /**
  * A lane on another machine is selected here, never in the store's
@@ -86,8 +103,6 @@ export function useLanesPageMachines({
   localLanes,
   storeSelectedLaneId,
   storeSelectLane,
-  noComputerCount = 0,
-  noComputerUnseen = false,
 }: {
   active: boolean;
   projectStateKey: string | null;
@@ -95,10 +110,6 @@ export function useLanesPageMachines({
   localLanes: LaneSummary[];
   storeSelectedLaneId: string | null;
   storeSelectLane: (laneId: string | null) => void;
-  /** ADE Cloud lanes of this project whose computer is gone (`useCloudLanesWithoutComputerSummary`). */
-  noComputerCount?: number;
-  /** Any of those the person has not looked at yet. */
-  noComputerUnseen?: boolean;
 }) {
   // Mounting this while the tab is visible keeps the shared cross-machine union
   // refreshing (ref-counted, no new loop).
@@ -107,9 +118,8 @@ export function useLanesPageMachines({
   const allMachineLanesRef = useRef(allMachineLanes);
   allMachineLanesRef.current = allMachineLanes;
   // ADE Cloud computers the account no longer has (`computerGone`, decided by
-  // the account's computer list): their lanes live only as saved chats, listed
-  // once in the lanes without a computer (`CloudLanesWithoutComputerBlock`),
-  // never among the live lanes or as a machine chip.
+  // the account's computer list) are no machine: their lanes are listed below
+  // as rows of their own (`deletedLanes`), never as a machine or a chip.
   const crossMachineEntries = useRootAppStore((state) => state.crossMachineLanesByMachineId);
   const goneMachineKey = useMemo(
     () => Object.values(crossMachineEntries ?? {}).filter((entry) => entry.computerGone === true).map((entry) => entry.machineId).sort().join("\u0000"),
@@ -129,10 +139,18 @@ export function useLanesPageMachines({
   );
   const restingMachineIds = useMemo(() => new Set(restingMachineKey ? restingMachineKey.split("\u0000") : []), [restingMachineKey]);
 
-  const foreignLanes = useMemo<ForeignLaneModel>(() => {
+  // This project's ADE Cloud lanes whose computer was deleted (its chats kept,
+  // or the lane kept by the server). They list among the ADE Cloud lanes and
+  // look like an asleep one's, with one "Computer deleted" mark. Their rows
+  // name a machine nothing routes to, so every lane action refuses them.
+  const deletedCloudLanes = useCloudLanesWithoutComputerRows();
+  const { deletedByLaneId, deletingSoonByLaneId } = useCloudLaneRowNotes(deletedCloudLanes);
+
+  const foreignLanes = useMemo<ForeignLaneModel & { deletedLaneByKey: ReadonlyMap<string, CloudLaneWithoutComputerRow> }>(() => {
     const rowByKey = new Map<string, MachineLane>();
     const viewLanes: LaneSummary[] = [];
     const realLanesByMachineId = new Map<string, LaneSummary[]>();
+    const deletedLaneByKey = new Map<string, CloudLaneWithoutComputerRow>();
     for (const row of allMachineLanes.lanes) {
       if (row.isActiveBinding) continue;
       if (goneMachineIds.has(row.machineId)) continue;
@@ -142,11 +160,43 @@ export function useLanesPageMachines({
       if (machineLanes) machineLanes.push(row.lane);
       else realLanesByMachineId.set(row.machineId, [row.lane]);
     }
+    // A lane that a computer lists again (another device started it) is that computer's row.
+    const listedLaneIds = new Set([...localLanes.map((lane) => lane.id), ...[...rowByKey.values()].map((row) => row.lane.id)]);
+    for (const deleted of deletedCloudLanes) {
+      if (listedLaneIds.has(deleted.laneId)) continue;
+      const base = deleted.lane ?? (deleted.kept ? keptLaneSummary(deleted.kept) : null);
+      if (!base) continue;
+      const key = foreignLaneKey(DELETED_CLOUD_COMPUTER_MACHINE_ID, deleted.laneId);
+      const kept = deleted.kept ? keptLaneSummary(deleted.kept) : null;
+      // The kept record knows the lane's branch; its saved chats do not.
+      const lane: LaneSummary = { ...base, name: deleted.laneName, branchRef: base.branchRef || kept?.branchRef || "" };
+      deletedLaneByKey.set(key, deleted);
+      rowByKey.set(key, {
+        key,
+        lane,
+        machineId: DELETED_CLOUD_COMPUTER_MACHINE_ID,
+        machineName: ADE_CLOUD_NAME,
+        online: false,
+        isThisMachine: false,
+        isActiveBinding: false,
+        binding: null,
+        pin: null,
+        address: null,
+        routable: false,
+        hasRepo: false,
+        deviceId: null,
+        hostname: null,
+        version: null,
+      });
+    }
     for (const row of rowByKey.values()) {
       viewLanes.push({ ...row.lane, id: row.key });
     }
-    return { rowByKey, viewLanes, realLanesByMachineId };
-  }, [allMachineLanes, goneMachineIds, restingMachineIds]);
+    return { rowByKey, viewLanes, realLanesByMachineId, deletedLaneByKey };
+  }, [allMachineLanes, deletedCloudLanes, goneMachineIds, localLanes, restingMachineIds]);
+  const deletedLaneByKey = foreignLanes.deletedLaneByKey;
+  const deletedLaneByKeyRef = useRef(deletedLaneByKey);
+  deletedLaneByKeyRef.current = deletedLaneByKey;
   const foreignRowByKey = foreignLanes.rowByKey;
   // The page's ADE Cloud lanes are watched for their computer's sleep and wake.
   useCloudViewOnScreen(active && [...foreignLanes.realLanesByMachineId.keys()].some(
@@ -179,6 +229,8 @@ export function useLanesPageMachines({
    * machine actually lists. Anything else is refused rather than sent unpinned.
    */
   const resolveLaneTarget = useCallback((key: string): LaneTarget => {
+    // A deleted computer's lane has nothing to act on; its chat makes a new computer.
+    if (deletedLaneByKeyRef.current.has(key)) return { ok: false, reason: DELETED_CLOUD_COMPUTER_REASON };
     const router = laneRouterRef.current;
     const foreignRow = foreignRowByKeyRef.current.get(key);
     if (foreignRow) {
@@ -214,11 +266,13 @@ export function useLanesPageMachines({
       && (machine.isActiveBinding ? !tabMachineOffline : machine.online || restingMachineIds.has(machine.machineId))),
     [allMachineLanes.machines, goneMachineIds, restingMachineIds, tabMachineOffline],
   );
-  // ADE Cloud is one machine: its computers count once for the chips.
+  // ADE Cloud is one machine: its computers, and its lanes whose computer was
+  // deleted, count once for the chips.
+  const hasDeletedCloudLanes = deletedLaneByKey.size > 0;
   const machineCount = useMemo(() => {
     const own = liveMachines.filter((machine) => !isCloudMachine(machine)).length;
-    return own + (own < liveMachines.length ? 1 : 0);
-  }, [isCloudMachine, liveMachines]);
+    return own + (own < liveMachines.length || hasDeletedCloudLanes ? 1 : 0);
+  }, [hasDeletedCloudLanes, isCloudMachine, liveMachines]);
   const multiMachine = shouldShowMachineChips(machineCount);
   /** The tab's own computer while it is offline (its lanes are hidden), for the page's one line. */
   const offlineTabMachineName = tabMachineOffline ? activeMachine?.machineName ?? null : null;
@@ -300,6 +354,13 @@ export function useLanesPageMachines({
           : cloudMachineLabel({ machineId: chip.machineId, name: chip.machineName }),
       });
     }
+    // A deleted computer's lane is still an ADE Cloud lane, as an asleep one's is.
+    byMachineId.set(DELETED_CLOUD_COMPUTER_MACHINE_ID, {
+      machineId: DELETED_CLOUD_COMPUTER_MACHINE_ID,
+      machineName: ADE_CLOUD_NAME,
+      online: true,
+      isThisMachine: false,
+    });
     const map = new Map<string, MachineChipModel>();
     for (const lane of allViewLanes) {
       const machineId = machineIdForKey(lane.id);
@@ -313,7 +374,8 @@ export function useLanesPageMachines({
     const map = new Map<string, string>();
     for (const row of foreignRowByKey.values()) {
       // An asleep ADE Cloud computer's lane opens normally; opening wakes it.
-      if (restingMachineIds.has(row.machineId)) continue;
+      // A deleted one's opens too: its chat, or what happened to its computer.
+      if (restingMachineIds.has(row.machineId) || row.machineId === DELETED_CLOUD_COMPUTER_MACHINE_ID) continue;
       const reason = machineBlockedReason(row);
       if (reason) map.set(row.key, reason);
     }
@@ -333,12 +395,12 @@ export function useLanesPageMachines({
     }
     return counts;
   }, [allViewLanes, machineIdForKey]);
-  // One entry per computer the person owns, one for every ADE Cloud computer,
-  // and the lanes whose computer is gone. `isCloudMachine` is the same rule the
-  // rows and Work's filter use.
+  // One entry per computer the person owns, and one for every ADE Cloud
+  // computer, the deleted ones' lanes included. `isCloudMachine` is the same
+  // rule the rows and Work's filter use.
   const machineFilterEntries = useMemo(
     () => buildLaneMachineFilterEntries({
-      machines: liveMachines.map((machine) => ({
+      machines: [...liveMachines.map((machine) => ({
         entryId: laneFilterEntryId(machine.machineId, isCloudMachine(machine)),
         // Every ADE Cloud computer is one machine to the person: never the
         // disambiguated per-computer label ("ADE Cloud (instance-a)") the
@@ -349,11 +411,15 @@ export function useLanesPageMachines({
         isCloud: isCloudMachine(machine),
         isThisMachine: machine.isThisMachine,
         laneCount: laneCountByMachineId.get(machine.machineId) ?? 0,
-      })),
-      noComputerCount,
-      noComputerUnseen,
+      })), {
+        entryId: ADE_CLOUD_MACHINE_ID,
+        name: ADE_CLOUD_NAME,
+        isCloud: true,
+        isThisMachine: false,
+        laneCount: laneCountByMachineId.get(DELETED_CLOUD_COMPUTER_MACHINE_ID) ?? 0,
+      }],
     }),
-    [isCloudMachine, laneCountByMachineId, liveMachines, noComputerCount, noComputerUnseen],
+    [isCloudMachine, laneCountByMachineId, liveMachines],
   );
   // The entry a row's machine belongs to, so the filter never has to re-derive
   // cloud-ness or slots per row.
@@ -362,12 +428,31 @@ export function useLanesPageMachines({
     for (const machine of liveMachines) {
       map.set(machine.machineId, laneFilterEntryId(machine.machineId, isCloudMachine(machine)));
     }
+    map.set(DELETED_CLOUD_COMPUTER_MACHINE_ID, ADE_CLOUD_MACHINE_ID);
     return map;
   }, [isCloudMachine, liveMachines]);
   const machineFilterIdForKey = useCallback((key: string): string => {
     const machineId = machineIdForKey(key);
     return (machineId ? entryIdByMachineId.get(machineId) : null) ?? LANES_MACHINE_FILTER_ALL;
   }, [entryIdByMachineId, machineIdForKey]);
+
+  /* ---- Quiet marks ---- */
+
+  // "Computer deleted" on a deleted computer's lane, "Deleting soon" on a lane
+  // whose computer the idle cleanup warned about; by row key, from the lists
+  // already read (no read per row).
+  const noteByLaneKey = useMemo(() => {
+    const map = new Map<string, CloudLaneRowNote>();
+    for (const [key, deleted] of deletedLaneByKey) map.set(key, deletedByLaneId.get(deleted.laneId) ?? COMPUTER_DELETED_ROW_NOTE);
+    if (deletingSoonByLaneId.size > 0) {
+      for (const lane of allViewLanes) {
+        const realLaneId = foreignRowByKey.get(lane.id)?.lane.id ?? lane.id;
+        const note = map.has(lane.id) ? null : deletingSoonByLaneId.get(realLaneId);
+        if (note) map.set(lane.id, note);
+      }
+    }
+    return map;
+  }, [allViewLanes, deletedByLaneId, deletedLaneByKey, deletingSoonByLaneId, foreignRowByKey]);
 
   return {
     allMachineLanes,
@@ -390,5 +475,7 @@ export function useLanesPageMachines({
     offlineTabMachineName,
     machineFilterEntries,
     machineFilterIdForKey,
+    deletedLaneByKey,
+    noteByLaneKey,
   };
 }

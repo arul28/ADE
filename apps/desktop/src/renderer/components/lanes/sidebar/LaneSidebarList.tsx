@@ -95,15 +95,13 @@ export type LaneSidebarListProps = {
   foreignLaneIds?: ReadonlySet<string>;
   /** Rendered between the filter row and the list (the ADE Cloud notices). */
   toolbar?: React.ReactNode;
-  /** Rendered at the top of the scrolling list: content that is the list (the lanes without a computer). */
-  listHeader?: React.ReactNode;
+  /** A quiet mark per row key ("Computer deleted", "Deleting soon") with its hover text. */
+  noteByLaneId?: ReadonlyMap<string, { label: string; title: string }>;
   /** The Computer filter's entries; two or fewer means there is nothing to filter. */
   machineFilterEntries?: readonly LaneMachineFilterEntry[];
-  /** `"all"`, a computer id, ADE Cloud, or the lanes without a computer. */
+  /** `"all"`, a computer id, or ADE Cloud. */
   machineFilter?: string;
   onMachineFilterChange?: (next: string) => void;
-  /** True while the list *is* the lanes without a computer (its block renders in the toolbar). */
-  hideEmptyState?: boolean;
   /** What "nothing here" says instead of "No lanes match" (a computer filter is on). */
   emptyMessage?: string;
 };
@@ -157,11 +155,10 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     disabledReasonByLaneId,
     foreignLaneIds,
     toolbar,
-    listHeader,
+    noteByLaneId,
     machineFilterEntries = EMPTY_MACHINE_FILTER_ENTRIES,
     machineFilter = LANES_MACHINE_FILTER_ALL,
     onMachineFilterChange,
-    hideEmptyState = false,
     emptyMessage,
   } = props;
   const listRef = useRef<HTMLDivElement>(null);
@@ -172,12 +169,8 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const machineFilterActive = machineFilter !== LANES_MACHINE_FILTER_ALL;
   // Nothing to filter on a project that lives on one computer, unless a filter
-  // is already on (it must always be reachable to clear) or lanes without a
-  // computer exist: that entry is the only way to reach them, so the funnel
-  // appears for it alone.
-  const machineFilterOffered = machineFilterEntries.length > 2
-    || machineFilterEntries.some((entry) => entry.kind === "noComputer")
-    || machineFilterActive;
+  // is already on (it must always be reachable to clear).
+  const machineFilterOffered = machineFilterEntries.length > 2 || machineFilterActive;
   const groupBy = layout.groupBy;
   // Two rows of one name on two machines (two main checkouts) name their
   // machine on screen; else they look the same.
@@ -214,6 +207,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     const laneId = row.lane.id;
     const deleteProgress = deleteProgressByLaneId[laneId] ?? null;
     const deleting = isLaneDeleteProgressActive(deleteProgress);
+    const note = noteByLaneId?.get(laneId) ?? null;
     return (
       <LaneSidebarRow
         key={laneId}
@@ -240,6 +234,8 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
         shareTarget={shareTargetByLaneId?.get(laneId) ?? null}
         disabledReason={disabledReasonByLaneId?.get(laneId) ?? null}
         foreign={foreignLaneIds?.has(laneId) ?? false}
+        noteLabel={note?.label ?? null}
+        noteTitle={note?.title ?? null}
         onSelect={onSelectRow}
         onContextMenu={onContextMenu}
         onOpenPr={onOpenPr}
@@ -384,7 +380,6 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
         className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1.5 pb-2 outline-none"
         onKeyDown={onListKeyDown}
       >
-        {listHeader}
         {groupBy === "list" ? (
           <div className="flex flex-col gap-0.5">
             {layout.rows.map(renderRow)}
@@ -422,7 +417,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
             })}
           </div>
         )}
-        {!hideEmptyState && rowCount === 0 && creatingRows.length === 0 ? (
+        {rowCount === 0 && creatingRows.length === 0 ? (
           <div className="px-2 py-6 text-center text-[12px]" style={{ color: COLORS.textMuted }}>
             {loading && totalLaneCount === 0
               ? "Loading lanes…"
@@ -430,7 +425,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
                 ? (loadError ? `Couldn't load lanes. ${loadError}` : (emptyMessage ?? "No lanes yet"))
                 : (emptyMessage ?? "No lanes match")}
           </div>
-        ) : !hideEmptyState && filter.trim().length === 0 && totalLaneCount === 1 && creatingRows.length === 0 ? (
+        ) : filter.trim().length === 0 && totalLaneCount === 1 && creatingRows.length === 0 ? (
           // Only the primary lane: the next step is a lane to work in.
           <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-[12px]" style={{ color: COLORS.textMuted }}>
             <span>Lanes keep each task on its own branch</span>

@@ -457,6 +457,8 @@ import { startAccountCloudChat } from "../../state/accountCloudLaunches";
 import { readAccountProjectList } from "../../state/useRepositoryCopies";
 import { useAdeCloudSignInNeed } from "./useAdeCloudSignInNeed";
 import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
+import { CloudLaneComputerDeletedBanner, cloudLaneComputerDeletedFacts } from "../cloudLane/CloudLaneComputerDeletedBanner";
+import { useCloudAccount } from "../../state/cloudAccountStore";
 import { useFollowLaneMoves } from "../cloudLane/useFollowLaneMoves";
 import { CloudLaneHeaderButton } from "../cloudLane/CloudLaneHeaderButton";
 import { CloudLaneDeletingSoonBand } from "../cloudLane/CloudLaneDeletingSoonBand";
@@ -19431,6 +19433,30 @@ export function AgentChatPane({
     activeComposerRuntimeBinding,
     Boolean(selectedSessionId) && !chatScope && cursorRuntime !== "cloud",
   );
+  // The open chat's ADE Cloud computer was deleted (its lane kept, or only its
+  // saved chats left): the banner says so and what the next message does, and
+  // its blocked form stops Send. The account is read only while that holds.
+  const chatGoneLocation = selectedSessionId && !subagentView && !chatScope
+    ? savedChatLocation(chatForeignPin, selectedSessionId, () => false)
+    : null;
+  const chatComputerDeleted = Boolean(selectedSessionId) && !subagentView
+    && (freedChatLaneRef.current != null || chatGoneLocation?.computerGone === true);
+  const deletedComputerAccount = useCloudAccount(chatComputerDeleted);
+  const deletedComputerLaneId = freedChatLaneRef.current?.laneId ?? chatGoneLocation?.row.laneId ?? selectedSession?.laneId ?? null;
+  const deletedComputerFacts = chatComputerDeleted && deletedComputerLaneId
+    ? cloudLaneComputerDeletedFacts({
+        laneId: deletedComputerLaneId,
+        laneName: chatGoneLocation?.row.laneName?.trim() || laneLabel?.trim() || "this lane",
+        kept: freedChatLaneRef.current,
+        computer: chatGoneLocation?.row.computer ?? null,
+        branch: (chatMachineLanes ?? lanes).find((lane) => lane.id === deletedComputerLaneId)?.branchRef ?? null,
+        account: deletedComputerAccount,
+        defaultTier: rootAppStoreApi.getState().cloudDefaultTier,
+        viaQueue: Boolean(window.ade?.cloud?.sendChatMessage),
+        binding: projectBinding,
+        originUrl: originUrlForBinding(projectBinding),
+      })
+    : null;
   // A draft reads the launch defaults of the machine it will launch on, again
   // whenever that machine changes, a chat is created, or the window regains
   // focus (another client may have launched since).
@@ -19580,7 +19606,9 @@ export function AgentChatPane({
   // missing login does not hold it off (a failed turn still shows its card).
   const sessionRunsInACloud = Boolean(selectedSessionId) && composerCloudRuntime === "cloud";
   const providerSignInNeed = useMemo<(ProviderSignInNeed & { key: string }) | null>(() => {
-    if (!signInProvider || turnActive || subagentView || chatScope || draftSkipsLocalSignIn) return null;
+    // A chat whose ADE Cloud computer was deleted has no computer to sign in
+    // on: its next message goes through the account to a new computer.
+    if (!signInProvider || turnActive || subagentView || chatScope || draftSkipsLocalSignIn || chatComputerDeleted) return null;
     const machineKey = activeComposerRuntimeBinding?.key ?? "tab";
     // A failed sign-in asks for a login only when this chat runs on that login:
     // a custom provider or a key brings its own, so the harness's sign-out is
@@ -19601,7 +19629,7 @@ export function AgentChatPane({
       return { provider: signInLoginProvider, reason: "no-login", key: `${machineKey}:${signInLoginProvider}:no-login` };
     }
     return null;
-  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, chatScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
+  }, [activeComposerRuntimeBinding?.key, chatComputerDeleted, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, chatScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
   // The connection of the provider the card signs in to.
   const signInConnection = providerSignInNeed ? signInConnections?.[providerSignInNeed.provider] ?? null : null;
   // Not now hides this card until a different reason (another failed turn,
@@ -21815,7 +21843,7 @@ export function AgentChatPane({
             onRemoveBuiltInBrowserContext={removeBuiltInBrowserContext}
             onOpenAiSettings={openProviderSignIn}
             aboveComposerSlot={composerAboveSlot}
-            sendBlockedReason={sendBlockedReason ?? signInSendBlockReason ?? adeCloudSignInBlockReason ?? adeCloudNotice?.message ?? null}
+            sendBlockedReason={sendBlockedReason ?? signInSendBlockReason ?? adeCloudSignInBlockReason ?? adeCloudNotice?.message ?? deletedComputerFacts?.blocked?.message ?? null}
             onSendBlocked={handleSendBlocked}
             sendBlockExempt={sendRunsWithoutSignIn}
             onOpenLinearSettings={openLinearSettings}
@@ -22508,6 +22536,9 @@ export function AgentChatPane({
           />
         ) : null}
         <ChatMachineWakeBanner style={RUNTIME_BANNER_STYLE} />
+        {deletedComputerFacts && cloudQueueSend?.chatId !== selectedSessionId ? (
+          <CloudLaneComputerDeletedBanner facts={deletedComputerFacts} onOpenSettings={openAdeCloudSettings} style={RUNTIME_BANNER_STYLE} />
+        ) : null}
         {cloudQueueSend && cloudQueueSend.chatId === selectedSessionId ? (
           <CloudQueueSendCard
             send={cloudQueueSend}

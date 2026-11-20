@@ -87,27 +87,13 @@ export function LaneFilterPanel({ entries, value, onChange, className }: LaneFil
                     <DropdownMenu.RadioItem
                       key={entry.id}
                       value={entry.id}
-                      className={cn(
-                        MENU_ITEM_CLASS,
-                        // The lanes without a computer are not a machine: they
-                        // sit under ADE Cloud, quieter, with their count.
-                        entry.kind === "noComputer" && "pl-7 text-muted-fg",
-                      )}
-                      data-testid={`lane-filter-entry-${entry.kind === "noComputer" ? "no-computer" : entry.id}`}
+                      className={MENU_ITEM_CLASS}
+                      data-testid={`lane-filter-entry-${entry.id}`}
                     >
                       <span className={CHECK_CLASS}>
                         <DropdownMenu.ItemIndicator><Check size={10} weight="bold" /></DropdownMenu.ItemIndicator>
                       </span>
-                      <span className="min-w-0 flex-1 truncate">
-                        {entry.kind === "noComputer" ? `${entry.name} · ${entry.laneCount}` : entry.name}
-                      </span>
-                      {entry.kind === "noComputer" && entry.unseen ? (
-                        <span
-                          role="img"
-                          aria-label="New"
-                          className="ml-1 inline-block h-1.5 w-1.5 shrink-0 rounded-[2px] bg-[var(--adec-lamp)]"
-                        />
-                      ) : null}
+                      <span className="min-w-0 flex-1 truncate">{entry.name}</span>
                     </DropdownMenu.RadioItem>
                   ))}
                 </DropdownMenu.RadioGroup>

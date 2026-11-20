@@ -528,6 +528,51 @@ function mockCleanup(machines: CloudLaneMachine[], planId: "free" | "plus" | "pr
   return { ...facts, computers, choices, startsAt, freeing: null, sentence: planCleanupSentence(facts) };
 }
 
+/** Saved chats whose computer ADE deleted, for the `idle` preview: fake ids and text only. */
+function mockDeletedComputerChats(now: number) {
+  const projectKey = "github.com/acme-labs/browser-preview";
+  const chat = (spec: { chatId: string; machineKey: string; laneId: string; laneName: string; title: string; agoMs: number; deletedAgoMs: number; reason: "idle" | "plan" }) => ({
+    title: spec.title,
+    laneId: spec.laneId,
+    laneName: spec.laneName,
+    status: "ended",
+    toolType: "claude-chat",
+    provider: "claude",
+    model: "claude-opus-5-5",
+    projectKey,
+    projectId: "browser-preview",
+    projectRoot: "/home/ade/work/browser-preview",
+    lastActivityAt: new Date(now - spec.agoMs).toISOString(),
+    machineKey: spec.machineKey,
+    chatId: spec.chatId,
+    instanceId: `inst-${spec.laneId}`,
+    lastSeq: 1,
+    updatedAt: now - spec.agoMs,
+    computer: { state: "deleted" as const, deletedAt: now - spec.deletedAgoMs, reason: spec.reason },
+  });
+  const chats = [
+    chat({ chatId: "saved-pricing-1", machineKey: "mk-gone-pricing", laneId: "lane-pricing-page", laneName: "pricing-page", title: "Pricing page copy", agoMs: 3 * DAY, deletedAgoMs: DAY, reason: "idle" }),
+    chat({ chatId: "saved-onboarding-1", machineKey: "mk-gone-lane-without-0", laneId: "lane-without-0", laneName: "onboarding-copy", title: "Onboarding copy pass", agoMs: 4 * DAY, deletedAgoMs: DAY, reason: "idle" }),
+  ];
+  const transcript = (row: (typeof chats)[number]) => [
+    { sessionId: row.chatId, timestamp: new Date(row.updatedAt - 60_000).toISOString(), event: { type: "user_message", text: `Tidy up the ${row.laneName} text.` } },
+    { sessionId: row.chatId, timestamp: new Date(row.updatedAt).toISOString(), event: { type: "text", text: "Done. I shortened the headings and fixed two typos." } },
+  ].map((line) => JSON.stringify(line)).join("\n") + "\n";
+  return {
+    list: async (args: { projectKey?: string | null }) => ({
+      chats: chats.filter((row) => !args.projectKey || row.projectKey === args.projectKey),
+      nextCursor: null,
+    }),
+    read: async (args: { machineKey: string; chatId: string }) => {
+      const row = chats.find((entry) => entry.chatId === args.chatId && entry.machineKey === args.machineKey);
+      return row ? { chat: row, parts: [{ seq: 1, text: transcript(row) }], hasMore: false, nextBefore: null } : null;
+    },
+    delete: async (args: unknown) => {
+      console.info("[browser mock] cloud.savedChats.delete", args);
+    },
+  };
+}
+
 export function applyBrowserMockCloud(ade: any): void {
   // `&mockTheme=<theme id>`: open the preview on that theme (light, dark, ...), for checking both.
   const theme = param("mockTheme");
@@ -569,12 +614,15 @@ export function applyBrowserMockCloud(ade: any): void {
     type: "default",
     cpu: 2,
     memoryGb: 4,
-    projectOrigin: "github.com/acme/web",
-    freedAt: now - 3 * DAY,
-  }) as unknown as CloudLaneWithoutComputer);
+    // The preview project's own origin, so its Lanes and Work pages list these lanes.
+    projectOrigin: "github.com/acme-labs/browser-preview",
+    // The old computer: its saved chats are filed under this key.
+    formerInstanceId: `inst-lane-without-${index}`,
+    formerMachineKey: `mk-gone-lane-without-${index}`,
+  }));
   // Lane backups at rest (`laneBackups.ts`): the kept lane's saved work, and one from a deleted project's lane.
   let backups: CloudLaneBackup[] = scenario === "idle" ? [
-    mockBackup({ laneId: "lane-without-0", laneName: "onboarding-copy", branchRef: "ade/onboarding-copy", projectKey: "github.com/acme/web", commits: 2, files: 3, savedAt: now - 3 * DAY }),
+    mockBackup({ laneId: "lane-without-0", laneName: "onboarding-copy", branchRef: "ade/onboarding-copy", projectKey: "github.com/acme-labs/browser-preview", commits: 2, files: 3, savedAt: now - 3 * DAY }),
     mockBackup({ laneId: "lane-docs-search", laneName: "docs-search", branchRef: "ade/docs-search", projectKey: "github.com/acme/docs", commits: 4, files: 0, savedAt: now - 5 * DAY }),
   ] : [];
   const statusListeners = new Set<() => void>();
@@ -665,6 +713,16 @@ export function applyBrowserMockCloud(ade: any): void {
       console.info("[browser mock] cloud.openFreeUnlock");
       return { opened: true, unlocked: false };
     },
+    // `idle`: saved chats of computers ADE deleted, so Work and the chat show
+    // a deleted computer's lane (one kept by the server, one not).
+    ...(scenario === "idle" ? {
+      savedChats: mockDeletedComputerChats(now),
+      // The account's queue: a message to a deleted computer's chat makes a new one.
+      sendChatMessage: async (args: { messageId: string }) => {
+        console.info("[browser mock] cloud.sendChatMessage", args);
+        return { state: "sent", messageId: args.messageId, wake: { state: "launching", launchId: null } };
+      },
+    } : {}),
     laneLife: async ({ method }: { method: string }) => {
       if (method === "lanesWithoutComputer") return without;
       if (method === "listJobs") return [];

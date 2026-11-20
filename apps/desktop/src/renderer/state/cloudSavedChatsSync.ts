@@ -352,7 +352,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       const machineId = connection?.target.id ?? `${SAVED_CHATS_MACHINE_PREFIX}${machineKey}`;
       const previous = store.crossMachineLanesByMachineId[machineId] ?? null;
       if (!connection) keptSyntheticIds.add(machineId);
-      const machineName = (laneComputer ? name : null) ?? connection?.target.name ?? name ?? (gone ? "Deleted computer" : previous?.machineName ?? "ADE Cloud");
+      const machineName = (laneComputer ? name : null) ?? connection?.target.name ?? name ?? (gone ? null : previous?.machineName) ?? ADE_CLOUD_NAME;
       const binding = previous?.binding
         ?? (connection ? realBinding(connection, first) : null)
         ?? savedBinding(machineId, first, machineName);
@@ -452,8 +452,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     }
     // The project's lane computers the account knows that no slice lists yet
     // (no chat, and the lane index has not named them): each lists once, on
-    // its computer's slice. A lane kept without a computer lists in its own
-    // block (`CloudLanesWithoutComputerList`), never here.
+    // its computer's slice. A lane kept without a computer lists through
+    // `useCloudLanesWithoutComputerRows` (Work and Lanes), never here.
     for (const lane of overview?.lanes ?? []) {
       const machineKey = lane.machineKey;
       if (!machineKey || !lane.computer || goneMachineKeys.has(machineKey.toLowerCase())) continue;
