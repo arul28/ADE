@@ -57,6 +57,7 @@ import { createTrackFeedPolicy } from "./updateTrackFeed";
 import type { LatestByTrackReader } from "../../../shared/latestByTrack";
 import type { UpdateTrackSwitchResult } from "../../../shared/types";
 import { InstallOnQuitDeferredError } from "./installOnQuit";
+import { updateBlockCause } from "../../../shared/updateBlock";
 import { RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
@@ -285,6 +286,13 @@ type CreateAutoUpdateServiceArgs = {
   forceQuit?: (args: { blockedPhase: string; blockedMs: number }) => void;
   getRuntimeActivitySummary?: () => Promise<{ idle: boolean }>;
   productAnalyticsService?: Pick<ProductAnalyticsService, "captureInternal">;
+  /**
+   * The Windows installer's report of what held the install folder's files
+   * when an update could not replace them (`build/ade-update-holders.ps1`),
+   * parsed; null when there is none. Read only by the launch that finds a
+   * failed install.
+   */
+  readUpdateBlockReport?: () => unknown;
   now?: () => string;
   nowMs?: () => number;
   releaseNotesBaseUrl?: string;
@@ -739,6 +747,7 @@ export function createAutoUpdateService({
   readSelectedTrack,
   writeSelectedTrack,
   latestByTrack,
+  readUpdateBlockReport,
 }: CreateAutoUpdateServiceArgs) {
   updater.logger = null;
   // Manual download is required so ADE can preflight the updater cache volume
@@ -825,8 +834,10 @@ export function createAutoUpdateService({
     // Reported by the launch that found it. The failure stays saved for the
     // notice (and the retry count), and later launches that only carry it
     // over used to report the same failure again every time.
+    const blockedBy = updateBlockCause(readUpdateBlockReport?.() ?? null, initialState.failedInstall.targetVersion);
     logger.error("autoUpdate.install_did_not_land", {
       targetVersion: initialState.failedInstall.targetVersion,
+      blockedBy,
       currentVersion,
       attempt: initialState.failedInstall.attempt,
       downloadPreserved: initialState.cacheCleanupReason == null,
@@ -844,6 +855,7 @@ export function createAutoUpdateService({
       properties: {
         attempt: initialState.failedInstall.attempt,
         handoff_step: initialState.failedInstallHandoff?.step ?? "none",
+        blocked_by: blockedBy,
       },
     });
   }

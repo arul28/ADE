@@ -315,6 +315,11 @@ The Machines panel:
   in this account's directory. Nothing re-pairs on its own.
 - `SavedMachineRow.tsx`, `MachineIdentity.tsx`, `remoteMachineModel.ts`,
   `UpdateSteps.tsx` — one machine row.
+- `machineUpdateStatus.ts` — where an "Update & restart" sent to another
+  machine stands (in flight, landed, failed and why), for every update
+  surface: the grace, the far brain's restart (`hostStartedAt`) and the
+  Windows installer's report of what held its files (`hostUpdateBlock`). The
+  phone's copy is `describeMachineUpdateAttempt` in `MachineUpdateStore.swift`.
   - The computer drawn with its platform logo in the machine's color
     (`machineColorKey`); a hand-picked color applies to this computer only
     (`ade.machineColors.v1`). A presence dot, a version chip and the winning
