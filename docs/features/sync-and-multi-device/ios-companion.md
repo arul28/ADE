@@ -1501,6 +1501,23 @@ drops a set after 30 s; the phone sends chunks only after
   frame per display frame (turn state, pending input and local echoes apply at
   once).
 - Hub navigation activates the chat's project before it opens the chat.
+- **The machine moved to another project.** A brain hosts one project's sync
+  at a time, and another device's switch, a restart or a fallback can move it
+  while the phone stays on its own (logged as `project_scope.sync_host_switched`
+  with its `reason`, and `sync_host.project_switch_requested` with the asking
+  device). The host serves a chat envelope stamped with a project it does not
+  host from that project's transcripts, like a cross-project chat. A
+  `chat_subscribe` it cannot serve at all gets a snapshot with `unavailable
+  { code, message }` (`project_not_open`, `project_mismatch`, `no_chat_scope`,
+  `transcript_read_failed`) for a phone that advertises
+  `chatSubscribeUnavailableV1`, so the chat shows the reason instead of waiting
+  out its watchdog; older phones get no answer, as before. The phone notices the
+  move from the catalog, the hello or a `changeset_ack` mismatch: after 15 s it
+  sends `project_switch_request` for its own project and reconnects, and the new
+  hello restores every chat and terminal subscription. It does this at most once
+  per machine every 10 minutes; a second move inside that window means two
+  devices want different projects, so it holds until the person picks one.
+  Diagnostics carry `hostedProjectIsActive` and `hostedProjectHeld`.
 - A `session_meta_updated` event with a mode change updates the summary
   through `applyChatSessionMetaModeUpdateIfNeeded`
   (`AgentChatSessionMetaModeUpdate`, all optional), so the mode pill updates

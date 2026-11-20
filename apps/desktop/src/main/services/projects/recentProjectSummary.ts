@@ -464,7 +464,9 @@ const gitOriginSpawnCache = new Map<string, { signature: string; url: string | n
  */
 function gitOriginSpawnSignature(config: CheckoutGitConfig): string | null {
   if (!config.selfContained) return null;
-  const home = os.homedir();
+  // git finds the global file through HOME; on Windows os.homedir() reads
+  // USERPROFILE, which Git Bash and some setups point elsewhere.
+  const home = process.env.HOME?.trim() || os.homedir();
   const xdgConfigHome = process.env.XDG_CONFIG_HOME?.trim() || path.join(home, ".config");
   const globalFiles = [
     process.env.GIT_CONFIG_GLOBAL?.trim() || path.join(home, ".gitconfig"),
