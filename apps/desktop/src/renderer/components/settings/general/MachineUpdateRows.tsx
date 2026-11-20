@@ -186,7 +186,7 @@ function MachineUpdateRow({
     const connected = fact.connected;
     const attempt = updates.attempts[machine.machineId] ?? null;
     const described = attempt
-      ? describeMachineUpdateAttempt(attempt, { connected: true, version: connected.version }, updates.nowMs)
+      ? describeMachineUpdateAttempt(attempt, { connected: true, version: connected.version, hostStartedAt: connected.hostStartedAt, hostUpdateBlock: connected.hostUpdateBlock }, updates.nowMs)
       : null;
     status = described ? { ok: described.ok, message: described.message } : null;
     const updating = updates.updatingIds.has(machine.machineId) || described?.inFlight === true;

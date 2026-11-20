@@ -132,6 +132,28 @@ quit is left alone and ADE stays closed, the same rule the window follows,
 unless the person opened ADE during the install (`launch-requested.json` is
 beside the window): then it is closed and ADE reopened.
 
+First, though, the hook names what blocked the update. It unpacks
+`build/ade-update-holders.ps1` into its plugins folder and runs it. The script
+asks Windows' Restart Manager which processes have the install folder's
+programs, libraries, native modules or `app.asar` open, and adds any process
+whose command line names the folder. Processes from outside the folder come
+first. It writes them to `<ADE home>\runtime\update-blocked.json` and adds an
+`install update_blocked … holders=` line to `install-steps.log`. On 2026-11-19
+an orphaned dev app from a PC lane blocked four updates in a row, and nothing
+said so. The brain reports the file in its handshake
+(`runtimeInfo.lastUpdateBlock`, `ade-cli/src/lib/updateBlockedReport.ts`). It
+drops a report once that version is installed, or after 6 h. The brain reads the
+file off the event loop. Another computer's Machines card then reads "didn't
+install: node.exe (PID 7292) had ADE's files open. Close it, then press Update".
+
+That card also stops waiting out its grace (5 min, or 35 min while
+downloading) when the far brain has restarted since the update was sent and
+has stayed up a minute on the old version (`hostStartedAt`, taken from the
+handshake's `uptimeMs`). A link that only dropped keeps the same brain, so it
+does not count. The phone's card (`MachineUpdateStore.swift`) does not have
+either signal yet: it reads machines from the account directory, not a
+handshake.
+
 The window also writes a heartbeat. A copy of the old ADE opened by hand during
 the install (the person sees nothing happening and clicks the shortcut) reads
 it, brings the window forward, and exits before starting anything, instead of

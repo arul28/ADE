@@ -209,6 +209,7 @@ import {
 import { gitRemoteIdentity, peerGitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
 import { readInstalledDesktopAppVersion } from "../../desktop/src/main/services/native/nativeHelperPaths";
+import { createUpdateBlockedReader } from "./lib/updateBlockedReport";
 import { readDesktopUpdateInstallMode } from "../../desktop/src/main/services/native/desktopUpdateInstallMode";
 
 type HandlerEntry = {
@@ -3006,9 +3007,15 @@ export function createMultiProjectRpcRequestHandler(
     }
   };
 
+  // Only the Windows installer writes the report (ade-update-holders.ps1).
+  const updateBlockedReader = process.platform === "win32"
+    ? createUpdateBlockedReader(path.join(resolveMachineAdeLayout().adeDir, "runtime"))
+    : null;
+
   const resolveRuntimeEnvInfo = () => {
     const projectRoot = trimmedEnvOrNull("ADE_PROJECT_ROOT");
     const packageChannel = trimmedEnvOrNull("ADE_PACKAGE_CHANNEL");
+    const desktopAppVersion = readInstalledDesktopAppVersion();
     return {
       buildHash: trimmedEnvOrNull("ADE_RUNTIME_BUILD_HASH") ?? computeRuntimeBuildHash(),
       defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
@@ -3021,7 +3028,10 @@ export function createMultiProjectRpcRequestHandler(
       // The installed desktop app's version, beside this brain's own: after
       // `ade brain update` they differ, and another device must not read the
       // brain's version as the app's. Null on a machine with no app.
-      desktopAppVersion: readInstalledDesktopAppVersion(),
+      desktopAppVersion,
+      // What kept the last update from installing, for the Machines card on
+      // other computers; null when nothing did, or that version is in since.
+      lastUpdateBlock: updateBlockedReader?.read(Date.now(), desktopAppVersion) ?? null,
       ...readDesktopUpdateInstallMode(),
     };
   };

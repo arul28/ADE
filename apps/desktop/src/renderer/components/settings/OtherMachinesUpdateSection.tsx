@@ -146,7 +146,7 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
         ) : [...ownMachines.map((machine) => {
           const attempt = machineUpdates.attempts[machine.id] ?? null;
           const status = attempt
-            ? describeMachineUpdateAttempt(attempt, { connected: true, version: machine.version }, machineUpdates.nowMs)
+            ? describeMachineUpdateAttempt(attempt, { connected: true, version: machine.version, hostStartedAt: machine.hostStartedAt, hostUpdateBlock: machine.hostUpdateBlock }, machineUpdates.nowMs)
             : null;
           const updating = machineUpdates.updatingIds.has(machine.id) || status?.inFlight === true;
           const checking = machineUpdates.checkingIds.has(machine.id);

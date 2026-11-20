@@ -565,6 +565,8 @@ export class RemoteConnectionService {
         version: result.version,
         // Read with the version, so a brain that stopped reporting it clears it.
         appVersion: result.appVersion ?? null,
+        hostStartedAt: result.hostStartedAt ?? null,
+        hostUpdateBlock: result.hostUpdateBlock ?? null,
         updateInstallMode: result.updateInstallMode,
         downloadUrl: result.downloadUrl ?? null,
         arch: result.arch,
@@ -1221,6 +1223,8 @@ export class RemoteConnectionService {
           // Only beside the live version it was read with, never beside the
           // persisted one, which can be from another connection.
           appVersion: status.version != null ? status.appVersion ?? null : null,
+          hostStartedAt: status.version != null ? status.hostStartedAt ?? null : null,
+          hostUpdateBlock: status.version != null ? status.hostUpdateBlock ?? null : null,
           updateInstallMode: status.version != null ? status.updateInstallMode : undefined,
           downloadUrl: status.version != null ? status.downloadUrl ?? null : null,
           ...(status.route ? { route: status.route } : {}),
@@ -1379,6 +1383,8 @@ export class RemoteConnectionService {
         arch: connectedResult.arch,
         version: connectedResult.version,
         appVersion: connectedResult.appVersion ?? null,
+        hostStartedAt: connectedResult.hostStartedAt ?? null,
+        hostUpdateBlock: connectedResult.hostUpdateBlock ?? null,
         updateInstallMode: connectedResult.updateInstallMode,
         downloadUrl: connectedResult.downloadUrl ?? null,
         route: connectedResult.route,

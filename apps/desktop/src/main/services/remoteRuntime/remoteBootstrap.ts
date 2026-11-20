@@ -14,6 +14,7 @@ import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetRoute,
+  RemoteRuntimeUpdateBlock,
   RemoteRuntimeUpdateInstallMode,
 } from "../../../shared/types/remoteRuntime";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
@@ -146,6 +147,10 @@ type RemoteRuntimeInitializeInfo = {
   version: string | null;
   /** The machine's installed desktop app version; null with no app or from an older brain. */
   desktopAppVersion: string | null;
+  /** See `RemoteRuntimeConnectResult.hostStartedAt`. */
+  hostStartedAt: number | null;
+  /** See `RemoteRuntimeConnectResult.hostUpdateBlock`. */
+  hostUpdateBlock: RemoteRuntimeUpdateBlock | null;
   updateInstallMode?: RemoteRuntimeUpdateInstallMode;
   downloadUrl?: string | null;
   packageChannel: string | null;
@@ -206,9 +211,14 @@ export function validateRemoteRuntimeInitializeResult(args: {
   const updateInstallMode = runtimeInfo.updateInstallMode === "in_place" || runtimeInfo.updateInstallMode === "manual_download" || runtimeInfo.updateInstallMode === "runtime_only"
     ? runtimeInfo.updateInstallMode : undefined;
   const downloadUrl = typeof runtimeInfo.downloadUrl === "string" ? runtimeInfo.downloadUrl : null;
+  const uptimeMs = typeof runtimeInfo.uptimeMs === "number" && Number.isFinite(runtimeInfo.uptimeMs) && runtimeInfo.uptimeMs >= 0
+    ? runtimeInfo.uptimeMs
+    : null;
   return {
     version,
     desktopAppVersion,
+    hostStartedAt: uptimeMs == null ? null : Date.now() - uptimeMs,
+    hostUpdateBlock: readHostUpdateBlock(runtimeInfo.lastUpdateBlock),
     updateInstallMode,
     downloadUrl,
     packageChannel,
@@ -228,6 +238,25 @@ export function validateRemoteRuntimeInitializeResult(args: {
       ...(chatLaunchKinds.length ? { chatLaunchKinds } : {}),
     },
     compatibilityWarnings,
+  };
+}
+
+/** `runtimeInfo.lastUpdateBlock` (ade-cli `UpdateBlockedReport`), or null when absent or malformed. */
+function readHostUpdateBlock(value: unknown): RemoteRuntimeUpdateBlock | null {
+  if (!isRecord(value)) return null;
+  const ageMs = typeof value.ageMs === "number" && Number.isFinite(value.ageMs) && value.ageMs >= 0 ? value.ageMs : null;
+  if (ageMs == null) return null;
+  const holders = (Array.isArray(value.holders) ? value.holders : []).flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const pid = typeof entry.pid === "number" && Number.isInteger(entry.pid) ? entry.pid : null;
+    const name = typeof entry.name === "string" ? entry.name.trim() : "";
+    if (pid == null || !name) return [];
+    return [{ pid, name, path: typeof entry.path === "string" && entry.path.trim() ? entry.path.trim() : null }];
+  });
+  return {
+    at: Date.now() - ageMs,
+    targetVersion: typeof value.targetVersion === "string" && value.targetVersion.trim() ? value.targetVersion.trim() : null,
+    holders: holders.slice(0, 8),
   };
 }
 
@@ -2523,6 +2552,8 @@ async function bootstrapWindowsRemoteRuntime(args: {
       arch: platform.label,
       version: opened.initializeInfo.version ?? runtimeVersion,
       appVersion: opened.initializeInfo.desktopAppVersion,
+      hostStartedAt: opened.initializeInfo.hostStartedAt,
+      hostUpdateBlock: opened.initializeInfo.hostUpdateBlock,
       updateInstallMode: opened.initializeInfo.updateInstallMode,
       downloadUrl: opened.initializeInfo.downloadUrl,
       route: { kind: "ssh", endpoint: `${host}:${connectedRoute.port ?? request.target.port ?? 22}` },

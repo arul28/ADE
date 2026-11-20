@@ -97,7 +97,7 @@ export function isMachineUpdateBusy(
   if (current.updatingIds.has(machine.id) || current.checkingIds.has(machine.id)) return true;
   const attempt = current.attempts[machine.id];
   return attempt != null
-    && describeMachineUpdateAttempt(attempt, { connected: true, version: machine.version }, nowMs).inFlight;
+    && describeMachineUpdateAttempt(attempt, { connected: true, version: machine.version, hostStartedAt: machine.hostStartedAt, hostUpdateBlock: machine.hostUpdateBlock }, nowMs).inFlight;
 }
 
 /**

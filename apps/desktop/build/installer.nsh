@@ -108,6 +108,20 @@
   ${EndIf}
   ${If} $R0 != 0
     DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`
+    ; Name what kept the old files in place (ade-update-holders.ps1), before ADE
+    ; reopens and opens files there itself. The brain reports it to other
+    ; machines; nothing here changes the outcome.
+    StrCpy $1 "stable"
+    ${If} "${PRODUCT_NAME}" == "ADE Alpha"
+      StrCpy $1 "alpha"
+    ${ElseIf} "${PRODUCT_NAME}" == "ADE Beta"
+      StrCpy $1 "beta"
+    ${EndIf}
+    InitPluginsDir
+    File "/oname=$PLUGINSDIR\ade-update-holders.ps1" "${BUILD_RESOURCES_DIR}\ade-update-holders.ps1"
+    DetailPrint "Looking for what kept the old ADE files in use..."
+    nsExec::Exec '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\ade-update-holders.ps1" -InstallDir "$INSTDIR" -PackageChannel "$1" -TargetVersion "${VERSION}"'
+    Pop $1
     MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0" /SD IDOK
     ${If} ${isUpdated}
     ${AndIf} ${Silent}

@@ -108,7 +108,7 @@ function DesktopUpdateBanner({ name, block }: { name: string; block: RemoteMachi
   const updates = useMachineUpdates();
   const { machine, requirement } = block;
   const attempt = updates.attempts[machine.id];
-  const status = attempt ? describeMachineUpdateAttempt(attempt, { connected: true, version: machine.version }, updates.nowMs) : null;
+  const status = attempt ? describeMachineUpdateAttempt(attempt, { connected: true, version: machine.version, hostStartedAt: machine.hostStartedAt, hostUpdateBlock: machine.hostUpdateBlock }, updates.nowMs) : null;
   const busy = isMachineUpdateBusy(updates, machine, updates.nowMs);
   const manual = machineUpdateIsManual(machine, attempt);
   // A brain too old to take `machine.updateAndRestart`, a build whose app

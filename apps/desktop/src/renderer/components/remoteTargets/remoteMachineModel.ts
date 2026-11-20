@@ -11,6 +11,7 @@ import type {
   RemoteRuntimeTargetInput,
   RemoteRuntimeTargetRoute,
   RemoteRuntimeTargetRouteSource,
+  RemoteRuntimeUpdateBlock,
 } from "../../../shared/types";
 import { isTailnetHostname } from "../../../shared/tailnet";
 import { compareUpdateVersions } from "../../../shared/updateVersions";
@@ -737,6 +738,14 @@ export type MachineUpdateAttempt = {
 export const MACHINE_UPDATE_INSTALL_GRACE_MS = 5 * 60_000;
 /** A download first, then the same install. */
 export const MACHINE_UPDATE_DOWNLOAD_GRACE_MS = 35 * 60_000;
+/**
+ * How long a brain that restarted after the update was sent must stay up on
+ * the old version before the update counts as failed. An install restarts the
+ * brain more than once (the old one stops, the new one starts after the files
+ * are swapped); a minute on the old version is past every step of a working
+ * install.
+ */
+export const MACHINE_UPDATE_OLD_BRAIN_SETTLE_MS = 60_000;
 
 export function machineUpdateGraceMs(attempt: MachineUpdateAttempt): number {
   return attempt.downloading ? MACHINE_UPDATE_DOWNLOAD_GRACE_MS : MACHINE_UPDATE_INSTALL_GRACE_MS;
@@ -796,7 +805,14 @@ export type MachineUpdateStatus = {
  */
 export function describeMachineUpdateAttempt(
   attempt: MachineUpdateAttempt,
-  machine: { connected: boolean; version: string | null },
+  machine: {
+    connected: boolean;
+    version: string | null;
+    /** `RemoteRuntimeConnectionStatus.hostStartedAt`; absent when unknown. */
+    hostStartedAt?: number | null;
+    /** `RemoteRuntimeConnectionStatus.hostUpdateBlock`; absent when unknown. */
+    hostUpdateBlock?: RemoteRuntimeUpdateBlock | null;
+  },
   nowMs: number,
 ): MachineUpdateStatus {
   const pending = attempt.pendingVersion;
@@ -804,13 +820,31 @@ export function describeMachineUpdateAttempt(
   if (machine.connected && machine.version && !isMachineVersionOutdated(machine.version, pending)) {
     return { ok: true, message: `Updated to ${machine.version}.`, inFlight: false };
   }
-  if (nowMs - attempt.startedAtMs < machineUpdateGraceMs(attempt)) {
+  // Its brain restarted after the update was sent and has stayed up on the
+  // old version: the install ran and failed (a Windows install that could not
+  // replace the old files reopens the old ADE). Say so now, not after the grace.
+  const restartedOnOldVersion = machine.connected
+    && machine.hostStartedAt != null
+    && machine.hostStartedAt > attempt.startedAtMs
+    && nowMs - machine.hostStartedAt >= MACHINE_UPDATE_OLD_BRAIN_SETTLE_MS;
+  // The installer said why this attempt failed (Windows: what held its files).
+  const block = machine.connected
+    && machine.hostUpdateBlock
+    && machine.hostUpdateBlock.at >= attempt.startedAtMs - UPDATE_BLOCK_CLOCK_SLACK_MS
+    ? machine.hostUpdateBlock
+    : null;
+  if (!block && !restartedOnOldVersion && nowMs - attempt.startedAtMs < machineUpdateGraceMs(attempt)) {
     return { ok: true, message: attempt.message, inFlight: true };
   }
   if (machine.connected) {
+    const stillOn = `Still on ${machine.version ?? "an older version"} — the update to ${pending} didn't install`;
+    if (block) {
+      const close = block.holders.length === 0 ? "Then press Update" : `Close ${block.holders.length === 1 ? "it" : "them"}, then press Update`;
+      return { ok: false, message: `${stillOn}: ${describeUpdateBlock(block)} ${close} to try again.`, inFlight: false };
+    }
     return {
       ok: false,
-      message: `Still on ${machine.version ?? "an older version"} — the update to ${pending} didn't install on that machine. Press Update to try again.`,
+      message: `${stillOn} on that machine. Press Update to try again.`,
       inFlight: false,
     };
   }
@@ -819,6 +853,22 @@ export function describeMachineUpdateAttempt(
     message: `Not back yet after the update to ${pending}. Check that ADE is running on that machine.`,
     inFlight: false,
   };
+}
+
+/**
+ * `hostUpdateBlock.at` is this computer's clock rebuilt from an age, so it can
+ * land a little before the attempt that it belongs to.
+ */
+const UPDATE_BLOCK_CLOCK_SLACK_MS = 30_000;
+
+/** "node.exe (PID 7292) had ADE's files open." Follows "didn't install: ". */
+export function describeUpdateBlock(block: RemoteRuntimeUpdateBlock): string {
+  const names = block.holders.slice(0, 3).map((holder) => `${holder.name} (PID ${holder.pid})`);
+  if (!names.length) return "something on it kept ADE's old files in use.";
+  const more = block.holders.length - names.length;
+  if (more > 0) names.push(`${more} more`);
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return `${list} had ADE's files open.`;
 }
 
 /**
@@ -863,6 +913,10 @@ export type ConnectedMachine = {
   arch?: string | null;
   updateInstallMode?: RemoteRuntimeConnectionStatus["updateInstallMode"];
   downloadUrl?: string | null;
+  /** See `RemoteRuntimeConnectionStatus.hostStartedAt`. */
+  hostStartedAt?: number | null;
+  /** See `RemoteRuntimeConnectionStatus.hostUpdateBlock`. */
+  hostUpdateBlock?: RemoteRuntimeUpdateBlock | null;
   /** False when this client cannot ask it to update (`RemoteRuntimeCapabilities.remoteUpdate`). */
   canUpdate?: boolean;
 };
@@ -885,6 +939,8 @@ export function connectedMachinesFromSnapshot(
         arch: connection.arch ?? connection.target.lastSeenArch ?? null,
         updateInstallMode: connection.updateInstallMode,
         downloadUrl: connection.downloadUrl,
+        hostStartedAt: connection.hostStartedAt ?? null,
+        hostUpdateBlock: connection.hostUpdateBlock ?? null,
         canUpdate: connection.capabilities?.remoteUpdate !== false,
       };
     });
