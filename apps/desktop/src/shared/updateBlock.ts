@@ -33,12 +33,19 @@ export function readUpdateBlockHolders(raw: unknown): UpdateBlockHolder[] {
 export const UPDATE_BLOCK_CAUSES = ["none", "outside_process", "ade_process", "unknown"] as const;
 export type UpdateBlockCause = (typeof UPDATE_BLOCK_CAUSES)[number];
 
-/** `raw` is the installer's parsed `update-blocked.json`; `targetVersion` the update that did not land. */
-export function updateBlockCause(raw: unknown, targetVersion: string): UpdateBlockCause {
-  if (!raw || typeof raw !== "object") return "none";
+/**
+ * `raw` is the installer's parsed `update-blocked.json`; `targetVersion` the
+ * update that did not land, asked for at `requestedAtMs` (same machine, same
+ * clock). A report from before that request belongs to an earlier try; with no
+ * known request time, none counts.
+ */
+export function updateBlockCause(raw: unknown, targetVersion: string, requestedAtMs: number): UpdateBlockCause {
+  if (!raw || typeof raw !== "object" || !Number.isFinite(requestedAtMs)) return "none";
   const record = raw as Record<string, unknown>;
   const reported = typeof record.targetVersion === "string" ? record.targetVersion.trim() : "";
   if (!reported || reported !== targetVersion.trim()) return "none";
+  const at = typeof record.at === "string" ? Date.parse(record.at) : Number.NaN;
+  if (!Number.isFinite(at) || at < requestedAtMs) return "none";
   const holders = readUpdateBlockHolders(record.holders);
   if (holders.length === 0) return "unknown";
   const installDir = typeof record.installDir === "string" ? normalizeWindowsDir(record.installDir) : "";
