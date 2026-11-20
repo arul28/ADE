@@ -755,7 +755,8 @@ struct WorkNewChatScreen: View {
     onChatImported: @escaping @MainActor (AgentChatSessionSummary) async -> Void = { _ in },
     onRefreshLanes: @escaping @MainActor () async -> Void,
     onLaunchStarted: @escaping @MainActor (ChatLaunchSnapshot) async -> Void = { _ in },
-    onCloudLaunchStarted: @escaping @MainActor (String) async -> Void = { _ in }
+    // Required: a host that drops it would clear the composer and open nothing.
+    onCloudLaunchStarted: @escaping @MainActor (String) async -> Void
   ) {
     self.lanes = lanes
     self.preferredLaneId = preferredLaneId
@@ -1936,12 +1937,17 @@ struct WorkNewChatScreen: View {
       using: syncService
     )
     busy = false
-    if cloudLaunches.entries.first(where: { $0.launchId == launchId })?.startError == nil {
-      ADEHaptics.success()
-    } else {
+    let launch = cloudLaunches.entries.first { $0.launchId == launchId }
+    if let startError = launch?.startError, launch?.record == nil {
+      // ADE Cloud kept nothing: the message stays here (false restores the
+      // draft), with the reason, for a send again.
       ADEHaptics.error()
+      cloudLaunches.discardFailedStart(launchId)
+      errorMessage = startError
+      return false
     }
-    // The launch keeps the message: a failed start shows on its page with Retry.
+    ADEHaptics.success()
+    // A start ADE Cloud kept opens its page; a later failure shows there with Retry.
     await onCloudLaunchStarted(launchId)
     return true
   }
@@ -2668,7 +2674,8 @@ struct WorkNewChatPreviewHost: View {
         activeProjectRootPath: "/Users/preview/Projects/ADE",
         onStarted: { _, _, _, _, _ in },
         onCliStarted: { _ in },
-        onRefreshLanes: {}
+        onRefreshLanes: {},
+        onCloudLaunchStarted: { _ in }
       )
     }
   }

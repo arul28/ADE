@@ -808,6 +808,8 @@ extension WorkRootListScreen {
   }
 
   func openSession(_ session: TerminalSessionSummary) {
+    // A chat replaces a pushed launch page: the list pauses again under it.
+    cloudLaunchPageOpen = false
     // A pending-sync row has no synced session to open yet.
     guard !workIsPendingChatCreationSession(session) else { return }
     // The saved copy of an ADE Cloud CLI or shell: read-only, never a terminal.

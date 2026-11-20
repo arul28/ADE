@@ -956,24 +956,31 @@ extension SyncService {
   /// The chat a cloud launch started now runs on its lane's new computer.
   /// This phone never paired that computer, and its project copy is not in
   /// the account list it read at the last foreground. So it reads the
-  /// account again (machines, ADE Cloud computers, project copies) and
-  /// connects the computer, with no wake. Then the computer's roster lists
-  /// the chat in Work at once, not after the next app launch. True when the
-  /// computer has a live link.
+  /// account again (machines, ADE Cloud computers, project copies), each
+  /// read started after the launch ran, and connects the computer, with no
+  /// wake. Then the computer's roster lists the chat in Work at once, not
+  /// after the next app launch. True when the computer has a live link.
   @discardableResult
-  func connectLaunchedCloudComputer(instanceId: String?) async -> Bool {
+  func connectLaunchedCloudComputer(instanceId: String) async -> Bool {
     async let projects: Void = AccountProjectStore.shared.refresh()
-    await readCloudForLaunchedChat()
+    async let machines: Void = AccountService.shared.loadMachines()
+    await refreshCloudServerInstances()
+    await machines
     await projects
-    guard let instanceId = instanceId.flatMap({ nonEmptyTrimmed($0) }),
-          let accountKey = cloudServerInstances.first(where: { $0.id == instanceId })?.machineKey
-    else { return false }
+    guard let accountKey = cloudServerInstances.first(where: { $0.id == instanceId })?.machineKey else { return false }
     resolveCloudMachineKeys()
     let fleetKey = cloudFleetKey(accountMachineKey: accountKey)
-    if fleetKey == focusedMachineKey { return connectionState == .connected }
+    if fleetKey == focusedMachineKey {
+      // The focused computer has its own link (the fleet's connect does not cover it).
+      if connectionState != .connected { await reconnectIfPossible() }
+      return connectionState == .connected
+    }
     guard let fleet = machineFleet else { return false }
-    return await fleet.connect(machineKey: fleetKey, timeout: .seconds(45), wake: false)
+    return await fleet.connect(machineKey: fleetKey, timeout: Self.launchedComputerConnectTimeout, wake: false)
   }
+
+  /// How long a launch's new computer may take to answer its first connect.
+  private static let launchedComputerConnectTimeout: Duration = .seconds(45)
 
   /// A pull on Lanes or Work: the account's machines and ADE Cloud computers
   /// read again, so a computer made since the last look (from the web,

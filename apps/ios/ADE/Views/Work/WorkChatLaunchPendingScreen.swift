@@ -24,8 +24,6 @@ struct WorkChatLaunchPendingScreen: View {
   @State private var busyAction: WorkChatLaunchCardAction?
   @State private var retryingMessageId: String?
   @State private var composerFocused = false
-  /// This composer cannot hold attachments; the shared card still wants a tray.
-  @State private var noAttachments: [WorkChatInputAttachment] = []
 
   private var entry: ChatLaunchEntry? { store.entry(launchId: launchId) }
 
@@ -150,54 +148,15 @@ struct WorkChatLaunchPendingScreen: View {
   // MARK: Composer
 
   private func composer(_ snapshot: ChatLaunchSnapshot) -> some View {
-    let canType = snapshot.phase != .cancelled
-    let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-    return VStack(alignment: .leading, spacing: 6) {
-      Text(composerHint(snapshot))
-        .font(.caption2)
-        .foregroundStyle(ADEColor.textMuted)
-        .padding(.horizontal, 4)
-      // The app's shared glass prompt box, so the placeholder reads as the
-      // chat it turns into.
-      ADEPlainGlassComposer(
-        text: $draft,
-        isFocused: $composerFocused,
-        attachments: $noAttachments,
-        placeholder: "Message",
-        acceptsPastedImages: false,
-        sendEnabled: canType && !trimmed.isEmpty && !sending,
-        sending: sending,
-        sendAccessibilityLabel: "Queue message",
-        disabledSendAccessibilityLabel: "Enter a message to queue",
-        dictationTargetId: "chat-launch-\(launchId)",
-        onSend: { Task { await sendQueuedMessage() } },
-        menu: { startDictation in
-          Menu {
-            if SpeechDictationService.isAvailable {
-              Button(action: startDictation) {
-                Label("Dictate", systemImage: "mic")
-              }
-            }
-          } label: {
-            Image(systemName: "ellipsis")
-              .font(.system(size: 15, weight: .semibold))
-              .foregroundStyle(ADEColor.textSecondary)
-              .frame(width: 36, height: 36)
-              .contentShape(Circle())
-              .frame(minWidth: 44, minHeight: 44)
-          }
-          .disabled(!canType || !SpeechDictationService.isAvailable)
-          .accessibilityLabel("Composer options")
-        },
-        controls: { EmptyView() }
-      )
-      .disabled(!canType)
-      .accessibilityHint("Queued until the agent starts")
-    }
-    .padding(.horizontal, 12)
-    .padding(.top, 6)
-    .padding(.bottom, 8)
-    .workLaunchComposerScrollEdge()
+    WorkChatLaunchQueueComposer(
+      draft: $draft,
+      focused: $composerFocused,
+      hint: composerHint(snapshot),
+      canType: snapshot.phase != .cancelled,
+      sending: sending,
+      dictationTargetId: "chat-launch-\(launchId)",
+      onSend: { Task { await sendQueuedMessage() } }
+    )
   }
 
   private func composerHint(_ snapshot: ChatLaunchSnapshot) -> String {
@@ -224,8 +183,7 @@ struct WorkChatLaunchPendingScreen: View {
       ADEHaptics.light()
     } catch {
       ADEHaptics.error()
-      let typedSince = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-      draft = typedSince.isEmpty ? text : "\(text)\n\n\(draft)"
+      draft = workChatLaunchRestoredDraft(text, typedSince: draft)
       errorMessage = "Couldn't send — \(error.localizedDescription)"
     }
   }

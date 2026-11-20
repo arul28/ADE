@@ -103,7 +103,7 @@ struct WorkChatLaunchSetupCard: View {
     HStack(spacing: 6) {
       let name = launch.laneName.trimmingCharacters(in: .whitespacesAndNewlines)
       if !name.isEmpty {
-        chip(mono: false) {
+        WorkChatLaunchChip {
           WorkLaneLogoMark(color: WorkChatLaunchTone.running, size: 9)
           Text(name)
             .lineLimit(1)
@@ -121,7 +121,7 @@ struct WorkChatLaunchSetupCard: View {
         .accessibilityLabel("Lane \(name)")
       }
       if let base = chatLaunchBaseLabel(launch) {
-        chip(mono: true) {
+        WorkChatLaunchChip(mono: true) {
           Image(systemName: "arrow.triangle.branch")
             .font(.system(size: 8, weight: .semibold))
             .foregroundStyle(ADEColor.textMuted)
@@ -132,18 +132,6 @@ struct WorkChatLaunchSetupCard: View {
         .accessibilityLabel("Base \(base)")
       }
     }
-  }
-
-  private func chip<Content: View>(mono: Bool, @ViewBuilder _ content: () -> Content) -> some View {
-    HStack(spacing: 4) {
-      content()
-    }
-    .font(mono ? .caption2.monospaced() : .caption2.weight(.medium))
-    .foregroundStyle(ADEColor.textSecondary)
-    .padding(.horizontal, 7)
-    .padding(.vertical, 2.5)
-    .background(ADEColor.recessedBackground.opacity(0.5), in: Capsule(style: .continuous))
-    .overlay(Capsule(style: .continuous).strokeBorder(ADEColor.glassBorder, lineWidth: 1))
   }
 
   // MARK: Stages
@@ -301,7 +289,7 @@ struct WorkChatLaunchSetupCard: View {
   private func actionButton(_ action: WorkChatLaunchCardAction, actions: WorkChatLaunchCardActions) -> some View {
     let isBusy = busyAction == action
     let isPrimary = action == .retry || action == .startNow
-    return Button {
+    return WorkChatLaunchCapsuleButton(title: action.title, symbol: action.symbol, primary: isPrimary, busy: isBusy) {
       switch action {
       case .cancel, .delete:
         deleteConfirmationPresented = true
@@ -310,29 +298,7 @@ struct WorkChatLaunchSetupCard: View {
       case .startNow, .startAnyway:
         actions.onStartNow()
       }
-    } label: {
-      HStack(spacing: 4) {
-        if isBusy {
-          ProgressView()
-            .controlSize(.mini)
-        } else {
-          Image(systemName: action.symbol)
-            .font(.system(size: 9, weight: .bold))
-        }
-        Text(action.title)
-      }
-      .font(.caption.weight(.semibold))
-      .foregroundStyle(isPrimary ? WorkChatLaunchTone.running : ADEColor.textSecondary)
-      .padding(.horizontal, 10)
-      .padding(.vertical, 6)
-      .background(isPrimary ? WorkChatLaunchTone.running.opacity(0.12) : Color.clear, in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .strokeBorder(isPrimary ? WorkChatLaunchTone.running.opacity(0.32) : ADEColor.glassBorder, lineWidth: 1)
-      )
-      .contentShape(Capsule(style: .continuous))
     }
-    .buttonStyle(.plain)
     .disabled(busyAction != nil)
   }
 }

@@ -345,6 +345,9 @@ struct WorkRootScreen: View {
   @EnvironmentObject private var dictationController: DictationController
   var isTabActive = true
   @State private var path = NavigationPath()
+  /// A pushed ADE Cloud launch page waits for its chat's row, so the list
+  /// keeps reading while it shows (any other pushed page pauses it).
+  @State private var cloudLaunchPageOpen = false
 
   init(isTabActive: Bool = true) {
     self.isTabActive = isTabActive
@@ -355,8 +358,9 @@ struct WorkRootScreen: View {
       syncService: syncService,
       dictationController: dictationController,
       isTabActive: isTabActive,
-      inputs: WorkRootSyncInputs(syncService, fleet: machineFleet, listVisible: isTabActive && path.isEmpty),
-      path: $path
+      inputs: WorkRootSyncInputs(syncService, fleet: machineFleet, listVisible: isTabActive && (path.isEmpty || cloudLaunchPageOpen)),
+      path: $path,
+      cloudLaunchPageOpen: $cloudLaunchPageOpen
     )
     .equatable()
   }
@@ -382,6 +386,8 @@ struct WorkRootListScreen: View, Equatable {
   let isTabActive: Bool
   let inputs: WorkRootSyncInputs
   @Binding var path: NavigationPath
+  /// The phone's pushed page is an ADE Cloud launch page (`openCloudLaunch`).
+  @Binding var cloudLaunchPageOpen: Bool
 
   /// Whether a chat destination's own computer is live. A chat on another
   /// computer follows that computer's link; the focused computer's chats keep
@@ -398,13 +404,15 @@ struct WorkRootListScreen: View, Equatable {
     dictationController: DictationController,
     isTabActive: Bool,
     inputs: WorkRootSyncInputs,
-    path: Binding<NavigationPath>
+    path: Binding<NavigationPath>,
+    cloudLaunchPageOpen: Binding<Bool>
   ) {
     self.syncService = syncService
     self.dictationController = dictationController
     self.isTabActive = isTabActive
     self.inputs = inputs
     self._path = path
+    self._cloudLaunchPageOpen = cloudLaunchPageOpen
   }
 
   static func == (lhs: WorkRootListScreen, rhs: WorkRootListScreen) -> Bool {
@@ -651,11 +659,18 @@ struct WorkRootListScreen: View, Equatable {
   }
 
   /// The launch rows the Work list shows: a launch whose chat already has its
-  /// own row (its computer's roster lists it) gives way to that row.
+  /// own row (its computer's roster lists it) gives way to that row. A
+  /// status, lane or machine filter hides them (a launch has none of those
+  /// yet); a search keeps the ones whose message or lane matches.
   var listedCloudLaunchEntries: [AccountCloudLaunchStore.Entry] {
-    // A lane launch that finished: the lane and its chats list on their own.
+    guard selectedStatus == .all, selectedLaneId == "all", machineFilterStorage.isEmpty else { return [] }
+    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     let entries = cloudLaunchEntries.filter { entry in
-      !(entry.isLane && (entry.record?.state == "running" || entry.record?.state == "done"))
+      // A lane launch that finished: the lane and its chats list on their own.
+      if entry.isLane && entry.record?.reachedRunning == true { return false }
+      guard !query.isEmpty else { return true }
+      let lane = nonEmptyTrimmed(entry.record?.laneName) ?? entry.laneName ?? ""
+      return entry.prompt.localizedCaseInsensitiveContains(query) || lane.localizedCaseInsensitiveContains(query)
     }
     guard entries.contains(where: { $0.record?.sessionId != nil }) else { return entries }
     let listed = Set(mergedSessions.map(\.id))
@@ -928,8 +943,10 @@ struct WorkRootListScreen: View, Equatable {
     scheduleSessionPresentationRebuild()
   }
 
+  /// The list reads and rebuilds: nothing pushed over it, or only a launch
+  /// page that waits for its chat's row.
   var isWorkRootActive: Bool {
-    isTabActive && path.isEmpty
+    isTabActive && (path.isEmpty || cloudLaunchPageOpen)
   }
 
   var sessionPresentationTaskKey: WorkRootSessionPresentationTaskKey? {
@@ -1495,6 +1512,7 @@ struct WorkRootListScreen: View, Equatable {
       if path.isEmpty {
         if let route = duoSelectedRoute {
           path.append(route)
+          cloudLaunchPageOpen = workCloudLaunchId(routeSessionId: route.sessionId) != nil
         }
         if let compose = duoComposeRoute {
           path.append(compose)
@@ -1859,15 +1877,17 @@ struct WorkRootListScreen: View, Equatable {
     func listedRow() -> TerminalSessionSummary? {
       mergedSessions.first { $0.id == chatId }
     }
-    if listedRow() == nil {
-      let instanceId = cloudLaunches.entries.first { $0.record?.sessionId == chatId }?.record?.instanceId
-      await syncService.connectLaunchedCloudComputer(instanceId: instanceId)
+    if listedRow() == nil,
+       let launchId = cloudLaunches.entries.first(where: { $0.record?.sessionId == chatId })?.launchId {
+      await cloudLaunches.connectComputer(launchId, using: syncService)
     }
     // The roster lists the chat a moment after the link is live.
-    for _ in 0..<60 {
+    let listedBy = ContinuousClock.now + .seconds(15)
+    while ContinuousClock.now < listedBy {
       if Task.isCancelled { return false }
       if let row = listedRow() {
         // Off the new-chat page and the launch's page first, as `showNewChatRoute` does.
+        cloudLaunchPageOpen = false
         path = NavigationPath()
         duoComposeRoute = nil
         openSession(row)
@@ -1875,28 +1895,30 @@ struct WorkRootListScreen: View, Equatable {
       }
       try? await Task.sleep(for: .milliseconds(250))
     }
+    CrashReporting.breadcrumb("cloud_launch", message: "chat_not_listed", data: [:])
     return false
   }
 
   /// Opens the page of a chat still starting on ADE Cloud: pushed on a phone,
   /// in the detail column on a wide display. Its route is never saved as the
-  /// open route, because no machine knows its id.
+  /// open route, because no machine knows its id. The transition id keeps
+  /// the page when the Duo unfolds (as `duoSelectSession` does for a chat).
   func openCloudLaunch(_ launchId: String) {
     let route = WorkSessionRoute(sessionId: workCloudLaunchRouteSessionId(launchId))
+    selectedSessionTransitionId = route.sessionId
     if duoLayout.isWide {
       if duoPane.isOpen { duoPane.close() }
       duoComposeRoute = nil
-      if let previous = duoSelectedRoute?.sessionId, previous != route.sessionId,
-         workCloudLaunchId(routeSessionId: previous) == nil {
+      if let previous = duoSelectedRoute?.sessionId, previous != route.sessionId {
         WorkSeenStore.stamp([previous])
       }
       if duoViewMode == .board { duoViewModeRaw = DuoWorkViewMode.list.rawValue }
-      selectedSessionTransitionId = nil
       duoSelectedRoute = route
     } else {
       var fresh = NavigationPath()
       fresh.append(route)
       path = fresh
+      cloudLaunchPageOpen = true
     }
   }
 
@@ -1904,6 +1926,7 @@ struct WorkRootListScreen: View, Equatable {
   /// column's chat on a wide display.
   private func showNewChatRoute(_ route: WorkSessionRoute) async {
     await Task.yield()
+    cloudLaunchPageOpen = false
     if duoLayout.isWide {
       // The compose page becomes the chat, in place, beside the list.
       path = NavigationPath()
@@ -2122,6 +2145,7 @@ struct WorkRootListScreen: View, Equatable {
         }
       }
       .onChange(of: path.count) { _, newCount in
+        if newCount == 0 { cloudLaunchPageOpen = false }
         if newCount == 0, let leftSessionId = selectedSessionTransitionId {
           // Leaving a chat is what marks it seen (desktop stamps the same
           // moment): everything it showed, including output that landed while
