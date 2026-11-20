@@ -221,7 +221,7 @@
 /* Manage lane's Computer tab for an ADE Cloud lane: a head, then one row per action. */
 .adecl-manage { display: flex; flex-direction: column; gap: 10px; }
 .adecl-manage-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--color-fg); }
-.adecl-manage-head .adecl-cx-state { margin-left: auto; font-weight: 400; }
+.adecl-manage-head .adecl-status-state { margin-left: auto; font-weight: 400; }
 .adecl-manage-rows { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
 .adecl-manage-row {
   display: grid;
@@ -266,24 +266,7 @@
 .adecl-deleted-chat-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .adecl-deleted-chat > .adecl-muted { flex: none; white-space: nowrap; }
 
-/* A lane computer's state dot (Manage lane). */
-.adecl-cx-state { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--kit-text-2); }
-.adecl-cx-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--adec-asleep); }
-.adecl-cx-state[data-awake="true"] i { background: var(--adec-lamp); box-shadow: 0 0 6px color-mix(in srgb, var(--adec-lamp) 60%, transparent); }
-
 /* The change-size dialog uses the ADE Cloud page's size cards (B14-23). */
 .adecl-tier-cards { margin-bottom: 12px; }
 .adecl-tier-now-check { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--kit-text-2); margin-right: auto; }
 
-/* The chat header's cloud button while the idle cleanup warned about the lane's computer. */
-.adecl-idle-trigger { position: relative; display: inline-flex; }
-.adecl-idle-trigger i {
-  position: absolute;
-  top: -2px;
-  right: -3px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--kit-warn, #f59e0b);
-  box-shadow: 0 0 0 2px var(--kit-surface, transparent);
-}

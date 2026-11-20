@@ -16,7 +16,13 @@ import {
 } from "./primitives";
 import "./machineSettings.css";
 import { laneSetupScriptHasWork } from "../../../shared/types";
-import { macosOnlyToolIn } from "../../../shared/laneSetupPlatform";
+import {
+  LANE_SETUP_PLATFORM_FIELDS,
+  macosOnlyToolOnLinux,
+  type LaneSetupCommandsKey,
+  type LaneSetupPlatformKey,
+  type LaneSetupScriptPathKey,
+} from "../../../shared/laneSetupPlatform";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { showToast } from "../app/toast/toastStore";
 import type {
@@ -138,34 +144,17 @@ function compact<T extends Record<string, unknown>>(obj: T): T {
  * string-shaped (not `LaneSetupScriptConfig`) because these are raw textarea
  * and input values — parsing into commands only happens on save.
  */
-type SetupScriptForm = {
-  commands: string;
-  scriptPath: string;
+type SetupScriptForm = Record<LaneSetupCommandsKey | LaneSetupScriptPathKey, string> & {
   injectPrimaryPath: boolean;
-  unixCommands: string;
-  unixScriptPath: string;
-  macosCommands: string;
-  macosScriptPath: string;
-  linuxCommands: string;
-  linuxScriptPath: string;
-  windowsCommands: string;
-  windowsScriptPath: string;
 };
 
 function setupScriptFormFrom(script: LaneSetupScriptConfig | undefined): SetupScriptForm {
-  return {
-    commands: script?.commands?.join("\n") ?? "",
-    scriptPath: script?.scriptPath ?? "",
-    injectPrimaryPath: script?.injectPrimaryPath ?? false,
-    unixCommands: script?.unixCommands?.join("\n") ?? "",
-    unixScriptPath: script?.unixScriptPath ?? "",
-    macosCommands: script?.macosCommands?.join("\n") ?? "",
-    macosScriptPath: script?.macosScriptPath ?? "",
-    linuxCommands: script?.linuxCommands?.join("\n") ?? "",
-    linuxScriptPath: script?.linuxScriptPath ?? "",
-    windowsCommands: script?.windowsCommands?.join("\n") ?? "",
-    windowsScriptPath: script?.windowsScriptPath ?? "",
-  };
+  const form = { injectPrimaryPath: script?.injectPrimaryPath ?? false } as SetupScriptForm;
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    form[field.commandsKey] = script?.[field.commandsKey]?.join("\n") ?? "";
+    form[field.scriptKey] = script?.[field.scriptKey] ?? "";
+  }
+  return form;
 }
 
 /**
@@ -174,24 +163,17 @@ function setupScriptFormFrom(script: LaneSetupScriptConfig | undefined): SetupSc
  * decides that, so the editor and the card can never disagree.
  */
 function setupScriptFromForm(form: SetupScriptForm): LaneSetupScriptConfig | undefined {
-  const commands = parseLines(form.commands);
-  const unixCommands = parseLines(form.unixCommands);
-  const macosCommands = parseLines(form.macosCommands);
-  const linuxCommands = parseLines(form.linuxCommands);
-  const windowsCommands = parseLines(form.windowsCommands);
-  const script: LaneSetupScriptConfig = compact({
-    commands: commands.length > 0 ? commands : undefined,
-    unixCommands: unixCommands.length > 0 ? unixCommands : undefined,
-    macosCommands: macosCommands.length > 0 ? macosCommands : undefined,
-    linuxCommands: linuxCommands.length > 0 ? linuxCommands : undefined,
-    windowsCommands: windowsCommands.length > 0 ? windowsCommands : undefined,
-    scriptPath: form.scriptPath.trim() || undefined,
-    unixScriptPath: form.unixScriptPath.trim() || undefined,
-    macosScriptPath: form.macosScriptPath.trim() || undefined,
-    linuxScriptPath: form.linuxScriptPath.trim() || undefined,
-    windowsScriptPath: form.windowsScriptPath.trim() || undefined,
-    injectPrimaryPath: form.injectPrimaryPath || undefined,
-  });
+  // Every commands list first, then every script path: the stored key order.
+  const script: LaneSetupScriptConfig = {};
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    const commands = parseLines(form[field.commandsKey]);
+    if (commands.length > 0) script[field.commandsKey] = commands;
+  }
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    const scriptPath = form[field.scriptKey].trim();
+    if (scriptPath) script[field.scriptKey] = scriptPath;
+  }
+  if (form.injectPrimaryPath) script.injectPrimaryPath = true;
   return laneSetupScriptHasWork(script) ? script : undefined;
 }
 
@@ -553,17 +535,16 @@ function ConfigRow({ label, items }: { label: string; items: string[] }) {
 }
 
 function SetupScriptPreview({ script }: { script: LaneSetupScriptConfig }) {
+  const labelled = (label: string | null, text: string) => (label ? `${label}: ${text}` : text);
   const lines: string[] = [];
-  if (script.commands?.length) lines.push(script.commands.join("; "));
-  if (script.unixCommands?.length) lines.push(`macOS/Linux: ${script.unixCommands.join("; ")}`);
-  if (script.macosCommands?.length) lines.push(`macOS: ${script.macosCommands.join("; ")}`);
-  if (script.linuxCommands?.length) lines.push(`Linux: ${script.linuxCommands.join("; ")}`);
-  if (script.windowsCommands?.length) lines.push(`Windows: ${script.windowsCommands.join("; ")}`);
-  if (script.scriptPath) lines.push(script.scriptPath);
-  if (script.unixScriptPath) lines.push(`macOS/Linux: ${script.unixScriptPath}`);
-  if (script.macosScriptPath) lines.push(`macOS: ${script.macosScriptPath}`);
-  if (script.linuxScriptPath) lines.push(`Linux: ${script.linuxScriptPath}`);
-  if (script.windowsScriptPath) lines.push(`Windows: ${script.windowsScriptPath}`);
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    const commands = script[field.commandsKey];
+    if (commands?.length) lines.push(labelled(field.label, commands.join("; ")));
+  }
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    const scriptPath = script[field.scriptKey];
+    if (scriptPath) lines.push(labelled(field.label, scriptPath));
+  }
   return (
     <>
       <dt>Setup script</dt>
@@ -615,15 +596,10 @@ function TemplateEditor({
 
   // Per-platform variants and the advanced block start open only when they
   // already hold something, so an existing template never hides its own config.
-  const hasPlatformVariants =
-    (initial.setupScript?.unixCommands?.length ?? 0) > 0 ||
-    (initial.setupScript?.macosCommands?.length ?? 0) > 0 ||
-    (initial.setupScript?.linuxCommands?.length ?? 0) > 0 ||
-    (initial.setupScript?.windowsCommands?.length ?? 0) > 0 ||
-    !!initial.setupScript?.unixScriptPath ||
-    !!initial.setupScript?.macosScriptPath ||
-    !!initial.setupScript?.linuxScriptPath ||
-    !!initial.setupScript?.windowsScriptPath;
+  const hasPlatformVariants = LANE_SETUP_PLATFORM_FIELDS.some((field) => (
+    field.key !== "shared"
+    && ((initial.setupScript?.[field.commandsKey]?.length ?? 0) > 0 || !!initial.setupScript?.[field.scriptKey])
+  ));
 
   const hasAdvanced =
     !!initial.docker?.composePath ||
@@ -833,6 +809,33 @@ function TemplateEditor({
 // Editor blocks
 // ---------------------------------------------------------------------------
 
+/** The per-OS editor column's heading and examples, in the order the table lists them. */
+const PLATFORM_EDITOR_COPY: Record<
+  Exclude<LaneSetupPlatformKey, "shared">,
+  { label: string; commandsPlaceholder: string; scriptPlaceholder: string }
+> = {
+  unix: {
+    label: "macOS and Linux",
+    commandsPlaceholder: "chmod +x scripts/setup.sh\n./scripts/setup.sh",
+    scriptPlaceholder: "scripts/setup-lane.sh",
+  },
+  macos: {
+    label: "macOS only",
+    commandsPlaceholder: "cp -cR $PRIMARY_WORKTREE_PATH/node_modules node_modules",
+    scriptPlaceholder: "scripts/setup-lane-mac.sh",
+  },
+  linux: {
+    label: "Linux only (ADE Cloud)",
+    commandsPlaceholder: "npm ci --prefer-offline",
+    scriptPlaceholder: "scripts/setup-lane-linux.sh",
+  },
+  windows: {
+    label: "Windows",
+    commandsPlaceholder: "powershell -File scripts\\setup.ps1",
+    scriptPlaceholder: "scripts\\setup-lane.ps1",
+  },
+};
+
 /**
  * The setup-script half of the editor: commands, script file, platform variants.
  * `defaultOpen` controls the per-platform disclosure only.
@@ -846,23 +849,9 @@ function SetupScriptFields({
   onChange: (patch: Partial<SetupScriptForm>) => void;
   defaultOpen: boolean;
 }) {
-  const {
-    commands,
-    scriptPath,
-    injectPrimaryPath,
-    unixCommands,
-    unixScriptPath,
-    macosCommands,
-    macosScriptPath,
-    linuxCommands,
-    linuxScriptPath,
-    windowsCommands,
-    windowsScriptPath,
-  } = value;
+  const { commands, scriptPath, injectPrimaryPath } = value;
   // Shared commands that call a macOS-only tool also run on Linux (ADE Cloud) unless Linux has its own.
-  const macosTool = linuxCommands.trim()
-    ? null
-    : macosOnlyToolIn(parseLines(unixCommands.trim() ? unixCommands : commands));
+  const macosTool = macosOnlyToolOnLinux(setupScriptFromForm(value) ?? {});
   return (
     <Field
       label="Setup script"
@@ -935,82 +924,31 @@ function SetupScriptFields({
             win over the shared macOS and Linux ones.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div>
-              <div style={subLabelStyle}>macOS and Linux</div>
-              <textarea
-                style={{ ...textareaStyle, minHeight: 48 }}
-                value={unixCommands}
-                onChange={(e) => onChange({ unixCommands: e.target.value })}
-                placeholder={"chmod +x scripts/setup.sh\n./scripts/setup.sh"}
-                rows={2}
-              />
-              <div style={{ marginTop: 8 }}>
-                <div style={subLabelStyle}>Script file</div>
-                <SettingsTextField
-                  value={unixScriptPath}
-                  onChange={(next) => onChange({ unixScriptPath: next })}
-                  placeholder="scripts/setup-lane.sh"
-                  mono
-                />
-              </div>
-            </div>
-            <div>
-              <div style={subLabelStyle}>macOS only</div>
-              <textarea
-                style={{ ...textareaStyle, minHeight: 48 }}
-                value={macosCommands}
-                onChange={(e) => onChange({ macosCommands: e.target.value })}
-                placeholder="cp -cR $PRIMARY_WORKTREE_PATH/node_modules node_modules"
-                rows={2}
-              />
-              <div style={{ marginTop: 8 }}>
-                <div style={subLabelStyle}>Script file</div>
-                <SettingsTextField
-                  value={macosScriptPath}
-                  onChange={(next) => onChange({ macosScriptPath: next })}
-                  placeholder="scripts/setup-lane-mac.sh"
-                  mono
-                />
-              </div>
-            </div>
-            <div>
-              <div style={subLabelStyle}>Linux only (ADE Cloud)</div>
-              <textarea
-                style={{ ...textareaStyle, minHeight: 48 }}
-                value={linuxCommands}
-                onChange={(e) => onChange({ linuxCommands: e.target.value })}
-                placeholder="npm ci --prefer-offline"
-                rows={2}
-              />
-              <div style={{ marginTop: 8 }}>
-                <div style={subLabelStyle}>Script file</div>
-                <SettingsTextField
-                  value={linuxScriptPath}
-                  onChange={(next) => onChange({ linuxScriptPath: next })}
-                  placeholder="scripts/setup-lane-linux.sh"
-                  mono
-                />
-              </div>
-            </div>
-            <div>
-              <div style={subLabelStyle}>Windows</div>
-              <textarea
-                style={{ ...textareaStyle, minHeight: 48 }}
-                value={windowsCommands}
-                onChange={(e) => onChange({ windowsCommands: e.target.value })}
-                placeholder="powershell -File scripts\setup.ps1"
-                rows={2}
-              />
-              <div style={{ marginTop: 8 }}>
-                <div style={subLabelStyle}>Script file</div>
-                <SettingsTextField
-                  value={windowsScriptPath}
-                  onChange={(next) => onChange({ windowsScriptPath: next })}
-                  placeholder="scripts\setup-lane.ps1"
-                  mono
-                />
-              </div>
-            </div>
+            {LANE_SETUP_PLATFORM_FIELDS.map((field) => {
+              if (field.key === "shared") return null;
+              const copy = PLATFORM_EDITOR_COPY[field.key];
+              return (
+                <div key={field.key}>
+                  <div style={subLabelStyle}>{copy.label}</div>
+                  <textarea
+                    style={{ ...textareaStyle, minHeight: 48 }}
+                    value={value[field.commandsKey]}
+                    onChange={(e) => onChange({ [field.commandsKey]: e.target.value } as Partial<SetupScriptForm>)}
+                    placeholder={copy.commandsPlaceholder}
+                    rows={2}
+                  />
+                  <div style={{ marginTop: 8 }}>
+                    <div style={subLabelStyle}>Script file</div>
+                    <SettingsTextField
+                      value={value[field.scriptKey]}
+                      onChange={(next) => onChange({ [field.scriptKey]: next } as Partial<SetupScriptForm>)}
+                      placeholder={copy.scriptPlaceholder}
+                      mono
+                    />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </SettingsDisclosure>
       </div>

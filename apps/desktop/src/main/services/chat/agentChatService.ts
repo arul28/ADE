@@ -16,7 +16,7 @@ import {
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { formatContinuityConversation } from "./continuityConversation";
 import { probeClaudeKeychainLogin } from "../ai/providerCredentialSources";
-import { providerLoginGeneration } from "../ai/providerLoginChanged";
+import { providerLoginGeneration, providerModelsGeneration } from "../ai/providerLoginChanged";
 import { providerLoginGate, type ProviderLoginRestartOptions } from "../providerLogins/providerLoginHooks";
 import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { claudeCompactionSettings, claudeCompactWindow, claudeEstimatedCompactAt, compactionIdleModeDefault, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
@@ -872,6 +872,7 @@ import type {
   DeletedChatListArgs,
   DeletedChatRemoveArgs,
   DeletedChatReopenArgs,
+  EffectiveProjectConfig,
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
@@ -1610,7 +1611,7 @@ import { classifyCopilotError, createCopilotSdkEventMapperState, mapCopilotSdkEv
 import { copilotSessionApproval, copilotSessionApprovalLabel } from "./copilotSdkPermissions";
 import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, refreshCopilotModelCatalog } from "./copilotModelsDiscovery";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
-import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { pinnedToolDownload, pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { holdToolInstallsWhileRunning } from "../../../../../ade-cli/src/services/tools/inUse";
 import {
   acquirePiSdkConnection,
@@ -76640,22 +76641,45 @@ export function createAgentChatService(args: {
     modelManifestGeneration += 1;
     modelCatalogManifestStale = true;
   });
-  // What else the cached catalog was built from: who is signed in (every
-  // sign-in path bumps the login generation), this project's OpenCode
-  // inventory and whether OpenCode is installed, and the providers switched
-  // off. Any of them moving makes the cache stale, so a provider set up after
-  // the catalog was read shows on the next read instead of after the TTL.
-  // Each part is a counter or a memoized read; no process starts here.
-  const modelCatalogInputsKey = (loginGeneration: number): string => [
-    loginGeneration,
+  // What else the cached catalog was built from: whose models a sign-in may
+  // have changed (the models generation: a Re-check that kept the lists
+  // doesn't move it), this project's OpenCode inventory and whether OpenCode
+  // is installed, and the providers switched off. Any of them moving makes the
+  // cache stale, so a provider set up after the catalog was read shows on the
+  // next read instead of after the TTL. No process starts here.
+  // OpenCode's install, from its binary lookup (fs probes): read again after
+  // a few seconds, or at once when a pinned tool install finishes.
+  const OPENCODE_INSTALLED_MEMO_MS = 5_000;
+  let openCodeInstalledMemo: { at: number; installGeneration: number; installed: boolean } | null = null;
+  const openCodeInstalledForCatalog = (): boolean => {
+    const at = Date.now();
+    const installGeneration = pinnedToolInstallGeneration();
+    if (openCodeInstalledMemo && openCodeInstalledMemo.installGeneration === installGeneration && at - openCodeInstalledMemo.at < OPENCODE_INSTALLED_MEMO_MS) {
+      return openCodeInstalledMemo.installed;
+    }
+    const installed = Boolean(resolveOpenCodeBinaryPath());
+    openCodeInstalledMemo = { at, installGeneration, installed };
+    return installed;
+  };
+  const modelCatalogInputsKey = (modelsGeneration: number, effectiveConfig: EffectiveProjectConfig): string => [
+    modelsGeneration,
     openCodeInventoryGeneration(projectRoot),
-    resolveOpenCodeBinaryPath() ? "oc" : "-",
-    [...(projectConfigService.get().effective.ai?.disabledProviders ?? [])].sort().join(","),
+    openCodeInstalledForCatalog() ? "oc" : "-",
+    [...(effectiveConfig.ai?.disabledProviders ?? [])].sort().join(","),
   ].join("|");
   let modelCatalogBuiltInputsKey: string | null = null;
-  const modelCatalogInputsChanged = (): boolean =>
-    modelCatalogBuiltInputsKey !== null
-    && modelCatalogBuiltInputsKey !== modelCatalogInputsKey(providerLoginGeneration());
+  // One answer per microtask: a picker opening reads the catalog for several rows at once.
+  let modelCatalogInputsChangedMemo: boolean | null = null;
+  const modelCatalogInputsChanged = (): boolean => {
+    if (modelCatalogBuiltInputsKey === null) return false;
+    if (modelCatalogInputsChangedMemo !== null) return modelCatalogInputsChangedMemo;
+    const changed = modelCatalogBuiltInputsKey !== modelCatalogInputsKey(providerModelsGeneration(), projectConfigService.get().effective);
+    modelCatalogInputsChangedMemo = changed;
+    queueMicrotask(() => {
+      modelCatalogInputsChangedMemo = null;
+    });
+    return changed;
+  };
 
   const managedSessionSupportsFastMode = (managed: ManagedChatSession): boolean =>
     sessionSupportsFastMode(managed.session, modelCatalogCache);
@@ -77243,7 +77267,7 @@ export function createAgentChatService(args: {
     // A manifest that lands mid-build must leave the result stale, not fresh.
     const manifestGenerationAtStart = modelManifestGeneration;
     // Likewise a sign-in that lands mid-build.
-    const loginGenerationAtStart = providerLoginGeneration();
+    const modelsGenerationAtStart = providerModelsGeneration();
     const mode = catalogArgs?.mode ?? "refresh-stale";
     const refreshProvider = catalogArgs?.refreshProvider;
     if (mode === "cached" && modelCatalogCache) {
@@ -77315,7 +77339,7 @@ export function createAgentChatService(args: {
 
     // Read after the inventory step, so this build's own probe of OpenCode
     // does not mark the catalog it is building stale.
-    const inputsKeyAtBuild = modelCatalogInputsKey(loginGenerationAtStart);
+    const inputsKeyAtBuild = modelCatalogInputsKey(modelsGenerationAtStart, effectiveConfig);
 
     const descriptorInfo = new Map<string, { provider: ModelProviderGroup; info: AgentChatModelInfo }>();
     const descriptors: ModelDescriptor[] = [];
@@ -77579,6 +77603,7 @@ export function createAgentChatService(args: {
     };
     modelCatalogCache = catalog;
     modelCatalogBuiltInputsKey = inputsKeyAtBuild;
+    modelCatalogInputsChangedMemo = null;
     if (modelManifestGeneration === manifestGenerationAtStart) modelCatalogManifestStale = false;
     if (mode !== "cached" && shouldMarkModelCatalogProviderFresh(catalog, refreshProvider, catalogArgs?.cursorSource)) {
       markModelCatalogProviderFresh(refreshProvider, Date.now(), catalogArgs?.cursorSource);

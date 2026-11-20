@@ -11,7 +11,7 @@ import { Banner } from "../ui/notice";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { parseMessageAuthor } from "../../../shared/messageAuthor";
-import { ipcErrorMessage } from "../../lib/format";
+import { ipcErrorMessage, isConnectionTroubleText } from "../../lib/format";
 import { requireChatPin } from "./chatMachinePin";
 import {
   countCommentsForNextSend,
@@ -26,19 +26,25 @@ import {
   threadCommentsApi,
 } from "./threadCommentsStore";
 
-/** A dropped or slow link to the chat's machine: the person retries, ADE has nothing to fix. */
-const CONNECTION_TROUBLE_TEXT = /didn't hear back in time|connection was interrupted|connection closed|connection failed recently|timed out|can't reach|manually disconnected|websocket is not open/i;
+/** An error from a comment write, as a person reads it, and whether it was the link to the chat's machine. */
+export type ThreadCommentError = { text: string; connection: boolean };
+
+const CONNECTION_TROUBLE_COPY = "ADE didn't hear back from the chat's machine. Try again in a moment.";
 
 /** An error from a comment write, as a person reads it (never the IPC wrapper or the bridge timeout). */
-export function threadCommentErrorText(error: unknown): string {
+export function threadCommentError(error: unknown): ThreadCommentError {
   const text = ipcErrorMessage(error) || (typeof error === "string" ? error : "");
-  if (!text || CONNECTION_TROUBLE_TEXT.test(text)) return "ADE didn't hear back from the chat's machine. Try again in a moment.";
-  return text;
+  if (!text || isConnectionTroubleText(text)) return { text: CONNECTION_TROUBLE_COPY, connection: true };
+  return { text, connection: false };
+}
+
+export function threadCommentErrorText(error: unknown): string {
+  return threadCommentError(error).text;
 }
 
 /** Connection trouble is not ADE's failure to hear about: no "Report…" for it. */
-function threadCommentErrorReport(error: string, surface: string) {
-  return /didn't hear back/.test(error) ? false : { surface };
+function threadCommentErrorReport(error: ThreadCommentError, surface: string) {
+  return error.connection ? false : { surface };
 }
 
 /**
@@ -51,7 +57,7 @@ export function useThreadCommentActions(
   sessionId: string | null | undefined,
   pin: OpenProjectBinding | null | undefined,
 ) {
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ThreadCommentError | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const stopEditing = useCallback(() => setEditingId(null), []);
   // An edit belongs to the chat it started in; another chat starts clean.
@@ -66,7 +72,7 @@ export function useThreadCommentActions(
       const result = await action();
       return result ?? null;
     } catch (cause) {
-      setError(threadCommentErrorText(cause));
+      setError(threadCommentError(cause));
       return null;
     }
   };
@@ -132,7 +138,7 @@ export function ThreadCommentEditor({
   placeholder?: string;
   saveLabel?: string;
   busy?: boolean;
-  error?: string | null;
+  error?: ThreadCommentError | null;
   onSave: (body: string) => void;
   onCancel: () => void;
   /** Every edit of the text, for a caller that keeps unsaved text. */
@@ -184,7 +190,7 @@ export function ThreadCommentEditor({
           model={{
             id: "thread-comment-save-error",
             tone: "error",
-            title: error,
+            title: error.text,
             report: threadCommentErrorReport(error, "thread_comment_save"),
           }}
         />
@@ -231,7 +237,7 @@ export function ThreadCommentListItem({
 }: {
   comment: ChatThreadComment;
   editing: boolean;
-  error?: string | null;
+  error?: ThreadCommentError | null;
   onStartEdit: () => void;
   onSaveEdit: (body: string) => void;
   onCancelEdit: () => void;
@@ -506,7 +512,7 @@ export function ComposerThreadCommentsButton({
                   model={{
                     id: "thread-comment-action-error",
                     tone: "error",
-                    title: actions.error,
+                    title: actions.error.text,
                     report: threadCommentErrorReport(actions.error, "thread_comment_action"),
                   }}
                 />

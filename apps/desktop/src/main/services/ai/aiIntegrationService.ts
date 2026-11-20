@@ -1379,7 +1379,7 @@ export function createAiIntegrationService(args: {
       const providerName = apiEntry.type === "openrouter" ? "openrouter" : apiEntry.provider;
       const verification = await verifyProviderApiKey(providerName, apiEntry.key);
       if (providerName === "cursor" && verification.ok) {
-        invalidateProviderReadinessCaches();
+        invalidateProviderReadinessCaches({ modelsMayHaveChanged: false });
         invalidateInFinally = false;
         try {
           const discovery = await probeCursorSdkModelDiscovery(apiEntry.key, { timeoutMs: 3_000 });
@@ -1404,7 +1404,7 @@ export function createAiIntegrationService(args: {
       };
     } finally {
       if (invalidateInFinally) {
-        invalidateProviderReadinessCaches();
+        invalidateProviderReadinessCaches({ modelsMayHaveChanged: false });
       }
     }
   };
@@ -2245,7 +2245,12 @@ export function createAiIntegrationService(args: {
     return current ? cached.inventory : readPiProfileInventory(installation);
   };
 
-  const invalidateProviderReadinessCaches = (): void => {
+  /**
+   * `modelsMayHaveChanged: false`: a key check that changed no key. OpenCode's
+   * inventory is still read again, but the chat model catalog goes stale only
+   * if that read finds other models (`clearOpenCodeInventoryCache`).
+   */
+  const invalidateProviderReadinessCaches = (options?: { modelsMayHaveChanged?: boolean }): void => {
     providerReadinessCacheGeneration += 1;
     statusCache = null;
     lastGoodStatus = null;
@@ -2263,7 +2268,7 @@ export function createAiIntegrationService(args: {
     markCursorModelCachesStale();
     markDroidModelCachesStale();
     clearOpenCodeBinaryCache();
-    clearOpenCodeInventoryCache();
+    clearOpenCodeInventoryCache({ modelsMayHaveChanged: options?.modelsMayHaveChanged !== false });
     replaceDynamicOpenCodeModelDescriptors([]);
     replaceDynamicPiModelDescriptors([]);
   };

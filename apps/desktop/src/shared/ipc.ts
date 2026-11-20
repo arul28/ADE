@@ -1037,6 +1037,7 @@ export const IPC = {
    * provider's settings page opens — never on a status refresh.
    */
   aiAcpProviderDiagnostics: "ade.ai.acpProviderDiagnostics",
+  aiRunAcpProviderDoctor: "ade.ai.runAcpProviderDoctor",
   aiOpencodeAuthMethods: "ade.ai.opencodeAuthMethods",
   aiOpencodeOAuthStart: "ade.ai.opencodeOAuthStart",
   aiOpencodeOAuthCancel: "ade.ai.opencodeOAuthCancel",

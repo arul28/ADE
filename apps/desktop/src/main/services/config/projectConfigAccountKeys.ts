@@ -175,7 +175,7 @@ const COLLECTIONS: readonly CollectionSpec[] = [
 const MOVED_KEY_SPECS: readonly MovedKeySpec[] = [...PR_AND_TRACKER_KEYS, ...AI_KEYS, ...RECIPE_KEYS];
 
 /** Keys whose value is a path; an absolute one names a folder on this computer. */
-const PATH_KEYS = new Set(["cwd", "source", "dest", "composePath", "scriptPath", "unixScriptPath", "windowsScriptPath"]);
+const PATH_KEYS = new Set(["cwd", "source", "dest", "composePath", "scriptPath", "unixScriptPath", "macosScriptPath", "linuxScriptPath", "windowsScriptPath"]);
 
 function holdsMachinePath(value: unknown, key?: string): boolean {
   if (typeof value === "string") {

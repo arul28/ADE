@@ -5,7 +5,7 @@ import type { ComposerDraftStore } from "./chatLiveEvents";
 import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { isImeComposing } from "../../lib/imeComposition";
-import { ipcErrorMessage } from "../../lib/format";
+import { ipcErrorMessage, isConnectionTroubleText } from "../../lib/format";
 import { jiraIssueRef, linearIssueRef } from "../../../shared/issueRefs";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
@@ -44,7 +44,6 @@ import {
   type LaneLinearIssue,
   type OpenProjectBinding,
   type PendingInputRequest,
-  type AgentChatModelCatalogRefreshProvider,
   type DraftEntry,
   type DraftScheduleInput,
   ANDROID_CONTEXT_SURFACE,
@@ -214,6 +213,16 @@ import {
   mentionChipMarkSvg,
   type ComposerAtChipKind,
 } from "./mentionChipMark";
+import {
+  collectPendingAttachmentChipIds,
+  COMPOSER_ATTACHMENT_THUMB_CLASS,
+  COMPOSER_IMAGE_CHIP_GLYPH_SVG,
+  COMPOSER_PENDING_ATTACHMENT_CHIP_SELECTOR,
+  createPendingAttachmentChipNode,
+  findPendingAttachmentChip,
+  removeChipWithTrailingSpace,
+  updatePendingAttachmentChipNode,
+} from "./composerPendingAttachmentChip";
 import { ComposerMachineChipPopover } from "./MachineChipCard";
 import { ADE_CLOUD_NAME, CloudMark } from "../remoteTargets/cloudBrand";
 import { AdeCloudMachineChip, useComposerAdeCloudLane, type ComposerAdeCloudLane } from "./AdeCloudComposerParts";
@@ -429,24 +438,21 @@ const HEIC_CONVERSION_MESSAGES: Record<HeicConversionErrorCode, string> = {
   failed: HEIC_CONVERSION_FAILED_MESSAGE,
 };
 
-/** A dropped or slow link to the machine the file was going to: worth one more try, nothing to report. */
-const ATTACH_CONNECTION_TROUBLE_TEXT = /didn't hear back in time|connection was interrupted|connection closed|connection failed recently|timed out|can't reach|manually disconnected|websocket is not open|fell behind/i;
+/** Why an attachment failed, as a person reads it, and whether the link to its machine dropped. */
+type AttachmentError = { text: string; connection: boolean };
 
-function isAttachConnectionTrouble(message: string): boolean {
-  return message.endsWith("the connection dropped. Try again.");
-}
-
-function attachmentErrorMessage(error: unknown, filename: string): string {
+/** A dropped or slow link to the machine the file was going to is worth one more try, and nothing to report. */
+function attachmentErrorMessage(error: unknown, filename: string): AttachmentError {
   if (error instanceof AttachmentConversionError) {
-    return HEIC_CONVERSION_MESSAGES[error.code];
+    return { text: HEIC_CONVERSION_MESSAGES[error.code], connection: false };
   }
   const reason = ipcErrorMessage(error) || (typeof error === "string" ? stripElectronErrorWrapper(error) : "");
   const name = filename || "the file";
   // "Connection was interrupted before ADE could confirm…" is ambiguous, but a
   // retry stages a fresh copy: the worst a landed first try leaves is an
   // unused file on that machine, never a second attachment.
-  if (ATTACH_CONNECTION_TROUBLE_TEXT.test(reason)) return `Couldn't attach ${name} — the connection dropped. Try again.`;
-  return `Couldn't attach ${name}.${reason ? ` ${reason}` : " Try again."}`;
+  if (isConnectionTroubleText(reason)) return { text: `Couldn't attach ${name} — the connection dropped. Try again.`, connection: true };
+  return { text: `Couldn't attach ${name}.${reason ? ` ${reason}` : " Try again."}`, connection: false };
 }
 
 // Every rich-composer chip carries `data-composer-chip`. Chips are
@@ -472,47 +478,13 @@ const COMPOSER_TOKEN_CHIP_CLASS =
 // is the chip's identity, so removing Image 1 renumbers the old Image 2 chip in
 // place instead of orphaning it.
 const COMPOSER_ATTACHMENT_CHIP_SELECTOR = "[data-composer-chip='attachment']";
-const COMPOSER_ATTACHMENT_THUMB_CLASS = "inline-flex h-3.5 w-3.5 shrink-0 overflow-hidden rounded-[3px]";
 /** Linked-hover and armed-for-delete ring, in the chat accent the tray glow uses. */
 const COMPOSER_ATTACHMENT_RING_CLASSES = [
   "ring-1",
   "ring-[color:color-mix(in_srgb,var(--chat-accent)_60%,transparent)]",
 ];
-// An image still uploading (or one that failed) holds its place in the prompt
-// as this token, put at the caret when it was pasted. It serializes to nothing;
-// when the upload lands the real chip replaces it in place, so the caret and
-// whatever was typed since stay put. `data-composer-pending-id` is the
-// pending record's id, the same record the tray tile draws.
-const COMPOSER_PENDING_ATTACHMENT_CHIP_SELECTOR = "[data-composer-chip='attachment-pending']";
-
-function findPendingAttachmentChip(editor: HTMLElement, pendingId: string): HTMLElement | null {
-  for (const chip of Array.from(editor.querySelectorAll<HTMLElement>(COMPOSER_PENDING_ATTACHMENT_CHIP_SELECTOR))) {
-    if (chip.dataset.composerPendingId === pendingId) return chip;
-  }
-  return null;
-}
-
-function collectPendingAttachmentChipIds(editor: HTMLElement): Set<string> {
-  const ids = new Set<string>();
-  editor.querySelectorAll<HTMLElement>(COMPOSER_PENDING_ATTACHMENT_CHIP_SELECTOR).forEach((chip) => {
-    if (chip.dataset.composerPendingId) ids.add(chip.dataset.composerPendingId);
-  });
-  return ids;
-}
-
-/** Removes a chip and the space put after it. */
-function removeChipWithTrailingSpace(chip: HTMLElement): void {
-  const next = chip.nextSibling;
-  chip.remove();
-  if (next?.nodeType === Node.TEXT_NODE && next.textContent?.startsWith(" ")) {
-    next.textContent = next.textContent.slice(1);
-  }
-}
-
 /** How long a queued chip waits for its attachment to land in the tray. */
 const ATTACHMENT_CHIP_QUEUE_TTL_MS = 15_000;
-const COMPOSER_IMAGE_CHIP_GLYPH_SVG =
-  '<svg viewBox="0 0 16 16" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="1.6"/><circle cx="6" cy="6.6" r="1.1"/><path d="M3 11.8l3.2-3.2 2.4 2.4 1.8-1.8 2.6 2.6"/></svg>';
 
 /**
  * Where a not-yet-staged attachment's chip goes once the attachment lands.
@@ -2484,7 +2456,6 @@ function AgentChatComposerImpl({
   modelUnavailableMessage,
   providerAuthStatus,
   providerRuntimeMissing,
-  onRuntimeCatalogRefreshed,
   allowCliOnlyModels = false,
   listsHarnessPresets = true,
   onOpenHarnessSettings,
@@ -2721,7 +2692,6 @@ function AgentChatComposerImpl({
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   /** Passed to the model pickers with `providerAuthStatus` (see ModelPicker). */
   providerRuntimeMissing?: Partial<Record<ProviderFamily, true>>;
-  onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
   allowCliOnlyModels?: boolean;
   /** False on a tracked-CLI launch, where a preset would be dropped anyway. */
   listsHarnessPresets?: boolean;
@@ -3102,7 +3072,12 @@ function AgentChatComposerImpl({
   /** The sentence of a file search that failed (a lane at rest needs its computer), shown instead of "No matching files". */
   const [attachmentSearchError, setAttachmentSearchError] = useState<string | null>(null);
   const [attachmentCursor, setAttachmentCursor] = useState(0);
-  const [attachError, setAttachError] = useState<string | null>(null);
+  const [attachErrorState, setAttachErrorState] = useState<AttachmentError | null>(null);
+  const attachError = attachErrorState?.text ?? null;
+  /** Plain copy is never connection trouble; `attachmentErrorMessage` results say whether they are. */
+  const setAttachError = useCallback((value: string | AttachmentError | null) => {
+    setAttachErrorState(typeof value === "string" ? { text: value, connection: false } : value);
+  }, []);
   // Files whose staging failed for a reason a second attempt could fix — a
   // dropped connection, a host that was mid-restart. Holding the `File` handles
   // is what makes the retry real rather than a message telling the user to
@@ -4242,16 +4217,19 @@ function AgentChatComposerImpl({
    * until the user retries or removes it. `retry` runs the same upload again
    * for the same record.
    */
-  const failPendingImageAttachment = useCallback((id: string, error: string, retry: () => void) => {
+  const failPendingImageAttachment = useCallback((id: string, error: string | AttachmentError, retry: () => void) => {
     pendingImageRetriesRef.current.set(id, retry);
-    setPendingImageAttachments((current) => current.map((entry) => (entry.id === id ? { ...entry, error } : entry)));
+    const { text, connection } = typeof error === "string" ? { text: error, connection: false } : error;
+    setPendingImageAttachments((current) => current.map((entry) => (
+      entry.id === id ? { ...entry, error: text, connectionTrouble: connection } : entry
+    )));
   }, []);
 
   const retryPendingImageAttachment = useCallback((id: string) => {
     const retry = pendingImageRetriesRef.current.get(id);
     if (!retry) return;
     pendingImageRetriesRef.current.delete(id);
-    setPendingImageAttachments((current) => current.map((entry) => (entry.id === id ? { ...entry, error: null } : entry)));
+    setPendingImageAttachments((current) => current.map((entry) => (entry.id === id ? { ...entry, error: null, connectionTrouble: false } : entry)));
     retry();
   }, []);
 
@@ -4394,7 +4372,7 @@ function AgentChatComposerImpl({
   ) => {
     const retryPending = options.retryPending ?? null;
     // A retry that cannot start stays failed, with the reason, rather than "Saving" forever.
-    const failRetry = (message: string) => {
+    const failRetry = (message: string | AttachmentError) => {
       if (retryPending) failPendingImageAttachment(retryPending.id, message, () => void addFileAttachmentsRef.current(files, options));
     };
     if (attachmentPersistenceUnavailableReason) {
@@ -4685,7 +4663,7 @@ function AgentChatComposerImpl({
     setAttachError(null);
     onAddAttachment({ path: url, type: "image-url", url });
     return true;
-  }, [attachmentSlotsUsed, canAttach, onAddAttachment, parallelChatMode]);
+  }, [attachmentSlotsUsed, canAttach, onAddAttachment, parallelChatMode, setAttachError]);
 
   const addImageUrlFromTransfer = useCallback((
     data: DataTransfer | React.ClipboardEvent<HTMLElement>["clipboardData"],
@@ -5368,61 +5346,6 @@ function AgentChatComposerImpl({
     return chip;
   }, [updateAttachmentChipNode]);
 
-  /** Draw an uploading token in its record's state: the picture, then Retry and × once it failed. */
-  const updatePendingAttachmentChipNode = useCallback((chip: HTMLElement, pending: ChatAttachmentPendingImage) => {
-    const failed = Boolean(pending.error);
-    const state = failed ? "failed" : "uploading";
-    const preview = pending.previewUrl ?? "";
-    if (chip.dataset.composerPendingState === state && chip.dataset.composerPendingPreview === preview) return;
-    chip.dataset.composerPendingState = state;
-    chip.dataset.composerPendingPreview = preview;
-    chip.title = failed ? pending.error ?? "" : `Attaching ${pending.name}`;
-    chip.setAttribute("aria-label", failed ? `${pending.name} didn't attach` : `Attaching ${pending.name}`);
-    chip.className = cn(COMPOSER_MENTION_CHIP_CLASS, failed ? "border-amber-400/45 text-amber-100/90" : "opacity-70");
-    const icon = document.createElement("span");
-    icon.setAttribute("aria-hidden", "true");
-    if (preview) {
-      icon.className = cn(COMPOSER_ATTACHMENT_THUMB_CLASS, failed && "opacity-60");
-      const image = document.createElement("img");
-      image.src = preview;
-      image.alt = "";
-      image.draggable = false;
-      image.className = "h-full w-full object-cover";
-      icon.append(image);
-    } else {
-      icon.className = COMPOSER_TOKEN_CHIP_ICON_CLASS;
-      icon.innerHTML = COMPOSER_IMAGE_CHIP_GLYPH_SVG;
-    }
-    const labelNode = document.createElement("span");
-    labelNode.className = "truncate";
-    labelNode.textContent = failed ? "Image" : "Image…";
-    const parts: HTMLElement[] = [icon, labelNode];
-    if (failed) {
-      const retry = document.createElement("span");
-      retry.dataset.composerPendingRetry = "true";
-      retry.className = "ml-1 cursor-pointer rounded px-0.5 font-medium text-amber-50 hover:bg-fg/10";
-      retry.textContent = "Retry";
-      retry.title = `Try attaching ${pending.name} again`;
-      const remove = document.createElement("span");
-      remove.dataset.composerPendingRemove = "true";
-      remove.className = "cursor-pointer rounded px-0.5 text-amber-100/60 hover:bg-fg/10 hover:text-amber-50";
-      remove.textContent = "×";
-      remove.title = `Remove ${pending.name}`;
-      parts.push(retry, remove);
-    }
-    chip.replaceChildren(...parts);
-  }, []);
-
-  const createPendingAttachmentChipNode = useCallback((pending: ChatAttachmentPendingImage): HTMLElement => {
-    const chip = document.createElement("span");
-    chip.contentEditable = "false";
-    chip.dataset.composerChip = "attachment-pending";
-    // Serializes to nothing: the draft gains the real token only when the image lands.
-    chip.dataset.composerChipText = "";
-    chip.dataset.composerPendingId = pending.id;
-    updatePendingAttachmentChipNode(chip, pending);
-    return chip;
-  }, [updatePendingAttachmentChipNode]);
 
   /**
    * Insert a chip at a placement, with a space after it so typing continues
@@ -5654,7 +5577,7 @@ function AgentChatComposerImpl({
     });
     attachmentChipPathsRef.current = collectAttachmentChipPaths(editor);
     return changed;
-  }, [createAttachmentChipNode, getRichCursorTextOffset, insertAttachmentChipAt, restoreRichCaretAtTextOffset, updateAttachmentChipNode, updatePendingAttachmentChipNode]);
+  }, [createAttachmentChipNode, getRichCursorTextOffset, insertAttachmentChipAt, restoreRichCaretAtTextOffset, updateAttachmentChipNode]);
 
   const disarmAttachmentChip = useCallback(() => {
     const armed = armedAttachmentChipRef.current;
@@ -6429,7 +6352,7 @@ function AgentChatComposerImpl({
     if (next === lastSerializedDraftRef.current) return;
     lastSerializedDraftRef.current = next;
     onDraftChange(next);
-  }, [appControlContextItems, askQuestionActive, attachments, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, createPendingAttachmentChipNode, draft, hydrateMentionChipsInEditor, imagePreviewUrls, insertAttachmentChipAt, insertNodeAtTextOffset, iosElementContextItems, mentionLabels, onDraftChange, openModelChipSegment, pendingImageAttachments, reconcileAttachmentChipsInEditor, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
+  }, [appControlContextItems, askQuestionActive, attachments, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, hydrateMentionChipsInEditor, imagePreviewUrls, insertAttachmentChipAt, insertNodeAtTextOffset, iosElementContextItems, mentionLabels, onDraftChange, openModelChipSegment, pendingImageAttachments, reconcileAttachmentChipsInEditor, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
 
   // Linked hover glow, composer side: the chip(s) of the hovered tray item
   // light up. An armed chip (first Backspace of a safe delete) keeps its ring.
@@ -7911,7 +7834,7 @@ function AgentChatComposerImpl({
       }
     }
     closeCommandMenu();
-  }, [attachBlockedReason, canAttach, closeCommandMenu, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, openModelChipSegment, recordModelRecent, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
+  }, [attachBlockedReason, canAttach, closeCommandMenu, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, openModelChipSegment, recordModelRecent, replaceRichTriggerWith, restoreTextareaCaret, setAttachError, useRichComposer]);
 
   const handleRichEditorInput = useCallback((event?: React.FormEvent<HTMLDivElement>) => {
     const editor = richEditorRef.current;
@@ -8763,7 +8686,6 @@ function AgentChatComposerImpl({
             {...(providerAuthStatus ? { providerAuthStatus } : {})}
             {...(providerRuntimeMissing ? { providerRuntimeMissing } : {})}
             {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
-            {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
             runtimePin={modelRuntimePin}
             catalogScopeKey={modelCatalogScopeKey}
             allowCliOnlyModels={allowCliOnlyModels}
@@ -8826,7 +8748,6 @@ function AgentChatComposerImpl({
             {...(providerAuthStatus ? { providerAuthStatus } : {})}
             {...(providerRuntimeMissing ? { providerRuntimeMissing } : {})}
             {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
-            {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
             runtimePin={modelRuntimePin}
             catalogScopeKey={modelCatalogScopeKey}
             allowCliOnlyModels={allowCliOnlyModels}
@@ -8891,7 +8812,7 @@ function AgentChatComposerImpl({
         />
       ) : null}
     </div>
-  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, reasoningModelId, reasoningTiers, runtimeCatalogTick, sessionId, turnActive, ultrathinkControl]);
+  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, reasoningModelId, reasoningTiers, runtimeCatalogTick, sessionId, turnActive, ultrathinkControl]);
   const contextUsageDial = useMemo(() => (!parallelChatMode && usageViewModel ? (
 
       <ContextUsageDial
@@ -9643,7 +9564,7 @@ function AgentChatComposerImpl({
                       },
                     ],
                     // A dropped link is the person's to retry, not ADE's failure to hear about.
-                    report: failedPendingImageAttachments.every((attachment) => isAttachConnectionTrouble(attachment.error ?? ""))
+                    report: failedPendingImageAttachments.every((attachment) => attachment.connectionTrouble)
                       ? false
                       : { surface: "chat_composer_attach" },
                   }}
@@ -9682,7 +9603,7 @@ function AgentChatComposerImpl({
                   ],
                   // Attachments that can't be stored on that machine are a setup
                   // choice, not a failure for ADE to hear about.
-                  report: attachError === attachmentPersistenceUnavailableReason || isAttachConnectionTrouble(attachError)
+                  report: attachError === attachmentPersistenceUnavailableReason || attachErrorState?.connection
                     ? false
                     : { surface: "chat_composer_attach" },
                   dismiss: {

@@ -666,6 +666,9 @@ export function closedComputerStatements(
     // The topics that woke it at rest and its last event wake (`eventWakes.ts`) go with it.
     env.DB.prepare("delete from cloud_event_wakes where instance_id = ?").bind(computer.instance_id),
     env.DB.prepare("delete from cloud_event_wake_state where instance_id = ?").bind(computer.instance_id),
+    // Its status menu's facts (`computerStatus.ts`): the provider's status changes and its brain's last report.
+    env.DB.prepare("delete from cloud_instance_events where instance_id = ?").bind(computer.instance_id),
+    env.DB.prepare("delete from cloud_computer_activity where instance_id = ?").bind(computer.instance_id),
   ];
 }
 

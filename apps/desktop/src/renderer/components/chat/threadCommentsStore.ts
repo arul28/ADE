@@ -56,10 +56,14 @@ export function isLocalThreadComment(commentId: string): boolean {
  * needs: the host ids that existed before the first attempt, so a save that
  * landed after all is found instead of made twice (create is not idempotent).
  */
-type FailedLocalComment = { error: string; knownHostIds: ReadonlySet<string> };
+type FailedLocalComment = { error: string; knownHostIds: ReadonlySet<string> | null };
 const failedLocal = new Map<string, FailedLocalComment>();
-/** Host ids present when each local comment was first created. */
-const knownHostIdsByLocal = new Map<string, ReadonlySet<string>>();
+/**
+ * Host ids present when each local comment was first created. Null when the
+ * chat's host list had not loaded yet: with no baseline, an older comment with
+ * the same text would pass for this one's copy, so no host copy is matched.
+ */
+const knownHostIdsByLocal = new Map<string, ReadonlySet<string> | null>();
 
 /** The reason a local comment failed to save, or null while it is fine. */
 export function threadCommentSaveError(commentId: string): string | null {
@@ -67,7 +71,8 @@ export function threadCommentSaveError(commentId: string): string | null {
 }
 
 /** A host comment that is this local comment, saved by an attempt whose answer never came back. */
-function hostCopyOf(local: ChatThreadComment, host: readonly ChatThreadComment[], known: ReadonlySet<string>): ChatThreadComment | null {
+function hostCopyOf(local: ChatThreadComment, host: readonly ChatThreadComment[], known: ReadonlySet<string> | null): ChatThreadComment | null {
+  if (!known) return null;
   const quote = threadCommentQuoteText(local.anchor);
   return host.find((comment) => (
     !known.has(comment.id)
@@ -114,7 +119,8 @@ export function addLocalThreadComment(
     createdAt: at,
     updatedAt: at,
   };
-  knownHostIdsByLocal.set(local.id, new Set((bySession.get(sessionId) ?? EMPTY).map((comment) => comment.id)));
+  const hostList = bySession.get(sessionId);
+  knownHostIdsByLocal.set(local.id, hostList ? new Set(hostList.map((comment) => comment.id)) : null);
   localBySession.set(sessionId, [...(localBySession.get(sessionId) ?? EMPTY), local]);
   publish(sessionId);
   return settleLocal(sessionId, local);
@@ -125,7 +131,7 @@ function settleLocal(sessionId: string, local: ChatThreadComment) {
     // Discarded while the call was out: nothing to settle.
     if (!(localBySession.get(sessionId) ?? EMPTY).some((comment) => comment.id === local.id)) return;
     const host = bySession.get(sessionId) ?? EMPTY;
-    const known = knownHostIdsByLocal.get(local.id) ?? new Set<string>();
+    const known = knownHostIdsByLocal.get(local.id) ?? null;
     if (!saved && error && !hostCopyOf(local, host, known)) {
       failedLocal.set(local.id, { error, knownHostIds: known });
       publish(sessionId);

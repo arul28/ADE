@@ -258,7 +258,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getCursorAgentUsage", "ensureMuseBinary", "pinnedToolDownload", "antigravitySignInStart", "antigravitySignInComplete",
       "antigravitySignInCancel", "cliLoginStart", "cliLoginSubmitCode", "cliLoginCancel",
       "museSettings", "museSettingsClose",
-      "acpProviderDiagnostics", "storeApiCredential", "removeApiCredential",
+      "acpProviderDiagnostics", "runAcpProviderDoctor", "storeApiCredential", "removeApiCredential",
       "verifyApiKeyConnection", "verifyProviderSignIn", "storeApiKey", "deleteApiKey", "updateConfig", "setContinueAfterRestart",
       "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey",
       "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename",
@@ -920,6 +920,7 @@ const UNREPLAYED_READS = new Set<string>([
  */
 const BACKGROUND_WRITES = new Set<string>([
   // Opening a provider's page in Settings loads its CLI facts on its own.
+  // "Run doctor" is the person's (`ai.runAcpProviderDoctor`, a normal write).
   "ai.acpProviderDiagnostics",
   // Warm-ups a composer sends while a person types: the send loads what it needs.
   "chat.prewarmDraft",

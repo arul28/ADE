@@ -243,6 +243,10 @@ enum WorkChatInputAttachmentState: Equatable {
   case loading
   case ready
   case failed(String)
+  /// The bytes are here but the background upload failed: a tap uploads them
+  /// again. Its own case, so retry never depends on the message's wording;
+  /// the tile shows `workChatAttachmentUploadFailedMessage`.
+  case uploadFailed
 }
 
 struct WorkChatInputAttachment: Identifiable {
@@ -290,9 +294,19 @@ struct WorkChatInputAttachment: Identifiable {
     return false
   }
 
+  /// A background upload that failed, with the bytes still here to try again.
+  var isUploadFailed: Bool {
+    if case .uploadFailed = state { return uploadData != nil }
+    return false
+  }
+
+  /// What the tile says went wrong; display only.
   var errorMessage: String? {
-    if case .failed(let message) = state { return message }
-    return nil
+    switch state {
+    case .failed(let message): return message
+    case .uploadFailed: return workChatAttachmentUploadFailedMessage
+    case .loading, .ready: return nil
+    }
   }
 }
 
@@ -828,7 +842,7 @@ struct WorkChatInputAttachmentTray: View {
               attachments[index].isReady,
               attachments[index].hostRef == nil
         else { return }
-        attachments[index].state = .failed(workChatAttachmentUploadFailedMessage)
+        attachments[index].state = .uploadFailed
       }
       .onChange(of: openRequest?.wrappedValue) { _, requested in
         guard let requested else { return }
@@ -917,7 +931,7 @@ struct WorkChatInputAttachmentTray: View {
   /// A tile whose background upload failed still holds its bytes: a tap
   /// uploads it again (the composer's upload task starts once it is `.ready`).
   private func canRetryUpload(_ attachment: WorkChatInputAttachment) -> Bool {
-    attachment.errorMessage == workChatAttachmentUploadFailedMessage && attachment.uploadData != nil
+    attachment.isUploadFailed
   }
 
   private func retryUpload(_ attachment: WorkChatInputAttachment) {
@@ -1082,7 +1096,7 @@ private struct WorkChatInputAttachmentThumb: View {
       Image(systemName: "photo")
         .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.textSecondary)
-    case .failed:
+    case .failed, .uploadFailed:
       Image(systemName: "photo.badge.exclamationmark")
         .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.warning)
@@ -1097,6 +1111,8 @@ private struct WorkChatInputAttachmentThumb: View {
       return "Open attached image"
     case .failed(let message):
       return "Image failed. \(message)"
+    case .uploadFailed:
+      return "Image failed. \(workChatAttachmentUploadFailedMessage)"
     }
   }
 }

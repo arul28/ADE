@@ -143,8 +143,9 @@ function notifyRuntimeCatalogChanged(scopeKey: string): void {
   for (const listener of runtimeCatalogListeners) {
     try {
       listener(scopeKey);
-    } catch {
-      // A listener's failure is its own.
+    } catch (error) {
+      // A listener's failure is its own; the other surfaces still hear the change.
+      console.warn("[model-catalog] a catalog change listener threw", error);
     }
   }
 }
@@ -196,12 +197,13 @@ export function invalidateRuntimeCatalogScope(scopeKey: string): void {
 
 /**
  * True when a reader should fetch this bucket again before trusting it: it has
- * no catalog, or its machine changed since the catalog was read. A catalog the
- * host only aged past its TTL does not count; the rail's refresh covers that.
+ * no catalog, its machine changed since the catalog was read, or the host
+ * itself marked the catalog stale (a provider set up from another window or
+ * the CLI, which this window never heard about).
  */
 export function runtimeCatalogScopeNeedsRefresh(scopeKey: string): boolean {
   const scope = peekRuntimeCatalogScope(scopeKey);
-  return !scope?.catalog || scope.invalidated;
+  return !scope?.catalog || scope.invalidated || scope.catalog.stale === true;
 }
 
 /** The buckets this window holds for one machine, with the pin each was read through. */

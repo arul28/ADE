@@ -27,6 +27,7 @@ import {
   ThreadCommentEditor,
   ThreadCommentListItem,
   threadCommentErrorText,
+  type ThreadCommentError,
   useThreadCommentActions,
 } from "./ThreadCommentControls";
 import {
@@ -160,7 +161,7 @@ export function ThreadCommentLayer({
   draftRef.current = draft;
   // What the open box holds right now, kept when the box closes because the user left.
   const draftBodyRef = useRef("");
-  const [draftError, setDraftError] = useState<string | null>(null);
+  const [draftError, setDraftError] = useState<ThreadCommentError | null>(null);
   const [openCommentId, setOpenCommentId] = useState<string | null>(null);
   const { editingId, stopEditing } = actions;
   const [resolved, setResolved] = useState<Resolved[]>([]);
@@ -499,7 +500,7 @@ export function ThreadCommentLayer({
     if (!draft) return;
     const api = threadCommentsApi();
     if (!api) {
-      setDraftError("This version of ADE cannot save comments.");
+      setDraftError({ text: "This version of ADE cannot save comments.", connection: false });
       return;
     }
     // The comment shows (highlight, margin card, send badge) the moment it is

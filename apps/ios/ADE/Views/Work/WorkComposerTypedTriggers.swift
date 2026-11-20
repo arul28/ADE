@@ -3124,6 +3124,7 @@ final class WorkComposerPillEngine {
       case .loading: state = "l"
       case .ready: state = "r"
       case .failed: state = "f"
+      case .uploadFailed: state = "u"
       }
       return "\(attachment.id.uuidString):\(state):\(attachment.image == nil ? 0 : 1):\(attachment.filename)"
     }.joined(separator: ",")

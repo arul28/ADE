@@ -62,6 +62,7 @@ import {
   type CloudDiskRefusalReason,
   type CloudInstance,
   type CloudPlanId,
+  CLOUD_INSTANCE_ID,
 } from "./contract";
 import { commandWith, overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
 import { deleteBackupsForLane, deleteBackupsWithComputer, markRestedWithBackups, routeLaneBackups } from "./laneBackups";
@@ -149,7 +150,6 @@ import {
  */
 
 const PREFIX = "/cloud";
-const INSTANCE_ID = /^[a-z0-9]{4,40}$/;
 const MAX_METADATA_ENTRIES = 32;
 const MAX_ENV_ENTRIES = 64;
 /**
@@ -1119,6 +1119,9 @@ async function handleStop(env: CloudEnv, computer: ComputerRow, provider: CloudP
   return json({ status });
 }
 
+/** How long the computer's own update waits for the provider before it answers `started` anyway. */
+const IDLE_UPDATE_ANSWER_WAIT_MS = 8_000;
+
 /**
  * Moves the computer to its channel's image (`updates.ts`). A person's update
  * (no reason, or `manual`) always runs; the computer's own (`idle`) runs only
@@ -1155,16 +1158,30 @@ async function handleUpdate(request: Request, env: CloudEnv, computer: ComputerR
     const expectsReport = automaticTemplate(targets, channel) === templateVersion;
     if (reason === "idle" && waitUntil) {
       // The computer asking is the one the update restarts: its link drops
-      // mid-request, which can cancel this request before the power log and
-      // the update's free window are written. The update runs on its own;
-      // the computer only needs to know it started.
-      waitUntil(startCloudUpdate(env, provider, computer, { reason, target: templateVersion, expectsReport, now }).then(
+      // mid-request, which can cancel this request. The update runs on its
+      // own (its power log and free window are written before the provider
+      // is asked, `startCloudUpdate`). The answer waits a few seconds for the
+      // provider: a quick refusal reaches the computer, which then sleeps as
+      // usual; still waiting, the computer only needs to know it started.
+      const update = startCloudUpdate(env, provider, computer, { reason, target: templateVersion, expectsReport, now });
+      waitUntil(update.then(
         () => undefined,
         (error: unknown) => {
           if (error instanceof CloudUpdateInProgressError) return;
           reportCloudFailure("cloud.idle_update_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
         },
       ));
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settled = await Promise.race([
+        update.then(
+          (started) => ({ kind: "started" as const, started }),
+          (error: unknown) => ({ kind: "failed" as const, error }),
+        ),
+        new Promise<{ kind: "pending" }>((resolve) => { timer = setTimeout(() => resolve({ kind: "pending" }), IDLE_UPDATE_ANSWER_WAIT_MS); }),
+      ]);
+      clearTimeout(timer);
+      if (settled.kind === "failed") throw settled.error;
+      if (settled.kind === "started") return json({ ...settled.started, started: true });
       return json({ status: "updating", templateVersion, started: true });
     }
     const started = await startCloudUpdate(env, provider, computer, { reason, target: templateVersion, expectsReport, now });
@@ -1404,7 +1421,6 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
     }
     return json({ ok: true });
   },
-  // The computer's own report of hours near full CPU with no chat turn or agent working: a line in the owner's daily report.
   // The computer's brain: its work started or stopped, or its count of agents changed (never on a timer).
   "POST activity": async (request, env, computer, _provider, { now, waitUntil }) => {
     const report = parseActivityReport(await readJson(request), now);
@@ -1414,6 +1430,7 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   },
   // A lane's status menu, read when it opens: never wakes the computer (`computerStatus.ts`).
   "GET status": async (_request, env, computer, provider, { now }) => json(await readComputerStatus(env, provider, computer, now)),
+  // The computer's own report of hours near full CPU with no chat turn or agent working: a line in the owner's daily report.
   "POST cpu-report": async (request, env, computer, _provider, { now }) => {
     const report = parseSustainedCpuReport(await readJson(request), now);
     if (!report) return badRequest(UNREADABLE_REQUEST_MESSAGE);
@@ -1489,7 +1506,7 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
 
 async function routeInstance(request: Request, env: CloudEnv, provider: CloudProvider, userId: string, instanceId: string, action: string | undefined, ctx: CloudRequestContext): Promise<Response> {
   const { now } = ctx;
-  if (!INSTANCE_ID.test(instanceId)) return notFound();
+  if (!CLOUD_INSTANCE_ID.test(instanceId)) return notFound();
   const computer = await ownedComputer(env, userId, instanceId);
   if (!computer) return notFound();
   if (action === undefined) {
@@ -1940,7 +1957,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   }
   const computerRoute = instanceRouteOf(path);
   if (computerRoute && (computerRoute.action === "messages" || computerRoute.action === "use")) {
-    if (!INSTANCE_ID.test(computerRoute.instanceId)) return notFound();
+    if (!CLOUD_INSTANCE_ID.test(computerRoute.instanceId)) return notFound();
     const computer = await ownedComputer(env, caller.userId, computerRoute.instanceId);
     if (!computer) return notFound();
     if (computerRoute.action === "messages") return routeComputerMessages(request, env, computer, computerRoute.rest, now);
@@ -1969,7 +1986,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (path === CLOUD_EDGE_PATHS.jiraSearch) return routeJiraSearch(request, env, caller.userId, now);
   if (path === CLOUD_EDGE_PATHS.jiraIssue) return routeJiraIssue(request, env, caller.userId, now);
   const eventWakes = EVENT_WAKES_ROUTE.exec(path);
-  if (eventWakes) return INSTANCE_ID.test(eventWakes[1]!) ? routeEventWakeSubscription(request, env, caller.userId, eventWakes[1]!, now) : notFound();
+  if (eventWakes) return CLOUD_INSTANCE_ID.test(eventWakes[1]!) ? routeEventWakeSubscription(request, env, caller.userId, eventWakes[1]!, now) : notFound();
   if (path === CLOUD_PATHS.models) return handleCloudModels(request);
   // The server launcher: a launch's record reads with no provider; only the start and a cancel need it.
   if (path === CLOUD_PATHS.launches || path.startsWith(`${CLOUD_PATHS.launches}/`)) {
@@ -2011,7 +2028,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
     const instanceRoute = instanceRouteOf(path);
     if (instanceRoute) {
       if (instanceRoute.action === "sign-ins") {
-        if (!INSTANCE_ID.test(instanceRoute.instanceId)) return notFound();
+        if (!CLOUD_INSTANCE_ID.test(instanceRoute.instanceId)) return notFound();
         const computer = await ownedComputer(env, caller.userId, instanceRoute.instanceId);
         if (!computer) return notFound();
         // Signing in on the computer is use, even during an idle cleanup's save.

@@ -2,7 +2,7 @@ import path from "node:path";
 
 import type { LaneSetupScriptConfig } from "../../../shared/types";
 import { laneSetupScriptHasWork } from "../../../shared/types";
-import { macosOnlyToolIn } from "../../../shared/laneSetupPlatform";
+import { macosOnlyToolOnLinux } from "../../../shared/laneSetupPlatform";
 
 export type ResolvedSetupScript = {
   commands: string[];
@@ -15,7 +15,6 @@ export type ResolvedSetupScript = {
    */
   macosOnlyOnLinux?: string;
 };
-
 
 /**
  * Pick the platform-appropriate setup commands / script path out of a setup
@@ -51,8 +50,7 @@ export function resolveSetupScriptConfig(
 
   if (commands.length === 0 && !scriptPath) return null;
 
-  const usesSharedOnLinux = isLinux && !cfg.linuxCommands?.length;
-  const macosTool = usesSharedOnLinux ? macosOnlyToolIn(commands) : null;
+  const macosTool = isLinux ? macosOnlyToolOnLinux(cfg) : null;
 
   return {
     commands,

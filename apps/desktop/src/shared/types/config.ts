@@ -10,6 +10,7 @@ import type { ModelConfig, ThinkingLevel } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
 import type { LocalProviderFamily } from "../modelRegistry";
 import type { CloudTierId } from "../cloudTiers";
+import { LANE_SETUP_PLATFORM_FIELDS } from "../laneSetupPlatform";
 
 export type TestRunStatus = "running" | "passed" | "failed" | "canceled" | "timed_out";
 export type TestSuiteTag = "unit" | "lint" | "integration" | "e2e" | "custom";
@@ -212,17 +213,8 @@ export function laneSetupScriptHasWork(
     Array.isArray(list) && list.some((entry) => typeof entry === "string" && entry.trim().length > 0);
   const hasPath = (value: string | undefined): boolean =>
     typeof value === "string" && value.trim().length > 0;
-  return (
-    hasCommand(script.commands)
-    || hasCommand(script.unixCommands)
-    || hasCommand(script.macosCommands)
-    || hasCommand(script.linuxCommands)
-    || hasCommand(script.windowsCommands)
-    || hasPath(script.scriptPath)
-    || hasPath(script.unixScriptPath)
-    || hasPath(script.macosScriptPath)
-    || hasPath(script.linuxScriptPath)
-    || hasPath(script.windowsScriptPath)
+  return LANE_SETUP_PLATFORM_FIELDS.some(
+    (field) => hasCommand(script[field.commandsKey]) || hasPath(script[field.scriptKey]),
   );
 }
 

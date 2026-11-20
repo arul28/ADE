@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { useEffect, useState } from "react";
 import { ArrowSquareOut, CheckCircle, Clock, Cloud, Cpu, Moon, Pulse, SunHorizon, Trash, Warning } from "@phosphor-icons/react";
 import { idleCleanupWhen, type CloudIdleCleanupEntry } from "../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { useCloudAccount } from "../../state/cloudAccountStore";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { showToast } from "../app/toast/toastStore";
-import { useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
+import { useCloudLaneComputer, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { useChatMachineWake } from "../chat/useChatMachineWake";
 import { useChatRuntimeScope } from "../chat/ChatRuntimeScope";
+import { useAnchoredActionMenu, type AnchoredActionMenu } from "../remoteTargets/MachineActionsMenu";
 import { callCloudMachineAction, confirmCloudSleep } from "../remoteTargets/useCloudBoxActions";
 import { refreshCloudMachines, useCloudMachines } from "../remoteTargets/useCloudMachines";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
@@ -42,14 +43,12 @@ import "./cloudLaneStatus.css";
  * freezes the computer, and the turn may fail), as Sleep does everywhere.
  */
 export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string | null; turnRunning: boolean }) {
-  const { computers } = useAdeCloudLaneComputers();
+  const computer = useCloudLaneComputer(laneId);
   const account = useCloudAccount();
   const machine = useChatMachineWake();
   const scope = useChatRuntimeScope();
-  const [open, setOpen] = useState(false);
+  const menu = useAnchoredActionMenu();
   const [sizing, setSizing] = useState(false);
-  const anchorRef = useRef<HTMLButtonElement | null>(null);
-  const computer = laneId ? computers.find((entry) => entry.laneId === laneId) ?? null : null;
   if (!computer) return null;
   const name = computer.laneName || "this lane";
   const idle = account?.dueForDeletion?.find((entry) => entry.instanceId === computer.instanceId) ?? null;
@@ -85,14 +84,11 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
   return (
     <>
       <button
-        ref={anchorRef}
+        {...menu.triggerProps}
         type="button"
         className={WORK_HEADER_ICON_BUTTON_CLASS}
         aria-label={`ADE Cloud computer of ${name}: ${CLOUD_LANE_POWER_TEXT[power]}`}
         title={title}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
       >
         <span className="adecl-power">
           <Cloud size={16} weight="bold" />
@@ -100,15 +96,14 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
           {idle ? <i aria-hidden="true" data-due="true" /> : null}
         </span>
       </button>
-      {open ? (
+      {menu.open ? (
         <CloudLaneStatusMenu
-          anchorRef={anchorRef}
+          menu={menu}
           computer={computer}
           name={name}
           power={power}
           idle={idle}
           turnRunning={turnRunning}
-          onClose={() => setOpen(false)}
           onWake={() => void wakeNow()}
           onSize={() => setSizing(true)}
         />
@@ -123,26 +118,25 @@ const MENU_TICK_MS = 30_000;
 
 /**
  * The open menu. Mounted only while open, so its reads (the account's list,
- * the status) and its clock run only then.
+ * the status) and its clock run only then. Focus, Escape and focus return are
+ * the shared action menu's (`useAnchoredActionMenu`).
  */
 function CloudLaneStatusMenu({
-  anchorRef,
+  menu,
   computer,
   name,
   power,
   idle,
   turnRunning,
-  onClose,
   onWake,
   onSize,
 }: {
-  anchorRef: RefObject<HTMLButtonElement | null>;
+  menu: AnchoredActionMenu;
   computer: AdeCloudLaneComputer;
   name: string;
   power: CloudLanePower;
   idle: CloudIdleCleanupEntry | null;
   turnRunning: boolean;
-  onClose: () => void;
   onWake: () => void;
   onSize: () => void;
 }) {
@@ -150,34 +144,16 @@ function CloudLaneStatusMenu({
   // The account's list once on open (no settle polling): the size, disk, work and up-since.
   const { result } = useCloudMachines(true, { settle: false });
   const box = (result?.state === "ok" ? result.machines.find((entry) => entry.instanceId === computer.instanceId) ?? null : null) as CloudLaneMachine | null;
-  const { status, loading } = useCloudComputerStatus(computer.instanceId);
+  const { status, loading, failed: statusFailed, retry: retryStatus } = useCloudComputerStatus(computer.instanceId);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), MENU_TICK_MS);
     return () => window.clearInterval(timer);
   }, []);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-  }, []);
   const model = cloudLaneStatusModel({ power, box, status, account, now });
   const life = cloudLaneChangesAvailable();
 
-  const closeOnEscape = (event: KeyboardEvent) => {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    event.stopPropagation();
-    onClose();
-    anchorRef.current?.focus();
-  };
-  const run = (action: () => void) => () => {
-    onClose();
-    action();
-    // The chosen item unmounts with the menu; unless the action moved focus (a dialog), give it back.
-    requestAnimationFrame(() => {
-      if (document.activeElement === document.body || document.activeElement == null) anchorRef.current?.focus();
-    });
-  };
+  const { run } = menu;
 
   const sleepNow = () => {
     forgetCloudComputerStatus(computer.instanceId);
@@ -187,17 +163,17 @@ function CloudLaneStatusMenu({
   return (
     <AnchoredMenu
       open
-      anchorRef={anchorRef}
-      onClose={onClose}
+      anchorRef={menu.anchorRef}
+      onClose={menu.close}
       placement="bottom-end"
       role="menu"
       aria-label={`ADE Cloud computer of ${name}`}
       className="ade-cx-menu adecl-status-menu"
       zIndex={Z_LAYERS.contextMenu}
-      onKeyDown={closeOnEscape}
-      remeasureKey={`${box ? 1 : 0}${loading ? 1 : 0}${model.lines.length}`}
+      onKeyDown={menu.closeOnEscape}
+      remeasureKey={`${box ? 1 : 0}${loading ? 1 : 0}${statusFailed ? 1 : 0}${model.lines.length}`}
     >
-      <div ref={menuRef} style={{ display: "contents" }}>
+      <div ref={menu.menuRef} style={{ display: "contents" }}>
         {power === "asleep" ? (
           <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(onWake)}>
             <span className="ade-cx-menu-icon"><SunHorizon size={13} /></span>
@@ -232,6 +208,13 @@ function CloudLaneStatusMenu({
             </div>
           ))}
           {loading && !box ? <div className="adecl-status-line"><small>Reading its status…</small></div> : null}
+          {statusFailed && !loading ? (
+            <div className="adecl-status-line">
+              <small>Couldn&apos;t load this computer&apos;s status</small>
+              <small aria-hidden="true">·</small>
+              <button type="button" role="menuitem" className="adecl-status-retry" onClick={retryStatus}>Try again</button>
+            </div>
+          ) : null}
         </div>
         <div className="ade-cx-menu-rule" />
         {power === "waking" ? (

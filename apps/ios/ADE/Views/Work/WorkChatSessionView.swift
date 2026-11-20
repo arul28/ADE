@@ -4140,6 +4140,13 @@ private struct WorkChatComposerDraftInput: View {
     }
     if restored.isEmpty {
       restored = WorkComposerDraftAttachmentCache.read(entry.localFiles, for: key)
+    } else {
+      // Refs resolved, but a tile whose upload had failed lives only in the
+      // cache: bring it back too, failed with its retry.
+      let failedFiles = entry.localFiles.filter { $0.uploadFailed == true }
+      if !failedFiles.isEmpty {
+        restored += WorkComposerDraftAttachmentCache.read(failedFiles, for: key)
+      }
     }
     guard !restored.isEmpty, inputAttachments.isEmpty, draftPersistenceKey == key else { return }
     inputAttachments = Array(restored.prefix(workChatInputAttachmentLimit))

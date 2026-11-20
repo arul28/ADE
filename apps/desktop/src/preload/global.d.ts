@@ -1913,6 +1913,10 @@ declare global {
           provider: "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity";
           runDoctor?: boolean;
         }, pin?: OpenProjectBinding | null) => Promise<AcpProviderDiagnostics>;
+        /** "Run doctor": the diagnostics plus the provider CLI's own doctor. A person's action, so it wakes a sleeping cloud computer. Optional like the read above. */
+        runAcpProviderDoctor?: (args: {
+          provider: "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity";
+        }, pin?: OpenProjectBinding | null) => Promise<AcpProviderDiagnostics>;
         opencodeAuthMethods: (pin?: OpenProjectBinding | null) => Promise<{ methods: OpenCodeProviderAuthMethods }>;
         opencodeOAuthStart: (args: {
           providerId: string;

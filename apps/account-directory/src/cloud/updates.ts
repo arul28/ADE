@@ -281,25 +281,43 @@ export async function startCloudUpdate(
     where instance_id = ? and deleted_at is null and (update_state is null or update_state <> 'updating')
   `).bind(target, now, reason, expects, computer.instance_id).run();
   if (claimed.meta.changes !== 1) throw new CloudUpdateInProgressError();
+  const before = { ...computer };
+  // An automatic update of an awake computer writes its power log and opens
+  // its free window before the provider is asked, which can take minutes: the
+  // idle update runs past the request that asked for it, and a Worker's
+  // `waitUntil` doesn't wait that long. A failure below takes them back.
+  const early = AUTOMATIC_REASONS.has(reason) && isMeteredStatus(computer.status);
+  let earlyWritten = false;
   let status: string;
   try {
+    if (early) {
+      await env.DB.batch([
+        ...freeWindowStatements(env, computer, "updating", now),
+        powerLogStatement(env, computer, "update", `update_${reason}`, now),
+      ]);
+      earlyWritten = true;
+    }
     status = await provider.updateInstance(computer.instance_id, target);
   } catch (error) {
     // Nothing moved: the row reads as before, except that an automatic try
     // waits an hour (its start time), and a finished rollback's reason gives
     // way to this try's, so the time can't read as a rollback in flight.
     const automatic = reason !== "manual";
-    await env.DB.prepare(`
-      update cloud_computers set template_version = ?, previous_template = ?, update_state = ?, update_started_at = ?,
-        update_reason = ?, update_error = ?, update_expects_report = ?
-      where instance_id = ? and update_state = 'updating' and update_started_at = ?
-    `).bind(
-      computer.template_version, computer.previous_template, computer.update_state,
-      automatic ? now : computer.update_started_at,
-      automatic && computer.update_reason === "rollback" ? reason : computer.update_reason,
-      computer.update_error, computer.update_expects_report ?? null,
-      computer.instance_id, now,
-    ).run();
+    await env.DB.batch([
+      ...(earlyWritten ? undoEarlyStartStatements(env, before, computer, reason, now) : []),
+      env.DB.prepare(`
+        update cloud_computers set template_version = ?, previous_template = ?, update_state = ?, update_started_at = ?,
+          update_reason = ?, update_error = ?, update_expects_report = ?
+        where instance_id = ? and update_state = 'updating' and update_started_at = ?
+      `).bind(
+        before.template_version, before.previous_template, before.update_state,
+        automatic ? now : before.update_started_at,
+        automatic && before.update_reason === "rollback" ? reason : before.update_reason,
+        before.update_error, before.update_expects_report ?? null,
+        computer.instance_id, now,
+      ),
+    ]);
+    if (early) Object.assign(computer, before, earlyWritten ? restoredMeter(before, now) : {});
     if (automatic) {
       reportCloudFailure("cloud.auto_update_start_failed", { instanceId: computer.instance_id, reason, code: error instanceof CloudProviderError ? error.code : "unknown" });
     }
@@ -312,9 +330,50 @@ export async function startCloudUpdate(
   computer.update_reason = reason;
   computer.update_error = null;
   computer.update_expects_report = expects;
-  await env.DB.batch(startedStatements(env, computer, status, reason, now));
+  const statements = !early ? startedStatements(env, computer, status, reason, now)
+    // Written early: only the provider's status is left. Awake, the status alone (the meter
+    // is the window's, and a boot report that came first may have closed it already);
+    // a computer it left asleep closes the window at once.
+    : isMeteredStatus(status)
+      ? status === computer.status ? [] : [env.DB.prepare("update cloud_computers set status = ? where instance_id = ? and status = ?").bind(status, computer.instance_id, computer.status)]
+      : statusChangeStatements(env, computer, status, now, "update");
+  if (early && isMeteredStatus(status)) computer.status = status;
+  if (statements.length) await env.DB.batch(statements);
   logCloud("cloud.update_started", { instanceId: computer.instance_id, reason, target });
   return { status, templateVersion: target };
+}
+
+/**
+ * The meter as it was before an early free window, for a provider that refused
+ * the update: a window that was open keeps its end; a metered stretch
+ * `freeWindowStatements` charged up to `now` restarts there; an ended window
+ * it recorded is gone, so a later close can't record it twice.
+ */
+function restoredMeter(before: ComputerRow, now: number): Pick<ComputerRow, "awake_since" | "free_wake_started_at" | "free_wake_until" | "last_awake_at"> {
+  const windowOpen = before.free_wake_started_at != null && before.free_wake_until != null && before.free_wake_until > now;
+  const meteredNow = before.awake_since != null && before.awake_since <= now;
+  return {
+    awake_since: windowOpen ? before.awake_since : meteredNow ? now : before.awake_since,
+    free_wake_started_at: windowOpen ? before.free_wake_started_at : null,
+    free_wake_until: windowOpen ? before.free_wake_until : null,
+    last_awake_at: meteredNow ? now : before.last_awake_at,
+  };
+}
+
+/** Takes back an early free window and its power log (`startCloudUpdate`), only while the row still holds them. */
+function undoEarlyStartStatements(env: CloudEnv, before: ComputerRow, early: ComputerRow, reason: CloudUpdateReason, now: number): D1PreparedStatement[] {
+  const meter = restoredMeter(before, now);
+  return [
+    env.DB.prepare(`
+      update cloud_computers set status = ?, status_changed_at = ?, awake_since = ?, free_wake_started_at = ?, free_wake_until = ?, last_awake_at = ?
+      where instance_id = ? and update_state = 'updating' and update_started_at = ? and status = ? and awake_since = ?
+    `).bind(
+      before.status, before.status_changed_at, meter.awake_since, meter.free_wake_started_at, meter.free_wake_until, meter.last_awake_at,
+      before.instance_id, now, early.status, early.awake_since,
+    ),
+    env.DB.prepare("delete from cloud_power_log where instance_id = ? and action = 'update' and reason = ? and created_at = ?")
+      .bind(before.instance_id, `update_${reason}`, now),
+  ];
 }
 
 /**

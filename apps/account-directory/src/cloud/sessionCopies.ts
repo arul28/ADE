@@ -10,6 +10,7 @@ import {
   type CloudSessionRow,
   type CloudSessionRowInput,
   type CloudSessionMoveResult,
+  CLOUD_INSTANCE_ID,
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
 import { openBytes, openJson, sealBytes, sealJson, userKeys, type UserKeys } from "./seal";
@@ -55,7 +56,7 @@ export async function readCappedJson(request: Request, maxBytes: number): Promis
 /** The computer that names itself in the body or the instance header, if it is the caller's own. */
 export async function callingComputer(env: CloudEnv, request: Request, userId: string, bodyInstanceId: unknown): Promise<ComputerRow | null> {
   const named = typeof bodyInstanceId === "string" && bodyInstanceId.trim() ? bodyInstanceId.trim() : request.headers.get(CLOUD_INSTANCE_HEADER)?.trim() ?? "";
-  if (!/^[a-z0-9]{4,40}$/.test(named)) return null;
+  if (!CLOUD_INSTANCE_ID.test(named)) return null;
   return await ownedComputer(env, userId, named);
 }
 
@@ -321,7 +322,7 @@ async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, use
   if (!body.ok) return unreadable();
   const toMachineKey = typeof body.value.toMachineKey === "string" ? body.value.toMachineKey.trim() : "";
   const instanceId = typeof body.value.instanceId === "string" ? body.value.instanceId.trim() : "";
-  if (!ROW_ID.test(toMachineKey) || !/^[a-z0-9]{4,40}$/.test(instanceId)) return unreadable();
+  if (!ROW_ID.test(toMachineKey) || !CLOUD_INSTANCE_ID.test(instanceId)) return unreadable();
   const computer = await ownedComputer(env, userId, instanceId);
   // Only the caller's own computer, and only to its own machine key.
   if (!computer || computer.deleted_at != null) return fail("not_found", "ADE Cloud has no such computer.", 404);

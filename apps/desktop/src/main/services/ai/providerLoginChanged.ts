@@ -21,6 +21,8 @@ import { invalidateCachedClaudeCredentials } from "./providerCredentialSources";
 import { clearProviderAccountCache } from "../usage/providerAccountIdentity";
 
 let generation = 0;
+/** Moved only by `noteProviderModelsChanged`: the sum of the per-provider generations below. */
+let modelsGeneration = 0;
 const loginChangedListeners = new Set<(provider: string) => void>();
 const providerGenerations = new Map<string, number>();
 
@@ -47,6 +49,15 @@ export function providerLoginGeneration(provider?: string): number {
 }
 
 /**
+ * Moves only when some provider's model list may have changed
+ * (`noteProviderModelsChanged`), never on a Re-check that keeps the lists
+ * (`refreshModels: false`). The chat model catalog keys on it.
+ */
+export function providerModelsGeneration(): number {
+  return modelsGeneration;
+}
+
+/**
  * The login may now be another account, whose models differ: mark the
  * provider's model lists old, so the next status read lists them again.
  */
@@ -59,6 +70,7 @@ export function noteProviderModelsChanged(provider: string): void {
       .catch(() => undefined);
   }
   generation += 1;
+  modelsGeneration += 1;
   providerGenerations.set(id, (providerGenerations.get(id) ?? 0) + 1);
 }
 

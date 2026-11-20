@@ -280,8 +280,9 @@ export function openCodeInventoryGeneration(projectRoot: string): string {
   return `${inventoryGlobalGeneration}:${inventoryRootGenerations.get(projectRoot) ?? 0}`;
 }
 
+// A stale entry (a routine clear) with the same models is no change: the catalog built from it lists them already.
 function sameInventory(previous: PersistedInventoryEntry | undefined, entry: CacheEntry): boolean {
-  if (!previous || previous.stale) return false;
+  if (!previous) return false;
   return JSON.stringify(previous.modelIds) === JSON.stringify(entry.modelIds)
     && JSON.stringify(previous.providers) === JSON.stringify(entry.providers.map(stripEphemeralCredentialSource));
 }
@@ -371,18 +372,23 @@ function hydrateFromPersisted(projectRoot: string, entry: PersistedInventoryEntr
  * Drop the in-memory inventory and mark every persisted one stale: a config or
  * key changed, so the next probe must ask the server. The persisted models
  * still draw the picker until then.
+ *
+ * `modelsMayHaveChanged: false`: a routine clear (every forced status read)
+ * that knows of no change. The generation then stays, and the next probe
+ * moves it only if it finds other models (`persistEntry`).
  */
-export function clearOpenCodeInventoryCache(): void {
+export function clearOpenCodeInventoryCache(options?: { modelsMayHaveChanged?: boolean }): void {
   const hadMemory = inventoryCache != null;
+  const bump = options?.modelsMayHaveChanged !== false;
   inventoryCache = null;
   const file = readPersistedInventoryFile();
   if (!Object.values(file.entries).some((entry) => !entry.stale)) {
     // Only a real drop moves the generation: a status read with no OpenCode
     // installed clears an already empty cache on every read.
-    if (hadMemory) inventoryGlobalGeneration += 1;
+    if (hadMemory && bump) inventoryGlobalGeneration += 1;
     return;
   }
-  inventoryGlobalGeneration += 1;
+  if (bump) inventoryGlobalGeneration += 1;
   writePersistedInventoryFile({
     version: PERSISTED_INVENTORY_VERSION,
     entries: Object.fromEntries(

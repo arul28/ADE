@@ -274,6 +274,8 @@ export const CLOUD_COMPUTER_PLATFORM_HEADER = "x-ade-computer-platform";
 /** The fixed, ADE-wide salt of the computer id. Not per account: one computer is one id for every account. */
 export const CLOUD_COMPUTER_ID_DOMAIN = "ade-cloud-free-plan-computer-v1";
 export const CLOUD_COMPUTER_UNREADABLE = "unreadable";
+/** A provider instance id, as every `/cloud/instances/:id` route and the provider webhook accept it. */
+export const CLOUD_INSTANCE_ID = /^[a-z0-9]{4,40}$/;
 
 /**
  * The metadata that links a computer to the one lane it was made for. The

@@ -1,6 +1,7 @@
 import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { isIanaTimeZone, parseAutomationCloudTarget } from "../../../shared/automationCloud";
 import { ADE_CLOUD_HOME_DEVICE_ID, ADE_CLOUD_HOME_NAME, isAdeCloudHome } from "../../../shared/automationHome";
+import { LANE_SETUP_PLATFORM_FIELDS } from "../../../shared/laneSetupPlatform";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -1140,30 +1141,17 @@ function coerceLaneSetupScript(value: unknown): LaneSetupScriptConfig | undefine
   };
   const readPath = (candidate: unknown): string | undefined => asString(candidate)?.trim() || undefined;
 
-  const commands = readCommands(value.commands);
-  const unixCommands = readCommands(value.unixCommands);
-  const macosCommands = readCommands(value.macosCommands);
-  const linuxCommands = readCommands(value.linuxCommands);
-  const windowsCommands = readCommands(value.windowsCommands);
-  const scriptPath = readPath(value.scriptPath);
-  const unixScriptPath = readPath(value.unixScriptPath);
-  const macosScriptPath = readPath(value.macosScriptPath);
-  const linuxScriptPath = readPath(value.linuxScriptPath);
-  const windowsScriptPath = readPath(value.windowsScriptPath);
-
-  const parsed: LaneSetupScriptConfig = {
-    ...(commands ? { commands } : {}),
-    ...(unixCommands ? { unixCommands } : {}),
-    ...(macosCommands ? { macosCommands } : {}),
-    ...(linuxCommands ? { linuxCommands } : {}),
-    ...(windowsCommands ? { windowsCommands } : {}),
-    ...(scriptPath ? { scriptPath } : {}),
-    ...(unixScriptPath ? { unixScriptPath } : {}),
-    ...(macosScriptPath ? { macosScriptPath } : {}),
-    ...(linuxScriptPath ? { linuxScriptPath } : {}),
-    ...(windowsScriptPath ? { windowsScriptPath } : {}),
-    ...(asBool(value.injectPrimaryPath) === true ? { injectPrimaryPath: true } : {}),
-  };
+  // Every commands list first, then every script path: the stored key order.
+  const parsed: LaneSetupScriptConfig = {};
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    const commands = readCommands(value[field.commandsKey]);
+    if (commands) parsed[field.commandsKey] = commands;
+  }
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    const scriptPath = readPath(value[field.scriptKey]);
+    if (scriptPath) parsed[field.scriptKey] = scriptPath;
+  }
+  if (asBool(value.injectPrimaryPath) === true) parsed.injectPrimaryPath = true;
 
   // `injectPrimaryPath` on its own configures nothing to run, so a config with
   // only that key is not a setup script — returning one would emit an empty

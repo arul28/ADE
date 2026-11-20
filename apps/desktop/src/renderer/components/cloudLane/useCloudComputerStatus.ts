@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { CloudComputerStatus } from "../../../shared/adeCloud";
 
 /**
@@ -17,41 +17,56 @@ export function forgetCloudComputerStatus(instanceId: string): void {
   kept.delete(instanceId);
 }
 
-export function useCloudComputerStatus(instanceId: string): { status: CloudComputerStatus | null; loading: boolean } {
+export type CloudComputerStatusRead = {
+  status: CloudComputerStatus | null;
+  loading: boolean;
+  /** The last read failed (logged once per read); `retry` asks again. A failure is never kept. */
+  failed: boolean;
+  retry: () => void;
+};
+
+type StatusState = { id: string; status: CloudComputerStatus | null; loading: boolean; failed: boolean };
+
+export function useCloudComputerStatus(instanceId: string): CloudComputerStatusRead {
   const fresh = kept.get(instanceId);
   const initial = fresh && Date.now() - fresh.at < KEEP_MS ? fresh : null;
-  const [state, setState] = useState<{ id: string; status: CloudComputerStatus | null; loading: boolean }>(() => ({
+  const [state, setState] = useState<StatusState>(() => ({
     id: instanceId,
     status: initial?.status ?? null,
     loading: initial == null,
+    failed: false,
   }));
+  const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => setAttempt((value) => value + 1), []);
   useEffect(() => {
     const hit = kept.get(instanceId);
     if (hit && Date.now() - hit.at < KEEP_MS) {
-      setState({ id: instanceId, status: hit.status, loading: false });
+      setState({ id: instanceId, status: hit.status, loading: false, failed: false });
       return;
     }
     const read = window.ade?.cloud?.computerStatus;
     if (!read) {
-      setState({ id: instanceId, status: null, loading: false });
+      setState({ id: instanceId, status: null, loading: false, failed: false });
       return;
     }
     let live = true;
-    setState((current) => ({ id: instanceId, status: current.id === instanceId ? current.status : null, loading: true }));
+    setState((current) => ({ id: instanceId, status: current.id === instanceId ? current.status : null, loading: true, failed: false }));
     void read(instanceId).then(
       (status) => {
         kept.set(instanceId, { at: Date.now(), status: status ?? null });
-        if (live) setState({ id: instanceId, status: status ?? null, loading: false });
+        if (live) setState({ id: instanceId, status: status ?? null, loading: false, failed: false });
       },
       (error: unknown) => {
-        // The menu shows what the list and the account already say.
+        // The menu still shows what the list and the account say, with a quiet "Try again".
         console.warn("[cloud] reading a lane computer's status failed", error);
-        if (live) setState({ id: instanceId, status: null, loading: false });
+        if (live) setState((current) => ({ id: instanceId, status: current.id === instanceId ? current.status : null, loading: false, failed: true }));
       },
     );
     return () => {
       live = false;
     };
-  }, [instanceId]);
-  return state.id === instanceId ? { status: state.status, loading: state.loading } : { status: null, loading: true };
+  }, [instanceId, attempt]);
+  return state.id === instanceId
+    ? { status: state.status, loading: state.loading, failed: state.failed, retry }
+    : { status: null, loading: true, failed: false, retry };
 }

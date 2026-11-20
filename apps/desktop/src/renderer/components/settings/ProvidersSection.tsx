@@ -9,6 +9,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  AgentChatModelCatalogRefreshProvider,
   AiConfig,
   AiApiKeyVerificationResult,
   AiProviderSignInCheck,
@@ -345,6 +346,15 @@ type ProvidersSectionProps = {
   harnessesParam?: boolean;
 };
 
+/** The providers a chat model catalog can re-read on their own (`refreshProvider`); the rest come with any rebuild. */
+const CATALOG_REFRESH_PROVIDERS: ReadonlySet<string> = new Set<AgentChatModelCatalogRefreshProvider>([
+  "opencode", "pi", "muse", "cursor", "droid", "lmstudio", "ollama", "qwen", "kimi", "grok", "copilot", "devin", "antigravity",
+]);
+
+function catalogRefreshProviderOf(provider: SettingsProviderId | undefined): AgentChatModelCatalogRefreshProvider | undefined {
+  return provider && CATALOG_REFRESH_PROVIDERS.has(provider) ? provider as AgentChatModelCatalogRefreshProvider : undefined;
+}
+
 function toastActionError(title: string, err: unknown): void {
   showToast({ tone: "error", title, message: err instanceof Error ? err.message : String(err) });
 }
@@ -455,7 +465,12 @@ function MachineProvidersSection({
     onProviderChange?.(next);
   }, [onProviderChange]);
 
-  const refreshStatus = useCallback(async (options?: { force?: boolean; silent?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus | null> => {
+  /**
+   * `refreshProvider`: the one provider whose sign-in changed. The chat model
+   * lists then re-read only that provider's, not every provider's (a full
+   * refresh starts several provider processes).
+   */
+  const refreshStatus = useCallback(async (options?: { force?: boolean; silent?: boolean; refreshOpenCodeInventory?: boolean; refreshProvider?: SettingsProviderId }): Promise<AiSettingsStatus | null> => {
     if (!options?.silent) {
       setLoading(true);
       if (!statusKnownRef.current) setStatusLoadError(null);
@@ -519,10 +534,8 @@ function MachineProvidersSection({
     // copy of this machine's model list, so read those again too, in the
     // background. An OpenCode inventory read re-probes OpenCode there as well.
     if (nextStatus && (options?.force || options?.refreshOpenCodeInventory)) {
-      void refreshRuntimeCatalogsForMachine(
-        pin,
-        options.refreshOpenCodeInventory ? { refreshProvider: "opencode" } : undefined,
-      );
+      const catalogProvider = options.refreshOpenCodeInventory ? "opencode" : catalogRefreshProviderOf(options.refreshProvider);
+      void refreshRuntimeCatalogsForMachine(pin, catalogProvider ? { refreshProvider: catalogProvider } : undefined);
     }
     return nextStatus;
   }, [editingLocalProvider, pin, projectCall, projectConfigEditable, projectPin, savingLocalProvider]);
@@ -895,7 +908,7 @@ function MachineProvidersSection({
       // The key check is Cursor's sign-in check: it asks Cursor itself.
       const verification = await window.ade.ai.verifyApiKey("cursor", pin);
       invalidateAiDiscoveryCache();
-      await refreshStatus({ force: true });
+      await refreshStatus({ force: true, refreshProvider: "cursor" });
       setVerificationByProvider((prev) => ({ ...prev, cursor: verification }));
       setSignInChecks((prev) => ({
         ...prev,
@@ -932,7 +945,7 @@ function MachineProvidersSection({
         return;
       }
       invalidateAiDiscoveryCache();
-      await refreshStatus({ force: true });
+      await refreshStatus({ force: true, refreshProvider: "cursor" });
       setVerificationByProvider((prev) => {
         const next = { ...prev };
         delete next.cursor;
@@ -1114,14 +1127,31 @@ function MachineProvidersSection({
   }, [pin]);
 
   const runAcpDoctor = useCallback(async (provider: AcpSettingsProviderId) => {
+    // The person's own action (`ai.runAcpProviderDoctor`): it wakes a sleeping
+    // cloud computer, which the page-open read (a background write) never does.
+    const runDoctor = window.ade.ai.runAcpProviderDoctor;
     const read = window.ade.ai.acpProviderDiagnostics;
-    if (!isAdeAvailable(read)) {
+    if (!isAdeAvailable(runDoctor) && !isAdeAvailable(read)) {
       setAcpDiagnosticsError((prev) => ({ ...prev, [provider]: "This window cannot run provider diagnostics." }));
       return;
     }
     setAcpDoctorBusy(provider);
     try {
-      const result = await read({ provider, runDoctor: true }, pin);
+      let result;
+      if (isAdeAvailable(runDoctor)) {
+        try {
+          result = await runDoctor({ provider }, pin);
+        } catch (error) {
+          // A machine on an older ADE has no `runAcpProviderDoctor`: the old
+          // doctor run still works there (it just doesn't wake a sleeping one).
+          const message = error instanceof Error ? error.message : String(error);
+          if (!isAdeAvailable(read) || !/runAcpProviderDoctor|unknown|not (found|allowed|supported)/i.test(message)) throw error;
+          console.warn("[providers] doctor fell back to the older diagnostics action", { provider, message });
+          result = await read({ provider, runDoctor: true }, pin);
+        }
+      } else {
+        result = await read!({ provider, runDoctor: true }, pin);
+      }
       setAcpDiagnostics((prev) => ({ ...prev, [provider]: result }));
       setAcpDiagnosticsError((prev) => {
         const next = { ...prev };
@@ -1158,7 +1188,7 @@ function MachineProvidersSection({
     try {
       const check = await checkProviderSignIn(provider, pin);
       setSignInChecks((prev) => ({ ...prev, [provider]: check }));
-      await refreshStatus({ force: true, silent: true });
+      await refreshStatus({ force: true, silent: true, refreshProvider: provider });
       return check;
     } finally {
       setSignInCheckBusy((current) => (current === provider ? null : current));
@@ -1347,7 +1377,7 @@ function MachineProvidersSection({
             setSignInRequest(null);
             if (!changed) return;
             // The "login changed" path and the provider's own check, or only a fresh read.
-            void (signedIn ? verifySignIn(provider) : refreshStatus({ force: true, silent: true }));
+            void (signedIn ? verifySignIn(provider) : refreshStatus({ force: true, silent: true, refreshProvider: provider }));
           }}
         />
       ) : null}

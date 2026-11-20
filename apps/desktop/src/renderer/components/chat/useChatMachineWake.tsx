@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 import { isCloudConnectionTarget, isSavedChatsMachineId, savedChatComputerGone } from "../../state/cloudSavedChats";
 import { useCloudViewOnScreen } from "../../state/crossMachineLanes";
-import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { useCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { cloudComputerResting, useCloudComputer } from "../remoteTargets/useCloudComputer";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { clearCloudMachineWakeFailure, useCloudMachineWakeFailure, useCloudMachineWakeInFlight } from "../../lib/cloudMachineWake";
@@ -237,8 +237,7 @@ export function ChatMachineWakeBanner({ style, headerLaneId }: {
   headerLaneId: string | null;
 }) {
   const machine = useChatMachineWake();
-  const { computers } = useAdeCloudLaneComputers();
-  const onHeader = headerLaneId != null && computers.some((computer) => computer.laneId === headerLaneId);
+  const onHeader = useCloudLaneComputer(headerLaneId) != null;
   if (machine.gone || !machine.resting) return null;
   if (machine.waking) {
     if (onHeader) return null;

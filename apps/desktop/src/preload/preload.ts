@@ -6650,6 +6650,13 @@ const adeBridge = {
       pin
         ? callPinnedRuntimeAction<AcpProviderDiagnostics>(pin, "ai", "acpProviderDiagnostics", { args })
         : ipcRenderer.invoke(IPC.aiAcpProviderDiagnostics, args),
+    // The person's "Run doctor", routed like the read above.
+    runAcpProviderDoctor: async (args: {
+      provider: "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity";
+    }, pin?: OpenProjectBinding | null): Promise<AcpProviderDiagnostics> =>
+      pin
+        ? callPinnedRuntimeAction<AcpProviderDiagnostics>(pin, "ai", "runAcpProviderDoctor", { args })
+        : ipcRenderer.invoke(IPC.aiRunAcpProviderDoctor, args),
     opencodeAuthMethods: async (pin?: OpenProjectBinding | null): Promise<{ methods: OpenCodeProviderAuthMethods }> =>
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "opencodeAuthMethods", {}, () =>
         ipcRenderer.invoke(IPC.aiOpencodeAuthMethods),

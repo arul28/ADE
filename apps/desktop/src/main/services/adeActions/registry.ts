@@ -2990,6 +2990,13 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         ...(args?.runDoctor === true ? { runDoctor: true } : {}),
       });
     },
+    // "Run doctor": the person asked, so unlike the page-open read above it
+    // counts as use and wakes a sleeping cloud computer.
+    runAcpProviderDoctor: (args?: { provider?: string }) => {
+      const provider = args?.provider;
+      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, devin.");
+      return collectAcpProviderDiagnostics({ provider, cwd: runtime.projectRoot, runDoctor: true });
+    },
     piLoginProviders: () => listPiLoginProviders(),
     piLoginStart: async (args?: { providerId?: string; method?: "oauth" | "api_key" }) => {
       const providerId = requireNonEmptyString(args?.providerId, "providerId");

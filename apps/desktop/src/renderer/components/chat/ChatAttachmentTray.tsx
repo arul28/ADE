@@ -139,6 +139,8 @@ export type ChatAttachmentPendingImage = {
    * "Saving".
    */
   error?: string | null;
+  /** The failure was the link to the chat's machine: Retry, but nothing for ADE to hear about. */
+  connectionTrouble?: boolean;
 };
 
 export const CHAT_IMAGE_ATTACHMENT_FOCUS_SELECTOR = "[data-chat-image-attachment-focus-target='true']";

@@ -2826,7 +2826,6 @@ export class RemoteConnectionService {
     return this.statusById.get(targetId)?.recovery === "waiting_for_user" ? "waiting_for_user" : null;
   }
 
-  /** Whether a sleeping cloud machine was woken for this use (see the option). */
   /**
    * Wakes a sleeping cloud box for a use, and logs what asked for it: the
    * server records a person's wake with no cause, so this line is the only

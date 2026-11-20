@@ -1,9 +1,10 @@
-import { CLOUD_PATHS, type CloudComputerActivityReport, type CloudComputerStatus, type CloudResourcePressure } from "./contract";
+import { CLOUD_INSTANCE_ID, CLOUD_PATHS, type CloudComputerActivityReport, type CloudComputerStatus, type CloudResourcePressure } from "./contract";
 import { fail, json } from "./http";
 import type { CloudProvider, CloudInstanceHealth, CloudInstanceMetrics } from "./provider";
 import { logCloud, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 import type { CloudWaitUntil } from "./analytics";
 import { readBoundedBody } from "../sinkUtils";
+import { verifyWebhookSignature, type WebhookSignatureCheck } from "../webhookSignature";
 
 /**
  * A lane computer's live status, for the status menu on a cloud lane's chat
@@ -23,8 +24,6 @@ import { readBoundedBody } from "../sinkUtils";
  *   wakes the computer: the provider's logs and metrics answer in any state.
  */
 
-/** The provider's signature on a delivery older (or newer) than this is refused: Standard Webhooks' window. */
-const WEBHOOK_TOLERANCE_SECONDS = 300;
 /** A delivery is a few hundred bytes; anything far bigger is not one. */
 const WEBHOOK_MAX_BYTES = 64_000;
 /** Status changes kept per computer: enough to read the current stretch awake. */
@@ -35,7 +34,8 @@ const STATUS_CACHE_TTL_S = 15;
 const MAX_RUNNING_AGENTS = 500;
 /** A report's clock may run this far ahead of the server's. */
 const REPORT_CLOCK_SKEW_MS = 2 * 60_000;
-const INSTANCE_ID = /^[a-z0-9]{4,40}$/;
+/** How long after a change the minute tick may record it: an event this much older than the row's change is still that change. */
+const TICK_LAG_MS = 3 * 60_000;
 
 const CACHE_NAME = "ade-cloud-computer-status";
 const cacheUrl = (instanceId: string) => `https://ade-cloud-cache.invalid/computer-status/${encodeURIComponent(instanceId)}`;
@@ -44,57 +44,19 @@ const cacheUrl = (instanceId: string) => `https://ade-cloud-cache.invalid/comput
 
 export const isAgent37WebhookRequest = (path: string, method: string): boolean => path === CLOUD_PATHS.agent37Webhook && method === "POST";
 
-function bytesOfBase64(value: string): Uint8Array<ArrayBuffer> | null {
-  try {
-    const binary = atob(value);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-    return bytes;
-  } catch {
-    return null;
-  }
-}
-
-function base64Of(bytes: ArrayBuffer): string {
-  let binary = "";
-  for (const byte of new Uint8Array(bytes)) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
-function sameText(left: string, right: string): boolean {
-  if (left.length !== right.length) return false;
-  let diff = 0;
-  for (let index = 0; index < left.length; index += 1) diff |= left.charCodeAt(index) ^ right.charCodeAt(index);
-  return diff === 0;
-}
-
 /**
- * Standard Webhooks: HMAC-SHA256 over `{webhook-id}.{webhook-timestamp}.{body}`,
- * keyed with the base64-decoded secret after `whsec_`, compared in constant time
- * with each `v1,<base64>` in `webhook-signature` (space separated, so a key
- * rotation can send two). The timestamp must lie within five minutes of now.
+ * The provider signs with Standard Webhooks (`verifyWebhookSignature`); its
+ * timestamp is whole seconds, so anything else is refused before the HMAC.
  */
-export async function agent37SignatureValid(
+async function agent37SignatureCheck(
   secret: string,
   headers: { id: string | null; timestamp: string | null; signature: string | null },
   raw: string,
   now: number,
-): Promise<boolean> {
+): Promise<WebhookSignatureCheck> {
   const { id, timestamp, signature } = headers;
-  if (!id || !timestamp || !signature || !/^\d{1,12}$/.test(timestamp)) return false;
-  if (Math.abs(now / 1000 - Number(timestamp)) > WEBHOOK_TOLERANCE_SECONDS) return false;
-  const keyBytes = bytesOfBase64(secret.trim().replace(/^whsec_/, ""));
-  if (!keyBytes || keyBytes.length === 0) return false;
-  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const expected = base64Of(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${id}.${timestamp}.${raw}`)));
-  let matched = false;
-  for (const entry of signature.split(" ")) {
-    const comma = entry.indexOf(",");
-    if (comma < 0 || entry.slice(0, comma) !== "v1") continue;
-    // Every candidate is compared, so the time taken never says which one matched.
-    if (sameText(entry.slice(comma + 1), expected)) matched = true;
-  }
-  return matched;
+  if (!id || !timestamp || !signature || !/^\d{1,12}$/.test(timestamp)) return "invalid";
+  return await verifyWebhookSignature({ secret, id, timestamp, body: raw, signatureHeader: signature, nowSeconds: now / 1000 });
 }
 
 type StatusEvent = { id: string; status: string; previousStatus: string | null; at: number; reason: string | null };
@@ -105,7 +67,7 @@ function statusEventOf(value: unknown, fallbackAt: number): StatusEvent | null {
   if (event.type !== "instance.status.updated" || !event.data || typeof event.data !== "object") return null;
   const id = typeof event.data.id === "string" ? event.data.id : "";
   const status = typeof event.data.status === "string" ? event.data.status.trim().slice(0, 40) : "";
-  if (!INSTANCE_ID.test(id) || !status) return null;
+  if (!CLOUD_INSTANCE_ID.test(id) || !status) return null;
   const parsed = typeof event.timestamp === "string" ? Date.parse(event.timestamp) : Number.NaN;
   const previous = typeof event.data.previous_status === "string" ? event.data.previous_status.trim().slice(0, 40) || null : null;
   const reasonRecord = event.data.status_reason && typeof event.data.status_reason === "object" ? event.data.status_reason as Record<string, unknown> : null;
@@ -135,9 +97,11 @@ export async function handleAgent37Webhook(
   }
   const deliveryId = request.headers.get("webhook-id");
   const timestamp = request.headers.get("webhook-timestamp");
-  const valid = await agent37SignatureValid(secret, { id: deliveryId, timestamp, signature: request.headers.get("webhook-signature") }, read.text, now);
-  if (!valid || !deliveryId) {
-    logCloud("cloud.agent37_webhook_refused", { reason: "signature" });
+  const check = await agent37SignatureCheck(secret, { id: deliveryId, timestamp, signature: request.headers.get("webhook-signature") }, read.text, now);
+  if (check !== "valid" || !deliveryId) {
+    // `secret_unreadable`: AGENT37_WEBHOOK_SECRET itself is malformed, so every delivery fails until it is fixed.
+    if (check === "secret_unreadable") reportCloudFailure("cloud.agent37_webhook_refused", { reason: "secret_unreadable" });
+    else logCloud("cloud.agent37_webhook_refused", { reason: "signature" });
     return fail("unauthorized", "That signature isn't valid.", 401);
   }
   let parsed: unknown = null;
@@ -153,7 +117,7 @@ export async function handleAgent37Webhook(
     const [inserted] = await env.DB.batch([
       env.DB.prepare(`
         insert or ignore into cloud_instance_events (delivery_id, instance_id, status, previous_status, at, reason, received_at)
-        select ?, ?, ?, ?, ?, ?, ? where exists (select 1 from cloud_computers where instance_id = ?)
+        select ?, ?, ?, ?, ?, ?, ? where exists (select 1 from cloud_computers where instance_id = ? and deleted_at is null)
       `).bind(deliveryId.slice(0, 120), event.id, event.status, event.previousStatus, event.at, event.reason, now, event.id),
       env.DB.prepare("delete from cloud_instance_events where instance_id = ? and at < ?").bind(event.id, now - INSTANCE_EVENT_KEEP_MS),
     ]);
@@ -223,14 +187,23 @@ export async function recordActivity(env: Pick<CloudEnv, "DB">, instanceId: stri
 type EventRow = { delivery_id: string; status: string; at: number; restart_count: number | null };
 type ActivityRow = { busy: number; idle_since: number | null; sleeps_at: number | null; running_agents: number; reported_at: number };
 
+const errorMessage = (error: unknown): string => error instanceof Error ? error.message : "unknown";
+
+/** Null when the cache can't open: every read then asks the provider. */
 async function openCache(): Promise<Cache | null> {
   if (typeof caches === "undefined") return null;
-  return await caches.open(CACHE_NAME).catch(() => null);
+  return await caches.open(CACHE_NAME).catch((error: unknown) => {
+    logCloud("cloud.computer_status_cache_failed", { step: "open", message: errorMessage(error) });
+    return null;
+  });
 }
 
 /** Drops this colo's kept read, so the next menu reads the change. Never throws. */
 function forgetStatus(instanceId: string, waitUntil?: CloudWaitUntil): void {
-  const drop = openCache().then((cache) => cache?.delete(cacheUrl(instanceId))).catch(() => undefined);
+  const drop = openCache().then((cache) => cache?.delete(cacheUrl(instanceId))).catch((error: unknown) => {
+    // The kept read then ages out on its own (`STATUS_CACHE_TTL_S`).
+    logCloud("cloud.computer_status_cache_failed", { step: "forget", instanceId, message: errorMessage(error) });
+  });
   waitUntil?.(drop);
 }
 
@@ -241,17 +214,19 @@ function forgetStatus(instanceId: string, waitUntil?: CloudWaitUntil): void {
  */
 async function buildComputerStatus(env: Pick<CloudEnv, "DB">, provider: Pick<CloudProvider, "instanceHealth" | "instanceMetrics">, computer: ComputerRow, now: number): Promise<CloudComputerStatus> {
   const id = computer.instance_id;
-  const [events, activity] = await Promise.all([
+  const [latest, activity] = await Promise.all([
     env.DB.prepare("select delivery_id, status, at, restart_count from cloud_instance_events where instance_id = ? order by at desc limit 1")
-      .bind(id).all<EventRow>().then((result) => result.results ?? []),
+      .bind(id).first<EventRow>(),
     env.DB.prepare("select busy, idle_since, sleeps_at, running_agents, reported_at from cloud_computer_activity where instance_id = ?")
       .bind(id).first<ActivityRow>(),
   ]);
-  const latest = events[0] ?? null;
-  // The webhook's change is the tick's too when they agree (with the exact
-  // time; the tick sees it up to a minute late), and wins when it is newer.
-  // Out of order deliveries are ordered by `at`.
-  const fromEvent = latest != null && (latest.status === computer.status || latest.at > computer.status_changed_at);
+  // The webhook's change wins when it is newer than the tick's, and is the
+  // tick's own when they agree (with the exact time; the tick sees it up to a
+  // minute late). An agreeing event from before the row's change is an older
+  // stretch (a delivery in between was missed): the row's own time then
+  // stands, and restarts are unknown. Out of order deliveries are ordered by `at`.
+  const fromEvent = latest != null && (latest.at > computer.status_changed_at
+    || (latest.status === computer.status && latest.at >= computer.status_changed_at - TICK_LAG_MS));
   const status = fromEvent ? latest.status : computer.status;
   const running = status === "running";
   const awakeSince = running ? (fromEvent ? latest.at : computer.status_changed_at) : null;
@@ -301,15 +276,23 @@ export async function readComputerStatus(
   const cache = await openCache();
   const url = cacheUrl(computer.instance_id);
   if (cache) {
-    const hit = await cache.match(url).catch(() => undefined);
-    const kept = hit ? await hit.json().catch(() => null) as CloudComputerStatus | null : null;
+    const hit = await cache.match(url).catch((error: unknown) => {
+      logCloud("cloud.computer_status_cache_failed", { step: "match", instanceId: computer.instance_id, message: errorMessage(error) });
+      return undefined;
+    });
+    const kept = hit ? await hit.json().catch((error: unknown) => {
+      logCloud("cloud.computer_status_cache_failed", { step: "read", instanceId: computer.instance_id, message: errorMessage(error) });
+      return null;
+    }) as CloudComputerStatus | null : null;
     if (kept && kept.instanceId === computer.instance_id) return kept;
   }
   const status = await buildComputerStatus(env, provider, computer, now);
   if (cache) {
     await cache.put(url, new Response(JSON.stringify(status), {
       headers: { "content-type": "application/json", "cache-control": `max-age=${STATUS_CACHE_TTL_S}` },
-    })).catch(() => undefined);
+    })).catch((error: unknown) => {
+      logCloud("cloud.computer_status_cache_failed", { step: "put", instanceId: computer.instance_id, message: errorMessage(error) });
+    });
   }
   return status;
 }

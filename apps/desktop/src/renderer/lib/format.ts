@@ -219,6 +219,18 @@ export function ipcErrorMessage(err: unknown): string {
 
 const IPC_TIMEOUT_TEXT = /^IPC handler for '[^']+' timed out after \d+ms/;
 
+/** A dropped or slow link to another machine's text: the person retries, ADE has nothing to fix. */
+const CONNECTION_TROUBLE_TEXT = /didn't hear back in time|connection was interrupted|connection closed|connection failed recently|timed out|can't reach|manually disconnected|websocket is not open|fell behind/i;
+
+/**
+ * Whether an error's text (as `ipcErrorMessage` returns it) means the link to
+ * the other machine dropped or was too slow, not that the action failed.
+ * Decide this once on the raw text and carry the answer with the error.
+ */
+export function isConnectionTroubleText(text: string): boolean {
+  return CONNECTION_TROUBLE_TEXT.test(text);
+}
+
 /** Shorten a SHA-like hash to the first 8 characters. */
 export function shortSha(value: string | null | undefined): string {
   return value?.slice(0, 8) ?? "";

@@ -4,34 +4,24 @@
  * no wake and no exec (`POST /cloud/instances/:id/activity`,
  * `computerStatus.ts` on the server).
  *
- * It rides the keep-awake's own busy read (`readCloudBusy` in `cli.ts`, once
- * a minute while the brain runs): no timer of its own. A report goes out only
- * when what it says changes (working or idle, since when, how many agents),
- * and once again after a wake, since the server drops a report older than the
- * stretch awake. One report is in flight at a time; a failed one is sent
- * again with the next read.
- *
- * The idle clock mirrors the keep-awake's (`cloudKeepAwake.ts`): work ends
- * between two reads, so idle counts from the last read that saw work (or a
- * person's use, `noteUse`), and a wake restarts it. The keep-awake asks for
- * the sleep `CLOUD_IDLE_SLEEP_AFTER_MS` after that, so `sleepsAt` is a close
- * estimate, not a promise: a timer due soon or a late use can hold it back.
+ * It rides the keep-awake's own checks (once a minute while the brain runs):
+ * no timer and no idle clock of its own. The keep-awake hands over its idle
+ * facts after each check (`onIdleFacts` in `cloudKeepAwake.ts`), so
+ * `sleepsAt` is the check that will ask for the sleep, unless work comes
+ * first. The busy read (`readCloudBusy` in `cli.ts`) hands over the agents.
+ * A report goes out only when what it says changes (working or idle, since
+ * when, how many agents), and once again after a wake, since the server drops
+ * a report older than the stretch awake. One report is in flight at a time;
+ * a failed one is sent again with the next check.
  */
 
 import type { CloudComputerActivityReport } from "../../../../account-directory/src/cloud/contract";
 import {
-  CLOUD_IDLE_SLEEP_AFTER_MS,
-  CLOUD_KEEP_AWAKE_INTERVAL_MS,
-  CLOUD_KEEP_AWAKE_SCHEDULE_WINDOW_MS,
+  AGENT_CLI_PROCESS_NAMES,
   CLOUD_UNTOUCHED_IDLE_MS,
   type CloudBusyFacts,
+  type CloudIdleFacts,
 } from "../power/cloudKeepAwake";
-
-/** A gap this many read intervals long between two reads means the computer slept (the keep-awake's rule). */
-const SLEEP_GAP_INTERVALS = 2.5;
-
-/** Names an agent CLI runs under when started by hand in a shell (the keep-awake's list). */
-const AGENT_CLI_PROCESS_NAMES = new Set(["claude", "codex", "cursor-agent", "agent", "droid", "opencode", "muse"]);
 
 /**
  * Agents working now: chat turns that aren't waiting on the person, and agent
@@ -48,10 +38,10 @@ export function cloudRunningAgents(facts: Pick<CloudBusyFacts, "chats" | "termin
 }
 
 export type CloudActivityReporter = {
-  /** One busy read: `busy` as the keep-awake reads it, the facts it read, and the next timer. Never throws. */
-  note(read: { busy: boolean; facts: Pick<CloudBusyFacts, "chats" | "terminals">; nextWakeAt?: number | null }): void;
-  /** Someone used the computer through another machine (the keep-awake's `noteUse`): idle restarts from now. */
-  noteUse(): void;
+  /** One busy read's facts: the agents working now. Sends nothing; the next check's idle facts carry it. Never throws. */
+  noteAgents(facts: Pick<CloudBusyFacts, "chats" | "terminals">): void;
+  /** The keep-awake's idle facts after a check: sends a report when it changed. Never throws. */
+  noteIdle(idle: CloudIdleFacts): void;
 };
 
 export function createCloudActivityReporter(deps: {
@@ -61,71 +51,59 @@ export function createCloudActivityReporter(deps: {
   now?: () => number;
 }): CloudActivityReporter {
   const now = deps.now ?? Date.now;
-  let lastBusyAt: number | null = null;
-  let lastReadAt: number | null = null;
-  let wasBusy = false;
+  let runningAgents = 0;
   let sentKey: string | null = null;
   let inFlight = false;
-  let queued: CloudComputerActivityReport | null = null;
+  let queued: { report: CloudComputerActivityReport; key: string } | null = null;
 
-  const keyOf = (report: CloudComputerActivityReport) => `${report.busy}|${report.runningAgents}|${report.idleSince ?? ""}`;
+  // The stretch awake is in the key: after a wake the server needs a report from this stretch, even if nothing else changed.
+  const keyOf = (report: CloudComputerActivityReport, awakeSince: number) => `${awakeSince}|${report.busy}|${report.runningAgents}|${report.idleSince ?? ""}`;
 
-  const flush = (report: CloudComputerActivityReport): void => {
+  const flush = (report: CloudComputerActivityReport, key: string): void => {
     if (inFlight) {
-      queued = report;
+      queued = { report, key };
       return;
     }
     inFlight = true;
-    const key = keyOf(report);
     void deps.send(deps.instanceId, report).then(
       () => {
         sentKey = key;
       },
       (error: unknown) => {
-        // Sent again with the next read: `sentKey` still names the last one that landed.
+        // Sent again with the next check: `sentKey` still names the last one that landed.
         deps.logger?.warn("cloud.activity_report_failed", { error: error instanceof Error ? error.message : String(error) });
       },
     ).finally(() => {
       inFlight = false;
       const next = queued;
       queued = null;
-      if (next && keyOf(next) !== sentKey) flush(next);
+      if (next && next.key !== sentKey) flush(next.report, next.key);
     });
   };
 
   return {
-    note(read) {
+    noteAgents(facts) {
       try {
-        const at = now();
-        // Woken (or the reads stopped a long while): the idle clock restarts, and the
-        // server needs a report from this stretch awake even if nothing changed.
-        const woke = lastReadAt != null && at - lastReadAt > CLOUD_KEEP_AWAKE_INTERVAL_MS * SLEEP_GAP_INTERVALS;
-        lastReadAt = at;
-        if (woke) {
-          lastBusyAt = at;
-          sentKey = null;
-        }
-        // A timer due soon keeps the computer awake, as in the keep-awake.
-        const timerSoon = read.nextWakeAt != null && read.nextWakeAt - at < CLOUD_KEEP_AWAKE_SCHEDULE_WINDOW_MS;
-        const busy = read.busy || timerSoon;
-        if (busy || wasBusy || lastBusyAt == null) lastBusyAt = at;
-        wasBusy = busy;
-        const idleSince = busy ? null : lastBusyAt;
-        const report: CloudComputerActivityReport = {
-          busy,
-          idleSince,
-          sleepsAt: idleSince == null ? null : idleSince + CLOUD_IDLE_SLEEP_AFTER_MS,
-          runningAgents: cloudRunningAgents(read.facts, at),
-          reportedAt: at,
-        };
-        if (keyOf(report) === sentKey) return;
-        flush(report);
+        runningAgents = cloudRunningAgents(facts, now());
       } catch (error) {
         deps.logger?.warn("cloud.activity_report_failed", { error: error instanceof Error ? error.message : String(error) });
       }
     },
-    noteUse() {
-      lastBusyAt = now();
+    noteIdle(idle) {
+      try {
+        const report: CloudComputerActivityReport = {
+          busy: idle.busy,
+          idleSince: idle.busy ? null : idle.idleSince,
+          sleepsAt: idle.busy ? null : idle.sleepsAt,
+          runningAgents,
+          reportedAt: now(),
+        };
+        const key = keyOf(report, idle.awakeSince);
+        if (key === sentKey) return;
+        flush(report, key);
+      } catch (error) {
+        deps.logger?.warn("cloud.activity_report_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
     },
   };
 }

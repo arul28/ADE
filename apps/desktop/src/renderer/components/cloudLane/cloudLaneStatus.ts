@@ -48,7 +48,12 @@ export function cloudLanePower(input: {
   if (input.waking) return "waking";
   if (input.online) return "awake";
   if (input.resting) return input.state === "starting" ? "waking" : input.state === "stopping" ? "stopping" : "asleep";
-  switch (input.state) {
+  return cloudLanePowerOfState(input.state);
+}
+
+/** The mark for a computer's state as the account's list last read it, with nothing live to go on. */
+export function cloudLanePowerOfState(state: CloudMachineState): CloudLanePower {
+  switch (state) {
     case "running":
       return "awake";
     case "asleep":

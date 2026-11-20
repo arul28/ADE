@@ -30885,8 +30885,8 @@ async function runServe(
       })
     : null;
   // The computer's own word on its work, for a lane's status menu
-  // (`cloudActivityReporter.ts`): fed by each busy read, made once the account
-  // client exists below.
+  // (`cloudActivityReporter.ts`): its agents from each busy read, its idle
+  // clock from the keep-awake's checks; made once the account client exists below.
   let cloudActivityReporter: import("./services/account/cloudActivityReporter").CloudActivityReporter | null = null;
   const readCloudBusy = cloudKeepAwakeModule && isAdeCloudComputer()
     ? async () => {
@@ -30900,7 +30900,7 @@ async function runServe(
           setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
           holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
         }, Date.now());
-        cloudActivityReporter?.note({ busy, facts, nextWakeAt });
+        cloudActivityReporter?.noteAgents(facts);
         // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
         // one goes to the account server, which wakes the machine for it.
         return { busy, reasons, nextWakeAt, waitingOnPerson, laneSetups: facts.laneSetups ?? 0 };
@@ -31127,6 +31127,8 @@ async function runServe(
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
         reportBooted: async () => await cloudComputerReports?.reportBooted() ?? { sleepWhenIdle: false },
         sampleCpu: cloudCpuWatch ? (at, reasons) => cloudCpuWatch.sample(at, reasons) : undefined,
+        // The status menu's idle clock is the keep-awake's own.
+        onIdleFacts: cloudActivityReporter ? (idle) => cloudActivityReporter?.noteIdle(idle) : undefined,
         sendTimedWake: async (wake) => {
           const auth = brainAccountAuthService;
           if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");
@@ -31144,15 +31146,6 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
-  // A person's use through another machine restarts the idle clock the status menu reads too.
-  if (cloudKeepAwake && cloudActivityReporter) {
-    const keepAwakeNoteUse = cloudKeepAwake.noteUse;
-    const reporter = cloudActivityReporter;
-    cloudKeepAwake.noteUse = async () => {
-      reporter.noteUse();
-      await keepAwakeNoteUse();
-    };
-  }
   // Work the busy list can't see (a first clone, a push). Held while it runs
   // and counted as use when it ends: the checks come once a minute, so work
   // that fits between two of them would otherwise leave no trace, and the
@@ -32967,6 +32960,10 @@ async function runServe(
     // A person watching a tool (Linux Desktop, a preview): a read, so it never
     // wakes a sleeping computer, but it does keep an awake one awake.
     if (domain === "work_tools" && action === "noteWatching") return true;
+    // Someone typing in a chat's composer warms its model: background writes
+    // (BACKGROUND_WRITES), so typing never wakes a sleeping computer, but an
+    // awake one stays awake while the person is about to send.
+    if (domain === "chat" && (action === "warmupModel" || action === "prewarmDraft")) return true;
     return Boolean(domain && action && adeActionAccess(domain, action) === "write" && !isBackgroundAdeWrite(domain, action));
   };
   const withRemoteUseNoted = <H extends JsonRpcHandler>(peerDeviceId: string | null, handler: H): H => {

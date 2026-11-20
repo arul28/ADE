@@ -21040,8 +21040,13 @@ export function AgentChatPane({
           ) : null}
     </>
   ));
+  // The chat header shows unless the shell is compact or the surface hides it;
+  // its cloud button and the wake line below agree on which lane it is for.
+  const showsSurfaceHeader = !(compactShell || hideSurfaceHeader);
+  const headerCloudLaneId = showsSurfaceHeader ? selectedSession?.laneId ?? laneId ?? null : null;
   const chatActionsToggle = cachedForRender(headerSlotCacheRef.current, "actions", [
     selectedSessionId,
+    headerCloudLaneId,
     workSidebar.setTool,
     selectedSession?.sideChatParentSessionId,
     selectedSession?.sideChatSessionId,
@@ -21079,7 +21084,7 @@ export function AgentChatPane({
         onClick={() => workSidebar.setTool("side-chat")}
       />
       <LaneDesktopHeaderButton laneId={laneId} onOpen={(tool) => workSidebar.setTool(tool)} />
-      <CloudLaneHeaderButton laneId={selectedSession?.laneId ?? laneId ?? null} turnRunning={turnActive} />
+      <CloudLaneHeaderButton laneId={headerCloudLaneId} turnRunning={turnActive} />
       {hasAttachedTerminal ? (
         <button
           type="button"
@@ -22468,7 +22473,7 @@ export function AgentChatPane({
         shellGeometry={chatShellGeometry}
         className={compactShell ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
         canvasFill={embedDraft ? "transparent" : canvasFill}
-        header={compactShell || hideSurfaceHeader ? undefined : shellHeader}
+        header={showsSurfaceHeader ? shellHeader : undefined}
         footer={isEmptyState || appPanelOpen
           ? undefined
           : composerWithTypographyRoot}
@@ -22511,7 +22516,7 @@ export function AgentChatPane({
         {/* Asleep and waking show on the header's cloud button; this is the failed wake (or asleep with no such button). */}
         <ChatMachineWakeBanner
           style={RUNTIME_BANNER_STYLE}
-          headerLaneId={compactShell || hideSurfaceHeader ? null : selectedSession?.laneId ?? laneId ?? null}
+          headerLaneId={headerCloudLaneId}
         />
         {cloudQueueSend && cloudQueueSend.chatId === selectedSessionId ? (
           <CloudQueueSendCard

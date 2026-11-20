@@ -60,5 +60,20 @@ html[data-motion="reduced"] .adecl-power > i[data-power] { animation: none; }
 .adecl-status-row [data-tone="warn"], .adecl-status-line[data-tone="warn"] { color: var(--kit-warn); }
 .adecl-status-row [data-tone="crit"], .adecl-status-line[data-tone="crit"] { color: var(--kit-crit); }
 .adecl-status-ic { display: inline-flex; flex: none; }
+/* "Try again" after a failed status read: a quiet text button, not a menu row. */
+.adecl-status-retry {
+  padding: 0 2px;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--kit-text-2);
+  font: inherit;
+  font-size: 10.5px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.adecl-status-retry:hover { color: var(--color-fg); }
+.adecl-status-retry:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
 .adecl-status-actions { display: flex; flex-wrap: wrap; gap: 2px; }
 .adecl-status-actions > .ade-cx-menu-item { width: auto; flex: 1 1 auto; justify-content: center; gap: 7px; padding: 0 8px; white-space: nowrap; }
