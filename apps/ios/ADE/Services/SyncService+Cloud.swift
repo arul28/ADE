@@ -657,6 +657,7 @@ extension SyncService {
     cloudServerLastReadFailed = false
     cloudServerInstances = []
     cloudSavedChats = []
+    cloudDeletedLaneTicks = [:]
     // The last account's chat launches from this phone go too.
     AccountCloudLaunchStore.shared.reset()
     // And its ADE Cloud account state, held messages and saved transcripts.
@@ -693,9 +694,22 @@ extension SyncService {
     await cloudServerReadTask?.value
   }
 
+  /// The server deleted this lane and its saved chats: they leave the lists
+  /// now, and a read that started before the delete can't bring them back.
+  func noteCloudLaneDeleted(_ laneId: String) {
+    cloudLaneDeleteTick &+= 1
+    cloudDeletedLaneTicks[laneId] = cloudLaneDeleteTick
+    guard cloudSavedChats.contains(where: { $0.laneId == laneId }) else { return }
+    cloudSavedChats.removeAll { $0.laneId == laneId }
+    objectWillChange.send()
+    resolveCloudMachineKeys()
+  }
+
   private func readCloudServer() async {
     guard let client = await cloudServerClient(),
           let owner = AccountService.shared.currentPairingAuthorization else { return }
+    // Lanes deleted after this tick are newer than this read's answer.
+    let startTick = cloudLaneDeleteTick
     // The account's state (hours, deleting soon, lanes without a computer)
     // reads beside the computers, on the same trigger.
     async let accountState: Void = AccountCloudStore.shared.refresh(client: client, owner: owner)
@@ -748,7 +762,14 @@ extension SyncService {
         Task { await AccountService.shared.loadMachines() }
       }
     }
-    if let chats { cloudSavedChats = chats }
+    if let chats {
+      cloudSavedChats = chats.filter { row in
+        guard let laneId = row.laneId, let tick = cloudDeletedLaneTicks[laneId] else { return true }
+        return tick <= startTick
+      }
+      // The deletes this read started after are the server's answer now.
+      cloudDeletedLaneTicks = cloudDeletedLaneTicks.filter { $0.value > startTick }
+    }
     guard instances != nil || chats != nil else { return }
     // Every computer that saves chats is an ADE Cloud computer: its work
     // always lists. A connected computer's cloud list says the same.

@@ -14,33 +14,25 @@ import { CloudMark } from "../remoteTargets/cloudBrand";
 import { confirmDialog } from "../ui/dialog";
 import { cn } from "../ui/cn";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneLifeAvailable, forgetCloudLaneWithoutComputer } from "./cloudLaneActions";
-import { refreshCloudLanesWithoutComputer } from "./cloudLaneStores";
+import { requestCloudSavedChatsRead } from "../../state/crossMachineLanes";
 import { CloudLaneSavedWork } from "./CloudLaneSavedWork";
+import { keptLaneFateSentence, noteKeptLaneDeleted } from "./cloudLanesWithoutComputer";
 import "./cloudLane.css";
 
 /**
- * A lane kept without a computer: its computer was freed to save space,
- * removed by the idle cleanup after its work was saved (or by the old 30-day
- * rule), or freed to fit a cheaper plan. Work that wasn't on GitHub shows
- * under it (`CloudLaneSavedWork`), and a new computer for the lane gets it back. It says so in plain words and offers one
- * next step, "New computer on the same branch": a new ADE Cloud launch for
- * the same lane id on `origin/<branch>`, the same launch a new lane uses, so
- * its card shows the same steps. "Forget lane" removes the record; the
- * lane's chats stay readable from the saved copy either way.
+ * A lane kept without a computer, in Settings › ADE Cloud: its computer was
+ * freed to save space, removed by the idle cleanup after its work was saved
+ * (or by the old 30-day rule), or freed to fit a cheaper plan. Work that
+ * wasn't on GitHub shows under it (`CloudLaneSavedWork`), and a new computer
+ * for the lane gets it back. It says what happened in the shared words
+ * (`keptLaneFateSentence`) and offers one next step, "New computer on the
+ * same branch": a new ADE Cloud launch for the same lane id on
+ * `origin/<branch>`, the same launch a new lane uses, so its card shows the
+ * same steps. "Forget lane" removes the record; the lane's chats stay
+ * readable from the saved copy either way. In Work, Lanes and the chat the
+ * same lane shows as a normal row with "Computer deleted"
+ * (`CloudLaneComputerDeletedBanner`).
  */
-
-function cloudLaneWithoutComputerSentence(lane: CloudLaneWithoutComputer): string {
-  const since = Number.isFinite(lane.since) ? new Date(lane.since).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : null;
-  const when = since ? ` on ${since}` : "";
-  if (lane.reason === "freed") return `${lane.laneName} has no computer now. You freed it${when} to save space; its work is on GitHub.`;
-  if (lane.reason === "idle_cleanup") {
-    return `${lane.laneName} has no computer now. ADE Cloud removed it${when} because it wasn't used, after saving its work that wasn't on GitHub. Your next message makes a new computer from ${lane.branchRef ? lane.branchRef : "the lane's branch"} with that work.`;
-  }
-  if (lane.reason === "plan_limit") {
-    return `${lane.laneName} has no computer now. ADE Cloud removed it${when} to fit your plan, after saving its work that wasn't on GitHub. A new computer for the lane gets that work back.`;
-  }
-  return `${lane.laneName} has no computer now. ADE Cloud removed it${when} after 30 days without use. Work you pushed to GitHub is safe, and a new computer starts from the branch on GitHub.`;
-}
 
 /** The size the old computer had, as a tier of today's catalog; the saved default when none matches. */
 export function cloudLaneRestartTier(lane: CloudLaneWithoutComputer, account: CloudAccountState | null, fallback: CloudTierId): CloudTierId {
@@ -67,15 +59,15 @@ export function cloudLaneRestartProblem(lane: CloudLaneWithoutComputer, binding:
  * "New computer on the same branch" for a lane kept without one: the problem
  * that blocks it here, whether a start runs, and the start (a failure shows a toast).
  */
-export function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer, account: CloudAccountState | null) {
+export function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer | null, account: CloudAccountState | null) {
   const [busy, setBusy] = useState(false);
   const binding = useAppStore((state) => state.projectBinding);
   const defaultTier = useRootAppStore((state) => state.cloudDefaultTier);
   const originUrl = originUrlForBinding(binding);
-  const problem = cloudLaneRestartProblem(lane, binding, originUrl);
-  const sizeId = useMemo(() => cloudLaneRestartTier(lane, account, defaultTier), [account, defaultTier, lane]);
+  const problem = lane ? cloudLaneRestartProblem(lane, binding, originUrl) : null;
+  const sizeId = useMemo(() => (lane ? cloudLaneRestartTier(lane, account, defaultTier) : defaultTier), [account, defaultTier, lane]);
   const launch = async (): Promise<boolean> => {
-    if (problem || !binding || !lane.branchRef) return false;
+    if (!lane || problem || !binding || !lane.branchRef) return false;
     const outcome = await startAdeCloudLaunch({
       args: {
         kind: "lane",
@@ -101,6 +93,7 @@ export function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer, accoun
     return true;
   };
   const start = async (): Promise<void> => {
+    if (!lane) return;
     setBusy(true);
     try {
       await launch();
@@ -116,13 +109,10 @@ export function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer, accoun
 export function CloudLaneWithoutComputerNotice({
   lane,
   account,
-  variant = "strip",
   className,
 }: {
   lane: CloudLaneWithoutComputer;
   account: CloudAccountState | null;
-  /** `strip`: above a chat's prompt box. `row`: one row in a list of lanes. */
-  variant?: "strip" | "row";
   className?: string;
 }) {
   const { problem, busy: starting, start } = useStartLaneOnNewComputer(lane, account);
@@ -133,14 +123,15 @@ export function CloudLaneWithoutComputerNotice({
   const onForget = async () => {
     const ok = await confirmDialog({
       title: `Forget ${lane.laneName}?`,
-      message: "ADE stops listing this lane and deletes its saved work that isn't on GitHub. Download that work first if you need it. Its branch on GitHub and its chats stay.",
+      message: "ADE stops listing this lane and deletes its saved chats and its saved work that isn't on GitHub. Download that work first if you need it. Its branch stays on GitHub.",
       confirmLabel: "Forget lane",
     });
     if (!ok) return;
     setForgetting(true);
     try {
       await forgetCloudLaneWithoutComputer(lane.laneId);
-      refreshCloudLanesWithoutComputer();
+      noteKeptLaneDeleted(lane.laneId);
+      requestCloudSavedChatsRead();
     } catch (error) {
       showToast({ tone: "error", title: `Couldn't forget ${lane.laneName}`, message: ipcErrorMessage(error) || "Try again in a moment." });
     } finally {
@@ -149,11 +140,11 @@ export function CloudLaneWithoutComputerNotice({
   };
 
   return (
-    <div className={cn("adecl-nocomp", className)} data-variant={variant} data-cloud-lane-without-computer={lane.laneId} role={variant === "strip" ? "status" : undefined}>
+    <div className={cn("adecl-nocomp", className)} data-cloud-lane-without-computer={lane.laneId}>
       <span className="adecl-nocomp-mark" aria-hidden><CloudMark size={14} brand /></span>
       <div className="adecl-nocomp-text">
-        <span>{cloudLaneWithoutComputerSentence(lane)}</span>
-        {problem ? <span id={problemId} className="adecl-muted">{problem}</span> : null}
+        <span>{keptLaneFateSentence(lane)}</span>
+        {problem ? <span id={problemId} role="status" className="adecl-muted">{problem}</span> : null}
         <CloudLaneSavedWork laneId={lane.laneId} laneName={lane.laneName} />
       </div>
       <div className="adecl-nocomp-actions">

@@ -11,6 +11,8 @@ struct LaneTreeRow: View {
   let isOpen: Bool
   let transitionNamespace: Namespace.ID?
   let isSelectedTransitionSource: Bool
+  /// The lane's ADE Cloud computer was deleted: a quiet "Computer deleted" in its facts line.
+  var computerDeleted = false
   let onContextMenu: (LaneListSnapshot) -> AnyView
   let onSelectLane: (String) -> Void
   /// Pushes the lane's detail through the list's navigation path.
@@ -41,7 +43,8 @@ struct LaneTreeRow: View {
       isOpen: isOpen,
       pullRequest: pullRequest,
       transitionNamespace: transitionNamespace,
-      isSelectedTransitionSource: isSelectedTransitionSource
+      isSelectedTransitionSource: isSelectedTransitionSource,
+      computerDeleted: computerDeleted
     )
     .equatable()
   }

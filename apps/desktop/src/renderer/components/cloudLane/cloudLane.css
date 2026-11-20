@@ -117,7 +117,7 @@
 /* Inside the corner panel's row, which already draws the panel. */
 .adecl-jobpanel.adecl-jobpanel-bare { padding: 0; border: 0; border-radius: 0; background: none; }
 
-/* A lane without a computer. */
+/* A lane kept without a computer, under its row in Settings › ADE Cloud. */
 .adecl-nocomp {
   display: flex;
   flex-wrap: wrap;
@@ -125,11 +125,10 @@
   gap: 8px 10px;
   padding: 8px 10px;
   border-radius: 10px;
-  border: 1px dashed color-mix(in srgb, var(--adec-400) 32%, transparent);
-  background: color-mix(in srgb, var(--adec-900) 18%, transparent);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
   font-size: 12px;
 }
-.adecl-nocomp[data-variant="row"] { border-style: solid; border-color: var(--kit-panel-edge); background: var(--kit-panel-bg); }
 .adecl-nocomp-mark { display: grid; place-items: center; flex: none; opacity: 0.7; }
 .adecl-nocomp-text { display: flex; flex: 1 1 220px; flex-direction: column; gap: 2px; min-width: 0; color: var(--color-fg); line-height: 1.4; }
 .adecl-nocomp-actions { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -142,81 +141,6 @@
 .adecl-saved-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 260px; }
 .adecl-saved-row-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .adecl-saved-row .adecl-nocomp-actions { flex-shrink: 0; margin-left: auto; }
-
-
-/*
- * Cloud lanes without a computer (Work and Lanes): one folded head, opened to
- * quiet rows. A row is a name, one line on what happened, and its next step;
- * Delete is in its ⋯ menu. The gold dot on the head is a lane not seen yet:
- * the cloud logo's lit window, the block's one accent.
- */
-.adecl-wc { display: flex; flex-direction: column; gap: 4px; }
-/* The head spans the rows box below it, so its hover reads as the same block. */
-.adecl-wc-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 5px 10px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  text-align: left;
-  background: none;
-  color: var(--kit-text-3);
-  font-size: 11px;
-  cursor: pointer;
-}
-.adecl-wc-head > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.adecl-wc-head:hover { color: var(--color-fg); background: var(--kit-hover); border-color: var(--kit-panel-edge); }
-.adecl-wc-head:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
-.adecl-wc-new {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 2px;
-  background: var(--adec-lamp);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--adec-lamp) 55%, transparent);
-}
-.adecl-wc-rows {
-  display: flex;
-  flex-direction: column;
-  margin: 0;
-  padding: 2px 0;
-  list-style: none;
-  border-radius: 10px;
-  border: 1px solid var(--kit-panel-edge);
-  background: var(--kit-panel-bg);
-}
-.adecl-wc-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 8px;
-  padding: 7px 6px 7px 10px;
-}
-.adecl-wc-row + .adecl-wc-row { border-top: 1px solid var(--kit-rule); }
-.adecl-wc-row[aria-busy="true"] { opacity: 0.6; }
-.adecl-wc-mark { display: grid; place-items: center; padding-top: 2px; opacity: 0.75; }
-.adecl-wc-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.adecl-wc-name { overflow: hidden; font-size: 12.5px; font-weight: 600; color: var(--color-fg); text-overflow: ellipsis; white-space: nowrap; }
-.adecl-wc-why { font-size: 11.5px; line-height: 1.4; color: var(--kit-text-2); }
-.adecl-wc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 3px; }
-.adecl-wc-actions:empty { display: none; }
-.adecl-wc-chats-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 4px;
-  margin-left: -4px;
-  border-radius: 5px;
-  background: none;
-  color: var(--kit-text-2);
-  font-size: 11.5px;
-  cursor: pointer;
-}
-.adecl-wc-chats-toggle:hover:not(:disabled) { color: var(--color-fg); background: var(--kit-hover); }
-.adecl-wc-chats-toggle:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
-.adecl-wc-main .adecl-deleted-chats { padding-left: 0; margin-top: 2px; }
 
 /* Manage lane's Computer tab for an ADE Cloud lane: a head, then one row per action. */
 .adecl-manage { display: flex; flex-direction: column; gap: 10px; }
@@ -243,28 +167,6 @@
 .adecl-keep-chats { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--color-fg); cursor: pointer; }
 .adecl-keep-chats input { margin-top: 2px; accent-color: var(--adec-400); }
 .adecl-keep-chats > span { display: flex; flex-direction: column; gap: 1px; }
-
-/* A lane's saved chats, newest first, under its row. */
-.adecl-deleted-chats { display: flex; flex: 1 1 100%; flex-direction: column; gap: 1px; margin: 0; padding: 0 0 0 22px; list-style: none; }
-.adecl-deleted-chat {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  min-width: 0;
-  padding: 3px 6px;
-  border-radius: 6px;
-  background: none;
-  color: var(--color-fg);
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-.adecl-deleted-chat:hover:not(:disabled) { background: var(--kit-hover); }
-.adecl-deleted-chat:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
-.adecl-deleted-chat:disabled { cursor: default; opacity: 0.6; }
-.adecl-deleted-chat-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.adecl-deleted-chat > .adecl-muted { flex: none; white-space: nowrap; }
 
 /* The change-size dialog uses the ADE Cloud page's size cards (B14-23). */
 .adecl-tier-cards { margin-bottom: 12px; }

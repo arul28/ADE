@@ -112,14 +112,12 @@ The filter is the funnel in the sidebar's search row, which opens a small panel
   to click.
 - **ADE Cloud is one machine.** Every ADE Cloud lane is filtered by one
   "ADE Cloud" entry. The lane's own computer never gets an entry or a row.
-- **Lanes without a computer hang under ADE Cloud.** An ADE Cloud lane whose
-  computer was freed or deleted (or whose chats outlived it) is a quieter,
-  indented `Without a computer · N` entry under ADE Cloud, with the gold dot
-  while the person has not looked at them. Choosing it is the only way those
-  lanes are listed: the folded block
-  (`CloudLanesWithoutComputerBlock`) then renders, expanded, in place of the
-  lanes, with each row's **New computer** / delete actions. With `All`, the
-  block no longer sits above the list. Work keeps its own folded block.
+- **A lane whose ADE Cloud computer was deleted stays under ADE Cloud.** It
+  lists among the ADE Cloud lanes like an asleep one, with one "Computer
+  deleted" mark, and the ADE Cloud entry counts it. Its rows name the machine
+  id `ade-cloud-deleted`, so every lane action refuses them; its lane page
+  shows the deleted-computer banner (`CloudLaneComputerDeletedBanner.tsx`).
+  A lane that a listed computer shows again is that computer's row.
 - **Offline own computers are hidden.** Their lanes leave the list, so they get
   no entry. When the tab's own computer is offline, the page shows one line
   that names it.

@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { ADE_CLOUD_MACHINE_ID } from "../../shared/adeCloudMachine";
-import { LANES_MACHINE_FILTER_ALL, LANES_MACHINE_FILTER_NO_COMPUTER } from "./laneMachineFilterIds";
+import { LANES_MACHINE_FILTER_ALL } from "./laneMachineFilterIds";
 import {
   buildLaneMachineFilterEntries,
   effectiveLaneMachineFilter,
@@ -17,7 +17,7 @@ function machine(overrides: Partial<LaneMachineFilterMachine> & Pick<LaneMachine
 describe("the Lanes Computer filter's entries", () => {
   it.each([
     {
-      name: "one entry per computer, ADE Cloud once, All first, and the lanes without a computer last",
+      name: "one entry per computer, ADE Cloud once and last, All first",
       machines: [
         machine({ entryId: laneFilterEntryId("studio", false), name: "Studio Mac", laneCount: 2 }),
         machine({ entryId: laneFilterEntryId("this-mac", false), name: "This computer", isThisMachine: true, laneCount: 3 }),
@@ -29,29 +29,25 @@ describe("the Lanes Computer filter's entries", () => {
         // Nothing to show here: not a choice.
         machine({ entryId: laneFilterEntryId("old-laptop", false), name: "Old Laptop", laneCount: 0 }),
       ],
-      noComputerCount: 2,
       expected: [
         [LANES_MACHINE_FILTER_ALL, 9],
         ["this-mac", 3],
         ["studio", 3],
         [ADE_CLOUD_MACHINE_ID, 3],
-        [LANES_MACHINE_FILTER_NO_COMPUTER, 2],
       ],
     },
     {
-      name: "All and the computer when this project lives on one computer and nothing is stranded",
+      name: "All and the computer when this project lives on one computer",
       machines: [machine({ entryId: laneFilterEntryId("this-mac", false), name: "This computer", isThisMachine: true, laneCount: 4 })],
-      noComputerCount: 0,
       expected: [
         [LANES_MACHINE_FILTER_ALL, 4],
         ["this-mac", 4],
       ],
     },
-  ])("$name", ({ machines, noComputerCount, expected }) => {
-    const entries = buildLaneMachineFilterEntries({ machines, noComputerCount, noComputerUnseen: noComputerCount > 0 });
+  ])("$name", ({ machines, expected }) => {
+    const entries = buildLaneMachineFilterEntries({ machines });
     expect(entries.map((entry) => [entry.id, entry.laneCount])).toEqual(expected);
     expect(entries[0]?.kind).toBe("all");
-    if (noComputerCount > 0) expect(entries.at(-1)).toMatchObject({ kind: "noComputer", unseen: true });
   });
 
   it("a stored computer that is no longer listed reads as All, and returns when it is back", () => {
@@ -62,7 +58,8 @@ describe("the Lanes Computer filter's entries", () => {
     // A computer that went offline (its lanes left the list) must not leave the
     // sidebar filtered with no entry left to click.
     expect(effectiveLaneMachineFilter("studio", listed)).toBe(LANES_MACHINE_FILTER_ALL);
-    expect(effectiveLaneMachineFilter(LANES_MACHINE_FILTER_NO_COMPUTER, listed)).toBe(LANES_MACHINE_FILTER_ALL);
+    // The old "Without a computer" entry's stored value reads as All.
+    expect(effectiveLaneMachineFilter("__no_computer__", listed)).toBe(LANES_MACHINE_FILTER_ALL);
     expect(effectiveLaneMachineFilter("studio", [])).toBe(LANES_MACHINE_FILTER_ALL);
   });
 });

@@ -7,16 +7,9 @@ import { CHAT_CARD_WIDTH_CLASS } from "../chat/chatCardPrimitives";
 import { useCloudMachines } from "../remoteTargets/useCloudMachines";
 import { cn } from "../ui/cn";
 import { CloudLaneJobCard } from "./CloudLaneJobCard";
-import { CloudLaneWithoutComputerNotice } from "./CloudLaneWithoutComputer";
 import { CloudTierChangeCard } from "./CloudTierChangeCard";
 import { tierChangeComputerOf } from "./cloudTierChangeFacts";
-import {
-  cloudLaneJobFor,
-  cloudLaneWithoutComputerForBinding,
-  useCloudLaneJobs,
-  useCloudLanesWithoutComputer,
-} from "./cloudLaneStores";
-import { cloudLaneLifeAvailable } from "./cloudLaneActions";
+import { cloudLaneJobFor, useCloudLaneJobs } from "./cloudLaneStores";
 
 /**
  * The ADE Cloud lane cards a chat shows:
@@ -27,8 +20,8 @@ import { cloudLaneLifeAvailable } from "./cloudLaneActions";
  * - `CloudLaneChatStatus`: above the prompt box of a chat on a cloud lane,
  *   the lane's size change or move: its start, its steps, its finish ("Moved
  *   to a Large computer · your chat follows") or its failure with the reason
- *   and an ×; or "this lane has no computer now" with "New computer on the
- *   same branch".
+ *   and an ×. A lane whose computer was deleted says so in the chat's banner
+ *   stack instead (`CloudLaneComputerDeletedBanner`).
  */
 
 const DISMISSED_KEY = "ade.cloudTierRequestsDismissed.v1";
@@ -141,15 +134,12 @@ export function CloudLaneChatStatus({
   const lane = useAdeCloudLaneForBinding(binding);
   const remote = binding?.kind === "remote";
   const jobs = useCloudLaneJobs(lane != null || (remote && laneId != null));
-  const withoutState = useCloudLanesWithoutComputer(remote && cloudLaneLifeAvailable());
   const job = lane
     ? cloudLaneJobFor(jobs, { instanceId: lane.instanceId, laneId: lane.laneId })
     : remote && laneId ? cloudLaneJobFor(jobs, { laneId }) : null;
-  const without = !lane && remote ? cloudLaneWithoutComputerForBinding(binding, withoutState.lanes) : null;
-  // A job's rates or the former size need the account; read only while a card shows.
-  const machines = useCloudMachines(Boolean(job || without));
+  // A job's rates need the account; read only while its card shows.
+  const machines = useCloudMachines(Boolean(job));
   const account = machines.result?.state === "ok" ? machines.result.account : null;
   if (job) return <CloudLaneJobCard job={job} account={account} />;
-  if (without) return <CloudLaneWithoutComputerNotice lane={without} account={account} />;
   return null;
 }

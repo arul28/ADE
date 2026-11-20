@@ -147,7 +147,12 @@ import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
 import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
 import { groupByMachine, useTabCopyPin } from "../../state/repositoryScope";
 import { withChatPin } from "../chat/chatMachinePin";
-import { CloudLanesWithoutComputerBlock } from "../cloudLane/CloudLanesWithoutComputerBlock";
+import {
+  COMPUTER_DELETED_ROW_NOTE,
+  useCloudLaneRowNotes,
+  useCloudLanesWithoutComputerRows,
+  type CloudLaneRowNote,
+} from "../cloudLane/cloudLanesWithoutComputer";
 import { openDraftAndFocusWorkInput } from "../work/workShortcuts";
 
 
@@ -588,6 +593,7 @@ function StickyGroupHeader({
   layoutDependency,
   laneStatus = null,
   laneFailed = false,
+  laneNote = null,
 }: {
   sectionId: string;
   icon: React.ReactNode;
@@ -666,6 +672,12 @@ function StickyGroupHeader({
   laneStatus?: WorkLaneFocusStatus | null;
   /** A chat in the lane failed: the collapsed dot turns red. */
   laneFailed?: boolean;
+  /**
+   * One quiet word about the lane's ADE Cloud computer for `variant="lane"`
+   * ("Computer deleted", "Deleting soon"), with its tooltip. Muted text, the
+   * same weight as the quiet counts.
+   */
+  laneNote?: { label: string; title: string } | null;
 }) {
   const namingLane = useLaneNamePending(namingLaneId);
   if (count === 0) return null;
@@ -875,6 +887,15 @@ function StickyGroupHeader({
               ) : null}
               {/* Only a collapsed lane needs the summary; an open one shows its chats. */}
               {isLane && collapsed && laneStatus ? <LaneFocusStatusDot status={laneStatus} failed={laneFailed} /> : null}
+              {isLane && laneNote ? (
+                <span
+                  className="shrink-0 whitespace-nowrap text-[10px] font-medium leading-tight text-muted-fg/55"
+                  title={laneNote.title}
+                  data-testid="work-lane-note"
+                >
+                  {laneNote.label}
+                </span>
+              ) : null}
               {machineMarker}
               {prBadge}
               {headerAction}
@@ -1302,27 +1323,32 @@ export const SessionListPane = React.memo(function SessionListPane({
     workLaneSortMode,
     workLaneOrder,
   );
-  // Lanes of ADE Cloud computers that are really gone (`computerGone`, from the
-  // account's computer list) are listed once, in the lanes without a computer
-  // above the list (`CloudLanesWithoutComputerBlock`), never among live lanes.
-  // Each of their saved chats is listed under its lane there, newest first, and
-  // opens from the roster, which still holds them.
-  const goneMachineIds = useRootAppStore((state) => {
-    let key = "";
-    for (const entry of Object.values(state.crossMachineLanesByMachineId)) {
-      if (entry.computerGone === true) key += `${entry.machineId}\u0000`;
-    }
-    return key;
-  });
   // A machine that is offline after its short reconnect window is not listed
   // at all; it comes back with its rows when it reconnects. An ADE Cloud
-  // computer that is only asleep stays listed (`rowShowsConnected`).
-  const foreignRows = useMemo(() => {
-    const gone = goneMachineIds ? new Set(goneMachineIds.split("\u0000").filter(Boolean)) : null;
-    return unionForeignRows.filter((row) => rowShowsConnected(row) && !gone?.has(row.machineId));
-  }, [goneMachineIds, unionForeignRows]);
-  // A listed ADE Cloud computer is watched for its sleep and its wake.
-  useCloudViewOnScreen(foreignRows.some((row) => isCloudConnectionTarget(row.machineId) || isSavedChatsMachineId(row.machineId)));
+  // computer that is only asleep stays listed, and so does one that was
+  // deleted (`computerGone`): its lane and saved chats look like an asleep
+  // computer's, with one "Computer deleted" mark (`rowShowsConnected`).
+  const foreignRows = useMemo(
+    () => unionForeignRows.filter((row) => rowShowsConnected(row)),
+    [unionForeignRows],
+  );
+  // A listed ADE Cloud computer is watched for its sleep and its wake. A
+  // deleted one has neither.
+  useCloudViewOnScreen(foreignRows.some((row) => !row.computerGone && (isCloudConnectionTarget(row.machineId) || isSavedChatsMachineId(row.machineId))));
+  // The quiet marks of ADE Cloud lanes: "Computer deleted" (what happened as
+  // its tooltip) and "Deleting soon" (the day). From the stores this list
+  // already follows and the account's warning list; one read for the list,
+  // never one per row, and each map keeps its identity while its marks hold.
+  const cloudLanesWithoutComputer = useCloudLanesWithoutComputerRows();
+  const { deletedByLaneId, deletingSoonByLaneId } = useCloudLaneRowNotes(cloudLanesWithoutComputer);
+  const laneNoteOf = useCallback(
+    (row: Pick<CrossMachineLaneRow, "computerGone"> | null | undefined, laneId: string): CloudLaneRowNote | null => (
+      row?.computerGone
+        ? deletedByLaneId.get(laneId) ?? COMPUTER_DELETED_ROW_NOTE
+        : deletingSoonByLaneId.get(laneId) ?? null
+    ),
+    [deletedByLaneId, deletingSoonByLaneId],
+  );
   // No copy of the repository online: the list reads nothing and says so.
   const tabCopyPin = useTabCopyPin();
   // The tab's machine dropped and ADE is dialing it again: say so, not "no computer".
@@ -1452,9 +1478,11 @@ export const SessionListPane = React.memo(function SessionListPane({
     // A computer with two checkouts has two slices; the filter lists the computer once.
     const byMachine = new Map<string, WorkFilterMachineOption>();
     for (const entry of Object.values(crossMachineEntries)) {
-      const machineId = filterMachineIdOf(machineIdOfSlot(entry.machineId), entry.binding);
-      // A deleted cloud computer is no machine to filter by: its lanes have their own place.
-      if (machineId === activeFilterMachineId || entry.computerGone === true) continue;
+      // A deleted cloud computer's lanes are ADE Cloud lanes, as an asleep one's are.
+      const machineId = entry.computerGone === true
+        ? ADE_CLOUD_MACHINE_ID
+        : filterMachineIdOf(machineIdOfSlot(entry.machineId), entry.binding);
+      if (machineId === activeFilterMachineId) continue;
       const online = machineShowsConnected(entry);
       const known = byMachine.get(machineId);
       if (known) {
@@ -2001,7 +2029,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               // remote lane instead of incorrectly treating an unknown PR as open.
               laneHasPr: () => false,
               laneIsDirty: (laneId) => laneId === row.lane.id && row.lane.status.dirty,
-              machineId: filterMachineIdOf(machineIdOfSlot(row.machineId), row.binding),
+              machineId: row.computerGone ? ADE_CLOUD_MACHINE_ID : filterMachineIdOf(machineIdOfSlot(row.machineId), row.binding),
               effectiveFilingBuckets,
             });
           })
@@ -2803,6 +2831,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     // Work of an ADE Cloud computer that is only asleep opens normally and
     // reads its saved copy; only an action in it wakes the computer.
     const cloudResting = foreignRow != null && !foreignRow.online && foreignRow.cloudResting === true;
+    const laneNote = laneNoteOf(foreignRow, session.laneId);
     const savedCopyReadable = session.cloudSavedCopy === true && foreignRow != null && !foreignRow.online;
     const disabledReason = (foreignRow && !savedCopyReadable && !cloudResting
       ? machineBlockedReason({ machineName: foreignRow.machineName, online: foreignRow.online, routable: foreignRow.binding != null })
@@ -2892,6 +2921,9 @@ export const SessionListPane = React.memo(function SessionListPane({
         laneCloud={options?.laneCloud ?? (showLaneIdentity ? laneCloudProvider(sessionLane) : null)}
         laneAppControl={options?.laneAppControl ?? (showLaneIdentity && !foreignRow && laneToolUse.appControl.has(session.laneId))}
         laneBrowserTabs={options?.laneBrowserTabs ?? (showLaneIdentity && !foreignRow ? laneToolUse.browserTabs.get(session.laneId) : 0) ?? 0}
+        // A card that names its lane carries the lane's quiet mark too.
+        laneNote={showLaneIdentity ? laneNote?.label ?? null : null}
+        laneNoteTitle={showLaneIdentity ? laneNote?.title ?? null : null}
         suppressStatusLabel={options?.suppressStatusLabel}
         subagentMark={options?.subagentMark ?? null}
         deltaEnabled={!foreignRow}
@@ -2973,7 +3005,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     row: CrossMachineLaneRow,
   ): SessionContextMenuLaneActions | null => {
     const binding = row.binding;
-    if (!binding) return null;
+    // A deleted computer's lane has nothing to send its lane actions to.
+    if (!binding || row.computerGone) return null;
     return {
       laneId: row.lane.id,
       laneName: row.lane.name,
@@ -3525,6 +3558,8 @@ export const SessionListPane = React.memo(function SessionListPane({
         layoutDependency={laneOrderSignature}
         laneStatus={laneFocusByLaneId.get(lane.id)?.status ?? null}
         laneFailed={laneFocusByLaneId.get(lane.id)?.failed ?? false}
+        // A tab on an ADE Cloud lane's own computer: its lane may be due for deletion.
+        laneNote={laneNoteOf(null, lane.id)}
         quietCounts={laneQuiet && collapsed
           ? {
               snoozed: list.filter((session) =>
@@ -3693,12 +3728,14 @@ export const SessionListPane = React.memo(function SessionListPane({
             }
           : null}
         // A sleeping cloud computer's lane looks like any other: a send wakes it.
+        // A deleted one's too, with its one quiet mark.
         dimmed={!rowShowsConnected(row)}
+        laneNote={laneNoteOf(row, row.lane.id)}
         onToggleCollapsed={() => {
           if (laneQuiet) toggleWorkSectionCollapsed(laneOpenMarker);
           else toggleWorkLaneCollapsed(compositeLaneId);
         }}
-        onContextMenu={row.binding
+        onContextMenu={row.binding && !row.computerGone
           ? (event) => triggerForeignLaneContextMenu(
             row.lane,
             row.binding!,
@@ -4443,8 +4480,6 @@ export const SessionListPane = React.memo(function SessionListPane({
           onDismiss={() => setDismissedMachineReadFailureIds((prev) => new Set(prev).add(failure.machineId))}
         />
       ))}
-
-      <CloudLanesWithoutComputerBlock className="mx-2 mt-1.5" />
 
       {/* The tab's machine dropped: its rows are what it last sent, and they
           wait for it. Said once above the list, not on every row. */}

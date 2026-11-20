@@ -532,6 +532,8 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   suppressStatusLabel = false,
   subagentMark = null,
   subagentBusy = false,
+  laneNote = null,
+  laneNoteTitle = null,
 }: {
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
@@ -650,6 +652,13 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   subagentMark?: NestedSubagentMark | null;
   /** A nested subagent still keeps this chat busy, so a finished row reads Waiting. */
   subagentBusy?: boolean;
+  /**
+   * One quiet word about the lane's ADE Cloud computer ("Computer deleted",
+   * "Deleting soon"), shown after the lane name with `showLaneIdentity`; the
+   * lane header shows it elsewhere. `laneNoteTitle` is its tooltip.
+   */
+  laneNote?: string | null;
+  laneNoteTitle?: string | null;
 }) {
   // Set while a send wakes this chat's sleeping cloud computer: when the wake
   // started (ISO). A string per card, so a mark on another row re-renders nothing here.
@@ -977,6 +986,18 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         ) : null}
       </span>,
     );
+    if (laneNote) {
+      whereParts.push(
+        <span
+          key="lane-note"
+          className="shrink-0 whitespace-nowrap text-[10px] font-medium text-muted-fg/55"
+          title={laneNoteTitle ?? undefined}
+          data-testid="session-card-lane-note"
+        >
+          {laneNote}
+        </span>,
+      );
+    }
   }
   /* Lineage takes the slot the branch used to occupy. In a lane where three of
      four sessions were spawned by the fourth, "this is a spawned agent" is the

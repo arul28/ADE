@@ -7,8 +7,10 @@ import {
   selectLanesLoadError,
   useAppStore,
   useAppStoreApi,
+  useRootAppStore,
   type LaneInspectorTab,
 } from "../../state/appStore";
+import { originUrlForBinding } from "./laneMachines";
 import { isTypingTarget } from "../../lib/typingTarget";
 import { machineErrorText } from "../../lib/machineErrorText";
 import { COLORS, primaryButton } from "./laneDesignTokens";
@@ -84,14 +86,15 @@ import {
   machineBlockedReason,
   type MachineLane,
 } from "../../state/laneMachineRouting";
-import { LANES_MACHINE_FILTER_ALL, LANES_MACHINE_FILTER_NO_COMPUTER } from "../../state/laneMachineFilterIds";
+import { LANES_MACHINE_FILTER_ALL } from "../../state/laneMachineFilterIds";
 import { useLanesPageMachines } from "./useLanesPageMachines";
 import { laneCompareBase, laneRebaseLine, useLaneRebaseNeeds, type LaneRebaseLine, type LaneRebaseScanMachine } from "./laneRebaseNeeds";
 import { confirmForeignLaneDeleted, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { deleteCloudLaneWithCheck, useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
 import { RestingCloudLaneDetail } from "./RestingCloudLaneDetail";
 import { RemoteMachineUpdateGate } from "../remoteTargets/RemoteMachineUpdateGate";
-import { CloudLanesWithoutComputerBlock, useCloudLanesWithoutComputerSummary } from "../cloudLane/CloudLanesWithoutComputerBlock";
+import { CloudLaneWithoutComputerDetail } from "../cloudLane/CloudLaneComputerDeletedBanner";
+import { adeCloudTrayActionRoute, type AdeCloudTrayAction } from "../chat/useAdeCloudDraft";
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
@@ -259,10 +262,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       return true;
     });
   }, [lanes]);
-  // This project's ADE Cloud lanes whose computer is gone: one entry under ADE
-  // Cloud in the Computer filter, and the block the list shows while that entry
-  // is on. Read before the machine model, which counts it into the entries.
-  const cloudLanesWithoutComputer = useCloudLanesWithoutComputerSummary();
   const {
     allMachineLanes,
     tabLanePin,
@@ -282,14 +281,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     offlineTabMachineName,
     machineFilterEntries,
     machineFilterIdForKey,
+    deletedLaneByKey,
+    noteByLaneKey,
   } = useLanesPageMachines({
     active,
     projectStateKey: activeProjectStateKey,
     localLanes: dedupedLanes,
     storeSelectedLaneId,
     storeSelectLane,
-    noComputerCount: cloudLanesWithoutComputer.count,
-    noComputerUnseen: cloudLanesWithoutComputer.unseen,
   });
 
   const getActiveProjectRoot = useCallback(() => {
@@ -523,15 +522,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // The Computer filter first, then the text filter: both narrow the same rows,
   // and neither touches the detail pane's identity.
   const effectiveMachineFilter = effectiveLaneMachineFilter(laneMachineFilter, machineFilterEntries);
-  const showingWithoutComputer = effectiveMachineFilter === LANES_MACHINE_FILTER_NO_COMPUTER;
   const machineFilterActive = effectiveMachineFilter !== LANES_MACHINE_FILTER_ALL;
   const machineScopedLanes = useMemo(() => {
     if (!machineFilterActive) return allViewLanes;
-    // The lanes without a computer are not rows: the block in the toolbar is
-    // the whole list while that entry is on.
-    if (showingWithoutComputer) return EMPTY_LANES;
     return allViewLanes.filter((lane) => machineFilterIdForKey(lane.id) === effectiveMachineFilter);
-  }, [allViewLanes, effectiveMachineFilter, machineFilterActive, machineFilterIdForKey, showingWithoutComputer]);
+  }, [allViewLanes, effectiveMachineFilter, machineFilterActive, machineFilterIdForKey]);
   const filteredLanes = useMemo(() => {
     if (!laneFilter.trim()) return machineScopedLanes;
     return machineScopedLanes.filter((lane) => laneMatchesFilter(lane, laneFilter));
@@ -553,12 +548,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setMultiSelectedLaneIds((prev) => {
       if (prev.size === 0) return prev;
       const next = new Set([...prev].filter((laneKey) => (
-        !showingWithoutComputer
-        && (effectiveMachineFilter === LANES_MACHINE_FILTER_ALL || machineFilterIdForKey(laneKey) === effectiveMachineFilter)
+        effectiveMachineFilter === LANES_MACHINE_FILTER_ALL || machineFilterIdForKey(laneKey) === effectiveMachineFilter
       )));
       return next.size === prev.size ? prev : next;
     });
-  }, [effectiveMachineFilter, machineFilterIdForKey, showingWithoutComputer]);
+  }, [effectiveMachineFilter, machineFilterIdForKey]);
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
   // Agents are read from the tab's machine, so only its own lanes ask.
   const localFilteredLaneIds = useMemo(
@@ -1175,6 +1169,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     selectDetailLane(nextId);
   }, [detailLaneId, selectDetailLane, selectableFilteredLaneIds]);
 
+  // A deleted ADE Cloud computer's saved chat opens in Work, as its row there does.
+  const openDeletedLaneChat = useCallback((sessionId: string) => {
+    navigate(`/work?${new URLSearchParams({ sessionId }).toString()}`);
+  }, [navigate]);
+  const openAdeCloudFix = useCallback((action: AdeCloudTrayAction) => navigate(adeCloudTrayActionRoute(action)), [navigate]);
+  const cloudDefaultTier = useRootAppStore((state) => state.cloudDefaultTier);
+
   // Plain click selects. Cmd/Ctrl-click toggles a row in the multi-selection;
   // Shift-click selects the range from the last clicked row.
   const handleRowSelect = useCallback((laneId: string, event: React.MouseEvent) => {
@@ -1195,8 +1196,15 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       return;
     }
     setMultiSelectedLaneIds(EMPTY_LANE_ID_SET);
+    // A lane whose ADE Cloud computer was deleted opens its newest chat, where
+    // the next message makes a new computer. One with no chat opens here.
+    const newestChat = deletedLaneByKey.get(laneId)?.sessions[0] ?? null;
+    if (newestChat) {
+      openDeletedLaneChat(newestChat.id);
+      return;
+    }
     selectDetailLane(laneId);
-  }, [deletingLaneIds, detailLaneId, lanesById, selectDetailLane, selectableFilteredLaneIds]);
+  }, [deletedLaneByKey, deletingLaneIds, detailLaneId, lanesById, openDeletedLaneChat, selectDetailLane, selectableFilteredLaneIds]);
 
   const handleRowContextMenu = useCallback((laneId: string, event: React.MouseEvent) => {
     // A row inside a multi-selection acts on the selection, the way Finder
@@ -2308,23 +2316,18 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // Row keys across machines; batch manage splits them per machine.
   const multiSelectedList = useMemo(() => [...multiSelectedLaneIds], [multiSelectedLaneIds]);
 
-  // This project's ADE Cloud lanes without a computer: one folded block, shown
-  // only while the Computer filter asks for them. The tab's own computer while
-  // it is offline: its lanes are hidden, and one line says why.
+  // The tab's own computer while it is offline: its lanes are hidden, and one
+  // line says why.
   const activeMachineFilterName = machineFilterEntries.find((entry) => entry.id === effectiveMachineFilter)?.name ?? null;
-  // What "nothing here" says. A computer filter names the computer; a project
-  // whose only lanes lost their computer points at the filter that holds them
-  // instead of claiming there are no lanes at all.
+  // What "nothing here" says. A computer filter names the computer.
   const laneListEmptyMessage = laneFilter.trim()
     ? undefined
     : machineFilterActive
       ? `No lanes on ${activeMachineFilterName ?? "that computer"}`
-      : cloudLanesWithoutComputer.count > 0 && allViewLanes.length === 0
-        ? `No live lanes. ${cloudLanesWithoutComputer.count} without a computer.`
-        : undefined;
+      : undefined;
   const laneListToolbar = (
     <>
-      {machineFilterActive && !showingWithoutComputer ? (
+      {machineFilterActive ? (
         <p
           className="mx-2.5 mb-2 mt-0 flex items-baseline gap-1.5 text-[12px] leading-[1.4] text-[var(--kit-text-2)]"
           data-testid="lanes-machine-filter-summary"
@@ -2346,12 +2349,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       ) : null}
     </>
   );
-  // While the Computer filter asks for the lanes without a computer, their
-  // block *is* the list: it sits in the scrolling area, so a long set of
-  // recovered lanes can still reach New computer / delete.
-  const laneListHeader = showingWithoutComputer
-    ? <CloudLanesWithoutComputerBlock className="mx-0.5 mb-2" initiallyOpen visible={active} />
-    : null;
 
   /* ---- Render ---- */
 
@@ -2398,11 +2395,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       disabledReasonByLaneId={disabledReasonByLaneId}
       foreignLaneIds={foreignLaneIdSet}
       toolbar={laneListToolbar}
-      listHeader={laneListHeader}
       machineFilterEntries={machineFilterEntries}
       machineFilter={effectiveMachineFilter}
       onMachineFilterChange={setLaneMachineFilter}
-      hideEmptyState={showingWithoutComputer}
+      noteByLaneId={noteByLaneKey}
       emptyMessage={laneListEmptyMessage}
     />
   );
@@ -2458,7 +2454,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
               />
             ) : null}
             {detailForeignRow ? (
-              restingMachineIds.has(detailForeignRow.machineId) && !detailForeignRow.online ? (
+              deletedLaneByKey.has(detailLaneId) ? (
+                <CloudLaneWithoutComputerDetail
+                  row={deletedLaneByKey.get(detailLaneId)!}
+                  binding={projectBinding ?? null}
+                  originUrl={originUrlForBinding(projectBinding ?? null)}
+                  defaultTier={cloudDefaultTier}
+                  onOpenChat={openDeletedLaneChat}
+                  onOpenSettings={openAdeCloudFix}
+                />
+              ) : restingMachineIds.has(detailForeignRow.machineId) && !detailForeignRow.online ? (
                 <RestingCloudLaneDetail
                   laneName={detailForeignRow.lane.name}
                   machine={detailForeignRow}

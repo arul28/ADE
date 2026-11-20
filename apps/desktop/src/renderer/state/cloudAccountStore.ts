@@ -133,12 +133,17 @@ const snapshot = () => account;
 const noop = () => () => undefined;
 const none = () => null;
 
-/** The account while ADE Cloud is on; null while off, or before the first read answers. */
-export function useCloudAccount(): CloudAccountState | null {
-  const enabled = useAdeCloudEnabled();
+/**
+ * The account while ADE Cloud is on; null while off, or before the first read
+ * answers. `active` false reads nothing and listens to nothing (a surface that
+ * needs the account only in one state, such as a chat whose computer was deleted).
+ */
+export function useCloudAccount(active = true): CloudAccountState | null {
+  const cloudOn = useAdeCloudEnabled();
+  const enabled = cloudOn && active;
   const value = useSyncExternalStore(enabled ? subscribe : noop, enabled ? snapshot : none, none);
   useEffect(() => {
-    if (!enabled) forget();
-  }, [enabled]);
+    if (!cloudOn) forget();
+  }, [cloudOn]);
   return enabled ? value : null;
 }

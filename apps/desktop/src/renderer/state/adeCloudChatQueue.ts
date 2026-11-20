@@ -22,6 +22,7 @@ import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { CLOUD_CHAT_MESSAGE_MAX_CHARS, type CloudChatQueuedMessage, type CloudWakeOutcome } from "../../../../account-directory/src/cloud/contract";
 import { newClientSendId, queuedMessageOpen } from "../../shared/adeCloud/chatQueue";
 import type { CloudChatSendAnswer } from "../../shared/adeCloudMachine";
+import type { CloudTierId } from "../../shared/cloudTiers";
 import type { AgentChatSendArgs } from "../../shared/types/chat";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import { clearQueuedChatPicks, peekQueuedChatPicks, savedChatLocation, savedChatLocationForSession, type SavedChatQueueTarget } from "./cloudSavedChats";
@@ -206,6 +207,32 @@ export function dismissAdeCloudFailedMessage(machineKey: string, chatId: string,
 /** Whether the person put back or dismissed this failed message in this browser (a CLI copy's send box filters by it). */
 export function adeCloudFailedMessageDismissed(messageId: string): boolean {
   return dismissedIds().has(messageId);
+}
+
+/**
+ * The size a person picked for the new computer that replaces a deleted one,
+ * by the deleted computer's machine key (its chats share that one new
+ * computer), until a send carries it. No pick: ADE's size (Small, or bigger
+ * if the project needed it before).
+ */
+const pickedNewComputerSizes = new Map<string, CloudTierId>();
+
+/** Picks (or, with null, unpicks) the size of the computer that replaces this deleted one. */
+export function pickNewComputerSize(machineKey: string, sizeId: CloudTierId | null): void {
+  const key = machineKey.toLowerCase();
+  if (sizeId) pickedNewComputerSizes.set(key, sizeId);
+  else pickedNewComputerSizes.delete(key);
+  for (const listener of listeners) listener();
+}
+
+/** The size picked for the computer that replaces this deleted one, or null. */
+export function peekNewComputerSize(machineKey: string): CloudTierId | null {
+  return pickedNewComputerSizes.get(machineKey.toLowerCase()) ?? null;
+}
+
+/** `peekNewComputerSize`, re-rendering on a pick. */
+export function useNewComputerSize(machineKey: string | null | undefined): CloudTierId | null {
+  return useSyncExternalStore(subscribe, () => (machineKey ? peekNewComputerSize(machineKey) : null), () => null);
 }
 
 /** What `withSavedChatReads` does with a send to a chat whose cloud computer is asleep. */
