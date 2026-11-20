@@ -51,7 +51,8 @@ extension LanesTabView {
     case .machine(let key): if key != ADECloudMachine.id { return [] }
     }
     var listed = Set<String>()
-    for machine in remoteLanes.machines {
+    // Only a machine the filter shows hides a kept lane.
+    for machine in remoteLanes.machines where machineFilterKeeps(machine.machineKey) {
       for snapshot in machine.snapshots {
         listed.insert(workParseRemoteLaneId(snapshot.lane.id)?.laneId ?? snapshot.lane.id)
       }

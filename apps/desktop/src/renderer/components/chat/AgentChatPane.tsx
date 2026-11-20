@@ -14848,7 +14848,8 @@ export function AgentChatPane({
   const sendThroughCloudQueue = useCallback(async (chat: { machineKey: string; chatId: string }): Promise<"sent" | "refused" | "unsupported"> => {
     const send = window.ade?.cloud?.sendChatMessage;
     if (!send) return "unsupported";
-    const text = draftStore.get().trim();
+    const sentDraft = draftStore.get();
+    const text = sentDraft.trim();
     if (attachments.length > 0 || contextAttachments.length > 0) {
       setError({ message: "Files can't go with this message while the chat moves to a new ADE Cloud computer. Send the text first, then the files once it is up.", kind: "hint" });
       return "refused";
@@ -14872,8 +14873,11 @@ export function AgentChatPane({
       // the box clears, and the chat stays selected with the launch's card.
       noteAdeCloudQueuedSend(chat, answer, { text, provider, modelId: modelId || null });
       if (sizeId) pickNewComputerSize(chat.machineKey, null);
-      draftStore.set("");
-      draftsPerSessionRef.current.delete(chat.chatId);
+      // Text typed while the send was out stays in the box.
+      if (draftStore.get() === sentDraft) {
+        draftStore.set("");
+        draftsPerSessionRef.current.delete(chat.chatId);
+      }
       setCloudQueueSend({ chatId: chat.chatId, wake: answer.wake.state, launchId: answer.wake.launchId ?? null, text });
       return "sent";
     } catch (sendError) {

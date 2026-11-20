@@ -338,10 +338,12 @@ const SAVED_CHAT_PAGES = 20;
 /**
  * Deletes the row's saved chats from ADE Cloud: each chat where its saved copy
  * is, then every chat of the lane on its old computers, page by page.
- * Resolves how many of the row's chats are still there (none found where they
- * should be), and whether the page limit cut a computer's scan short.
+ * Resolves whether the page limit cut a computer's scan short. A full scan
+ * leaves none of the lane's saved chats: a listed session it did not find is
+ * not a saved chat (a session the slice kept from before), so it never holds
+ * the lane back.
  */
-async function deleteRowChats(row: CloudLaneWithoutComputerRow, removed: Set<string>): Promise<{ missing: number; cut: boolean }> {
+async function deleteRowChats(row: CloudLaneWithoutComputerRow, removed: Set<string>): Promise<{ cut: boolean }> {
   const savedChats = window.ade?.cloud?.savedChats;
   if (!savedChats?.delete) throw new Error(CLOUD_LANE_LIFE_UNAVAILABLE);
   // The lane's old computers: the kept record's, and those of the slices that list it.
@@ -375,7 +377,7 @@ async function deleteRowChats(row: CloudLaneWithoutComputerRow, removed: Set<str
     }
     if (cursor) cut = true;
   }
-  return { missing: row.sessions.filter((session) => !removed.has(session.id)).length, cut };
+  return { cut };
 }
 
 /** Whether this window can delete the row: the kept lane's record, or its saved chats. */
@@ -414,18 +416,16 @@ export async function deleteCloudLaneWithoutComputer(row: CloudLaneWithoutComput
       await forgetCloudLaneWithoutComputer(row.laneId);
       noteKeptLaneDeleted(row.laneId);
     }
-    const { missing, cut } = await deleteRowChats(row, removed);
+    const { cut } = await deleteRowChats(row, removed);
     // Only what is gone: a lane that still has chats stays listed.
-    noteCloudSavedChatsDeleted({ chatIds: removed, laneIds: missing > 0 || cut ? [] : [row.laneId] });
-    if (missing > 0 || cut) {
-      console.warn("[cloud] a lane's delete left saved chats", { laneId: row.laneId, missing, cut });
+    noteCloudSavedChatsDeleted({ chatIds: removed, laneIds: cut ? [] : [row.laneId] });
+    if (cut) {
+      console.warn("[cloud] a lane's delete left saved chats", { laneId: row.laneId });
       dropFromStore(row, removed);
       showToast({
         tone: "error",
         title: row.kept ? `Deleted ${row.laneName}, not all its chats` : `Kept ${row.laneName}`,
-        message: missing > 0
-          ? `ADE couldn't find where ${missing === 1 ? "1 of its chats is" : `${missing} of its chats are`} kept on ADE Cloud. Try again in a moment.`
-          : "ADE Cloud has more chats than ADE could read at once. Delete again to remove the rest.",
+        message: "ADE Cloud has more chats than ADE could read at once. Delete again to remove the rest.",
         replayMask: { title: true },
       });
       return;
