@@ -3105,8 +3105,21 @@ function AgentChatComposerImpl({
   const queuedPendingAttachmentChipsRef = useRef<Array<{ pendingId: string; offset: number | null }>>([]);
   const pendingImageAttachmentsRef = useRef(pendingImageAttachments);
   pendingImageAttachmentsRef.current = pendingImageAttachments;
-  // What "Retry" runs for each failed pending image: the same bytes, the same token.
-  const pendingImageRetriesRef = useRef<Map<string, () => void>>(new Map());
+  // What "Retry" runs for each failed pending image: the same bytes, the same
+  // token, in the chat it was attached in (`epoch`).
+  const pendingImageRetriesRef = useRef<Map<string, { retry: () => void; epoch: number }>>(new Map());
+  // The composer stays mounted when the user switches chats. Each switch bumps
+  // this, and an upload started under an older value is dropped silently, so
+  // an image (or its failure, or its Retry) never lands in another chat.
+  // Moving from a new chat's draft (no session yet) to the session it created
+  // is the same chat, so that is not a switch.
+  const attachmentSessionRef = useRef(sessionId ?? null);
+  const attachmentSessionEpochRef = useRef(0);
+  if ((sessionId ?? null) !== attachmentSessionRef.current) {
+    if (attachmentSessionRef.current !== null) attachmentSessionEpochRef.current += 1;
+    attachmentSessionRef.current = sessionId ?? null;
+  }
+  const handledAttachmentSessionEpochRef = useRef(0);
   const pastedTextLineCountsRef = useRef<Map<string, number>>(new Map());
   const pastedTextFilesRef = useRef<WeakMap<File, number>>(new WeakMap());
   const armedAttachmentChipRef = useRef<HTMLElement | null>(null);
@@ -4218,7 +4231,7 @@ function AgentChatComposerImpl({
    * for the same record.
    */
   const failPendingImageAttachment = useCallback((id: string, error: string | AttachmentError, retry: () => void) => {
-    pendingImageRetriesRef.current.set(id, retry);
+    pendingImageRetriesRef.current.set(id, { retry, epoch: attachmentSessionEpochRef.current });
     const { text, connection } = typeof error === "string" ? { text: error, connection: false } : error;
     setPendingImageAttachments((current) => current.map((entry) => (
       entry.id === id ? { ...entry, error: text, connectionTrouble: connection } : entry
@@ -4226,12 +4239,31 @@ function AgentChatComposerImpl({
   }, []);
 
   const retryPendingImageAttachment = useCallback((id: string) => {
-    const retry = pendingImageRetriesRef.current.get(id);
-    if (!retry) return;
+    const entry = pendingImageRetriesRef.current.get(id);
+    if (!entry) return;
     pendingImageRetriesRef.current.delete(id);
-    setPendingImageAttachments((current) => current.map((entry) => (entry.id === id ? { ...entry, error: null, connectionTrouble: false } : entry)));
-    retry();
+    if (entry.epoch !== attachmentSessionEpochRef.current) return;
+    setPendingImageAttachments((current) => current.map((record) => (record.id === id ? { ...record, error: null, connectionTrouble: false } : record)));
+    entry.retry();
   }, []);
+
+  // A chat switch takes the previous chat's uploading and failed images with
+  // it: tiles, tokens (they serialize to nothing, so no draft keeps one), the
+  // Retry closures, and the attach error. Their uploads see the new epoch and
+  // drop their results.
+  useEffect(() => {
+    if (handledAttachmentSessionEpochRef.current === attachmentSessionEpochRef.current) return;
+    handledAttachmentSessionEpochRef.current = attachmentSessionEpochRef.current;
+    pendingImageRetriesRef.current.clear();
+    cancelledPendingImageAttachmentsRef.current.clear();
+    pendingAttachmentChipIdsRef.current.clear();
+    queuedPendingAttachmentChipsRef.current = [];
+    queuedAttachmentChipsRef.current = [];
+    fileAddInProgressRef.current = false;
+    setPendingImageAttachments((current) => (current.length ? [] : current));
+    setAttachErrorState(null);
+    setAttachRetryFiles(null);
+  }, [sessionId]);
 
   const handleRemoveAttachment = useCallback((path: string) => {
     clearPreviewForPath(path);
@@ -4371,8 +4403,11 @@ function AgentChatComposerImpl({
     } = {},
   ) => {
     const retryPending = options.retryPending ?? null;
+    const ownerEpoch = attachmentSessionEpochRef.current;
+    const sessionSwitched = () => attachmentSessionEpochRef.current !== ownerEpoch;
     // A retry that cannot start stays failed, with the reason, rather than "Saving" forever.
     const failRetry = (message: string | AttachmentError) => {
+      if (sessionSwitched()) return;
       if (retryPending) failPendingImageAttachment(retryPending.id, message, () => void addFileAttachmentsRef.current(files, options));
     };
     if (attachmentPersistenceUnavailableReason) {
@@ -4408,6 +4443,7 @@ function AgentChatComposerImpl({
       // which half the files were staged under a different contract.
       const stagingMode = await readAttachmentStagingMode(attachmentApiPin, attachmentApi);
       for (const file of Array.from(files)) {
+        if (sessionSwitched()) break;
         if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
           setAttachError("Files were not attached because the selected project or machine changed. Attach them again.");
           if (retryPending) dropPendingImageAttachment(retryPending.id);
@@ -4478,6 +4514,7 @@ function AgentChatComposerImpl({
             });
           }
 
+          if (sessionSwitched()) break;
           if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
             if (pendingImage) dropPendingImageAttachment(pendingImage.id);
             setAttachError(`"${sourceAttachmentName}" was not attached because the selected machine changed. Attach it again.`);
@@ -4514,6 +4551,7 @@ function AgentChatComposerImpl({
           if (pendingImage) dropPendingImageAttachment(pendingImage.id);
           addedInBatch += 1;
         } catch (error) {
+          if (sessionSwitched()) break;
           const message = attachmentErrorMessage(error, sourceAttachmentName);
           if (pendingImage && cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
             cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
@@ -4537,10 +4575,12 @@ function AgentChatComposerImpl({
       }
     } catch (error) {
       // Only a retry has a tile to mark; a batch's probe failing reads as before.
+      if (sessionSwitched()) return;
       if (!retryPending) throw error;
       failRetry(attachmentErrorMessage(error, retryPending.name));
     } finally {
-      if (!retryPending) {
+      // After a switch the flag and the retry list belong to the new chat.
+      if (!retryPending && !sessionSwitched()) {
         fileAddInProgressRef.current = false;
         setAttachRetryFiles(retryable.length ? retryable : null);
       }
@@ -4580,8 +4620,10 @@ function AgentChatComposerImpl({
     );
     const pendingChipPlacement = placePendingAttachmentChip(pendingImage, chipPlacement);
     let clipboardWasEmpty = false;
+    const ownerEpoch = attachmentSessionEpochRef.current;
     try {
       const image = await window.ade.app.readClipboardImage();
+      if (attachmentSessionEpochRef.current !== ownerEpoch) return;
       if (!image) {
         dropPendingImageAttachment(pendingImage.id);
         clipboardWasEmpty = true;
@@ -4596,11 +4638,12 @@ function AgentChatComposerImpl({
       )));
       await uploadClipboardImage(image, localPreview, pendingImage, pendingChipPlacement);
     } catch (error) {
+      if (attachmentSessionEpochRef.current !== ownerEpoch) return;
       // Reading this computer's clipboard failed: nothing to retry with.
       dropPendingImageAttachment(pendingImage.id);
       setAttachError(attachmentErrorMessage(error, "the clipboard image"));
     } finally {
-      fileAddInProgressRef.current = false;
+      if (attachmentSessionEpochRef.current === ownerEpoch) fileAddInProgressRef.current = false;
       if (clipboardWasEmpty && fallbackFiles?.length) void addFileAttachments(fallbackFiles);
     }
   };
@@ -4621,11 +4664,13 @@ function AgentChatComposerImpl({
     const attachmentApi = agentChatApiRef.current;
     const attachmentApiPin = chatApiPin(attachmentOwnerBinding, !projectChatPane);
     const filename = image.filename || "clipboard.png";
+    const ownerEpoch = attachmentSessionEpochRef.current;
     try {
       const { path: tempPath } = await withChatPin(attachmentApiPin, (chatPin) => attachmentApi.saveTempAttachment({
         data: image.data,
         filename,
       }, chatPin));
+      if (attachmentSessionEpochRef.current !== ownerEpoch) return;
       if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
         dropPendingImageAttachment(pendingImage.id);
         setAttachError("Clipboard image was not attached because the selected machine changed. Paste it again.");
@@ -4640,6 +4685,7 @@ function AgentChatComposerImpl({
       queueAttachmentChip(tempPath, pendingChipPlacement);
       dropPendingImageAttachment(pendingImage.id);
     } catch (error) {
+      if (attachmentSessionEpochRef.current !== ownerEpoch) return;
       if (cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
         cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
         return;

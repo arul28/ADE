@@ -844,6 +844,12 @@ struct WorkChatInputAttachmentTray: View {
         else { return }
         attachments[index].state = .uploadFailed
       }
+      // An upload that failed while this chat was not on screen posted a
+      // notification nobody heard, and the draft kept the tile `.ready`. The
+      // tracker still holds that failure, so a restored tile shows it with Retry.
+      .onChange(of: attachments.map(\.id), initial: true) { _, _ in
+        markStoredUploadFailures()
+      }
       .onChange(of: openRequest?.wrappedValue) { _, requested in
         guard let requested else { return }
         openRequest?.wrappedValue = nil
@@ -932,6 +938,16 @@ struct WorkChatInputAttachmentTray: View {
   /// uploads it again (the composer's upload task starts once it is `.ready`).
   private func canRetryUpload(_ attachment: WorkChatInputAttachment) -> Bool {
     attachment.isUploadFailed
+  }
+
+  private func markStoredUploadFailures() {
+    let uploads = WorkComposerAttachmentUploads.shared
+    for index in attachments.indices
+    where attachments[index].isReady
+      && attachments[index].hostRef == nil
+      && uploads.failure(for: attachments[index].id) != nil {
+      attachments[index].state = .uploadFailed
+    }
   }
 
   private func retryUpload(_ attachment: WorkChatInputAttachment) {
