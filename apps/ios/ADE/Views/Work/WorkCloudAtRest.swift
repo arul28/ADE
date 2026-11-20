@@ -51,6 +51,11 @@ struct CloudSessionCopyScreen: View {
 
   private var acceptsMessages: Bool { computerDeleted && !row.isShell }
 
+  /// Why a message can't make the new computer now (the chat line's sentence); nil when it can.
+  private var newComputerProblem: String? {
+    acceptsMessages ? cloudLaneNewComputerProblem(fleetKey: fleetKey, sync: syncService, store: cloudStore) : nil
+  }
+
   private var movingQueuedCount: Int {
     cloudStore.movingMessageCount(machineKey: row.machineKey, chatId: row.sessionId)
   }
@@ -192,7 +197,7 @@ struct CloudSessionCopyScreen: View {
       CloudQueuedMessagesView(accountMachineKey: row.machineKey, chatId: row.sessionId) { text in
         draft = nonEmptyTrimmed(draft).map { "\($0)\n\(text)" } ?? text
       }
-      if let sendError {
+      if let sendError = newComputerProblem ?? sendError {
         Text(sendError)
           .font(.caption)
           .foregroundStyle(ADEColor.danger)
@@ -236,7 +241,7 @@ struct CloudSessionCopyScreen: View {
   }
 
   private var canSend: Bool {
-    !sending && nonEmptyTrimmed(draft) != nil
+    !sending && newComputerProblem == nil && nonEmptyTrimmed(draft) != nil
   }
 
   /// Hands the message to ADE Cloud's queue. The server makes a new computer

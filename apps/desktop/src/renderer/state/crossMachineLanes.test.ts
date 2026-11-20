@@ -2887,14 +2887,14 @@ describe("a chat after its ADE Cloud computer moved", () => {
       looksConnected: true,
     },
     {
-      name: "a deleted computer's chat stays on it and does not look connected",
+      name: "a deleted computer's chat stays on it and lists like an asleep one",
       savedOn: [[OLD, 1]],
       connected: [],
       stillExists: [NEW],
       liveOn: null,
       owner: OLD,
       savedCopy: true,
-      looksConnected: false,
+      looksConnected: true,
     },
   ])("$name", async ({ savedOn, connected, stillExists, liveOn, owner, savedCopy, looksConnected }) => {
     window.ade = {

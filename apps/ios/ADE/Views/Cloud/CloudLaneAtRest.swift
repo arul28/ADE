@@ -106,8 +106,15 @@ struct CloudLaneAtRestScreen: View {
   let onAwake: @MainActor () async -> Void
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @ObservedObject private var store = CloudAtRestStore.shared
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
   @Environment(\.dismiss) private var dismiss
   private var syncService: SyncService { syncPublishes.service }
+
+  /// The lane ADE kept when its computer was deleted: New computer and Delete show here.
+  private var keptLane: CloudLaneWithoutComputer? {
+    guard subject.fleetKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix) else { return nil }
+    return cloudStore.lanesWithoutComputer.first { $0.laneId == subject.laneId }
+  }
   /// The lane's computer on the account server; none once it was deleted.
   private var manageInstanceId: String? {
     guard !subject.fleetKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix) else { return nil }
@@ -163,6 +170,14 @@ struct CloudLaneAtRestScreen: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 14) {
         header
+        // A deleted computer's lane ADE kept: New computer on the same
+        // branch, its saved chats and Delete (the line above says what happened).
+        if let keptLane {
+          CloudKeptLaneActionsCard(
+            lane: keptLane,
+            lineReason: cloudDeletedComputerFacts(fleetKey: subject.fleetKey, sync: syncService, store: cloudStore)?.blocked
+          )
+        }
         gitCard
         // The work its computer saved at its last rest, as a patch: a download
         // with no wake, also once the computer was deleted.

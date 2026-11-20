@@ -69,6 +69,21 @@ export function adeCloudAccountBlock(
   return { tone: "blocked", message: block.message, short: block.short, actions };
 }
 
+/**
+ * Where a tray action opens: Settings › ADE Cloud where the action is,
+ * "Upgrade" on the Plan and billing row, "Free up space" with the dashboard's
+ * flow already open, or GitHub's settings.
+ */
+export function adeCloudTrayActionRoute(action: AdeCloudTrayAction): string {
+  return action === "upgrade"
+    ? adeCloudSettingsRoute(ADE_CLOUD_PLAN_ANCHOR)
+    : action === "free-space"
+      ? adeCloudSettingsRoute(ADE_CLOUD_FREE_SPACE_ANCHOR)
+      : action === "github"
+        ? settingsRouteFor("integrations.github")
+        : settingsRouteFor("integrations.ade-cloud");
+}
+
 /** Keeps one array identity while its signature does not change, so memos downstream hold. */
 function useStableList<T>(list: T[], signatureOf: (item: T) => string): T[] {
   const ref = useRef<{ signature: string; list: T[] }>({ signature: "", list });
@@ -472,17 +487,7 @@ export function useAdeCloudComposer(input: {
         connections: input.connections,
       }
     : null;
-  const openSettings = useCallback((action: AdeCloudTrayAction) => {
-    // Settings › ADE Cloud, opened where the action is: "Upgrade" on the Plan
-    // and billing row, "Free up space" with the dashboard's flow already open.
-    navigate(action === "upgrade"
-      ? adeCloudSettingsRoute(ADE_CLOUD_PLAN_ANCHOR)
-      : action === "free-space"
-        ? adeCloudSettingsRoute(ADE_CLOUD_FREE_SPACE_ANCHOR)
-        : action === "github"
-          ? settingsRouteFor("integrations.github")
-          : settingsRouteFor("integrations.ade-cloud"));
-  }, [navigate]);
+  const openSettings = useCallback((action: AdeCloudTrayAction) => navigate(adeCloudTrayActionRoute(action)), [navigate]);
 
   /** A blocked Send: ask GitHub again when its refusal is what holds Send. */
   const recheckSendBlock = useCallback(() => {

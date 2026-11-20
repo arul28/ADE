@@ -382,9 +382,8 @@ export type WorkProjectViewState = {
   /**
    * Which computer's lanes the Lanes sidebar lists (`laneMachineFilterIds`):
    * `"all"`, a computer id (`machineIdOfSlot`, so two checkouts of one computer
-   * share it), `ADE_CLOUD_MACHINE_ID` for every ADE Cloud computer, or
-   * `LANES_MACHINE_FILTER_NO_COMPUTER` for the ADE Cloud lanes whose computer is
-   * gone. A value whose entry is no longer listed reads as `"all"` where the
+   * share it), or `ADE_CLOUD_MACHINE_ID` for every ADE Cloud computer (and
+   * the cloud lanes whose computer was deleted). A value whose entry is no longer listed reads as `"all"` where the
    * list is built; the stored value stays, so it returns with that computer.
    */
   lanesMachineFilter: string;

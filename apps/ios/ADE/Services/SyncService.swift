@@ -4940,6 +4940,11 @@ final class SyncService: ObservableObject {
   /// The saved copies of the ADE Cloud computers' chats, from the account
   /// server: the rows a sleeping computer shows (`restingCloudMachines`).
   var cloudSavedChats: [CloudSavedChatRow] = []
+  /// Lanes this phone deleted, each with the tick of its delete
+  /// (`noteCloudLaneDeleted`): a saved-chats read that started before a
+  /// delete leaves that lane out, and one that started after it decides.
+  var cloudDeletedLaneTicks: [String: UInt64] = [:]
+  var cloudLaneDeleteTick: UInt64 = 0
   /// When this phone last asked the account server; one ask at a time.
   var cloudServerReadAt: Date?
   var cloudServerReadTask: Task<Void, Never>?

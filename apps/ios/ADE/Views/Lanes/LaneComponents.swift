@@ -241,9 +241,11 @@ struct LaneStackCard: View, Equatable {
   var pullRequest: LanePrTag? = nil
   var transitionNamespace: Namespace.ID? = nil
   var isSelectedTransitionSource = false
+  /// The lane's ADE Cloud computer was deleted: "Computer deleted" leads the facts line.
+  var computerDeleted = false
 
   static func == (lhs: LaneStackCard, rhs: LaneStackCard) -> Bool {
-    lhs.renderSignature == rhs.renderSignature
+    lhs.renderSignature == rhs.renderSignature && lhs.computerDeleted == rhs.computerDeleted
   }
 
   /// Cheap render-relevant equality key (mirrors the Hub row-signature pattern in
@@ -310,7 +312,7 @@ struct LaneStackCard: View, Equatable {
     .contentShape(Rectangle())
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "lane-container-\(snapshot.lane.id)" : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel(stackCardAccessibilityLabel)
+    .accessibilityLabel(computerDeleted ? "\(stackCardAccessibilityLabel), computer deleted" : stackCardAccessibilityLabel)
   }
 
   private var laneGlyphTile: some View {
@@ -347,6 +349,10 @@ struct LaneStackCard: View, Equatable {
   private var metaLine: some View {
     let status = snapshot.lane.status
     var parts: [Text] = []
+    if computerDeleted {
+      // Quiet, no pill: the lane and its chats are all still there.
+      parts.append(Text("Computer deleted").foregroundStyle(ADEColor.textSecondary))
+    }
     if snapshot.lane.archivedAt != nil {
       parts.append(Text("Archived"))
     } else if snapshot.lane.laneType == "primary",

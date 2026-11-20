@@ -162,7 +162,8 @@ export function CloudSizeButton({
 const TRAY_ICON_PX = 14;
 const TRAY_GAP_PX = 8;
 
-const TRAY_ACTION_LABEL: Record<AdeCloudTrayAction, string> = {
+/** Each tray action's button label; the deleted-computer banner offers the same fixes. */
+export const TRAY_ACTION_LABEL: Record<AdeCloudTrayAction, string> = {
   upgrade: "Upgrade",
   "free-space": "Free up space",
   settings: "Open settings",
