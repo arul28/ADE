@@ -39,6 +39,7 @@ import type { CloudLaneWithoutComputer } from "../../shared/cloudLaneLaunch";
 import { distinctMachineNames, machineIdOfSlot, THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../shared/machineIdentity";
 import { formatMachineVersions } from "../../shared/machineVersions";
 import type { MachineAddress } from "../../shared/repositoryTab";
+import { ADE_CLOUD_MACHINE_ID } from "../../shared/adeCloudMachine";
 import {
   adeCloudLaneComputerForMachine,
   adeCloudLaneComputersNow,
@@ -54,6 +55,7 @@ import {
 } from "./appStore";
 import { listedLanesOfMachine } from "./cloudRestingRows";
 import { useCrossMachineLaneSync } from "./crossMachineLanes";
+import { LANES_MACHINE_FILTER_ALL, LANES_MACHINE_FILTER_NO_COMPUTER } from "./laneMachineFilterIds";
 
 /** One version, or both when the machine's app and brain drift ("1.2.123 · brain 1.2.125"). */
 function connectionVersionLabel(
@@ -191,6 +193,123 @@ export function machineChipFor(machine: MachineChipModel): MachineChipModel {
  */
 export function rowMachineChip(machine: MachineChipModel | null | undefined): MachineChipModel | null {
   return machine && !machine.isThisMachine ? machineChipFor(machine) : null;
+}
+
+/* ---- The Lanes sidebar's Computer filter ---- */
+
+/**
+ * One entry in the Lanes sidebar's Computer filter, in menu order: `All`, each
+ * computer the person owns, `ADE Cloud` (one entry for every cloud computer),
+ * then the ADE Cloud lanes whose computer is gone.
+ */
+export type LaneMachineFilterEntry = {
+  /** `"all"`, a computer id, `ADE_CLOUD_MACHINE_ID`, or `LANES_MACHINE_FILTER_NO_COMPUTER`. */
+  id: string;
+  name: string;
+  kind: "all" | "computer" | "cloud" | "noComputer";
+  /** Lanes this entry reveals right now. */
+  laneCount: number;
+  /** The tab's own computer: it leads the list, right after All. */
+  isThisMachine: boolean;
+  /** Lanes without a computer the person has not looked at yet (the block's gold dot). */
+  unseen?: boolean;
+};
+
+/** A listed machine as the filter sees it: one per union slice (a computer may have two checkouts). */
+export type LaneMachineFilterMachine = {
+  /** `laneFilterEntryId(machine.machineId, isCloud)`; two slices of one computer share it. */
+  entryId: string;
+  name: string;
+  isCloud: boolean;
+  isThisMachine: boolean;
+  /** Lanes this slice contributes. */
+  laneCount: number;
+};
+
+/**
+ * The entry a machine belongs to. Every ADE Cloud computer is one entry: the
+ * person has no single cloud computers to pick from. Everything else is one
+ * entry per computer, so two checkouts of one computer do not get two entries.
+ */
+export function laneFilterEntryId(machineId: string, isCloudMachine: boolean): string {
+  return isCloudMachine ? ADE_CLOUD_MACHINE_ID : machineIdOfSlot(machineId);
+}
+
+/**
+ * Every entry of the Computer filter, from the machines the list is showing.
+ * Pure: names, counts and cloud-ness are decided by the caller, which holds the
+ * cloud index and the lane labels.
+ *
+ * `noComputerCount` adds the entry for the ADE Cloud lanes whose computer is
+ * gone; it sits at the end, because it is the one entry no machine holds.
+ */
+export function buildLaneMachineFilterEntries(input: {
+  machines: readonly LaneMachineFilterMachine[];
+  noComputerCount?: number;
+  /** Any of those lanes the person has not looked at yet. */
+  noComputerUnseen?: boolean;
+}): LaneMachineFilterEntry[] {
+  const byEntryId = new Map<string, LaneMachineFilterEntry>();
+  for (const machine of input.machines) {
+    // A computer with no lanes of this project reveals nothing: it is not a
+    // choice, and picking it would leave an empty list.
+    if (machine.laneCount <= 0) continue;
+    const known = byEntryId.get(machine.entryId);
+    if (known) {
+      known.laneCount += machine.laneCount;
+      known.isThisMachine ||= machine.isThisMachine;
+      continue;
+    }
+    byEntryId.set(machine.entryId, {
+      id: machine.entryId,
+      name: machine.name,
+      kind: machine.isCloud ? "cloud" : "computer",
+      laneCount: machine.laneCount,
+      isThisMachine: machine.isThisMachine,
+    });
+  }
+  const computers = [...byEntryId.values()]
+    .filter((entry) => entry.kind === "computer")
+    .sort((a, b) => Number(b.isThisMachine) - Number(a.isThisMachine) || a.name.localeCompare(b.name));
+  const cloud = byEntryId.get(ADE_CLOUD_MACHINE_ID) ?? null;
+  const entries: LaneMachineFilterEntry[] = [
+    {
+      id: LANES_MACHINE_FILTER_ALL,
+      name: "All",
+      kind: "all",
+      laneCount: computers.reduce((sum, entry) => sum + entry.laneCount, 0) + (cloud?.laneCount ?? 0),
+      isThisMachine: false,
+    },
+    ...computers,
+    ...(cloud ? [cloud] : []),
+  ];
+  const noComputerCount = Math.max(0, Math.trunc(input.noComputerCount ?? 0));
+  if (noComputerCount > 0) {
+    entries.push({
+      id: LANES_MACHINE_FILTER_NO_COMPUTER,
+      name: "Without a computer",
+      kind: "noComputer",
+      laneCount: noComputerCount,
+      isThisMachine: false,
+      unseen: input.noComputerUnseen === true,
+    });
+  }
+  return entries;
+}
+
+/**
+ * The entry the chosen filter reads as: the stored one while its entry is
+ * listed, else `"all"`. A computer that went offline (its lanes left the list)
+ * or a lost lane that was restored must not leave the sidebar looking empty
+ * with nothing to click to undo it.
+ */
+export function effectiveLaneMachineFilter(
+  stored: string,
+  entries: readonly Pick<LaneMachineFilterEntry, "id">[],
+): string {
+  return stored !== LANES_MACHINE_FILTER_ALL && entries.some((entry) => entry.id === stored)
+    ? stored
+    : LANES_MACHINE_FILTER_ALL;
 }
 
 /**

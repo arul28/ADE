@@ -1,4 +1,4 @@
-import { useCallback, useId, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
 import { CaretDown, CaretRight, ChatCircleText, Plus, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { CloudChatComputer, CloudComputerDeleteReason } from "../../../shared/cloudSavedChats";
@@ -383,14 +383,19 @@ function LaneRowView({ row }: { row: LaneRow }) {
  * The block: one folded head ("2 cloud lanes without a computer"), opened to
  * a row per lane. Nothing when there are none or ADE Cloud is off.
  */
-export function CloudLanesWithoutComputerBlock({ className }: { className?: string }) {
+/**
+ * The lanes this project has on ADE Cloud computers that are gone, newest
+ * first. Empty when ADE Cloud is off. The block and the Lanes filter's
+ * "Without a computer" entry both read this, so their count cannot drift.
+ */
+function useCloudLanesWithoutComputerRows(): LaneRow[] {
   const enabled = useAdeCloudEnabled();
   const entries = useRootAppStore((state) => state.crossMachineLanesByMachineId);
   const binding = useAppStore((state) => state.projectBinding);
   const identity = normalizeGitRemoteIdentity(originUrlForBinding(binding));
   const { lanes: keptLanes } = useCloudLanesWithoutComputer(enabled && cloudLaneLifeAvailable());
-  const seenNow = useSyncExternalStore(subscribeSeen, readSeenNow, readSeenNow);
-  const rows = useMemo(() => {
+  return useMemo(() => {
+    if (!enabled) return [];
     const byLane = lanesOnDeletedComputers(entries ?? {});
     // A kept lane of this project: listed with its next step, and its chats if any.
     for (const kept of keptLanes) {
@@ -421,8 +426,33 @@ export function CloudLanesWithoutComputerBlock({ className }: { className?: stri
       row.computer?.state === "deleted" ? row.computer.deletedAt : 0,
     );
     return list.sort((a, b) => when(b) - when(a));
-  }, [entries, identity, keptLanes]);
-  const [open, setOpen] = useState(false);
+  }, [enabled, entries, identity, keptLanes]);
+}
+
+/**
+ * How many ADE Cloud lanes of this project have no computer, and whether any is
+ * unseen. The Lanes sidebar's Computer filter reads it for its entry and its
+ * gold dot; it costs the same stores the block reads, and no request.
+ */
+export function useCloudLanesWithoutComputerSummary(): { count: number; unseen: boolean } {
+  const rows = useCloudLanesWithoutComputerRows();
+  const seenNow = useSyncExternalStore(subscribeSeen, readSeenNow, readSeenNow);
+  return useMemo(
+    () => ({ count: rows.length, unseen: rows.some((row) => !seenNow.has(rowKey(row))) }),
+    [rows, seenNow],
+  );
+}
+
+export function CloudLanesWithoutComputerBlock({ className, initiallyOpen = false }: { className?: string; initiallyOpen?: boolean }) {
+  const enabled = useAdeCloudEnabled();
+  const rows = useCloudLanesWithoutComputerRows();
+  const seenNow = useSyncExternalStore(subscribeSeen, readSeenNow, readSeenNow);
+  const [open, setOpen] = useState(initiallyOpen);
+  // A block the Computer filter opened is the person looking at these lanes:
+  // mark them seen, exactly as pressing the block's own head does.
+  useEffect(() => {
+    if (initiallyOpen) markSeen(rows.map(rowKey));
+  }, [initiallyOpen, rows]);
   const listId = `adecl-wc-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
   const unseen = rows.some((row) => !seenNow.has(rowKey(row)));
   const toggle = useCallback(() => {
