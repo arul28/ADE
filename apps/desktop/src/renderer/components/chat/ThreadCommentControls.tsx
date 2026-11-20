@@ -22,6 +22,7 @@ import {
   refreshThreadComments,
   removeThreadCommentLocally,
   retryFailedThreadComment,
+  threadCommentDiscardFailed,
   threadCommentSaveError,
   threadCommentsApi,
 } from "./threadCommentsStore";
@@ -117,7 +118,7 @@ export function useThreadCommentActions(
         if (sessionId) void retryFailedThreadComment(sessionId, comment.id, pin, threadCommentErrorText);
       },
       onDiscardFailed: () => {
-        if (sessionId) discardFailedThreadComment(sessionId, comment.id);
+        if (sessionId) void discardFailedThreadComment(sessionId, comment.id, pin, threadCommentErrorText);
       },
     }),
   };
@@ -250,6 +251,7 @@ export function ThreadCommentListItem({
 }) {
   // A comment whose save failed: the note stays, with one quiet line and Retry / Discard.
   const saveError = threadCommentSaveError(comment.id);
+  const discardFailed = saveError ? threadCommentDiscardFailed(comment.id) : false;
   const quote = threadCommentQuoteText(comment.anchor);
   // An image or video reads as its caption, not as the bracketed line the agent gets.
   const media = comment.anchor.kind === "media" ? comment.anchor : null;
@@ -315,9 +317,9 @@ export function ThreadCommentListItem({
         <div className="flex items-center gap-1.5 pl-[11px] font-sans text-[10.5px]" data-testid="thread-comment-save-failed">
           <span className="inline-flex min-w-0 items-center gap-1 text-amber-200/80" title={saveError}>
             <WarningCircle size={11} weight="fill" className="shrink-0" aria-hidden />
-            <span className="truncate">Couldn't save.</span>
+            <span className="truncate">{discardFailed ? "Couldn't discard." : "Couldn't save."}</span>
           </span>
-          {onRetrySave ? (
+          {onRetrySave && !discardFailed ? (
             <button type="button" onClick={onRetrySave} className="rounded px-1 py-px font-medium text-fg/70 hover:bg-fg/[0.06] hover:text-fg/90">
               Retry
             </button>

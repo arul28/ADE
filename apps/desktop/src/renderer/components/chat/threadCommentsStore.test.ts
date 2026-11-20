@@ -7,6 +7,9 @@ import {
   addLocalThreadComment,
   countCommentsForNextSend,
   countFailedThreadComments,
+  countThreadCommentsReadyToSend,
+  discardFailedThreadComment,
+  holdFailedThreadCommentsTheHostHas,
   refreshThreadComments,
   retryFailedThreadComment,
   setThreadComments,
@@ -168,5 +171,103 @@ describe("threadCommentsStore.addLocalThreadComment", () => {
     expect(result.current.map((entry) => entry.id)).toEqual(["landed-on-host", "created-1"]);
     expect(countFailedThreadComments(result.current)).toBe(0);
     expect(countCommentsForNextSend(result.current)).toBe(2);
+  });
+
+  // A host that keeps client ids: the comment's id, not its text, says which
+  // host comment is which, so a lost answer can be retried, discarded, or
+  // kept out of a send without touching a twin with the same quote and body.
+  function installClientIdHost(sessionId: string) {
+    let next = 0;
+    const host = { list: [] as ChatThreadComment[] };
+    const create = vi.fn(async (args: { clientId?: string; body: string; anchor: ChatThreadComment["anchor"] }) => {
+      const existing = host.list.find((entry) => entry.clientId === args.clientId);
+      if (existing) return existing;
+      const made = { ...comment(`host-${(next += 1)}`, sessionId), body: args.body, anchor: args.anchor, clientId: args.clientId };
+      host.list = [...host.list, made];
+      return made;
+    });
+    const list = vi.fn(async () => host.list);
+    const remove = vi.fn(async (args: { commentId: string }) => {
+      host.list = host.list.filter((entry) => entry.id !== args.commentId);
+      return { deleted: true };
+    });
+    const update = vi.fn(async (args: { commentId: string; includeInNextSend?: boolean }) => {
+      host.list = host.list.map((entry) => (entry.id === args.commentId ? { ...entry, includeInNextSend: args.includeInNextSend ?? entry.includeInNextSend } : entry));
+      return host.list.find((entry) => entry.id === args.commentId)!;
+    });
+    (window as unknown as { ade: unknown }).ade = { agentChat: { threadComments: { list, create, delete: remove, update } } };
+    return { host, create, remove, update };
+  }
+
+  /** A create that reached the host whose answer never came back. */
+  async function lostAnswer(sessionId: string, create: ReturnType<typeof installClientIdHost>["create"], quote: string) {
+    let settle!: ReturnType<typeof addLocalThreadComment>;
+    act(() => { settle = addLocalThreadComment(sessionId, fields(quote)); });
+    const { messageKey, messageExcerpt, anchor, body } = fields(quote);
+    await create({ sessionId, messageKey, messageExcerpt, anchor, body, clientId: settle.clientId } as never);
+    act(() => settle(null, "Can't reach the computer"));
+    return settle;
+  }
+
+  it("retries with the same client id and never takes a twin's copy for its own", async () => {
+    const sessionId = "store-client-id-retry";
+    const { host, create } = installClientIdHost(sessionId);
+    const { result } = renderHook(() => useThreadComments(sessionId, CHAT_PIN));
+    await waitFor(() => expect(result.current).toEqual([]));
+
+    // Two comments with the same quote and body: the first landed, the second never did.
+    await lostAnswer(sessionId, create, "same");
+    let twin!: ReturnType<typeof addLocalThreadComment>;
+    act(() => { twin = addLocalThreadComment(sessionId, fields("same")); });
+    act(() => twin(null, "Can't reach the computer"));
+    // The host's change event for the first one: it replaces only its own local comment.
+    act(() => setThreadComments(sessionId, host.list));
+    expect(result.current.map((entry) => entry.id)).toEqual(["host-1", twin.localId]);
+    expect(threadCommentSaveError(twin.localId)).toBe("Can't reach the computer");
+
+    await act(() => retryFailedThreadComment(sessionId, twin.localId, CHAT_PIN, String));
+    expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ clientId: twin.clientId }), CHAT_PIN);
+    expect(result.current.map((entry) => entry.id)).toEqual(["host-1", "host-2"]);
+    expect(host.list).toHaveLength(2);
+  });
+
+  it("holds a failed comment's landed copy out of a send, and deletes the copy on Discard", async () => {
+    const sessionId = "store-client-id-discard";
+    const { host, create, remove, update } = installClientIdHost(sessionId);
+    const { result } = renderHook(() => useThreadComments(sessionId, CHAT_PIN));
+    await waitFor(() => expect(result.current).toEqual([]));
+
+    // Before a send: the copy of a comment shown as failed is held, so the host does not send it.
+    await lostAnswer(sessionId, create, "still failed");
+    expect(countThreadCommentsReadyToSend(sessionId)).toBe(0);
+    await act(() => holdFailedThreadCommentsTheHostHas(sessionId, CHAT_PIN));
+    expect(update).toHaveBeenCalledWith({ sessionId, commentId: "host-1", includeInNextSend: false }, CHAT_PIN);
+    expect(host.list.map((entry) => entry.includeInNextSend)).toEqual([false]);
+    expect(result.current.map((entry) => entry.id)).toEqual(["host-1"]);
+    expect(countThreadCommentsReadyToSend(sessionId)).toBe(0);
+
+    // Discard: the host's copy goes too, so no later send carries it.
+    const discarded = await lostAnswer(sessionId, create, "discard me");
+    await act(() => discardFailedThreadComment(sessionId, discarded.localId, CHAT_PIN, String));
+    expect(remove).toHaveBeenCalledWith({ sessionId, commentId: "host-2" }, CHAT_PIN);
+    expect(host.list.map((entry) => entry.id)).toEqual(["host-1"]);
+    expect(result.current.map((entry) => entry.id)).toEqual(["host-1"]);
+  });
+
+  it("keeps a comment whose Discard could not reach the host, marked, for another Discard", async () => {
+    const sessionId = "store-client-id-discard-fails";
+    const { host, create, remove } = installClientIdHost(sessionId);
+    const { result } = renderHook(() => useThreadComments(sessionId, CHAT_PIN));
+    await waitFor(() => expect(result.current).toEqual([]));
+
+    const failed = await lostAnswer(sessionId, create, "discard me");
+    remove.mockRejectedValueOnce(new Error("offline"));
+    await act(() => discardFailedThreadComment(sessionId, failed.localId, CHAT_PIN, (error) => (error as Error).message));
+    await waitFor(() => expect(result.current.map((entry) => entry.id)).toEqual([failed.localId]));
+    expect(threadCommentSaveError(failed.localId)).toBe("offline");
+
+    await act(() => discardFailedThreadComment(sessionId, failed.localId, CHAT_PIN, String));
+    expect(host.list).toEqual([]);
+    expect(result.current).toEqual([]);
   });
 });

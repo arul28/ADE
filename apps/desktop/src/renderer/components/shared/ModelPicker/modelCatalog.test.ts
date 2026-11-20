@@ -21,7 +21,9 @@ import {
   reserveRuntimeCatalogScope,
   resetModelPickerRuntimeCatalogForTests,
   runtimeCatalogProviderIsFresh,
+  runtimeCatalogScopeNeedsRefresh,
 } from "./runtimeCatalogCache";
+import { fetchSharedRuntimeCatalog, refreshRuntimeCatalogsForMachine } from "./sharedCatalogFetch";
 import type { AgentChatModelCatalog } from "../../../../shared/types";
 import {
   createDynamicAcpModelDescriptor,
@@ -679,6 +681,38 @@ describe("runtime catalog machine scoping", () => {
     const current = localModelCatalog("ollama/current", ["low"]);
     rememberRuntimeCatalog(current, { mode: "cached", scopeKey, scopeSerial: nextSerial });
     expect(getSharedRuntimeCatalog(scopeKey)).toBe(current);
+  });
+
+  // A sign-in lands while a forced read is out. That read describes the
+  // machine before the sign-in: the re-read the sign-in starts must not join
+  // it, and its answer must neither replace the catalog nor clear the mark.
+  it("keeps a read that started before an invalidation from standing for the machine after it", async () => {
+    const pin = { kind: "remote", key: "remote:t-login:p-login", targetId: "t-login", projectId: "p-login", rootPath: "/repo", displayName: "repo" } as never;
+    const scopeKey = "remote:t-login:p-login";
+    const answers: Array<(catalog: AgentChatModelCatalog) => void> = [];
+    (window as unknown as { ade: unknown }).ade = {
+      agentChat: { modelCatalog: vi.fn(() => new Promise<AgentChatModelCatalog>((resolve) => { answers.push(resolve); })) },
+    };
+    try {
+      const seed = localModelCatalog("ollama/seed", ["low"]);
+      rememberRuntimeCatalog(seed, { mode: "force", scopeKey });
+      const beforeLogin = fetchSharedRuntimeCatalog({ scopeKey, mode: "force", refreshProvider: "opencode", pin });
+      const afterLogin = refreshRuntimeCatalogsForMachine(pin, { refreshProvider: "opencode" });
+      await vi.waitFor(() => expect(answers).toHaveLength(2));
+
+      answers[0]!(localModelCatalog("ollama/pre-login", ["low"]));
+      await beforeLogin;
+      expect(getSharedRuntimeCatalog(scopeKey)).toBe(seed);
+      expect(runtimeCatalogScopeNeedsRefresh(scopeKey)).toBe(true);
+
+      const fresh = localModelCatalog("ollama/post-login", ["low"]);
+      answers[1]!(fresh);
+      await afterLogin;
+      expect(getSharedRuntimeCatalog(scopeKey)).toBe(fresh);
+      expect(runtimeCatalogScopeNeedsRefresh(scopeKey)).toBe(false);
+    } finally {
+      delete (window as { ade?: unknown }).ade;
+    }
   });
 
   it("marks provider freshness per machine so one machine's refresh cannot silence another's", () => {

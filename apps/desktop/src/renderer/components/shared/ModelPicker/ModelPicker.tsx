@@ -460,11 +460,13 @@ export const ModelPicker = memo(function ModelPicker({
     return firstModel ? firstModel.id : "";
   }, [value, recents, modelList]);
 
+  // `runtimeCatalog`: a refresh of this machine's catalog (Settings, another
+  // surface) can change the selected model's label and Fast/tier support.
   const selectedModel = useMemo<ModelDescriptor | undefined>(() => {
     if (!value) return undefined;
     return resolveModelDescriptorWithRuntimeCatalog(value, catalogScopeKey)
       ?? createUnknownModelPlaceholder(value);
-  }, [catalogScopeKey, value]);
+  }, [catalogScopeKey, runtimeCatalog, value]);
 
   const availableSet = useMemo(() => {
     const ids = constrainToAvailableModelIds || !runtimeCatalog

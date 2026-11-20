@@ -147,6 +147,40 @@ describe("createThreadCommentService", () => {
     );
   });
 
+  // A client whose create answer was lost retries with the same client id:
+  // it must get its comment back, not a second copy that would go to the
+  // agent twice, and never another author's comment that shares the id.
+  it("makes create idempotent by client id and author, and refuses one that was sent or deleted", () => {
+    const onChanged = vi.fn();
+    const service = makeService(onChanged);
+    const args = { sessionId: "s1", messageKey: "message:1", messageExcerpt: "reply", anchor: anchor("same"), body: "same note" };
+    const first = service.create({ ...args, clientId: "client-a" });
+    expect(first.clientId).toBe("client-a");
+    onChanged.mockClear();
+
+    expect(service.create({ ...args, clientId: "client-a" })).toEqual(first);
+    expect(onChanged).not.toHaveBeenCalled();
+    // A twin with the same text but its own client id is its own comment.
+    const twin = service.create({ ...args, clientId: "client-b" });
+    expect(twin.id).not.toBe(first.id);
+    // Another author repeating the id gets a new comment that does not claim it.
+    const guest = service.create({ ...args, clientId: "client-a" }, { author: { kind: "guest", userId: "user_guest", name: "Pat" } });
+    expect(guest.id).not.toBe(first.id);
+    expect(guest.clientId).toBeUndefined();
+    // The client id survives a reread from disk.
+    const reopened = createThreadCommentService({ chatSessionsDir: root!, logger: { warn: vi.fn() }, onChanged: vi.fn() });
+    expect(reopened.list({ sessionId: "s1" }).find((comment) => comment.id === first.id)?.clientId).toBe("client-a");
+
+    // Gone (sent, or deleted): a late retry does not bring it back.
+    service.delete({ sessionId: "s1", commentId: twin.id });
+    expect(() => service.create({ ...args, clientId: "client-b" })).toThrow("already sent or deleted");
+    const taken = service.takeForSend("s1");
+    expect(() => service.create({ ...args, clientId: "client-a" })).toThrow("already sent or deleted");
+    // A failed send puts it back, and the retry finds it again.
+    taken.restore();
+    expect(service.create({ ...args, clientId: "client-a" }).id).toBe(first.id);
+  });
+
   // A guest's comment never rides the owner's next send on its own (its text
   // would reach the agent under the owner's permission mode): only when the
   // owner names it at the body revision the owner saw, and then marked as

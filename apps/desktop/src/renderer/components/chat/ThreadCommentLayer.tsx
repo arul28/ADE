@@ -525,13 +525,15 @@ export function ThreadCommentLayer({
     // the comment reaches the host before the message does.
     await trackThreadCommentSave(sessionId, settle.localId, async () => {
       try {
-        // Read the list first when it never loaded: a retry after a lost answer
-        // can then tell the saved copy from an older identical comment.
+        // The client id names this comment on the host, so a retry or a
+        // discard after a lost answer finds it. An older host drops the id;
+        // for it, read the list first when it never loaded, so a retry can
+        // tell the saved copy from an older identical comment.
         if (!loaded) {
           await refreshThreadComments(sessionId, pin ?? null);
           captureThreadCommentBaseline(sessionId, settle.localId);
         }
-        settle(await withChatPin(pin ?? null, (chatPin) => api.create({ sessionId, ...fields }, chatPin)));
+        settle(await withChatPin(pin ?? null, (chatPin) => api.create({ sessionId, ...fields, clientId: settle.clientId }, chatPin)));
       } catch (error) {
         settle(null, threadCommentErrorText(error));
       }

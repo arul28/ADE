@@ -3111,15 +3111,29 @@ function AgentChatComposerImpl({
   // The composer stays mounted when the user switches chats. Each switch bumps
   // this, and an upload started under an older value is dropped silently, so
   // an image (or its failure, or its Retry) never lands in another chat.
-  // Moving from a new chat's draft (no session yet) to the session it created
-  // is the same chat, so that is not a switch.
+  // Moving from a new chat's draft (no session yet) to the session its own
+  // send created is the same chat, so that is not a switch. Opening another
+  // chat from the draft is one: the draft's upload must not land there.
   const attachmentSessionRef = useRef(sessionId ?? null);
   const attachmentSessionEpochRef = useRef(0);
+  // Set when this draft hands its text to a send that opens a new chat; the
+  // next session the composer shows is then that chat.
+  const draftSendOpensSessionRef = useRef(false);
   if ((sessionId ?? null) !== attachmentSessionRef.current) {
-    if (attachmentSessionRef.current !== null) attachmentSessionEpochRef.current += 1;
+    const draftBecameItsChat = attachmentSessionRef.current === null && draftSendOpensSessionRef.current;
+    if (!draftBecameItsChat) attachmentSessionEpochRef.current += 1;
+    draftSendOpensSessionRef.current = false;
     attachmentSessionRef.current = sessionId ?? null;
   }
   const handledAttachmentSessionEpochRef = useRef(0);
+  // An upload still out when the composer goes away belongs to nothing on
+  // screen: the bump makes it drop its result instead of reaching the pane.
+  useEffect(() => {
+    const epoch = attachmentSessionEpochRef;
+    return () => {
+      epoch.current += 1;
+    };
+  }, []);
   const pastedTextLineCountsRef = useRef<Map<string, number>>(new Map());
   const pastedTextFilesRef = useRef<WeakMap<File, number>>(new WeakMap());
   const armedAttachmentChipRef = useRef<HTMLElement | null>(null);
@@ -8095,6 +8109,7 @@ function AgentChatComposerImpl({
       const hasAttachments = attachments.length > 0 || contextAttachmentCount > 0;
       if (!hasPrompt && !hasAttachments) return;
       closeCommandMenu();
+      if (attachmentSessionRef.current === null) draftSendOpensSessionRef.current = true;
       onSubmit();
       return;
     }
@@ -8126,6 +8141,7 @@ function AgentChatComposerImpl({
         issueContextPrompt || null,
         trimmed || (issueContextPrompt ? "Use the attached issue context." : null),
       ].filter((part): part is string => Boolean(part)).join("\n\n");
+      if (attachmentSessionRef.current === null) draftSendOpensSessionRef.current = true;
       void Promise.resolve(onSubmitToCloud(cloudPrompt)).then((ok) => {
         if (ok) onDraftChange("");
       });
@@ -8143,6 +8159,7 @@ function AgentChatComposerImpl({
     // the trigger check: close an open `/` menu here, or it stays up over an
     // empty composer (Send clicked with the menu open, `/usage`, `/context`).
     closeCommandMenu();
+    if (attachmentSessionRef.current === null) draftSendOpensSessionRef.current = true;
     onSubmit();
   }, [sendBlocked, onSendBlocked, activeTurnHasContent, closeCommandMenu, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 

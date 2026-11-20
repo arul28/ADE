@@ -24,6 +24,7 @@ import {
   noteRuntimeCatalogScopePin,
   rememberRuntimeCatalog,
   reserveRuntimeCatalogScope,
+  runtimeCatalogScopeInvalidationGeneration,
   runtimeCatalogScopesForMachine,
   setRuntimeCatalogRequest,
   type SharedCatalogFetchResult,
@@ -61,7 +62,10 @@ export async function fetchSharedRuntimeCatalog(
   const { scopeKey, mode, refreshProvider, cursorSource, pin } = args;
   if (!catalogBridgeAvailable(scopeKey)) return { status: "unavailable" };
 
-  const requestKey = `${scopeKey}|${mode}:${refreshProvider ?? "all"}:${cursorSource ?? "all"}`;
+  // A read started before the machine's last change is not joined: its
+  // answer may predate the change (`rememberRuntimeCatalog` drops it).
+  const invalidationGeneration = runtimeCatalogScopeInvalidationGeneration(scopeKey);
+  const requestKey = `${scopeKey}|${mode}:${refreshProvider ?? "all"}:${cursorSource ?? "all"}#${invalidationGeneration}`;
   const existing = getRuntimeCatalogRequest(requestKey);
   if (existing) return await existing;
 
@@ -78,7 +82,7 @@ export async function fetchSharedRuntimeCatalog(
         catalogScopeKey: scopeKey,
         ...(pin ? { pin } : {}),
       });
-      const visible = rememberRuntimeCatalog(next, { ...fetchArgs, scopeKey, scopeSerial });
+      const visible = rememberRuntimeCatalog(next, { ...fetchArgs, scopeKey, scopeSerial, invalidationGeneration });
       return { status: "ok", catalog: visible };
     } catch {
       return { status: "error" };

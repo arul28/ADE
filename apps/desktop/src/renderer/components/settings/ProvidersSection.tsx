@@ -587,8 +587,9 @@ function MachineProvidersSection({
           setCursorLoginUrl(null);
         }
         // Cursor's sign-in says nothing about OpenCode's providers, so this
-        // reads the saved logins again and leaves OpenCode's server alone.
-        void refreshStatusRef.current({ force: true, silent: true });
+        // reads the saved logins again and leaves OpenCode's server alone;
+        // only Cursor's rows in the chat model lists are read again.
+        void refreshStatusRef.current({ force: true, silent: true, refreshProvider: "cursor" });
       }
       if (event.state === "error" && event.error) showToast({ tone: "error", title: "Cursor sign-in failed", message: event.error });
       if (event.state === "success") {

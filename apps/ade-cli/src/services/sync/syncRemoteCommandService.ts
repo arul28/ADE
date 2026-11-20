@@ -5448,6 +5448,8 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       messageExcerpt: typeof payload.messageExcerpt === "string" ? payload.messageExcerpt : "",
       anchor,
       body: typeof payload.body === "string" ? payload.body : "",
+      // The host cleans it (`normalizeThreadCommentClientId`); a lane-share guest's is dropped by its policy.
+      ...(typeof payload.clientId === "string" ? { clientId: payload.clientId } : {}),
     }, { author: context.author ?? null });
   });
   register("chat.updateThreadComment", { viewerAllowed: true }, async (payload) =>

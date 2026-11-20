@@ -196,8 +196,10 @@ import {
 import {
   countThreadCommentsReadyToSend,
   guestCommentsForNextSend,
+  holdFailedThreadCommentsTheHostHas,
   requestThreadCommentFocus,
   setThreadComments,
+  threadCommentSaveFailuresIn,
   threadCommentSavesInFlight,
   useThreadComments,
   waitForThreadCommentSaves,
@@ -17129,17 +17131,20 @@ export function AgentChatPane({
       : null;
     // A comment saved a moment ago may still be on its way to the host. Wait
     // for it (bounded, showing the sending state), so the host has it when the
-    // message lands; a chat with no save in flight skips this.
+    // message lands. The host sends every comment it holds, so one shown as
+    // failed (or discarded) whose save landed after all is then held back or
+    // deleted first. A chat with neither skips this.
     if (
       threadCommentsSessionAtSend
       && !isWorkCliLaunchDraft
       && !isProviderSlashCommandInput(text)
-      && threadCommentSavesInFlight(threadCommentsSessionAtSend)
+      && (threadCommentSavesInFlight(threadCommentsSessionAtSend) || threadCommentSaveFailuresIn(threadCommentsSessionAtSend))
     ) {
       submitInFlightRef.current = true;
       setBusy(true);
       try {
         await waitForThreadCommentSaves(threadCommentsSessionAtSend, THREAD_COMMENT_SAVE_SEND_WAIT_MS);
+        await holdFailedThreadCommentsTheHostHas(threadCommentsSessionAtSend, chatRuntimePinRef.current);
       } finally {
         submitInFlightRef.current = false;
         setBusy(false);
@@ -19707,7 +19712,6 @@ export function AgentChatPane({
   }, [activeComposerRuntimeBinding?.key, chatComputerDeleted, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, chatScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
   // Free models (`shared/freeModels.ts`), from the composer machine's status
   // like the sign-in check above.
-  const onFreeCatalogLoaded = useCallback(() => setRuntimeCatalogVersion((version) => version + 1), []);
   const { offerFreeModel, handleUseFreeModel } = useFreeModelsDraft({
     aiStatus,
     availableModelIds: effectiveAvailableModelIds,
@@ -19729,7 +19733,6 @@ export function AgentChatPane({
     draftKeepsMachineDefaultsRef,
     draftModelChosenRef,
     refreshAvailableModels,
-    onCatalogLoaded: onFreeCatalogLoaded,
   });
 
   // The connection of the provider the card signs in to.

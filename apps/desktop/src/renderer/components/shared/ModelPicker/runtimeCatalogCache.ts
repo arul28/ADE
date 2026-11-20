@@ -104,6 +104,12 @@ type RuntimeCatalogScopeState = {
   // Set when something on the machine changed after `catalog` was read. The
   // catalog stays visible; the next reader re-reads it.
   invalidated: boolean;
+  // Goes up on every invalidation. A read remembers the value it started
+  // under; one that started before an invalidation (a forced read in flight
+  // when a sign-in lands) describes the machine as it was, so it neither
+  // replaces the catalog nor clears `invalidated`, and later reads never
+  // join it.
+  invalidationGeneration: number;
 };
 
 // Scopes are bounded by the project bindings a window has open, so this cap is
@@ -176,9 +182,15 @@ export function invalidateRuntimeCatalogScope(scopeKey: string): void {
   const scope = peekRuntimeCatalogScope(scopeKey);
   if (!scope) return;
   scope.invalidated = true;
+  scope.invalidationGeneration += 1;
   scope.providerRefreshedAt.clear();
   scope.cursorSourceRefreshedAt.clear();
   notifyRuntimeCatalogChanged(scopeKey);
+}
+
+/** How many times this bucket was invalidated; a read passes it back to {@link rememberRuntimeCatalog}. */
+export function runtimeCatalogScopeInvalidationGeneration(scopeKey: string): number {
+  return peekRuntimeCatalogScope(scopeKey)?.invalidationGeneration ?? 0;
 }
 
 /**
@@ -235,6 +247,7 @@ function runtimeCatalogScope(scopeKey: string): RuntimeCatalogScopeState {
     machine: null,
     pin: null,
     invalidated: false,
+    invalidationGeneration: 0,
   };
   runtimeCatalogScopes.set(scopeKey, created);
   return created;
@@ -388,6 +401,8 @@ export function rememberRuntimeCatalog(
     scopeKey?: string;
     /** Token from {@link reserveRuntimeCatalogScope}; omit to skip the check. */
     scopeSerial?: number;
+    /** {@link runtimeCatalogScopeInvalidationGeneration} when the read started; omit to skip the check. */
+    invalidationGeneration?: number;
   },
 ): AgentChatModelCatalog {
   const scopeKey = args.scopeKey ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
@@ -399,6 +414,12 @@ export function rememberRuntimeCatalog(
     return catalog;
   }
   const scope = runtimeCatalogScope(scopeKey);
+  if (args.invalidationGeneration !== undefined && scope.invalidationGeneration !== args.invalidationGeneration) {
+    // Read before the machine changed: it may be the very list the change
+    // made out of date, and a newer read may already have landed. Keep the
+    // bucket (and its `invalidated` mark) as it is.
+    return scope.catalog ?? catalog;
+  }
   if (args.mode === "cached" && scope.catalog) {
     for (const provider of MODEL_CATALOG_REFRESH_PROVIDERS) {
       if (
