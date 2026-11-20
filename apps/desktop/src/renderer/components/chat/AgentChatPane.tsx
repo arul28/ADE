@@ -196,10 +196,9 @@ import {
 import {
   countThreadCommentsReadyToSend,
   guestCommentsForNextSend,
-  holdFailedThreadCommentsTheHostHas,
   requestThreadCommentFocus,
   setThreadComments,
-  threadCommentSaveFailuresIn,
+  threadCommentClientIdsToExclude,
   threadCommentSavesInFlight,
   useThreadComments,
   waitForThreadCommentSaves,
@@ -17131,33 +17130,25 @@ export function AgentChatPane({
       : null;
     // A comment saved a moment ago may still be on its way to the host. Wait
     // for it (bounded, showing the sending state), so the host has it when the
-    // message lands. The host sends every comment it holds, so one shown as
-    // failed (or discarded) whose save landed after all is then held back or
-    // deleted first. A chat with neither skips this.
+    // message lands. One shown as failed, still saving or being discarded is
+    // named in the send's exclusion list instead, so the host leaves its copy
+    // (if a save landed after all) out of this send. A chat with no save in
+    // flight skips the wait.
     if (
       threadCommentsSessionAtSend
       && !isWorkCliLaunchDraft
       && !isProviderSlashCommandInput(text)
-      && (threadCommentSavesInFlight(threadCommentsSessionAtSend) || threadCommentSaveFailuresIn(threadCommentsSessionAtSend))
+      && threadCommentSavesInFlight(threadCommentsSessionAtSend)
     ) {
-      // The chat's machine, read with its id: the pane may show another chat
-      // by the time the wait ends, and the hold must reach this chat's copy.
-      const threadCommentsPinAtSend = chatRuntimePinRef.current;
       submitInFlightRef.current = true;
       setBusy(true);
-      let heldFailedCopies = true;
       try {
         await waitForThreadCommentSaves(threadCommentsSessionAtSend, THREAD_COMMENT_SAVE_SEND_WAIT_MS);
-        heldFailedCopies = await holdFailedThreadCommentsTheHostHas(threadCommentsSessionAtSend, threadCommentsPinAtSend);
       } finally {
         submitInFlightRef.current = false;
         setBusy(false);
       }
       if (renderSelectedSessionIdRef.current !== selectedSessionId) return;
-      if (!heldFailedCopies) {
-        setError({ message: "Couldn't hold back a comment that failed to save. Try again.", kind: "status" });
-        return;
-      }
       if (liveDraftRef.current !== draft || attachmentsRef.current !== attachments) {
         setError({ message: "Your message changed while a comment was saving, so nothing was sent. Send it again.", kind: "status" });
         return;
@@ -17398,8 +17389,15 @@ export function AgentChatPane({
             ? "Attached issue context"
             : "");
       const guestCommentsForSend = includeThreadComments ? guestCommentsForNextSend(threadCommentsRef.current) : [];
+      const excludedThreadComments = includeThreadComments && threadCommentsSessionAtSend
+        ? threadCommentClientIdsToExclude(threadCommentsSessionAtSend)
+        : [];
       const threadCommentSendFields = includeThreadComments
-        ? { includeThreadComments: true as const, ...(guestCommentsForSend.length ? { includeGuestComments: guestCommentsForSend } : {}) }
+        ? {
+            includeThreadComments: true as const,
+            ...(guestCommentsForSend.length ? { includeGuestComments: guestCommentsForSend } : {}),
+            ...(excludedThreadComments.length ? { excludeThreadCommentClientIds: excludedThreadComments } : {}),
+          }
         : {};
 
       let sessionId = selectedSessionId;

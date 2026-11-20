@@ -9,10 +9,10 @@ import {
   countFailedThreadComments,
   countThreadCommentsReadyToSend,
   discardFailedThreadComment,
-  holdFailedThreadCommentsTheHostHas,
   refreshThreadComments,
   retryFailedThreadComment,
   setThreadComments,
+  threadCommentClientIdsToExclude,
   threadCommentSaveError,
   useThreadComments,
 } from "./threadCommentsStore";
@@ -231,35 +231,37 @@ describe("threadCommentsStore.addLocalThreadComment", () => {
     expect(host.list).toHaveLength(2);
   });
 
-  it("holds a failed comment's landed copy out of a send, and deletes the copy on Discard", async () => {
+  it("names failed and discarding comments in a send's exclusion list, and deletes the copy on Discard", async () => {
     const sessionId = "store-client-id-discard";
-    const { host, create, remove, update } = installClientIdHost(sessionId);
+    const { host, create, remove } = installClientIdHost(sessionId);
     const { result } = renderHook(() => useThreadComments(sessionId, CHAT_PIN));
     await waitFor(() => expect(result.current).toEqual([]));
 
-    // Before a send: the copy of a comment shown as failed is held, so the host does not send it.
+    // Shown as failed, though its copy landed: the send excludes it by client
+    // id, so the host keeps that copy out of the send and on its list.
     const stillFailed = await lostAnswer(sessionId, create, "still failed");
     expect(countThreadCommentsReadyToSend(sessionId)).toBe(0);
-    // The host could not hold it: the failure stays shown and the send must stop.
-    update.mockRejectedValueOnce(new Error("offline"));
-    let held: boolean | undefined;
-    await act(async () => { held = await holdFailedThreadCommentsTheHostHas(sessionId, CHAT_PIN); });
-    expect(held).toBe(false);
-    expect(threadCommentSaveError(stillFailed.localId)).toBe("Can't reach the computer");
-    expect(result.current.map((entry) => entry.id)).toEqual([stillFailed.localId]);
-    await act(async () => { held = await holdFailedThreadCommentsTheHostHas(sessionId, CHAT_PIN); });
-    expect(held).toBe(true);
-    expect(update).toHaveBeenCalledWith({ sessionId, commentId: "host-1", includeInNextSend: false }, CHAT_PIN);
-    expect(host.list.map((entry) => entry.includeInNextSend)).toEqual([false]);
-    expect(result.current.map((entry) => entry.id)).toEqual(["host-1"]);
-    expect(countThreadCommentsReadyToSend(sessionId)).toBe(0);
+    expect(threadCommentClientIdsToExclude(sessionId)).toEqual([stillFailed.clientId]);
 
-    // Discard: the host's copy goes too, so no later send carries it.
+    // Discard: excluded until the host's copy is deleted, then gone everywhere.
     const discarded = await lostAnswer(sessionId, create, "discard me");
-    await act(() => discardFailedThreadComment(sessionId, discarded.localId, CHAT_PIN, String));
-    expect(remove).toHaveBeenCalledWith({ sessionId, commentId: "host-2" }, CHAT_PIN);
-    expect(host.list.map((entry) => entry.id)).toEqual(["host-1"]);
+    let finishDelete!: () => void;
+    remove.mockImplementationOnce(async (args: { commentId: string }) => {
+      await new Promise<void>((resolve) => { finishDelete = resolve; });
+      host.list = host.list.filter((entry) => entry.id !== args.commentId);
+      return { deleted: true };
+    });
+    let discarding!: Promise<void>;
+    act(() => { discarding = discardFailedThreadComment(sessionId, discarded.localId, CHAT_PIN, String); });
+    await waitFor(() => expect(remove).toHaveBeenCalledWith({ sessionId, commentId: "host-2" }, CHAT_PIN));
+    // The discard's list read showed the first one's landed copy: it is now the
+    // saved comment the person sees, and goes with the next send like any other.
     expect(result.current.map((entry) => entry.id)).toEqual(["host-1"]);
+    expect(threadCommentClientIdsToExclude(sessionId)).toEqual([discarded.clientId]);
+    await act(async () => { finishDelete(); await discarding; });
+    expect(host.list.map((entry) => entry.id)).toEqual(["host-1"]);
+    expect(threadCommentClientIdsToExclude(sessionId)).toEqual([]);
+    expect(countThreadCommentsReadyToSend(sessionId)).toBe(1);
   });
 
   it("keeps a comment whose Discard could not reach the host, marked, for another Discard", async () => {
@@ -273,6 +275,8 @@ describe("threadCommentsStore.addLocalThreadComment", () => {
     await act(() => discardFailedThreadComment(sessionId, failed.localId, CHAT_PIN, (error) => (error as Error).message));
     await waitFor(() => expect(result.current.map((entry) => entry.id)).toEqual([failed.localId]));
     expect(threadCommentSaveError(failed.localId)).toBe("offline");
+    // Its host copy is still there: sends keep excluding it.
+    expect(threadCommentClientIdsToExclude(sessionId)).toEqual([failed.clientId]);
 
     await act(() => discardFailedThreadComment(sessionId, failed.localId, CHAT_PIN, String));
     expect(host.list).toEqual([]);

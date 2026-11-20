@@ -438,6 +438,8 @@ describe("projectConfigService - lane env init setup scripts and copy paths", ()
               },
             },
           },
+          // Its only setup key is the empty Linux list: kept, so it still wins the merge.
+          { id: "no-linux-setup", match: { tags: ["cloud"] }, overrides: { envInit: { setupScript: { linuxCommands: [] } } } },
         ],
       }),
       "utf8",
@@ -454,6 +456,9 @@ describe("projectConfigService - lane env init setup scripts and copy paths", ()
     expect(service.get().effective.laneOverlayPolicies[0]?.overrides.envInit).toEqual({
       copyPaths: [{ source: ".env.local" }],
       setupScript: { unixCommands: ["./scripts/seed.sh"], linuxCommands: [] },
+    });
+    expect(service.get().effective.laneOverlayPolicies[1]?.overrides.envInit).toEqual({
+      setupScript: { linuxCommands: [] },
     });
   });
 });

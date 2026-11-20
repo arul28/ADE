@@ -4685,11 +4685,14 @@ function AgentChatComposerImpl({
     const filename = image.filename || "clipboard.png";
     const ownerEpoch = attachmentSessionEpochRef.current;
     const retry = () => void uploadClipboardImageRef.current(image, localPreview, pendingImage, pendingChipPlacement);
-    // A Retry runs this directly: when attachments can't be saved now, it
-    // stays failed with the reason, and nothing is saved.
-    if (attachmentPersistenceUnavailableReason) {
-      setAttachError(attachmentPersistenceUnavailableReason);
-      failPendingImageAttachment(pendingImage.id, attachmentPersistenceUnavailableReason, retry);
+    // A Retry runs this directly: when attachments can't be saved now (or the
+    // composer is locked), it stays failed with the reason, and nothing is
+    // saved. Not `canAttach`: this image already holds its attachment slot.
+    const blockedReason = attachmentPersistenceUnavailableReason
+      ?? (composerInputLocked ? composerInputLockMessage ?? "Chat input is locked" : null);
+    if (blockedReason) {
+      setAttachError(blockedReason);
+      failPendingImageAttachment(pendingImage.id, blockedReason, retry);
       return;
     }
     try {

@@ -14,6 +14,7 @@ import {
   normalizeThreadCommentAnchor,
   normalizeThreadCommentClientId,
   parseGuestCommentSelections,
+  parseThreadCommentClientIds,
   threadCommentRevision,
   type ChatThreadComment,
   type ChatThreadCommentCreateArgs,
@@ -150,7 +151,14 @@ export function createThreadCommentService({
    * A guest's comment goes only when the owner picked it at the body revision
    * it still has: an edit after the pick keeps it out (and `update` unticks it).
    */
-  const goesWithSend = (comment: ChatThreadComment, guestPicks: ReadonlyMap<string, number>): boolean => {
+  const goesWithSend = (
+    comment: ChatThreadComment,
+    guestPicks: ReadonlyMap<string, number>,
+    excluded: ReadonlySet<string>,
+  ): boolean => {
+    // The sender shows it as not saved (failed, still saving, being
+    // discarded): it stays here for that client's Retry or Discard.
+    if (comment.clientId && excluded.has(comment.clientId)) return false;
     if (comment.author?.kind === "guest") return guestPicks.get(comment.id) === threadCommentRevision(comment);
     return comment.includeInNextSend;
   };
@@ -243,12 +251,16 @@ export function createThreadCommentService({
 
   /** A write that removes `removed`: their client ids are saved as gone with it, and stay unmarked when it fails. */
   const writeRemoving = (sessionId: string, comments: ChatThreadComment[], removed: readonly ChatThreadComment[]): void => {
+    // The whole previous set: at the cap, `rememberGone` also evicts the oldest
+    // ids, and a failed write must not lose those either.
+    const previous = goneClientIds.get(sessionId);
+    const before = previous ? new Set(previous) : null;
     rememberGone(sessionId, removed);
     try {
       write(sessionId, comments);
     } catch (error) {
-      const gone = goneClientIds.get(sessionId);
-      for (const comment of removed) if (comment.clientId) gone?.delete(comment.clientId);
+      if (before) goneClientIds.set(sessionId, before);
+      else goneClientIds.delete(sessionId);
       throw error;
     }
   };
@@ -349,12 +361,13 @@ export function createThreadCommentService({
    */
   const takeForSend = (
     sessionId: string,
-    options: { guestComments?: unknown } = {},
+    options: { guestComments?: unknown; excludeClientIds?: unknown } = {},
   ): { block: string | null; count: number; restore: () => void } => {
     const current = read(sessionId);
     const picks = parseGuestCommentSelections(options.guestComments) ?? [];
     const guestPicks = new Map(picks.map((pick) => [pick.id, pick.revision] as const));
-    const goes = (comment: ChatThreadComment) => goesWithSend(comment, guestPicks);
+    const excluded = new Set(parseThreadCommentClientIds(options.excludeClientIds) ?? []);
+    const goes = (comment: ChatThreadComment) => goesWithSend(comment, guestPicks, excluded);
     const taken = current.filter(goes);
     if (!taken.length) return { block: null, count: 0, restore: () => {} };
     const block = formatThreadReviewBlock(taken);
@@ -396,8 +409,11 @@ export function createThreadCommentService({
   };
 
   /** True when a send with `includeThreadComments` would carry at least one comment. */
-  const hasCommentsForSend = (sessionId: string): boolean =>
-    isThreadCommentSessionId(sessionId) && read(sessionId).some((comment) => goesWithSend(comment, new Map()));
+  const hasCommentsForSend = (sessionId: string, excludeClientIds?: unknown): boolean => {
+    if (!isThreadCommentSessionId(sessionId)) return false;
+    const excluded = new Set(parseThreadCommentClientIds(excludeClientIds) ?? []);
+    return read(sessionId).some((comment) => goesWithSend(comment, new Map(), excluded));
+  };
 
   /** Drops a deleted chat's comments without telling clients (the chat is gone). */
   const forgetSession = (sessionId: string): void => {

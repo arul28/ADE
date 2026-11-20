@@ -15,7 +15,7 @@ import type {
   LaneOverlayOverrides,
   LaneSummary
 } from "../../../shared/types";
-import { laneSetupScriptHasWork } from "../../../shared/types";
+import { laneSetupScriptIsConfigured } from "../../../shared/types";
 import { diskFullLine, LANE_SETUP_DISK_FULL_ERROR, laneSetupDiskFullError, laneSetupOutOfMemoryError } from "../../../shared/types/storage";
 
 /** What a command's output keeps past its 10 MB start: the end, where a tool says why it stopped. */
@@ -789,8 +789,9 @@ export function createLaneEnvironmentService({
       // there work for THIS platform", so using it here dropped a
       // windowsCommands-only script out of the normalized config on macOS —
       // and the normalized config is what merges, persists, and ships to other
-      // hosts. `laneSetupScriptHasWork` is the configured-at-all predicate.
-      ...(laneSetupScriptHasWork(config.setupScript) ? { setupScript: config.setupScript } : {})
+      // hosts. `laneSetupScriptIsConfigured` is the configured-at-all
+      // predicate (it keeps an explicit empty per-OS list).
+      ...(laneSetupScriptIsConfigured(config.setupScript) ? { setupScript: config.setupScript } : {})
     };
 
     return Object.keys(normalized).length > 0 ? normalized : undefined;

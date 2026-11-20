@@ -73,8 +73,10 @@ export function createCloudActivityReporter(deps: {
       return;
     }
     inFlight = true;
+    let landed = false;
     void deps.send(deps.instanceId, report).then(
       () => {
+        landed = true;
         sentKey = key;
         failures = 0;
         skipChecks = 0;
@@ -94,7 +96,9 @@ export function createCloudActivityReporter(deps: {
       inFlight = false;
       const next = queued;
       queued = null;
-      if (next && next.key !== sentKey) flush(next.report, next.key);
+      // After a failure the queued report waits for a later check, which
+      // builds a fresh one and keeps to the backoff (`skipChecks`).
+      if (landed && next && next.key !== sentKey) flush(next.report, next.key);
     });
   };
 

@@ -66819,7 +66819,7 @@ export function createAgentChatService(args: {
   };
 
   type ThreadReviewIntake<T> = {
-    args: Omit<T, "includeThreadComments" | "includeGuestComments">;
+    args: Omit<T, "includeThreadComments" | "includeGuestComments" | "excludeThreadCommentClientIds">;
     block: string | null;
     restore: () => void;
   };
@@ -66843,10 +66843,11 @@ export function createAgentChatService(args: {
     displayText?: string;
     includeThreadComments?: boolean;
     includeGuestComments?: ChatThreadCommentSelection[];
+    excludeThreadCommentClientIds?: string[];
   }>(
     args: T,
   ): ThreadReviewIntake<T> => {
-    const { includeThreadComments, includeGuestComments, ...rest } = args;
+    const { includeThreadComments, includeGuestComments, excludeThreadCommentClientIds, ...rest } = args;
     const untouched: ThreadReviewIntake<T> = { args: rest, block: null, restore: () => {} };
     if (!includeThreadComments) return untouched;
     const typed = args.text.trim();
@@ -66863,7 +66864,10 @@ export function createAgentChatService(args: {
     // with it, and a message without them would read as an unrelated reply.
     let taken: ReturnType<ThreadCommentService["takeForSend"]>;
     try {
-      taken = threadComments.takeForSend(args.sessionId, { guestComments: includeGuestComments ?? null });
+      taken = threadComments.takeForSend(args.sessionId, {
+        guestComments: includeGuestComments ?? null,
+        excludeClientIds: excludeThreadCommentClientIds ?? null,
+      });
     } catch (error) {
       logger.warn("agent_chat.thread_comments_take_failed", {
         sessionId: args.sessionId,
@@ -68912,7 +68916,8 @@ export function createAgentChatService(args: {
     const routableMessage = args.text.trim().length > 0
       || (args.attachments?.length ?? 0) > 0
       || (args.contextAttachments?.length ?? 0) > 0
-      || (args.includeThreadComments === true && threadComments.hasCommentsForSend(args.sessionId));
+      || (args.includeThreadComments === true
+        && threadComments.hasCommentsForSend(args.sessionId, args.excludeThreadCommentClientIds));
     const waitsForProviderDispatch =
       (
         managed.session.provider === "opencode"

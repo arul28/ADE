@@ -71,7 +71,7 @@ import type {
 } from "../../../shared/types";
 import { AUTOMATION_TRIGGER_TYPES, NO_DEFAULT_LANE_TEMPLATE, isPullRequestTriggerType } from "../../../shared/types";
 import {
-  laneSetupScriptHasWork,
+  laneSetupScriptIsConfigured,
   PROJECT_CONFIG_CHANGED_ON_DISK,
 } from "../../../shared/types/config";
 import { mergeLaneEnvInitConfig } from "../lanes/laneEnvInitMerge";
@@ -1156,9 +1156,10 @@ function coerceLaneSetupScript(value: unknown): LaneSetupScriptConfig | undefine
 
   // `injectPrimaryPath` on its own configures nothing to run, so a config with
   // only that key is not a setup script — returning one would emit an empty
-  // init step that always "succeeds". Shared with the resolver and the template
-  // editor so all three agree on what counts as a script.
-  return laneSetupScriptHasWork(parsed) ? parsed : undefined;
+  // init step that always "succeeds". An explicit per-OS list (even empty) is
+  // kept, so a layer that says "run nothing on Linux" survives the merge; the
+  // resolver runs nothing for it.
+  return laneSetupScriptIsConfigured(parsed) ? parsed : undefined;
 }
 
 function coerceLaneEnvInitConfig(value: unknown): LaneEnvInitConfig | undefined {

@@ -391,6 +391,7 @@ import {
   parseAgentChatCreateFields,
   parseAgentChatFileRefs,
   parseAgentChatSendArgs,
+  excludedThreadCommentsField,
   guestCommentsField,
   parseChatLaunchArgs,
   parseChatLaunchCompleteClientArgs,
@@ -2931,6 +2932,7 @@ function parseAgentChatSteerArgs(value: Record<string, unknown>): AgentChatSteer
     sentByUser: true,
     ...(includeThreadComments ? { includeThreadComments: true } : {}),
     ...guestCommentsField(includeThreadComments, value.includeGuestComments),
+    ...excludedThreadCommentsField(includeThreadComments, value.excludeThreadCommentClientIds),
   };
 }
 

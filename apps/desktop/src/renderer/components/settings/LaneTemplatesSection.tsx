@@ -15,7 +15,7 @@ import {
   SettingsToggle,
 } from "./primitives";
 import "./machineSettings.css";
-import { laneSetupScriptHasWork } from "../../../shared/types";
+import { laneSetupScriptHasWork, laneSetupScriptIsConfigured } from "../../../shared/types";
 import {
   LANE_SETUP_PLATFORM_FIELDS,
   macosOnlyToolOnLinux,
@@ -146,41 +146,46 @@ function compact<T extends Record<string, unknown>>(obj: T): T {
  */
 type SetupScriptForm = Record<LaneSetupCommandsKey | LaneSetupScriptPathKey, string> & {
   injectPrimaryPath: boolean;
+  /**
+   * Per-OS lists the person set to "Run no commands": saved as an explicit
+   * `[]`, so the shared commands do not run on that OS. Off, an empty field
+   * inherits them.
+   */
+  noCommands: Partial<Record<LaneSetupCommandsKey, boolean>>;
 };
 
 function setupScriptFormFrom(script: LaneSetupScriptConfig | undefined): SetupScriptForm {
-  const form = { injectPrimaryPath: script?.injectPrimaryPath ?? false } as SetupScriptForm;
+  const form = { injectPrimaryPath: script?.injectPrimaryPath ?? false, noCommands: {} } as SetupScriptForm;
   for (const field of LANE_SETUP_PLATFORM_FIELDS) {
     form[field.commandsKey] = script?.[field.commandsKey]?.join("\n") ?? "";
     form[field.scriptKey] = script?.[field.scriptKey] ?? "";
+    if (field.key !== "shared" && script?.[field.commandsKey]?.length === 0) form.noCommands[field.commandsKey] = true;
   }
   return form;
 }
 
 /**
- * Turns the editor's raw text back into a config, or `undefined` when nothing in
- * it would actually run. The same predicate the card's "setup script" chip uses
- * decides that, so the editor and the card can never disagree.
+ * Turns the editor's raw text back into a config, or `undefined` when it holds
+ * nothing to keep: the same predicate config parsing uses
+ * (`laneSetupScriptIsConfigured`), so a saved template loads back as saved.
  */
-function setupScriptFromForm(
-  form: SetupScriptForm,
-  saved?: LaneSetupScriptConfig,
-): LaneSetupScriptConfig | undefined {
+function setupScriptFromForm(form: SetupScriptForm): LaneSetupScriptConfig | undefined {
   // Every commands list first, then every script path: the stored key order.
   const script: LaneSetupScriptConfig = {};
   for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    if (form.noCommands[field.commandsKey]) {
+      script[field.commandsKey] = [];
+      continue;
+    }
     const commands = parseLines(form[field.commandsKey]);
     if (commands.length > 0) script[field.commandsKey] = commands;
-    // The editor cannot write an explicit empty list ("run nothing on this
-    // OS"), but a saved one left empty survives the save.
-    else if (saved?.[field.commandsKey]?.length === 0) script[field.commandsKey] = [];
   }
   for (const field of LANE_SETUP_PLATFORM_FIELDS) {
     const scriptPath = form[field.scriptKey].trim();
     if (scriptPath) script[field.scriptKey] = scriptPath;
   }
   if (form.injectPrimaryPath) script.injectPrimaryPath = true;
-  return laneSetupScriptHasWork(script) ? script : undefined;
+  return laneSetupScriptIsConfigured(script) ? script : undefined;
 }
 
 /**
@@ -546,6 +551,7 @@ function SetupScriptPreview({ script }: { script: LaneSetupScriptConfig }) {
   for (const field of LANE_SETUP_PLATFORM_FIELDS) {
     const commands = script[field.commandsKey];
     if (commands?.length) lines.push(labelled(field.label, commands.join("; ")));
+    else if (commands && field.key !== "shared") lines.push(labelled(field.label, "no commands"));
   }
   for (const field of LANE_SETUP_PLATFORM_FIELDS) {
     const scriptPath = script[field.scriptKey];
@@ -604,7 +610,7 @@ function TemplateEditor({
   // already hold something, so an existing template never hides its own config.
   const hasPlatformVariants = LANE_SETUP_PLATFORM_FIELDS.some((field) => (
     field.key !== "shared"
-    && ((initial.setupScript?.[field.commandsKey]?.length ?? 0) > 0 || !!initial.setupScript?.[field.scriptKey])
+    && (Array.isArray(initial.setupScript?.[field.commandsKey]) || !!initial.setupScript?.[field.scriptKey])
   ));
 
   const hasAdvanced =
@@ -617,7 +623,7 @@ function TemplateEditor({
   function handleSubmit() {
     if (!name.trim()) return;
 
-    const setupScript = setupScriptFromForm(setupScriptForm, initial.setupScript);
+    const setupScript = setupScriptFromForm(setupScriptForm);
 
     const { dockerCompose, dockerServices, mountPoints, envVars } = advancedForm;
     const filteredEnvVars = envVars.filter((v) => v.key.trim());
@@ -797,7 +803,6 @@ function TemplateEditor({
 
         <SetupScriptFields
           value={setupScriptForm}
-          saved={initial.setupScript}
           onChange={patchSetupScript}
           defaultOpen={hasPlatformVariants}
         />
@@ -849,18 +854,16 @@ const PLATFORM_EDITOR_COPY: Record<
  */
 function SetupScriptFields({
   value,
-  saved,
   onChange,
   defaultOpen,
 }: {
   value: SetupScriptForm;
-  saved: LaneSetupScriptConfig | undefined;
   onChange: (patch: Partial<SetupScriptForm>) => void;
   defaultOpen: boolean;
 }) {
   const { commands, scriptPath, injectPrimaryPath } = value;
   // Shared commands that call a macOS-only tool also run on Linux (ADE Cloud) unless Linux has its own.
-  const macosTool = macosOnlyToolOnLinux(setupScriptFromForm(value, saved) ?? {});
+  const macosTool = macosOnlyToolOnLinux(setupScriptFromForm(value) ?? {});
   return (
     <Field
       label="Setup script"
@@ -936,16 +939,26 @@ function SetupScriptFields({
             {LANE_SETUP_PLATFORM_FIELDS.map((field) => {
               if (field.key === "shared") return null;
               const copy = PLATFORM_EDITOR_COPY[field.key];
+              const noCommands = value.noCommands[field.commandsKey] === true;
               return (
                 <div key={field.key}>
                   <div style={subLabelStyle}>{copy.label}</div>
                   <textarea
-                    style={{ ...textareaStyle, minHeight: 48 }}
-                    value={value[field.commandsKey]}
+                    style={{ ...textareaStyle, minHeight: 48, opacity: noCommands ? 0.5 : 1 }}
+                    value={noCommands ? "" : value[field.commandsKey]}
                     onChange={(e) => onChange({ [field.commandsKey]: e.target.value } as Partial<SetupScriptForm>)}
-                    placeholder={copy.commandsPlaceholder}
+                    placeholder={noCommands ? "No commands run here" : copy.commandsPlaceholder}
+                    disabled={noCommands}
                     rows={2}
                   />
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 6 }}>
+                    <span style={{ ...hintStyle, marginTop: 0 }}>Run no commands here, not even the shared ones</span>
+                    <SettingsToggle
+                      checked={noCommands}
+                      onChange={(next) => onChange({ noCommands: { ...value.noCommands, [field.commandsKey]: next } })}
+                      label={`Run no commands on ${copy.label}`}
+                    />
+                  </div>
                   <div style={{ marginTop: 8 }}>
                     <div style={subLabelStyle}>Script file</div>
                     <SettingsTextField

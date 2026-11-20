@@ -218,6 +218,23 @@ export function laneSetupScriptHasWork(
   );
 }
 
+/**
+ * Is this setup script worth keeping in a config layer? True when it has work
+ * (`laneSetupScriptHasWork`) or an explicit per-OS command list, even an empty
+ * one: `linuxCommands: []` means "run nothing on Linux", and dropping it while
+ * parsing or normalizing would let that layer's setup fall back to another.
+ * `injectPrimaryPath` alone still keeps nothing. The resolver still runs an
+ * empty list as nothing.
+ */
+export function laneSetupScriptIsConfigured(
+  script: LaneSetupScriptConfig | undefined | null,
+): script is LaneSetupScriptConfig {
+  if (laneSetupScriptHasWork(script)) return true;
+  return Boolean(script) && LANE_SETUP_PLATFORM_FIELDS.some(
+    (field) => field.key !== "shared" && Array.isArray(script![field.commandsKey]),
+  );
+}
+
 // --- Lane Cleanup / Lifecycle types ---
 
 /**

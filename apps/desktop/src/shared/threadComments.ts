@@ -123,6 +123,21 @@ export function normalizeThreadCommentClientId(value: unknown): string | undefin
   return /^[A-Za-z0-9_.:-]{1,128}$/.test(trimmed) ? trimmed : undefined;
 }
 
+/**
+ * A send's `excludeThreadCommentClientIds`, cleaned: valid client ids only,
+ * each once, at most 200. Undefined when it names none.
+ */
+export function parseThreadCommentClientIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids = new Set<string>();
+  for (const entry of value) {
+    if (ids.size >= 200) break;
+    const clientId = normalizeThreadCommentClientId(entry);
+    if (clientId) ids.add(clientId);
+  }
+  return ids.size ? [...ids] : undefined;
+}
+
 export type ChatThreadCommentUpdateArgs = {
   sessionId: string;
   commentId: string;
