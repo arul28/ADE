@@ -459,8 +459,10 @@ export function CloudLanesWithoutComputerBlock({ className, initiallyOpen = fals
   const seenNow = useSyncExternalStore(subscribeSeen, readSeenNow, readSeenNow);
   const [open, setOpen] = useState(initiallyOpen);
   useEffect(() => {
-    if (initiallyOpen && visible) markSeen(rows.map(rowKey));
-  }, [initiallyOpen, rows, visible]);
+    // Only while the block is actually open on screen: a row that arrives after
+    // the person collapsed it (or while the tab is parked) keeps its new dot.
+    if (initiallyOpen && visible && open) markSeen(rows.map(rowKey));
+  }, [initiallyOpen, open, rows, visible]);
   const listId = `adecl-wc-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
   const unseen = rows.some((row) => !seenNow.has(rowKey(row)));
   const toggle = useCallback(() => {
