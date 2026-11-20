@@ -194,11 +194,13 @@ import {
   type ParallelComposerControlSlot,
 } from "./AgentChatComposer";
 import {
-  countCommentsForNextSend,
+  countThreadCommentsReadyToSend,
   guestCommentsForNextSend,
   requestThreadCommentFocus,
   setThreadComments,
+  threadCommentSavesInFlight,
   useThreadComments,
+  waitForThreadCommentSaves,
 } from "./threadCommentsStore";
 import { ClaudeModUi } from "./ClaudeModUi";
 import { registerDraftModelSetter } from "./draftModelSeam";
@@ -710,6 +712,8 @@ const CHAT_ACTIONS_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 const CHAT_ACTIONS_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const workCliStartupDelayMs = 180;
 const REMOTE_PARALLEL_LAUNCH_RECOVERY_DELAY_MS = 15_000;
+/** How long a send waits for a just-saved thread comment to reach its host. */
+const THREAD_COMMENT_SAVE_SEND_WAIT_MS = 10_000;
 /**
  * When a combined create-and-send call lost its answer, the checks of the
  * chat's machine: at once, then 3 s, 10 s and 20 s after the first (20 s in all). The
@@ -6156,9 +6160,6 @@ export function AgentChatPane({
   // The offer reads the setting and the plugins of this tab's own project, so a
   // chat pinned to another runtime (another machine, another open project) gets none.
   useClaudeModsPrompt(chatForeignPin ? null : claudeModUiSessionId, chatRuntimePin);
-  const threadCommentSendCount = countCommentsForNextSend(threadComments);
-  const threadCommentSendCountRef = useRef(threadCommentSendCount);
-  threadCommentSendCountRef.current = threadCommentSendCount;
   // A guest's comment goes only when the owner ticked it: the send names it.
   const threadCommentsRef = useRef(threadComments);
   threadCommentsRef.current = threadComments;
@@ -17083,8 +17084,36 @@ export function AgentChatPane({
       : { ...visualContext, prefix: `${readAmbientPrefix()}${visualContext.prefix}` });
     // Pending thread comments ride this send: the host adds them to the
     // message. They can go on their own, with nothing typed.
-    const threadCommentCountForSend = selectedSessionId && selectedSessionId === threadCommentsSessionIdRef.current
-      ? threadCommentSendCountRef.current
+    const threadCommentsSessionAtSend = selectedSessionId && selectedSessionId === threadCommentsSessionIdRef.current
+      ? selectedSessionId
+      : null;
+    // A comment saved a moment ago may still be on its way to the host. Wait
+    // for it (bounded, showing the sending state), so the host has it when the
+    // message lands; a chat with no save in flight skips this.
+    if (
+      threadCommentsSessionAtSend
+      && !isWorkCliLaunchDraft
+      && !isProviderSlashCommandInput(text)
+      && threadCommentSavesInFlight(threadCommentsSessionAtSend)
+    ) {
+      submitInFlightRef.current = true;
+      setBusy(true);
+      try {
+        await waitForThreadCommentSaves(threadCommentsSessionAtSend, THREAD_COMMENT_SAVE_SEND_WAIT_MS);
+      } finally {
+        submitInFlightRef.current = false;
+        setBusy(false);
+      }
+      if (renderSelectedSessionIdRef.current !== selectedSessionId) return;
+      if (liveDraftRef.current !== draft || attachmentsRef.current !== attachments) {
+        setError({ message: "Your message changed while a comment was saving, so nothing was sent. Send it again.", kind: "status" });
+        return;
+      }
+    }
+    // Read from the store, not the last render: a save that settled during the
+    // wait above counts now, one that failed or is still saving does not.
+    const threadCommentCountForSend = threadCommentsSessionAtSend
+      ? countThreadCommentsReadyToSend(threadCommentsSessionAtSend)
       : 0;
     // A slash command must reach the provider as typed, so comments wait.
     const includeThreadComments = threadCommentCountForSend > 0 && !isWorkCliLaunchDraft && !isProviderSlashCommandInput(text);

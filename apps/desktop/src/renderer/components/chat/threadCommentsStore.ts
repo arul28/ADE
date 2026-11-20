@@ -163,6 +163,70 @@ function settleLocal(sessionId: string, local: ChatThreadComment) {
   };
 }
 
+/**
+ * Saves (first create or retry) whose host call has not answered, per chat.
+ * A send waits for them (`waitForThreadCommentSaves`), so a comment saved just
+ * before the send reaches the host before the message does.
+ */
+const savesInFlight = new Map<string, Set<Promise<void>>>();
+const savingLocalIds = new Set<string>();
+
+/** Runs one comment save and tracks it until it settles. `run` must not throw. */
+export function trackThreadCommentSave(sessionId: string, localId: string, run: () => Promise<void>): Promise<void> {
+  savingLocalIds.add(localId);
+  const save = run().finally(() => {
+    savingLocalIds.delete(localId);
+    const set = savesInFlight.get(sessionId);
+    set?.delete(save);
+    if (set && !set.size) savesInFlight.delete(sessionId);
+  });
+  const set = savesInFlight.get(sessionId) ?? new Set<Promise<void>>();
+  set.add(save);
+  savesInFlight.set(sessionId, set);
+  return save;
+}
+
+/** Whether a comment save in this chat is still waiting on its host. Cheap: a send checks it before waiting. */
+export function threadCommentSavesInFlight(sessionId: string): boolean {
+  return Boolean(savesInFlight.get(sessionId)?.size);
+}
+
+/**
+ * Waits, up to `timeoutMs`, for this chat's comment saves to settle. True when
+ * none is left; false when one still runs after the bound (it stays in the
+ * list and rides a later send once the host has it).
+ */
+export async function waitForThreadCommentSaves(sessionId: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (threadCommentSavesInFlight(sessionId)) {
+    const left = deadline - Date.now();
+    if (left <= 0) {
+      console.warn("[thread-comments] send-wait-timeout", { sessionId, pending: savesInFlight.get(sessionId)?.size ?? 0 });
+      return false;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.allSettled([...(savesInFlight.get(sessionId) ?? [])]),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, left); }),
+    ]);
+    clearTimeout(timer);
+  }
+  return true;
+}
+
+/**
+ * How many comments the host holds for the next send right now: like
+ * `countCommentsForNextSend`, but a comment still saving is left out, since
+ * the host does not have it yet.
+ */
+export function countThreadCommentsReadyToSend(sessionId: string): number {
+  let count = 0;
+  for (const comment of getThreadComments(sessionId)) {
+    if (comment.includeInNextSend && !failedLocal.has(comment.id) && !savingLocalIds.has(comment.id)) count += 1;
+  }
+  return count;
+}
+
 /** Drops a comment that failed to save. */
 export function discardFailedThreadComment(sessionId: string, commentId: string): void {
   if (!failedLocal.has(commentId)) return;
@@ -188,21 +252,23 @@ export async function retryFailedThreadComment(
   failedLocal.delete(commentId);
   publish(sessionId);
   const settle = settleLocal(sessionId, local);
-  try {
-    const list = await withChatPin(pin ?? null, (chatPin) => api.list({ sessionId }, chatPin));
-    if (Array.isArray(list)) {
-      setThreadComments(sessionId, list);
-      const landed = hostCopyOf(local, list, failed.knownHostIds);
-      if (landed) {
-        settle(landed);
-        return;
+  await trackThreadCommentSave(sessionId, commentId, async () => {
+    try {
+      const list = await withChatPin(pin ?? null, (chatPin) => api.list({ sessionId }, chatPin));
+      if (Array.isArray(list)) {
+        setThreadComments(sessionId, list);
+        const landed = hostCopyOf(local, list, failed.knownHostIds);
+        if (landed) {
+          settle(landed);
+          return;
+        }
       }
+      const { messageKey, messageExcerpt, anchor, body } = local;
+      settle(await withChatPin(pin ?? null, (chatPin) => api.create({ sessionId, messageKey, messageExcerpt, anchor, body }, chatPin)));
+    } catch (error) {
+      settle(null, describeError(error));
     }
-    const { messageKey, messageExcerpt, anchor, body } = local;
-    settle(await withChatPin(pin ?? null, (chatPin) => api.create({ sessionId, messageKey, messageExcerpt, anchor, body }, chatPin)));
-  } catch (error) {
-    settle(null, describeError(error));
-  }
+  });
 }
 
 /** Removes a comment at once; the host's next list confirms or restores it. */

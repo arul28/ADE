@@ -35,6 +35,7 @@ import {
   captureThreadCommentBaseline,
   refreshThreadComments,
   threadCommentListLoaded,
+  trackThreadCommentSave,
   THREAD_COMMENT_FOCUS_EVENT,
   threadCommentsApi,
   discardUnsavedDraftBody,
@@ -520,17 +521,21 @@ export function ThreadCommentLayer({
     const loaded = threadCommentListLoaded(sessionId);
     const settle = addLocalThreadComment(sessionId, fields);
     discardDraft();
-    try {
-      // Read the list first when it never loaded: a retry after a lost answer
-      // can then tell the saved copy from an older identical comment.
-      if (!loaded) {
-        await refreshThreadComments(sessionId, pin ?? null);
-        captureThreadCommentBaseline(sessionId, settle.localId);
+    // Tracked until the host answers: a send made meanwhile waits for it, so
+    // the comment reaches the host before the message does.
+    await trackThreadCommentSave(sessionId, settle.localId, async () => {
+      try {
+        // Read the list first when it never loaded: a retry after a lost answer
+        // can then tell the saved copy from an older identical comment.
+        if (!loaded) {
+          await refreshThreadComments(sessionId, pin ?? null);
+          captureThreadCommentBaseline(sessionId, settle.localId);
+        }
+        settle(await withChatPin(pin ?? null, (chatPin) => api.create({ sessionId, ...fields }, chatPin)));
+      } catch (error) {
+        settle(null, threadCommentErrorText(error));
       }
-      settle(await withChatPin(pin ?? null, (chatPin) => api.create({ sessionId, ...fields }, chatPin)));
-    } catch (error) {
-      settle(null, threadCommentErrorText(error));
-    }
+    });
   };
 
   // ── Margin card layout: each card at its anchor's height, pushed down past the one above ──

@@ -208,7 +208,7 @@ struct CloudMachineFacts: View {
     .adeKitCard()
     .task(id: "\(machine.instanceId)#\(machine.state)") {
       guard machine.isAwake else { live = nil; return }
-      guard let client = await SyncService.shared?.cloudServerClient() else { return }
+      guard let client = await SyncService.shared?.cloudServerClient() else { live = nil; return }
       // A 404 (an older server) or any other failure: today's facts, no rows added.
       let read = try? await client.computerStatus(instanceId: machine.instanceId)
       guard !Task.isCancelled else { return }

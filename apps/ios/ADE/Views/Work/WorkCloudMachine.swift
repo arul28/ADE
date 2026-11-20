@@ -294,7 +294,12 @@ struct CloudLaneHeaderStateButton: View {
   private func wake(_ fleetKey: String) {
     let sync = syncService
     Task { @MainActor in
-      _ = await sync.machineFleet?.connect(machineKey: fleetKey, timeout: .seconds(150))
+      if fleetKey == sync.focusedMachineKey {
+        // The phone's own link wakes and comes back through its own path; the fleet never dials it.
+        _ = await sync.wakeFocusedCloudMachineIfAsleep()
+      } else {
+        _ = await sync.machineFleet?.connect(machineKey: fleetKey, timeout: .seconds(150))
+      }
     }
   }
 }

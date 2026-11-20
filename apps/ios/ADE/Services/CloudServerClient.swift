@@ -359,8 +359,6 @@ struct CloudChatQueueResult: Decodable {
   let wake: Wake?
 }
 
-/// The account server's ADE Cloud routes: one bearer, a 12-second timeout
-/// (a wake waits longer), one retry after a 401 with a fresh token.
 /// One lane computer's live facts (`GET /cloud/instances/:id/status`,
 /// `CloudComputerStatus` in `cloud/contract.ts`). Reading it never wakes the
 /// computer. Every field is optional, so a partial answer still reads.
@@ -386,6 +384,8 @@ struct CloudComputerLiveStatus: Decodable, Equatable {
   let disk: Disk?
 }
 
+/// The account server's ADE Cloud routes: one bearer, a 12-second timeout
+/// (a wake waits longer), one retry after a 401 with a fresh token.
 struct CloudServerClient {
   enum Failure: Error, Equatable {
     /// 404: the account has no ADE Cloud, the row is gone, or (on a new
