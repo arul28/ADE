@@ -2194,12 +2194,14 @@ own computer ends, `completed`, `failed` or `cancelled`, counted once per end
 when the launch host (the desktop's `registerCloudLaneLaunchIpc.ts`, surface
 `desktop`, or the brain's `cloudLaneLaunchBrainHost.ts`, surface `api`) saw it
 move there; a Retry that fixes a failure counts the failure, then the
-completion. `cloud_lane_freed`: Keep the lane and free its computer from the
-desktop, `completed` or `failed`. `cloud_lane_deleted`: a person deleted a
-lane and its computer from the desktop: `completed` (its saved chats went
-too), `kept` (they ticked "Keep its chats"), `partial` (ADE couldn't delete
-all its chats) or `failed`; it tells whether deleting the chats is the right
-default. `cloud_clear_caches`: the computer's own
+completion. `cloud_lane_freed`: Keep the lane and free its computer, `completed` or
+`failed`. `cloud_lane_deleted`: a person deleted a lane and its computer:
+`completed` (its saved chats went too), `kept` (they ticked "Keep its chats"),
+`partial` (ADE couldn't delete all its chats or saved work) or `failed`; it
+tells whether deleting the chats is the right default. Both come from the
+desktop's buttons (surface `desktop`) and from `ade cloud lanes delete` and
+`free` (`cloudLaneVerbs.ts`, surface `api`), once per action that ran; a card
+that was declined sends nothing. `cloud_clear_caches`: the computer's own
 brain clears its caches, `completed`, `failed`, or `denied` (an agent's ask
 declined or unanswered). `cloud_disk_grow`: an agent's grow of the
 disk of the computer it runs on (`cloud.grow_disk`, from that computer's brain):

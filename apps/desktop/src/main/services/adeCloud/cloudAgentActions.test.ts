@@ -192,7 +192,7 @@ describe("ADE Cloud agent actions: approvals", () => {
     // Deleting a lane (`ade cloud lanes delete`): a delete like any other. One card offers Delete lane, Keep for later and Cancel.
     ["a full-auto chat asks the person on a card to delete a lane whose computer it didn't make", agent, { level: "full-auto", madeBy: "chat_other" }, "lane_delete", { lane: "Fix login" }, null, 1],
     ["the person's Keep for later on that card frees the computer and deletes nothing", agent, { level: "ask", answer: "alternative" }, "lane_delete", { lane: "Fix login" }, "lane_free", 1],
-    ["a full-auto agent deletes the lane whose computer its chat made", agent, { level: "full-auto", madeBy: "chat_1" }, "lane_delete", { lane: "Fix login" }, "lane_delete", 0],
+    ["a full-auto agent asks the person even for a lane whose computer its chat made (its saved chats go too)", agent, { level: "full-auto", madeBy: "chat_1" }, "lane_delete", { lane: "Fix login" }, null, 1],
     ["an automation run may not delete a lane whose computer it didn't make", { by: "agent", chatSessionId: null, automation: true }, { madeBy: "chat_other" }, "lane_delete", { lane: "Fix login" }, null, 0],
     ["a shell with no chat may not delete a lane", shell, {}, "lane_delete", { lane: "Fix login" }, null, 0],
   ] as const)("%s", async (_label, approval, options, verb, args, expectedRun, expectedCards) => {

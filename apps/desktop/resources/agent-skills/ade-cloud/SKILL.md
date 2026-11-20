@@ -93,7 +93,10 @@ The cleanup, in order (reads wake nothing):
      removes its computer and keeps the lane and its chats.
    - `ade cloud lanes delete <lane>`: the lane, its computer and its saved
      chats (`--keep-chats` keeps them). ADE checks the work first and names
-     it on the card; the card also offers Keep for later.
+     it on the card; the card also offers Keep for later. A person always
+     decides, even for a computer your chat made. A lane whose computer was
+     deleted has only its chats left: deleting it deletes them, and
+     `--keep-chats` is refused there.
 
 `ade cloud lanes keep <lane>` stops the idle cleanup's delete of a computer
 (`deletesAt`). It wakes nothing and uses no hours. `ade cloud lanes start

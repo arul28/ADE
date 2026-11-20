@@ -155,7 +155,8 @@ export function formatCloudChatRead(value: unknown): string {
   if (!isRecord(raw) || !isRecord(raw.chat)) return "ADE Cloud has no such saved chat.";
   const chat = raw.chat;
   const parts = rows(raw.parts);
-  const events = parseAgentChatTranscript([...parts].reverse().map((part) => str(part.text)).join(""));
+  // A part may end without a line break: each one starts a new line, so two events never share one.
+  const events = parseAgentChatTranscript([...parts].reverse().map((part) => str(part.text)).map((text) => (text.endsWith("\n") ? text : `${text}\n`)).join(""));
   const lines: string[] = [`${str(chat.title) || "Untitled"} · ${str(chat.provider)} ${str(chat.model)} · ${str(chat.laneName)}`.trim(), ""];
   let agent = "";
   const flush = () => {

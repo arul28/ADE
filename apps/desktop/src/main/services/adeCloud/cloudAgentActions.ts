@@ -649,6 +649,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     readApproval,
     laneLaunch: (args: Record<string, unknown>) => actions.lane_launch(args),
     projectOriginUrl: () => deps.projectOriginUrl?.() ?? null,
+    analytics: deps.analytics,
     logger,
   });
 

@@ -4938,12 +4938,16 @@ function savedChatReads(credentials: CloudAccessDeps): {
       if (!server || !chatId) return null;
       // No machine key (`ade cloud chats read <chat id>`): the account's list says which computer saved it.
       let machineKey = text(request.machineKey);
+      let searched = true;
       for (let page = 0, cursor: string | null = null; !machineKey && page < 5; page += 1) {
         const listed: CloudSavedChatList = await server.listSavedChats({ limit: 200, cursor });
         machineKey = listed.chats.find((chat) => chat.chatId === chatId)?.machineKey ?? null;
         cursor = listed.nextCursor;
         if (!cursor) break;
+        if (page === 4) searched = false;
       }
+      // Past the newest 1,000 the chat may still exist: say so, never "no such chat".
+      if (!machineKey && !searched) throw new Error(`ADE Cloud has no saved chat ${chatId} among your newest 1,000. Pass --machine-key (ade cloud chats --machine-key <key>).`);
       if (!machineKey) return null;
       return await server.readSavedChat({
         machineKey,

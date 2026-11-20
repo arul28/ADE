@@ -942,7 +942,10 @@ the phone (`cloud.read`) and a brain with no project can read it.
   when the RPC server can stamp `viaAdeMcp` (the operator role and a process
   the MCP runner started, `isRunningRemoteRun`). A resize, a delete, a move, a
   cancel and loosening the limits always need the person. A read-only
-  connection is refused.
+  connection is refused. It can read the account with no wake: `ade cloud
+  status`, `list`, `hours`, `limits`, and the list and read forms of `lanes`,
+  `chats`, `sessions`, `backups`, `jobs` and `project`
+  (`remoteMcpCommandPolicy.ts`, `isCloudAccountRead`).
 - **The daily limit:** past the day's new computers for agents, the refusal
   names the limit and Settings › Integrations › ADE Cloud › What agents may do
   › New computers a day. A person is never counted.
@@ -1221,13 +1224,19 @@ Reads wake nothing and work from any folder (`ADE_ACTION_MACHINE_SCOPED`).
   that fails goes in `unread`, never a throw. `--stale` keeps the lanes unused
   for a week or due for cleanup, biggest disk first.
 - **A lane** is named by its name, id, branch or link (`lane_show`). A name
-  two lanes share is refused with their ids.
+  two lanes share is refused with their ids. An id is the whole selector or
+  a lane link's lane; a name that holds an id stays a name. A write named by
+  a name or branch needs the id while the kept lanes or saved chats can't be
+  read (a hidden second lane could have that name).
 - **Writes** are the delete class of `approve` (`CLOUD_APPROVED_ACTIONS`):
   - `lane_delete`: on a computer, the work check runs first (no wake for a
     saved computer), then one card: `Delete lane "X"?` with Delete lane,
     Keep for later (a free) and Cancel. The body names each lane's work not
-    on GitHub. A full-auto chat goes on alone only for a computer it made
-    (`ade_made_by_chat`). Computer already deleted: its kept record (the
+    on GitHub. A person always decides, even for a computer the chat made:
+    the lane's saved chats go with it. A card that read an asleep computer's
+    backups stops the delete if the computer started meanwhile. A move run
+    by the server refuses a delete or free of either computer. Computer
+    already deleted: its kept record (the
     server deletes the lane's backups and saved chats with it), then any
     chats left on its deleted computers. With no kept record, ADE deletes
     those chats and the lane's backups itself. `--keep-chats` is refused
@@ -1235,7 +1244,8 @@ Reads wake nothing and work from any folder (`ADE_ACTION_MACHINE_SCOPED`).
   - `lane_free`, `saved_chat_delete`, `session_delete`, `backup_forget` and
     `job_cancel` ask the same way. `lane_start` makes the lane's new computer
     through `lane_launch` and its card, on `origin/<branch>`, from a folder
-    of the lane's project.
+    of the lane's project. A lane whose repository ADE doesn't know is
+    refused.
   - `lane_keep` (`POST /cloud/instances/:id/keep`) needs no card: it stops
     the idle cleanup's delete, wakes nothing and uses no hours.
 - **Status.** `cloud.status` also returns `lanesComputerDeleted`, read beside

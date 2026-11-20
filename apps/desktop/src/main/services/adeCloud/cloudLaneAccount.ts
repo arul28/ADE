@@ -139,7 +139,11 @@ export function createCloudLaneAccount(deps: CloudLaneAccountDeps) {
    * computer runs the check there (a resting one wakes for it).
    */
   const workState = async (args: { instanceId: string; instance?: CloudInstance | null }): Promise<CloudLaneWorkState> => {
-    const instance = args.instance !== undefined ? args.instance : await readInstance(args.instanceId).catch(() => null);
+    const instance = args.instance !== undefined ? args.instance : await readInstance(args.instanceId).catch((error: unknown) => {
+      // With no record, the check runs on the computer instead of from its backups.
+      logger.warn?.("cloud.lane_work_instance_read_failed", { instanceId: args.instanceId, error: getErrorMessage(error) });
+      return null;
+    });
     const saved = await workFromBackups(instance);
     if (saved) return saved;
     const ran = await deps.machines.runPushWork(args.instanceId, { check: true });
