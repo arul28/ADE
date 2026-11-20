@@ -1,8 +1,9 @@
-import { memo, useCallback } from "react";
+import { memo, useCallback, useEffect, useRef } from "react";
 import { Gift } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { usePinnedToolStatus } from "../../../hooks/usePinnedToolStatus";
-import { cn } from "../../ui/cn";
+import { Banner } from "../../ui/notice";
+import { PickerEmptyMessage, type PickerEmptyAction } from "./PickerEmptyMessage";
 
 /**
  * The Free page with no rows yet. Free models run in ADE's pinned OpenCode on
@@ -16,6 +17,7 @@ export const FreeModelsEmptyState = memo(function FreeModelsEmptyState({
   runtimePin,
   opencodeInstalled,
   catalogRefreshing,
+  catalogRefreshFailed,
   onReady,
   onRefresh,
 }: {
@@ -23,7 +25,9 @@ export const FreeModelsEmptyState = memo(function FreeModelsEmptyState({
   /** The picker's own probe: true once OpenCode is on the machine. */
   opencodeInstalled: boolean | null;
   catalogRefreshing: boolean;
-  /** Runs once when a download this page watched lands. */
+  /** OpenCode's last catalog read failed. */
+  catalogRefreshFailed: boolean;
+  /** Re-reads the machine: when a download this page watched lands, or when the tool is ready but the picker does not know yet. */
   onReady: () => void;
   /** Reloads the free models from OpenCode. */
   onRefresh?: () => void;
@@ -40,11 +44,30 @@ export const FreeModelsEmptyState = memo(function FreeModelsEmptyState({
   const downloading = starting || status?.state === "downloading" || status?.downloading === true;
   const ready = opencodeInstalled === true || status?.state === "ready";
 
+  // OpenCode is on the machine (another download got it), but the picker's
+  // probe has not seen it: re-read the machine once, or the page waits forever.
+  const toolReadyPickerUnaware = status?.state === "ready" && opencodeInstalled !== true;
+  const rereadRef = useRef(false);
+  useEffect(() => {
+    if (!toolReadyPickerUnaware || rereadRef.current) return;
+    rereadRef.current = true;
+    onReady();
+  }, [onReady, toolReadyPickerUnaware]);
+
   if (ready && !downloading) {
     // A download that just landed: the picker re-reads the machine and the
     // catalog next, so this is loading, not an empty list.
     if (catalogRefreshing || opencodeInstalled !== true) {
       return <FreeModelsMessage title="Loading free models" live />;
+    }
+    if (catalogRefreshFailed) {
+      return (
+        <FreeModelsMessage
+          title="Couldn’t load free models"
+          body="OpenCode did not return its model list."
+          {...(onRefresh ? { action: { label: "Try again", onClick: onRefresh } } : {})}
+        />
+      );
     }
     return (
       <FreeModelsMessage
@@ -114,28 +137,29 @@ function FreeModelsMessage({
 }: {
   title: string;
   body?: string;
-  action?: { label: string; onClick: () => void };
+  action?: PickerEmptyAction;
   /** 0–100 for a known download size; null draws no bar. */
   progress?: number | null;
+  /** A download that could not start (`usePinnedToolStatus`'s error). */
   error?: string | null;
   live?: boolean;
 }) {
   return (
-    <div
-      data-model-picker-empty-state="free"
-      {...(live ? { role: "status", "aria-live": "polite" as const } : {})}
-      className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 px-6 py-6 text-center"
+    <PickerEmptyMessage
+      dataAttributes={{ "data-model-picker-empty-state": "free" }}
+      icon={(
+        <span
+          aria-hidden
+          className="mb-0.5 inline-flex h-8 w-8 items-center justify-center rounded-full bg-sky-400/[0.10] text-sky-300"
+        >
+          <Gift size={16} weight="fill" />
+        </span>
+      )}
+      title={title}
+      {...(body ? { body } : {})}
+      {...(action ? { primary: action } : {})}
+      {...(live ? { live } : {})}
     >
-      <span
-        aria-hidden
-        className="mb-0.5 inline-flex h-8 w-8 items-center justify-center rounded-full bg-sky-400/[0.10] text-sky-300"
-      >
-        <Gift size={16} weight="fill" />
-      </span>
-      <span className="text-[12px] font-semibold text-fg/90">{title}</span>
-      {body ? (
-        <span className="max-w-[280px] text-[11px] leading-relaxed text-muted-fg/65">{body}</span>
-      ) : null}
       {progress != null ? (
         <span
           role="progressbar"
@@ -150,22 +174,11 @@ function FreeModelsMessage({
           />
         </span>
       ) : null}
-      {action ? (
-        <button
-          type="button"
-          onClick={action.onClick}
-          className={cn(
-            "mt-2 inline-flex h-6 items-center rounded-md border border-violet-400/30 bg-violet-500/[0.12] px-2.5",
-            "text-[10px] font-semibold uppercase tracking-wide text-violet-100",
-            "transition-colors hover:border-violet-400/45 hover:bg-violet-500/[0.18]",
-          )}
-        >
-          {action.label}
-        </button>
-      ) : null}
       {error ? (
-        <span role="alert" className="max-w-[280px] text-[10px] leading-relaxed text-amber-200/80">{error}</span>
+        <div className="w-full max-w-[300px] text-left">
+          <Banner layout="inline" model={{ id: "free-models-download-error", tone: "error", title: error }} />
+        </div>
       ) : null}
-    </div>
+    </PickerEmptyMessage>
   );
 }

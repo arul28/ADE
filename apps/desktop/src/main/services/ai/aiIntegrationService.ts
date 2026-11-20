@@ -2627,7 +2627,7 @@ export function createAiIntegrationService(args: {
             ...timeSyncPhase("harness_brains", () => readHarnessBrains()),
             freeModels: timeSyncPhase("free_models", () => buildFreeModelsStatus({
               claude: availability.claude,
-              providerConnections: providerConnections as unknown as Record<string, AiProviderConnectionStatus | null | undefined>,
+              providerConnections,
               auth,
               piAvailableModelIds: piProfileInventory.availableModelIds,
               opencodeProviders: opencodeInventory.providers,

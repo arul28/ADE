@@ -719,7 +719,7 @@ about which agent runs; `off` fetches nothing at startup.
 | `claude-code` | `claude` on the PATH or a known install dir, `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`, `~/.claude/.credentials.json`, or `~/.claude.json` |
 | `codex` | `codex` on the PATH, or `~/.codex/auth.json` (`CODEX_HOME`) |
 | `copilot`, `copilot-cli` | `copilot` on the PATH, `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, `~/.copilot/config.json`, or gh's `hosts.yml` (`gh auth login`) |
-| `opencode` | `opencode`, `ollama` or `lms` on the PATH, an API-key env var ADE reads (`ENV_KEY_MAP`, `OPENROUTER_API_KEY`), an OpenCode `auth.json`, or `~/.ollama` / `~/.lmstudio`. OpenCode runs ADE's API-key, OpenRouter and local models too. Under `signals` it is also fetched when neither `claude-code` nor `codex` is: its free models need no account or key, so they are the only chat a person with neither can start. |
+| `opencode` | `opencode`, `ollama` or `lms` on the PATH, an API-key env var ADE reads (`ENV_KEY_MAP`, `OPENROUTER_API_KEY`), an OpenCode `auth.json`, or `~/.ollama` / `~/.lmstudio`. OpenCode runs ADE's API-key, OpenRouter and local models too. Under `signals` it is also fetched when no agent is set up (`node`, `ffmpeg` and a GitHub CLI sign-in alone do not count): its free models need no account or key, so they are the only chat a person with no agent can start. |
 | `muse` | `muse` on the PATH, or Muse's `auth.json` |
 | `droid` | `droid` on the PATH, `FACTORY_API_KEY`, or a Factory home (`~/.factory`, `FACTORY_HOME_OVERRIDE`) |
 | `grok` | `grok` on the PATH, `XAI_API_KEY`, or `$GROK_HOME/auth.json` |

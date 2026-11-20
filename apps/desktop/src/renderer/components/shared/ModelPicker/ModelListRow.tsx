@@ -1,5 +1,5 @@
 import { memo, useCallback } from "react";
-import type { FreeModelBadge as FreeModelBadgeKind } from "../../../../shared/freeModels";
+import { FREE_MODEL_BADGE_LABELS, type FreeModelBadge as FreeModelBadgeKind } from "../../../../shared/freeModels";
 import { FreeModelBadge } from "./FreeModelBadge";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { Brain, Check, ImageSquare, Lightning, SignIn, Star } from "@phosphor-icons/react";
@@ -325,7 +325,7 @@ export const ModelListRow = memo(function ModelListRow({
           aria-disabled={!isAvailable || undefined}
           aria-selected={isActive}
           aria-current={isFocused ? "true" : undefined}
-          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${maxModeBadge ? ", max mode only" : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : needsSignIn ? ", not signed in" : ""}${
+          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${freeBadge ? `, ${FREE_MODEL_BADGE_LABELS[freeBadge].toLowerCase()}` : ""}${maxModeBadge ? ", max mode only" : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : needsSignIn ? ", not signed in" : ""}${
             // This label replaces the descendants' accessible names, so the
             // badge beside the chip is otherwise invisible to a screen reader —
             // and "the server gave you a different tier" is exactly the kind of

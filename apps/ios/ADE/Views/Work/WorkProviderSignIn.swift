@@ -364,6 +364,8 @@ final class WorkProviderSignInController: ObservableObject {
     self.awaitingCode = awaitingCode
     switch state {
     case "succeeded":
+      // The machine has a sign-in now: its free-models answer is out of date.
+      if let host { WorkFreeModelsStatusStore.shared.invalidate(for: host) }
       phase = .done
       self.message = nil
     case "verifying":

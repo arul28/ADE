@@ -3,9 +3,9 @@ import { PROVIDER_DISPLAY_NAME } from "../../../../shared/providers";
 import type { AuthType, ProviderFamily } from "../../../../shared/modelRegistry";
 import { PROVIDER_REMEDIATION } from "../../../../shared/providerRemediation";
 import { openExternalUrl } from "../../../lib/openExternal";
-import { cn } from "../../ui/cn";
 import { Banner } from "../../ui/notice";
 import { ProviderLogo } from "../ProviderLogos";
+import { PickerEmptyMessage } from "./PickerEmptyMessage";
 
 export type ProviderEmptyStateAction =
   | { kind: "open-settings" }
@@ -278,42 +278,20 @@ export function ProviderEmptyState(props: ProviderEmptyStateProps) {
     );
   }
   return (
-    <div
-      data-model-picker-empty-state="provider"
-      data-provider-family={family}
-      data-empty-state-mode={mode}
-      className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 px-6 py-6 text-center"
-    >
-      <span className="text-[12px] font-semibold text-fg/90">{copy.title}</span>
-      <span className="max-w-[280px] text-[11px] leading-relaxed text-muted-fg/65">{copy.body}</span>
-      <div className="mt-2 flex items-center gap-1.5">
-        {copy.primary ? (
-          <button
-            type="button"
-            onClick={() => dispatchAction(copy.primary!.action, () => onOpenSignIn?.(family))}
-            className={cn(
-              "inline-flex h-6 items-center rounded-md border border-violet-400/30 bg-violet-500/[0.12] px-2.5",
-              "text-[10px] font-semibold uppercase tracking-wide text-violet-100",
-              "transition-colors hover:border-violet-400/45 hover:bg-violet-500/[0.18]",
-            )}
-          >
-            {copy.primary.label}
-          </button>
-        ) : null}
-        {copy.secondary ? (
-          <button
-            type="button"
-            onClick={() => dispatchAction(copy.secondary!.action, onOpenSignIn)}
-            className={cn(
-              "inline-flex h-6 items-center rounded-md border border-fg/[0.08] bg-fg/[0.03] px-2.5",
-              "text-[10px] font-semibold uppercase tracking-wide text-fg/75",
-              "transition-colors hover:border-fg/[0.14] hover:bg-fg/[0.06] hover:text-fg/90",
-            )}
-          >
-            {copy.secondary.label}
-          </button>
-        ) : null}
-      </div>
-    </div>
+    <PickerEmptyMessage
+      dataAttributes={{
+        "data-model-picker-empty-state": "provider",
+        "data-provider-family": family,
+        "data-empty-state-mode": mode,
+      }}
+      title={copy.title}
+      body={copy.body}
+      {...(copy.primary
+        ? { primary: { label: copy.primary.label, onClick: () => dispatchAction(copy.primary!.action, () => onOpenSignIn?.(family)) } }
+        : {})}
+      {...(copy.secondary
+        ? { secondary: { label: copy.secondary.label, onClick: () => dispatchAction(copy.secondary!.action, onOpenSignIn) } }
+        : {})}
+    />
   );
 }

@@ -128,12 +128,13 @@ export function FirstRunAgents({
     return () => window.removeEventListener("focus", onFocus);
   }, [pinKey, refresh, remoteTab]);
 
-  // A computer with no Claude or Codex downloads OpenCode at launch, and its
+  // A computer with no agent set up downloads OpenCode at launch, and its
   // tile turns connected when that lands, not on the next window focus.
+  const opencodeMissing = status != null && status.opencodeBinaryInstalled !== true;
   useEffect(() => {
-    if (remoteTab) return undefined;
+    if (remoteTab || !opencodeMissing) return undefined;
     return subscribeToolInstalled("opencode", () => void refresh());
-  }, [refresh, remoteTab]);
+  }, [opencodeMissing, refresh, remoteTab]);
 
   const agents = useMemo(() => firstRunAgents(), []);
   const tiles = useMemo<AgentTile[]>(

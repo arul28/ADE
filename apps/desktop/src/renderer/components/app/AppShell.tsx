@@ -827,6 +827,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     let refreshSerial = 0;
     let lastChatEventRefreshAt = 0;
     let lastKnownHasProvider = hasConfiguredAiProvider(cachedStatus);
+    let lastKnownOpenCodeInstalled = cachedStatus?.opencodeBinaryInstalled === true;
     const chatEventSubscriptionStartedAt = Date.now();
     const refreshAiStatus = (options: { force?: boolean } = {}) => {
       if (document.visibilityState !== "visible") return;
@@ -835,6 +836,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         if (serial !== refreshSerial) return;
         lastKnownHasProvider = hasConfiguredAiProvider(status);
+        lastKnownOpenCodeInstalled = status.opencodeBinaryInstalled === true;
         setAiStatus(status);
       }).catch(() => {
         if (cancelled) return;
@@ -878,11 +880,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       refreshAiStatus({ force: detail?.force !== false });
     };
     window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
-    // OpenCode landing on this computer (downloaded at launch when there is no
-    // Claude or Codex) makes its free models ready.
+    // OpenCode landing on this computer (downloaded at launch when no agent
+    // is set up) makes its free models ready. A computer that already
+    // has it ignores the tools cache's pushes: no forced re-probe for them.
     const unsubscribeOpenCodeInstalled = isRemoteProject
       ? () => undefined
-      : subscribeToolInstalled("opencode", () => refreshAiStatus({ force: true }));
+      : subscribeToolInstalled("opencode", () => {
+        if (!lastKnownOpenCodeInstalled) refreshAiStatus({ force: true });
+      });
     return () => {
       cancelled = true;
       window.clearTimeout(aiTimer);

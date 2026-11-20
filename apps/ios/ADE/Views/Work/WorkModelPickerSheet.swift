@@ -165,6 +165,9 @@ struct WorkModelPickerSheet: View {
   @State private var userPickedRail = false
   @State private var freeCatalogRefreshing = false
   @StateObject private var freeSetup = WorkFreeModelsSetup()
+  /// The free machine's own catalog, when it is not the machine the main
+  /// catalog comes from (see `separateFreeModelsHost`).
+  @State private var freeHostCatalogGroups: [WorkModelCatalogGroup]?
 
   private var catalog: [WorkModelCatalogGroup] {
     scopedCatalogGroups ?? []
@@ -176,16 +179,23 @@ struct WorkModelPickerSheet: View {
     rawCatalogGroups = groups
     let scoped = scopedCatalog(groups)
     scopedCatalogGroups = scoped
-    scopedFreeGroups = workFreeModelGroups(scoped)
+    scopedFreeGroups = freeGroups(scopedMain: scoped)
   }
 
   /// Re-scope in place when a scoping input changes without the host catalog changing.
   @MainActor
   private func rescopeCatalog() {
-    guard let rawCatalogGroups else { return }
-    let scoped = scopedCatalog(rawCatalogGroups)
-    scopedCatalogGroups = scoped
-    scopedFreeGroups = workFreeModelGroups(scoped)
+    if let rawCatalogGroups {
+      scopedCatalogGroups = scopedCatalog(rawCatalogGroups)
+    }
+    scopedFreeGroups = freeGroups(scopedMain: catalog)
+  }
+
+  /// The Free page lists the free machine's models only. Until that machine
+  /// answers, it lists none, never the main catalog's machine's.
+  private func freeGroups(scopedMain: [WorkModelCatalogGroup]) -> [WorkFreeModelGroup] {
+    guard separateFreeModelsHost != nil else { return workFreeModelGroups(scopedMain) }
+    return workFreeModelGroups(scopedCatalog(freeHostCatalogGroups ?? []))
   }
 
   /// The machine the Free page reads and downloads on.
@@ -200,6 +210,23 @@ struct WorkModelPickerSheet: View {
       }
       return syncService
     }
+  }
+
+  /// The free machine when the main catalog comes from another machine (New
+  /// Chat on a machine that is not the focused one, or a chat whose machine
+  /// is not the tab's). Its free models are read from it, not from the main
+  /// catalog.
+  private var separateFreeModelsHost: ProviderAccountsHost? {
+    guard cloudCatalog == nil, case .host(let host) = freeModelsMachine else { return nil }
+    let catalogMachineKey = commandScope == .personal ? (personalMachineKey ?? syncService.focusedMachineKey) : nil
+    if host === syncService {
+      let sameMachine = catalogMachineKey == nil || catalogMachineKey == syncService.focusedMachineKey
+      return sameMachine ? nil : host
+    }
+    if let connection = host as? MachineConnection, let catalogMachineKey, connection.machineKey == catalogMachineKey {
+      return nil
+    }
+    return host
   }
 
   /// The Free entry shows wherever free models are listed, or could be after
@@ -228,6 +255,12 @@ struct WorkModelPickerSheet: View {
         for model in provider.models where seen.insert(model.id).inserted {
           out.append(model)
         }
+      }
+    }
+    // Another machine's free models: search and the current-model bar find them too.
+    for group in scopedFreeGroups {
+      for model in group.models where seen.insert(model.id).inserted {
+        out.append(model)
       }
     }
     return out
@@ -417,7 +450,15 @@ struct WorkModelPickerSheet: View {
     .onChange(of: availableModelIds) { _, _ in rescopeCatalog() }
     .onChange(of: cursorAvailabilityMode) { _, _ in rescopeCatalog() }
     // A machine with nothing signed in opens the picker on the Free page.
-    .task(id: freeModelsHost.map { WorkFreeModelsStatusStore.key(for: $0) } ?? "") { await loadFreeStatus() }
+    .task(id: freeModelsHost.map { WorkFreeModelsStatusStore.key(for: $0) } ?? "") {
+      // Another machine now: drop the last one's free models first.
+      if freeHostCatalogGroups != nil {
+        freeHostCatalogGroups = nil
+        rescopeCatalog()
+      }
+      await loadFreeStatus()
+      await loadSeparateFreeCatalog(mode: "cached")
+    }
     .onDisappear { freeSetup.stop() }
   }
 
@@ -904,9 +945,31 @@ struct WorkModelPickerSheet: View {
     guard cloudCatalog == nil else { return }
     freeCatalogRefreshing = true
     defer { freeCatalogRefreshing = false }
-    if let fresh = try? await modelCatalog(mode: "force", refreshProvider: "opencode") {
+    if separateFreeModelsHost != nil {
+      await loadSeparateFreeCatalog(mode: "force", refreshProvider: "opencode")
+    } else if let fresh = try? await modelCatalog(mode: "force", refreshProvider: "opencode") {
       apply(hostCatalog: fresh)
     }
+    // The New Chat page tries its free default again with the new list.
+    WorkFreeModelsStatusStore.shared.freeCatalogDidRefresh()
+  }
+
+  /// Reads the free machine's catalog when it is not the main catalog's
+  /// machine. A failed read keeps what the page lists now.
+  @MainActor
+  private func loadSeparateFreeCatalog(mode: String, refreshProvider: String? = nil) async {
+    guard let host = separateFreeModelsHost else {
+      freeHostCatalogGroups = nil
+      return
+    }
+    guard let hostCatalog = await workModelCatalog(on: host, mode: mode, refreshProvider: refreshProvider),
+          !Task.isCancelled else { return }
+    freeHostCatalogGroups = workModelCatalogGroups(
+      hostCatalog: hostCatalog,
+      currentModelId: currentModelId,
+      currentProvider: currentProvider
+    )
+    rescopeCatalog()
   }
 
   @MainActor
@@ -1848,14 +1911,11 @@ struct ModelPickerListRow: View {
         size: 18
       )
       VStack(alignment: .leading, spacing: 1) {
-        HStack(spacing: 6) {
+        WorkModelNameWithFreeBadge(modelId: model.id) {
           Text(model.displayName)
             .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
             .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
             .lineLimit(1)
-          if let freeEntry {
-            WorkFreeModelBadgeTag(badge: freeEntry.badge)
-          }
         }
         if let piContextLabel {
           Text(piContextLabel)
@@ -1879,14 +1939,11 @@ struct ModelPickerListRow: View {
         size: 20
       )
       VStack(alignment: .leading, spacing: 1) {
-        HStack(spacing: 6) {
+        WorkModelNameWithFreeBadge(modelId: model.id) {
           Text(model.displayName)
             .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
             .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
             .lineLimit(1)
-          if let freeEntry {
-            WorkFreeModelBadgeTag(badge: freeEntry.badge)
-          }
         }
         if let piContextLabel {
           Text(piContextLabel)
@@ -2141,14 +2198,11 @@ struct ModelPickerCurrentModelBar: View {
 
       VStack(alignment: .leading, spacing: 2) {
         ADEEyebrow("Current model")
-        HStack(spacing: 6) {
+        WorkModelNameWithFreeBadge(modelId: model?.id) {
           Text(model?.displayName ?? "Pick a model")
             .font(.system(size: 14, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
-          if let model, let entry = workFreeModelEntry(modelId: model.id) {
-            WorkFreeModelBadgeTag(badge: entry.badge)
-          }
         }
         if let model, let piContextLabel = workPiModelContextLabel(for: model) {
           Text(piContextLabel)

@@ -1417,7 +1417,7 @@ shared-lane page (`/shared`) is open.
      reduced motion).
    - Status is re-read on open, after a sign-in (a re-read requested during
      one runs after it), on focus, and when the tools cache finishes
-     OpenCode (downloaded at launch on a computer with no Claude or Codex,
+     OpenCode (downloaded at launch on a computer with no agent signs,
      so its tile turns connected with no extra copy); never polled.
    - Project discovery starts in the background meanwhile.
 4. **Bring your projects in.** `discoverOnboardingProjects` reads Claude Code

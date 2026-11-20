@@ -756,6 +756,8 @@ struct WorkNewChatScreen: View {
   /// start on (for the "Use a free model" action beside the account hint).
   @State private var freeModelsStatus: WorkFreeModelsStatus?
   @State private var freeDefaultModelId: String?
+  /// Tells the page when a machine's free models were read again.
+  @ObservedObject private var freeModelsStore = WorkFreeModelsStatusStore.shared
 
   init(
     lanes: [LaneSummary],
@@ -1144,8 +1146,9 @@ struct WorkNewChatScreen: View {
     }
     .onChange(of: composerSelection) { _, newValue in
       // Persist the full selection without deriving one setting from another.
-      // A free model ADE picked is not the person's choice: never remember it.
-      guard newValue != freeDefaultSelection else { return }
+      // A free model ADE picked is not the person's choice: never remember it,
+      // also after a change to another setting such as the access mode.
+      guard !isOnFreeDefault else { return }
       WorkComposerPreferences.save(newValue)
     }
     // A machine with nothing signed in starts the chat on a free model.
@@ -1245,7 +1248,9 @@ struct WorkNewChatScreen: View {
       .flatMap { machineFleet.connection(for: $0) }
       .map { String(describing: $0.phase) }
       ?? String(describing: syncService.connectionState)
-    return "\(selectedMachineKey ?? "focused")|\(phase)|\(sessionMode)"
+    // A new free list (OpenCode finished downloading) and the end of a
+    // launch both run the free default again.
+    return "\(selectedMachineKey ?? "focused")|\(phase)|\(sessionMode)|\(freeModelsStore.catalogGeneration)|\(busy)"
   }
 
   /// Nothing signed in on the chosen machine: start on its free default (the
@@ -1258,6 +1263,7 @@ struct WorkNewChatScreen: View {
     guard let host = selectedMachineHost else {
       freeModelsStatus = nil
       freeDefaultModelId = nil
+      revertFreeDefaultUnlessBusy()
       return
     }
     let status = await WorkFreeModelsStatusStore.shared.status(for: host)
@@ -1265,46 +1271,78 @@ struct WorkNewChatScreen: View {
     freeModelsStatus = status
     guard let status, status.nothingSignedIn else {
       freeDefaultModelId = nil
-      revertFreeDefault()
+      revertFreeDefaultUnlessBusy()
       return
     }
     let pick = await workFreeDefaultModelId(on: host, status: status)
     guard !Task.isCancelled else { return }
     freeDefaultModelId = pick
-    guard let pick, sessionMode == .chat, !modelPickedByPerson, selectedPreset == nil,
-          freeDefaultSelection == composerSelection || !workIsFreeModel(modelId)
+    // This machine has no free model to start on.
+    guard let pick else {
+      revertFreeDefaultUnlessBusy()
+      return
+    }
+    // A launch reads the composer, so nothing changes while one runs. The
+    // task runs again when it ends.
+    guard !busy, sessionMode == .chat, !modelPickedByPerson, selectedPreset == nil,
+          isOnFreeDefault || !workIsFreeModel(modelId),
+          !(isOnFreeDefault && modelId == pick)
     else { return }
-    let selection = WorkComposerPreferences.Selection(
+    let selection = freeModelSelection(pick)
+    // Set before the fields change, so the save on change sees it.
+    freeDefaultSelection = selection
+    applyFreeModelSelection(selection)
+  }
+
+  /// A free model's composer selection: OpenCode, its default mode, no effort.
+  private func freeModelSelection(_ id: String) -> WorkComposerPreferences.Selection {
+    WorkComposerPreferences.Selection(
       provider: "opencode",
-      modelId: pick,
+      modelId: id,
       runtimeMode: workDefaultRuntimeMode(provider: "opencode"),
       reasoningEffort: "",
       codexFastMode: false
     )
-    // Set before the fields change, so the save on change sees it.
-    freeDefaultSelection = selection
+  }
+
+  private func applyFreeModelSelection(_ selection: WorkComposerPreferences.Selection) {
     selectedModelOption = nil
     provider = selection.provider
     modelId = selection.modelId
     runtimeMode = selection.runtimeMode
-    reasoningEffort = ""
-    codexFastMode = false
+    reasoningEffort = selection.reasoningEffort
+    codexFastMode = selection.codexFastMode
     machineModelHint = nil
   }
 
+  /// The composer still runs the free model ADE chose. Another setting (the
+  /// access mode) can change; the model stays ADE's choice until the person
+  /// picks a model or a harness, which clears `freeDefaultSelection`.
+  private var isOnFreeDefault: Bool {
+    guard let freeDefaultSelection, selectedPreset == nil else { return false }
+    return provider == freeDefaultSelection.provider && modelId == freeDefaultSelection.modelId
+  }
+
   /// Puts back what the page opened on when the free model ADE chose no
-  /// longer applies (another machine, someone signed in).
+  /// longer applies (another machine, no machine, someone signed in).
   private func revertFreeDefault() {
-    guard let freeDefaultSelection, freeDefaultSelection == composerSelection else {
+    guard isOnFreeDefault else {
       freeDefaultSelection = nil
       return
     }
-    self.freeDefaultSelection = nil
+    freeDefaultSelection = nil
     provider = openingSelection.provider
     modelId = openingSelection.modelId
     runtimeMode = openingSelection.runtimeMode
     reasoningEffort = openingSelection.reasoningEffort
+    codexFastMode = openingSelection.codexFastMode
     checkModelOnMachine()
+  }
+
+  /// A launch reads the composer: the revert waits until it ends.
+  private func revertFreeDefaultUnlessBusy() {
+    guard !busy else { return }
+    revertFreeDefault()
   }
 
   /// A brand-new person whose chosen model has no account here: the hint
@@ -1319,13 +1357,7 @@ struct WorkNewChatScreen: View {
     modelPickedByPerson = true
     freeDefaultSelection = nil
     selectedPreset = nil
-    selectedModelOption = nil
-    provider = "opencode"
-    modelId = id
-    runtimeMode = workDefaultRuntimeMode(provider: "opencode")
-    reasoningEffort = ""
-    codexFastMode = false
-    machineModelHint = nil
+    applyFreeModelSelection(freeModelSelection(id))
   }
 
   @ViewBuilder
@@ -2059,7 +2091,7 @@ struct WorkNewChatScreen: View {
     }
     busy = true
     errorMessage = nil
-    if composerSelection != freeDefaultSelection { WorkComposerPreferences.save(composerSelection) }
+    if !isOnFreeDefault { WorkComposerPreferences.save(composerSelection) }
     let launchId = await cloudLaunches.start(
       accountProjectId: project.id,
       origin: "\(project.host)/\(project.owner)/\(project.name)",
@@ -2132,7 +2164,7 @@ struct WorkNewChatScreen: View {
     // Anchor the "last time you sent a message" choice — covers the case where
     // the user sent with the restored/default selection without changing it.
     // Not a free model ADE picked: that was never the person's choice.
-    if composerSelection != freeDefaultSelection { WorkComposerPreferences.save(composerSelection) }
+    if !isOnFreeDefault { WorkComposerPreferences.save(composerSelection) }
     busy = true
     errorMessage = nil
     let wire = workRuntimeWireFields(provider: provider, mode: runtimeMode)

@@ -380,9 +380,7 @@ export { deriveRuntimeState, type PendingSteerEntry } from "./chatRuntimeState";
 import { AskQuestionComposer } from "./AskQuestionComposer";
 import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive, rowSaysTurnEnded } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
-import { fetchSharedRuntimeCatalog } from "../shared/ModelPicker/sharedCatalogFetch";
-import { isFreeModel, pickFreeDefaultModelId } from "../../../shared/freeModels";
-import { subscribeToolInstalled } from "../../lib/toolsCacheEvents";
+import { useFreeModelsDraft } from "./useFreeModelsDraft";
 import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { DevinLogo } from "../shared/ProviderLogos";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
@@ -12419,13 +12417,28 @@ export function AgentChatPane({
   const draftKeepsMachineDefaultsRef = useRef(false);
   // A draft's model, set from outside (the onboarding tour picks a cheap one
   // for the first chat; `draftModelSeam.ts`). Routed through the composer's
-  // own handler, so the usual checks apply.
-  const composerModelChangeRef = useRef<((modelId: string) => void) | null>(null);
+  // own handler, so the usual checks apply, and counted as a choice.
+  const personModelChangeRef = useRef<((modelId: string) => void) | null>(null);
+  // The same handler for ADE's own pick (the free default): not a choice.
+  const adeModelChangeRef = useRef<((modelId: string) => void) | null>(null);
+  /**
+   * The draft's model came from a person or a caller (the picker, the strip,
+   * a draft request), not from ADE's own free default. Set only by
+   * `handlePersonModelChange` and a restored draft; `useFreeModelsDraft`
+   * reads it.
+   */
+  const draftModelChosenRef = useRef(false);
+  // Opening a chat, or leaving one for a new draft: a choice made before does
+  // not carry over. Declared before the effects that set the flag (the tour's
+  // queued pick, a restored draft), so it runs before them in one commit.
+  useEffect(() => {
+    draftModelChosenRef.current = false;
+  }, [selectedSessionId]);
   useEffect(() => {
     if (!forceDraft) return undefined;
     return registerDraftModelSetter((pick) => {
-      if (!composerModelChangeRef.current) return false;
-      composerModelChangeRef.current(pick.modelId);
+      if (!personModelChangeRef.current) return false;
+      personModelChangeRef.current(pick.modelId);
       // After the pick above, which clears the flag as a person's pick would.
       draftKeepsMachineDefaultsRef.current = !pick.rememberLaunchDefaults;
       return true;
@@ -12917,6 +12930,8 @@ export function AgentChatPane({
       // The recipe is not persisted; a restored draft starts as plain auto-create.
       clearNewLaneConfig();
       if (!selectedSessionId && saved.modelId) {
+        // A saved draft's model was chosen before: ADE's free default leaves it.
+        draftModelChosenRef.current = true;
         draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
         draftLaunchConfigHydratedRef.current = `${draftLaunchConfigScopeKey}:composer-draft`;
         applyLaunchConfigToComposer({
@@ -14709,6 +14724,14 @@ export function AgentChatPane({
     /** Send-time mark: a foreground CLI opens its tab only if it still holds. */
     newDraftMarkAtSend?: NewDraftRequestMark,
   ): boolean => {
+    // ADE's own pick (the free default) stays out of the launch defaults also
+    // on the renderer chain that an older runtime falls back to; building the
+    // launch below clears the flag.
+    const keepsMachineDefaults = draftKeepsMachineDefaultsRef.current;
+    const handleUnsupported = () => {
+      if (keepsMachineDefaults) draftKeepsMachineDefaultsRef.current = true;
+      onUnsupported();
+    };
     const prepared = prepareDraftLaunch(snapshot);
     let cli: ChatLaunchCliParams | null = null;
     let chat: ChatLaunchChatArgs | undefined;
@@ -14782,7 +14805,7 @@ export function AgentChatPane({
         draftSnapshot: snapshot,
         cli,
         ...(newDraftMarkAtSend ? { newDraftMarkAtSend } : {}),
-        onUnsupported,
+        onUnsupported: handleUnsupported,
       });
     } else {
       registerChatLaunchLocalRecord(launchId, {
@@ -14819,7 +14842,7 @@ export function AgentChatPane({
     pendingRendererRef.current = configuredLane;
     // Read now: the draft machine is the one this launch runs on.
     const startedOn = draftStartedOnRef.current;
-    void startChatLaunch(launchId, { onUnsupported }).then((outcome) => {
+    void startChatLaunch(launchId, { onUnsupported: handleUnsupported }).then((outcome) => {
       if (outcome !== "unsupported") pendingRendererRef.current = null;
       if (outcome === "started") recordStartOnLastMachine(startedOn.tabId, startedOn.machineKey);
     });
@@ -19605,92 +19628,32 @@ export function AgentChatPane({
     }
     return null;
   }, [activeComposerRuntimeBinding?.key, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, chatScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
-  // ── Free models (`shared/freeModels.ts`) ──
-  // From the composer machine's status, like the sign-in check above.
-  const freeModelsStatus = aiStatus?.freeModels ?? null;
-  const freeModelIds = useMemo(
-    () => effectiveAvailableModelIds.filter((id) => (
-      isFreeModel(resolveScopedModelDescriptor(id, modelCatalogScopeKey) ?? { id })
-    )),
-    [effectiveAvailableModelIds, modelCatalogScopeKey],
-  );
-  const freeDefaultModelId = useMemo(
-    () => (freeModelsStatus ? pickFreeDefaultModelId(freeModelIds, freeModelsStatus.preferredDefaultModelIds) : null),
-    [freeModelIds, freeModelsStatus],
-  );
-  // A fresh chat draft the person runs here with the composer's own model:
-  // not a subagent, a cloud or CLI draft, a parallel set or a narrowed list.
-  const freeModelsDraft = !selectedSessionId
-    && selectedEvents.length === 0
-    && !chatScope
-    && !subagentView
-    && !draftSkipsLocalSignIn
-    && !parallelDraftActive
-    && !modelSelectionConstrained;
-  const nothingSignedInHere = freeModelsStatus?.nothingSignedIn === true;
-  const opencodeInstalledHere = aiStatus?.opencodeBinaryInstalled === true;
-
-  // Free models come from OpenCode's catalog, which loads when a picker opens
-  // it. With nothing signed in, load it once for the composer's machine, so a
-  // new chat can start on a free model before anyone opens the picker.
-  const freeCatalogRequestedForRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!freeModelsDraft || !nothingSignedInHere || !opencodeInstalledHere || freeModelIds.length > 0) return;
-    if (freeCatalogRequestedForRef.current === modelCatalogScopeKey) return;
-    freeCatalogRequestedForRef.current = modelCatalogScopeKey;
-    void fetchSharedRuntimeCatalog({
-      scopeKey: modelCatalogScopeKey,
-      mode: "refresh-stale",
-      refreshProvider: "opencode",
-      pin: activeComposerRuntimeBinding ?? null,
-    }).then((result) => {
-      if (result.status === "ok") setRuntimeCatalogVersion((version) => version + 1);
-    });
-  }, [activeComposerRuntimeBinding, freeModelIds.length, freeModelsDraft, modelCatalogScopeKey, nothingSignedInHere, opencodeInstalledHere]);
-
-  // OpenCode is still downloading on this computer (it downloads at launch
-  // when there is no Claude or Codex): re-read the status when it lands, and
-  // the effect above then loads the free models.
-  useEffect(() => {
-    if (!freeModelsDraft || !nothingSignedInHere || opencodeInstalledHere || composerRuntimePin) return undefined;
-    return subscribeToolInstalled("opencode", () => {
-      void refreshAvailableModels({ revalidate: true });
-    });
-  }, [composerRuntimePin, freeModelsDraft, nothingSignedInHere, opencodeInstalledHere, refreshAvailableModels]);
-
-  // With nothing signed in, a fresh draft starts on a free model: the only
-  // models that can answer. ADE set it, so it is not remembered as the
-  // machine's launch default or as "last used". A model the person picks
-  // first wins, and so does one already free.
-  const freeDefaultRef = useRef<{ baseModelId: string | null; settled: boolean }>({ baseModelId: null, settled: false });
-  useEffect(() => {
-    // An opened chat ends the draft; the next draft decides again.
-    if (selectedSessionId) freeDefaultRef.current = { baseModelId: null, settled: false };
-  }, [selectedSessionId]);
-  useEffect(() => {
-    const state = freeDefaultRef.current;
-    if (state.settled || !freeModelsDraft || !preferencesReady || loading || !nothingSignedInHere) return;
-    if (state.baseModelId === null) state.baseModelId = modelId;
-    if (modelId !== state.baseModelId || isFreeModel(resolveScopedModelDescriptor(modelId, modelCatalogScopeKey) ?? { id: modelId })) {
-      state.settled = true;
-      return;
-    }
-    if (!freeDefaultModelId || !composerModelChangeRef.current) return;
-    state.settled = true;
-    composerModelChangeRef.current(freeDefaultModelId);
-    // After the change, which clears the flag as a person's pick would.
-    draftKeepsMachineDefaultsRef.current = true;
-  }, [freeDefaultModelId, freeModelsDraft, loading, modelCatalogScopeKey, modelId, nothingSignedInHere, preferencesReady]);
-
-  // The strip offers a free model only to a brand-new person: nothing signed
-  // in now, and nothing ever signed in on this machine.
-  const handleUseFreeModel = useCallback(() => {
-    if (freeDefaultModelId) composerModelChangeRef.current?.(freeDefaultModelId);
-  }, [freeDefaultModelId]);
-  const offerFreeModel = !selectedSessionId
-    && nothingSignedInHere
-    && freeModelsStatus?.everSignedIn === false
-    && freeDefaultModelId != null;
+  // Free models (`shared/freeModels.ts`), from the composer machine's status
+  // like the sign-in check above.
+  const onFreeCatalogLoaded = useCallback(() => setRuntimeCatalogVersion((version) => version + 1), []);
+  const { offerFreeModel, handleUseFreeModel } = useFreeModelsDraft({
+    aiStatus,
+    availableModelIds: effectiveAvailableModelIds,
+    catalogScopeKey: composerModelCatalogScopeKey,
+    runtimeBinding: activeComposerRuntimeBinding ?? null,
+    remotePin: composerRuntimePin,
+    selectedSessionId: selectedSessionId ?? null,
+    freshDraft: !selectedSessionId
+      && selectedEvents.length === 0
+      && !chatScope
+      && !subagentView
+      && !draftSkipsLocalSignIn
+      && !parallelDraftActive
+      && !modelSelectionConstrained,
+    modelId,
+    composerReady: preferencesReady && !loading,
+    chooseModelRef: personModelChangeRef,
+    adeModelChangeRef,
+    draftKeepsMachineDefaultsRef,
+    draftModelChosenRef,
+    refreshAvailableModels,
+    onCatalogLoaded: onFreeCatalogLoaded,
+  });
 
   // The connection of the provider the card signs in to.
   const signInConnection = providerSignInNeed ? signInConnections?.[providerSignInNeed.provider] ?? null : null;
@@ -19966,6 +19929,8 @@ export function AgentChatPane({
     composerRuntimePin,
     continueSwitchInNewThread,
     handleProviderSignedIn,
+    handleUseFreeModel,
+    offerFreeModel,
     openAdeCloudSignIn,
     openSignInSettings,
     providerSignInShown,
@@ -21696,7 +21661,14 @@ export function AgentChatPane({
     applyModelSelectionSnapshot(snapshot);
     return true;
   };
-  composerModelChangeRef.current = handleComposerModelChange;
+  // The composer's own model controls and every outside caller: a choice,
+  // which ADE's free default never overrides.
+  const handlePersonModelChange = (nextModelId: string, options?: ModelPickerSelection) => {
+    draftModelChosenRef.current = true;
+    return handleComposerModelChange(nextModelId, options);
+  };
+  personModelChangeRef.current = handlePersonModelChange;
+  adeModelChangeRef.current = handleComposerModelChange;
   applyWorkDraftModelRequestRef.current = (request) => {
     // Both catalogs follow the chat's composer machine. A model missing there
     // is left alone; the draft itself still opens on the requested lane.
@@ -21704,7 +21676,7 @@ export function AgentChatPane({
       !availableModelIds.includes(request.modelId)
       && !runtimeCatalogModelIds(modelCatalogScopeKey).includes(request.modelId)
     ) return;
-    handleComposerModelChange(request.modelId);
+    handlePersonModelChange(request.modelId);
     handleReasoningEffortChange(request.reasoningEffort);
 
     if (!request.permission) return;
@@ -21913,7 +21885,7 @@ export function AgentChatPane({
             launchPromptClipboardEnabled={launchPromptClipboardEnabled}
             launchPromptClipboardNoticeEnabled={launchPromptClipboardNoticeEnabled}
             onOpenLaunchPromptClipboardSettings={openLaunchPromptClipboardSettings}
-            onModelChange={handleComposerModelChange}
+            onModelChange={handlePersonModelChange}
             onOpenModelPickerRequest={handleListChooseProviderFailureModel}
             sessionLaneId={laneId}
             onReasoningEffortChange={handleReasoningEffortChange}

@@ -67,6 +67,24 @@ function onPath(command: string, env: NodeJS.ProcessEnv): boolean {
   }
 }
 
+/** Copilot's own signs: its CLI, its tokens or its config. */
+function copilotOwnSignals(env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): boolean {
+  return onPath("copilot", env)
+    || hasEnv(withCopilotCarriedEnv(env, platform), COPILOT_TOKEN_ENV_KEYS)
+    || exists(path.join(copilotConfigHome({ env, homeDir: home }), "config.json"));
+}
+
+/**
+ * A GitHub CLI sign-in. Copilot follows that account, but alone it is a weak
+ * sign: most developers have one with no Copilot plan.
+ */
+function ghCliSignedIn(env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): boolean {
+  return ghHostsFiles({ env, homeDir: home, platform }).some(exists);
+}
+
+/** Pinned tools that are not agents: their use or download says nothing about a sign-in. */
+export const NON_AGENT_TOOLS: ReadonlySet<string> = new Set(["opencode", "node", "ffmpeg"]);
+
 /** Signs that this machine uses the provider behind a pinned tool, or null for a tool with no rule. */
 function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): boolean | null {
   const homeArgs = { env, homeDir: home };
@@ -81,10 +99,7 @@ function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, pla
     // The terminal CLI follows the same account as the SDK runtime.
     case "copilot":
     case "copilot-cli":
-      return onPath("copilot", env)
-        || hasEnv(withCopilotCarriedEnv(env, platform), COPILOT_TOKEN_ENV_KEYS)
-        || exists(path.join(copilotConfigHome(homeArgs), "config.json"))
-        || ghHostsFiles({ env, homeDir: home, platform }).some(exists);
+      return copilotOwnSignals(env, home, platform) || ghCliSignedIn(env, home, platform);
     case "opencode":
       // OpenCode is also the engine for API-key, OpenRouter and local models.
       // Keys saved only in ADE's own store are not read here: saving one starts
@@ -184,17 +199,24 @@ export function selectDemandedAgentTools(pinned: readonly string[], args: Demand
   const usage = policy === "off" ? {} : readToolUsage(toolsRoot);
   const now = Date.now();
   const wanted = new Set<string>();
-  for (const tool of pinned) {
-    if (policy === "off") continue;
+  // Some agent is set up here: used lately, or a sign of it beyond a GitHub
+  // CLI sign-in (`ghCliSignedIn`).
+  let agentSetUp = false;
+  for (const tool of policy === "off" ? [] : pinned) {
     const usedAt = usage[tool];
     const recentlyUsed = usedAt !== undefined && now - usedAt < RECENT_TOOL_USE_MS;
-    if (recentlyUsed || (policy === "signals" && (providerSignals(tool, env, home, platform) ?? false))) wanted.add(tool);
+    if (!(recentlyUsed || (policy === "signals" && (providerSignals(tool, env, home, platform) ?? false)))) continue;
+    wanted.add(tool);
+    if (NON_AGENT_TOOLS.has(tool) || agentSetUp) continue;
+    agentSetUp = recentlyUsed
+      || !(tool === "copilot" || tool === "copilot-cli")
+      || copilotOwnSignals(env, home, platform);
   }
-  // A computer with no sign of Claude or Codex gets OpenCode anyway: its free
-  // models need no account and no key, so they are the only chat such a
-  // person can start. Only under `signals`: an ADE Cloud computer (`used`)
-  // has every sign-in copied onto it.
-  if (policy === "signals" && pinned.includes("opencode") && !wanted.has("claude-code") && !wanted.has("codex")) {
+  // A computer with no agent set up gets OpenCode anyway: its free models
+  // need no account and no key, so they are the only chat such a person can
+  // start. Only under `signals`: an ADE Cloud computer (`used`) has every
+  // sign-in copied onto it.
+  if (policy === "signals" && pinned.includes("opencode") && !agentSetUp) {
     wanted.add("opencode");
   }
   return {

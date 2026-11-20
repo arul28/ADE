@@ -76,6 +76,22 @@ export function isFreeModel(model: FreeModelCandidate): boolean {
 }
 
 /**
+ * The same rule for a bare model id: a registry id (`opencode/opencode/big-pickle`)
+ * or OpenCode's own `<provider>/<model>` (`opencode/big-pickle`), as a runtime
+ * reports a settled turn's model.
+ */
+export function isFreeModelId(modelId: string | null | undefined): boolean {
+  const id = modelId?.trim();
+  if (!id) return false;
+  if (isFreeModel({ id })) return true;
+  // OpenCode's own id has one slash; a registry id the rule above declined
+  // is not read again as one.
+  const slash = id.indexOf("/");
+  if (slash <= 0 || slash === id.length - 1 || id.includes("/", slash + 1)) return false;
+  return isFreeModel({ id, openCodeProviderId: id.slice(0, slash), openCodeModelId: id.slice(slash + 1) });
+}
+
+/**
  * The free model a new chat starts on when nothing is signed in: the first of
  * `preferred` (the model manifest's `defaults.free`) that is listed now, else
  * the first listed free model. Zen's free models come and go, so a preferred

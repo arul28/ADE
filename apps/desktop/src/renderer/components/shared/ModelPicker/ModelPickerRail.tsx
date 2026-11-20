@@ -2,6 +2,7 @@ import { memo, useCallback, useRef } from "react";
 import { Star, Clock, Gift } from "@phosphor-icons/react";
 import type { ProviderFamily } from "../../../../shared/modelRegistry";
 import { ProviderLogo } from "../ProviderLogos";
+import { providerLabel } from "./modelFacts";
 import { CustomToolMark } from "../CustomToolMark";
 import { cn } from "../../ui/cn";
 import { railNavIndex } from "./railNav";
@@ -27,6 +28,37 @@ export type ModelPickerRailProps = {
   onSelect: (selection: RailSelection) => void;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
 };
+
+type ProviderRailSelection = Extract<RailSelection, `provider:${string}`>;
+
+function isProviderSelection(selection: RailSelection): selection is ProviderRailSelection {
+  return selection.startsWith("provider:");
+}
+
+/** The provider a rail page shows, or null for the pages that mix providers. */
+export function railSelectionFamily(selection: RailSelection): ProviderFamily | null {
+  return isProviderSelection(selection) ? selection.slice("provider:".length) as ProviderFamily : null;
+}
+
+/** The names of the rail pages that are not a provider. */
+const RAIL_FIXED_LABELS: Record<Exclude<RailSelection, ProviderRailSelection>, string> = {
+  harnesses: "Custom",
+  favorites: "Favorites",
+  recents: "Recents",
+  free: "Free models",
+};
+
+/** A rail page's name: the provider's or the fixed page's. */
+export function railSelectionLabel(selection: RailSelection): string {
+  return isProviderSelection(selection)
+    ? providerLabel(selection.slice("provider:".length))
+    : RAIL_FIXED_LABELS[selection];
+}
+
+/** The provider whose catalog a rail page shows: the Free page shows OpenCode's. */
+export function railSelectionCatalogFamily(selection: RailSelection): ProviderFamily | null {
+  return selection === "free" ? "opencode" : railSelectionFamily(selection);
+}
 
 function entryKey(entry: RailEntry): RailSelection {
   if (entry.kind === "harnesses") return "harnesses";
@@ -119,16 +151,7 @@ const RailButton = memo(function RailButton({
 }) {
   const handleClick = useCallback(() => onSelect(selectionKey), [onSelect, selectionKey]);
 
-  const label =
-    entry.kind === "harnesses"
-      ? "Custom"
-      : entry.kind === "favorites"
-        ? "Favorites"
-        : entry.kind === "recents"
-          ? "Recents"
-          : entry.kind === "free"
-            ? "Free models"
-            : entry.label;
+  const label = entry.kind === "provider" ? entry.label : RAIL_FIXED_LABELS[entry.kind];
 
   const icon =
     // The one rail entry that is yours rather than a vendor's gets its own

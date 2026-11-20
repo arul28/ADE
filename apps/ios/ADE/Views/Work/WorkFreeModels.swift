@@ -153,7 +153,7 @@ struct WorkFreeModelsStatus: Equatable {
 /// New Chat page and the sign-in card, so opening them does not ask the
 /// machine again. Keyed by the machine, never by the tab.
 @MainActor
-final class WorkFreeModelsStatusStore {
+final class WorkFreeModelsStatusStore: ObservableObject {
   static let shared = WorkFreeModelsStatusStore()
 
   private struct Entry {
@@ -161,8 +161,13 @@ final class WorkFreeModelsStatusStore {
     let at: Date
   }
 
+  /// Goes up each time a machine's free models are read again (OpenCode
+  /// finished downloading there, or the person tapped Refresh). The New Chat
+  /// page watches it to try its free default again.
+  @Published private(set) var catalogGeneration = 0
+
   private var entries: [String: Entry] = [:]
-  private var inFlight: [String: Task<WorkFreeModelsStatus?, Never>] = [:]
+  private var inFlight: [String: Task<(status: WorkFreeModelsStatus?, read: Bool), Never>] = [:]
   private let ttl: TimeInterval = 60
 
   #if DEBUG
@@ -193,6 +198,15 @@ final class WorkFreeModelsStatusStore {
     return entry.status
   }
 
+  /// Forgets the machine's answer (a sign-in finished there).
+  func invalidate(for host: ProviderAccountsHost) {
+    entries[Self.key(for: host)] = nil
+  }
+
+  func freeCatalogDidRefresh() {
+    catalogGeneration &+= 1
+  }
+
   /// Keeps the block of an `ai.getStatus` answer read for another reason.
   func record(aiStatus: Any, for host: ProviderAccountsHost) {
     entries[Self.key(for: host)] = Entry(status: WorkFreeModelsStatus(aiStatus: aiStatus), at: Date())
@@ -207,45 +221,57 @@ final class WorkFreeModelsStatusStore {
     let key = Self.key(for: host)
     if let entry = entries[key], Date().timeIntervalSince(entry.at) < ttl { return entry.status }
     guard host.providerAccountsConnected, host.supportsProviderAccountsAction("ai.getStatus") else { return nil }
-    if let task = inFlight[key] { return await task.value }
-    let task = Task { @MainActor () -> WorkFreeModelsStatus? in
-      guard let raw = try? await host.runProviderAccountsCommand("ai.getStatus", args: [:]) else { return nil }
-      return WorkFreeModelsStatus(aiStatus: raw)
+    if let task = inFlight[key] { return await task.value.status }
+    // A failed read is not kept: the next ask tries again.
+    let task = Task { @MainActor () -> (status: WorkFreeModelsStatus?, read: Bool) in
+      guard let raw = try? await host.runProviderAccountsCommand("ai.getStatus", args: [:]) else { return (nil, false) }
+      return (WorkFreeModelsStatus(aiStatus: raw), true)
     }
     inFlight[key] = task
-    let status = await task.value
+    let result = await task.value
     inFlight[key] = nil
-    entries[key] = Entry(status: status, at: Date())
-    return status
+    if result.read { entries[key] = Entry(status: result.status, at: Date()) }
+    return result.status
   }
 }
 
-/// The free models the machine behind `host` lists now. The primary
-/// connection reads its project catalog; another machine its machine-wide one.
+/// The model catalog of the machine behind `host`, or nil when it cannot be
+/// read. The primary connection reads its project catalog; another machine
+/// its machine-wide one. Free-model reads use this, so they go to the same
+/// machine as the free-models status and the OpenCode download.
+@MainActor
+func workModelCatalog(
+  on host: ProviderAccountsHost,
+  mode: String,
+  refreshProvider: String? = nil
+) async -> AgentChatModelCatalog? {
+  if let sync = host as? SyncService {
+    return try? await sync.getChatModelCatalog(mode: mode, refreshProvider: refreshProvider)
+  }
+  let action = "personalChats.modelCatalog"
+  guard host.providerAccountsConnected, host.supportsProviderAccountsAction(action) else { return nil }
+  var args: [String: Any] = ["mode": mode]
+  if let refreshProvider { args["refreshProvider"] = refreshProvider }
+  guard let raw = try? await host.runProviderAccountsCommand(action, args: args),
+        let data = try? JSONSerialization.data(withJSONObject: raw) else { return nil }
+  return try? JSONDecoder().decode(AgentChatModelCatalog.self, from: data)
+}
+
+/// The free models the machine behind `host` lists now. A cached catalog
+/// with no free model can be older than OpenCode on the machine, so the
+/// machine then reads OpenCode's models again before it answers.
 @MainActor
 func workFreeModelIds(on host: ProviderAccountsHost) async -> [String] {
   #if DEBUG
   if let pin = WorkFreeModelsStatusStore.shared.previewPin { return pin.freeModelIds }
   #endif
-  if let sync = host as? SyncService {
-    if let catalog = try? await sync.getChatModelCatalog(mode: "cached") {
-      let ids = workFreeModelIds(in: catalog)
-      if !ids.isEmpty { return ids }
-    }
-    guard let fresh = try? await sync.getChatModelCatalog(mode: "refresh-stale", refreshProvider: "opencode") else { return [] }
-    return workFreeModelIds(in: fresh)
+  if let cached = await workModelCatalog(on: host, mode: "cached") {
+    let ids = workFreeModelIds(in: cached)
+    if !ids.isEmpty { return ids }
   }
-  let action = "personalChats.modelCatalog"
-  guard host.providerAccountsConnected, host.supportsProviderAccountsAction(action) else { return [] }
-  func read(_ args: [String: Any]) async -> [String] {
-    guard let raw = try? await host.runProviderAccountsCommand(action, args: args),
-          let data = try? JSONSerialization.data(withJSONObject: raw),
-          let catalog = try? JSONDecoder().decode(AgentChatModelCatalog.self, from: data) else { return [] }
-    return workFreeModelIds(in: catalog)
-  }
-  let cached = await read(["mode": "cached"])
-  if !cached.isEmpty { return cached }
-  return await read(["mode": "refresh-stale", "refreshProvider": "opencode"])
+  // "refresh-stale" can answer with the same old list and refresh later.
+  guard let fresh = await workModelCatalog(on: host, mode: "force", refreshProvider: "opencode") else { return [] }
+  return workFreeModelIds(in: fresh)
 }
 
 /// The free model a new chat or a new person's card switches to on the
@@ -408,6 +434,27 @@ final class WorkFreeModelsSetup: ObservableObject {
 }
 
 // MARK: - Views
+
+/// A model's name with its Free tag beside it when the model is free. The
+/// picker rows and the current-model bar each style the name their own way.
+struct WorkModelNameWithFreeBadge<Name: View>: View {
+  let modelId: String?
+  let name: Name
+
+  init(modelId: String?, @ViewBuilder name: () -> Name) {
+    self.modelId = modelId
+    self.name = name()
+  }
+
+  var body: some View {
+    HStack(spacing: 6) {
+      name
+      if let modelId, let entry = workFreeModelEntry(modelId: modelId) {
+        WorkFreeModelBadgeTag(badge: entry.badge)
+      }
+    }
+  }
+}
 
 /// The small tag beside a free model's name, wherever the model shows.
 struct WorkFreeModelBadgeTag: View {

@@ -1103,7 +1103,8 @@ free tier runs in ADE's pinned OpenCode with nothing signed in.
 `-free` id or `big-pickle`); iOS mirrors it in `WorkFreeModels.swift`.
 
 - **Free page.** The picker rail's gift tab, under Recents, lists every free
-  model of the picker's machine. It needs no sign-in, so "Only models I can
+  model of the picker's machine. A picker narrowed to its caller's own list
+  shows the tab only when that list has a free model. It needs no sign-in, so "Only models I can
   use" never hides it. Each row carries a `source` (one tab per source; one
   source draws no tabs) and a `badge` (`free` or `ad-supported`), shown by
   `FreeModelBadge.tsx` on that row everywhere in the picker. Searching
@@ -1112,23 +1113,33 @@ free tier runs in ADE's pinned OpenCode with nothing signed in.
   (`pinnedToolDownload` on the picker's machine), shows the download's
   progress, then re-reads that machine's status and force-refreshes
   OpenCode's catalog. It mounts only while the page is empty, so a page with
-  rows reads nothing extra.
+  rows reads nothing extra. It shares `PickerEmptyMessage` with the provider
+  pages.
 - **Nothing signed in.** The status of the composer's machine carries
   `freeModels` (`main/services/ai/freeModelsStatus.ts`): `nothingSignedIn`
-  (no provider, key, custom provider or local model), `everSignedIn` (a
-  record written the first time any sign-in is seen, or an agent that ran
-  there) and `preferredDefaultModelIds` (the manifest's `defaults.free`).
+  (no provider, key, custom provider or local model), `everSignedIn` and
+  `preferredDefaultModelIds` (the manifest's `defaults.free`).
+  `everSignedIn` reads a record in ADE's cache: the first check writes it,
+  counting an agent that ran there before (older ADE versions), and the
+  first sign-in seen marks it. Later agent runs do not count, because a
+  runtime start is noted even with no sign-in. A local model is not a
+  sign-in: it clears `nothingSignedIn` but never marks the record.
   With nothing signed in:
-  - the picker opens on the Free page;
+  - the picker opens on the Free page (also when the status arrives after
+    the picker opened, unless the person picked a page);
   - a fresh chat draft starts on the preferred free model, else the first
-    listed one. ADE set it, so it is not remembered as the launch default
-    or "last used". A model the person picks first wins;
+    listed one (`chat/useFreeModelsDraft.ts`). ADE set it, so it is not
+    remembered as the launch default or "last used". A model someone chose
+    wins, also one chosen before the status arrived, the tour's pick and a
+    restored saved draft. A sign-in on that
+    machine puts the draft back on the model it opened on;
   - a person who never signed in there gets **Use a free model** on the
-    sign-in strip;
+    sign-in strip, on a draft or an open chat (iOS: on the chat's sign-in
+    card, which also re-sends a turn that stopped on the sign-in);
   - the app banner says **Free models are ready** (accent) instead of the
     missing-provider warning, once OpenCode is on the machine.
-- **Download at launch.** A computer with no sign of Claude or Codex
-  downloads OpenCode at launch (`agentToolDemand.ts`, `signals` policy
+- **Download at launch.** A computer with no sign of any agent downloads
+  OpenCode at launch (`agentToolDemand.ts`, `signals` policy
   only). The banner, the first-run OpenCode tile and a waiting draft follow
   the tools cache's push (`renderer/lib/toolsCacheEvents.ts`), this computer
   only.

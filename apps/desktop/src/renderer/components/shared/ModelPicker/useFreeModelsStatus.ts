@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AiFreeModelsStatus, OpenProjectBinding } from "../../../../shared/types";
 import {
   AI_STATUS_CACHE_UPDATED_EVENT,
+  aiStatusRootMatches,
+  aiStatusUpdatedRoot,
   getAiStatusCached,
+  statusCachePin,
   peekAiStatusCached,
-  type AiStatusCacheUpdatedEventDetail,
 } from "../../../lib/aiDiscoveryCache";
-import { arePathsEqual } from "../../../lib/pathUtils";
 import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 
 /**
@@ -14,14 +15,18 @@ import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
  * (`shared/freeModels.ts`). Reads the shared status cache, so it adds no
  * request of its own beyond the one every picker already shares.
  *
- * Null until the status is known, and for a brain too old to send the block:
- * callers then behave as before (someone is signed in).
+ * `status` is null until the status is known, and for a brain too old to send
+ * the block: callers then behave as before (someone is signed in). `refresh`
+ * makes that machine re-read its status (OpenCode just downloaded there).
  */
-export function useFreeModelsStatus(runtimePin: OpenProjectBinding | null): AiFreeModelsStatus | null {
+export function useFreeModelsStatus(runtimePin: OpenProjectBinding | null): {
+  status: AiFreeModelsStatus | null;
+  refresh: () => void;
+} {
   const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
   // The status cache keys the tab's own machine without a pin, as
   // `useProviderAuthStatus` does.
-  const pin = runtimePin && runtimePin.key !== projectBindingKey ? runtimePin : null;
+  const pin = statusCachePin(runtimePin, projectBindingKey);
   const pinRef = useRef(pin);
   pinRef.current = pin;
   const pinKey = pin?.key ?? null;
@@ -46,14 +51,14 @@ export function useFreeModelsStatus(runtimePin: OpenProjectBinding | null): AiFr
     };
     apply(peekAiStatusCached(projectRoot, pinRef.current)?.freeModels);
     const onUpdated = (event: Event) => {
-      const updatedRoot = (event as CustomEvent<AiStatusCacheUpdatedEventDetail>).detail?.projectRoot ?? null;
-      if (updatedRoot !== (projectRoot ?? null) && !(updatedRoot && projectRoot && arePathsEqual(updatedRoot, projectRoot))) return;
+      if (!aiStatusRootMatches(aiStatusUpdatedRoot(event), projectRoot)) return;
       apply(peekAiStatusCached(projectRoot, pinRef.current)?.freeModels);
     };
     window.addEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
     if (typeof window.ade?.ai?.getStatus === "function") {
       void getAiStatusCached({ projectRoot, pin: pinRef.current })
-        .then((status) => apply(status?.freeModels))
+        // The cache, not this reply: a newer read may have finished first.
+        .then((status) => apply((peekAiStatusCached(projectRoot, pinRef.current) ?? status)?.freeModels))
         .catch(() => undefined);
     }
     return () => {
@@ -62,5 +67,9 @@ export function useFreeModelsStatus(runtimePin: OpenProjectBinding | null): AiFr
     };
   }, [pinKey, projectRoot]);
 
-  return freeModels;
+  const refresh = useCallback(() => {
+    void getAiStatusCached({ projectRoot, pin: pinRef.current, force: true }).catch(() => undefined);
+  }, [projectRoot]);
+
+  return { status: freeModels, refresh };
 }

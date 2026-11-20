@@ -61,7 +61,7 @@ export type IntegrationBannersProps = {
    * (`shared/freeModels.ts`): the free-models banner replaces the missing
    * provider warning.
    */
-  freeModelsReady?: boolean;
+  freeModelsReady: boolean;
   aiStatusLoaded: boolean;
   /**
    * Relay leg of this machine's sync route health, pushed down from AppShell's
@@ -140,7 +140,7 @@ export function IntegrationBanners({
   currentProjectRoot,
   githubStatus,
   hasAnyAiProvider,
-  freeModelsReady = false,
+  freeModelsReady,
   aiStatusLoaded,
   relayHealth,
   navigate,
@@ -515,7 +515,8 @@ export function IntegrationBanners({
     //
     // Nothing signed in, but the free models work: say that instead, and name
     // no provider (there are many).
-    if (currentProjectRoot && aiStatusLoaded && freeModelsReady && !isAdeCloudTargetId(machineId)) {
+    const aiBannerApplies = Boolean(currentProjectRoot) && aiStatusLoaded && !isAdeCloudTargetId(machineId);
+    if (aiBannerApplies && freeModelsReady) {
       list.push({
         id: "free-models",
         tone: "accent",
@@ -525,7 +526,7 @@ export function IntegrationBanners({
         actions: [{ label: "Sign in", variant: "primary", onClick: () => navigate(AI_SETTINGS_ROUTE) }],
         dismiss: { key: `free-models:${currentProjectRoot}`, fingerprint: "ready" },
       });
-    } else if (currentProjectRoot && aiStatusLoaded && !hasAnyAiProvider && !isAdeCloudTargetId(machineId)) {
+    } else if (aiBannerApplies && !hasAnyAiProvider) {
       list.push({
         id: "ai-provider",
         tone: "warning",

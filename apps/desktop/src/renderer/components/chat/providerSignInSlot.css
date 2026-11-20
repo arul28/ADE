@@ -85,8 +85,6 @@
 /* "Use a free model": the free models' sky mark, so it reads as the same
    thing the picker's Free page lists. */
 .ade-psi-free {
-  display: inline-flex;
-  align-items: center;
   gap: 4px;
 }
 
