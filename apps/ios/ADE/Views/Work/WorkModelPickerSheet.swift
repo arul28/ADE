@@ -921,7 +921,8 @@ struct WorkModelPickerSheet: View {
     let status = await WorkFreeModelsStatusStore.shared.status(for: host)
     guard !Task.isCancelled else { return }
     freeStatus = status
-    if status?.nothingSignedIn == true, !userPickedRail, showsFreeEntry, hasCatalog || didPickInitialSelection {
+    // Also with no main catalog: the Free page then is the only page.
+    if status?.nothingSignedIn == true, !userPickedRail, showsFreeEntry {
       selection = .free
     }
   }

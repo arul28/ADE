@@ -13446,9 +13446,9 @@ export function AgentChatPane({
       throw new Error("The chat was not created: this ADE runtime returned a session with no id.");
     }
     invalidateAgentChatSessionListCache({ laneId: targetLaneId });
-    // ADE's pick stays its own until a person picks a model; the next chat or
-    // draft remembers again.
-    if (!draftKeepsMachineDefaultsRef.current) {
+    // ADE's pick stays its own until a person picks a model. Read from the
+    // create args: a pick made while the create ran is not this chat's.
+    if (built.createArgs.rememberLaunchDefaults !== false) {
       rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls);
     }
     loadedHistoryRef.current.delete(created.id);
@@ -14641,7 +14641,7 @@ export function AgentChatPane({
   const buildDraftChatLaunch = useCallback((prepared: Parameters<typeof buildChatCreateArgs>[0]) => {
     if (constrainedModelSelectionError) throw new Error(constrainedModelSelectionError);
     const built = buildChatCreateArgs(prepared);
-    if (!draftKeepsMachineDefaultsRef.current) {
+    if (built.createArgs.rememberLaunchDefaults !== false) {
       rememberLaunchConfig(lastLaunchConfigStorageKey, built, { model: built.createArgs.model }, initialNativeControls);
     }
     return built;

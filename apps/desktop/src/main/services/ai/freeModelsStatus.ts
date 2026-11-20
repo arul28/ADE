@@ -42,7 +42,11 @@ export type FreeModelsStatusInputs = {
  */
 function machineHasSignIn(inputs: FreeModelsStatusInputs): boolean {
   if (inputs.claude.auth.ready) return true;
-  if (Object.values(inputs.providerConnections).some((connection) => connection?.authAvailable === true)) return true;
+  // Pi's connection reads any configured provider as signed in (a base URL
+  // or a placeholder key too): its own rule below decides.
+  if (Object.entries(inputs.providerConnections).some(([provider, connection]) => (
+    provider !== "pi" && connection?.authAvailable === true
+  ))) return true;
   if (inputs.auth.some((entry) => (
     entry.type === "api-key"
     || entry.type === "openrouter"

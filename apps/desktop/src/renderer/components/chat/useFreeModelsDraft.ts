@@ -98,9 +98,9 @@ export function useFreeModelsDraft(args: {
   // One load per scope and status read: a load that failed, or listed no free
   // model, runs again on a later status re-read. A re-read that says the same
   // keeps the old status object, so the reads are counted from the cache
-  // event, and only while no free model is known. Such a retry waits 30 s
-  // after the last load. A retry skips the freshness check, or it would
-  // answer with the same empty list.
+  // event, and only while no free model is known. A retry waits 30 s after
+  // the last load and skips the freshness check, or it would answer with the
+  // same empty list.
   const waitingForFreeModels = freshDraft && nothingSignedIn && opencodeInstalled && freeModelIds.length === 0;
   const [statusReads, setStatusReads] = useState(0);
   useEffect(() => {
@@ -119,8 +119,10 @@ export function useFreeModelsDraft(args: {
     if (!waitingForFreeModels) return;
     const previous = catalogRequestedForRef.current;
     const retry = previous != null && previous.scopeKey === catalogScopeKey;
-    if (retry && previous.status === aiStatus) {
-      if (previous.statusReads === statusReads || Date.now() - previous.at < FREE_CATALOG_RETRY_MS) return;
+    if (retry) {
+      // Nothing new was read, or the last load is too recent.
+      if (previous.status === aiStatus && previous.statusReads === statusReads) return;
+      if (Date.now() - previous.at < FREE_CATALOG_RETRY_MS) return;
     }
     catalogRequestedForRef.current = { scopeKey: catalogScopeKey, status: aiStatus, statusReads, at: Date.now() };
     void fetchSharedRuntimeCatalog({

@@ -812,6 +812,9 @@ struct WorkChatSessionView: View {
   /// The free model the sign-in card offers a brand-new person on the chat's
   /// machine, or nil (someone signed in there before, or no free models).
   @State var signInFreeModelId: String?
+  /// A "Use a free model" switch is running: another tap does nothing, so a
+  /// stopped turn is sent once.
+  @State var signInFreeModelSwitching = false
   @State var bottomChromeMinY: CGFloat = 0
   @State var transcriptSafeInsets = EdgeInsets()
   /// The transcript's handle on its own `UICollectionView`. Replaces the
@@ -1176,7 +1179,10 @@ struct WorkChatSessionView: View {
   /// "Use a free model": the chat moves to the free model, the card goes,
   /// and a turn that stopped on the sign-in sends again on it.
   func useFreeModelFromSignIn(_ modelId: String, signIn: (key: String, reason: WorkProviderSignInReason)) {
+    guard !signInFreeModelSwitching else { return }
+    signInFreeModelSwitching = true
     Task { @MainActor in
+      defer { signInFreeModelSwitching = false }
       // A switch that failed shows its error and keeps the card: a resend
       // would run on the signed-out model again.
       guard await onSelectModel(modelId) else { return }
