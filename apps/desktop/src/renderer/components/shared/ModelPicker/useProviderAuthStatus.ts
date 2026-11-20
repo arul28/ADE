@@ -274,8 +274,10 @@ export function useProviderAuthStatus(options?: {
       : UNKNOWN_BINARY
   ));
 
-  // Counts the binary answers read from a status. A probe that a status
-  // answered after it started is stale and is dropped.
+  // Counts the binary answers read from a status. A probe that says "not
+  // installed" after a status answered is dropped: it can predate a download
+  // the status saw. An "installed" answer always applies, because a replayed
+  // cached status (counted too) can be the stale one.
   const binaryFromStatusRef = useRef(0);
 
   useEffect(() => {
@@ -292,7 +294,8 @@ export function useProviderAuthStatus(options?: {
     );
     const statusReadsAtProbe = binaryFromStatusRef.current;
     void probeBinary(binaryScopeKey, pin).then((installed) => {
-      if (!active || installed == null || binaryFromStatusRef.current !== statusReadsAtProbe) return;
+      if (!active || installed == null) return;
+      if (!installed && binaryFromStatusRef.current !== statusReadsAtProbe) return;
       setBinary({ opencodeBinaryInstalled: installed, binaryProbed: true });
     });
     // A status re-read can find OpenCode newly downloaded (the Free page's
