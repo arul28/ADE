@@ -20,13 +20,17 @@ import { useGoTo } from "../../onboarding/spotlight/useGoTo";
  * settles first and a situational suggestion with a real signal gets it
  * first, then again whenever the next tip is allowed (`nextTipCardAt`: up to
  * two a week, two days apart, within the shared unasked budget). The rest of the rules are `claimTipCard`'s.
- * Test mode asks after a few seconds.
+ * It never asks while an agent works in the open project, and it waits a
+ * short while after the last turn ends, so it does not cover the composer
+ * while the user reads the answer. Test mode asks after a few seconds.
  *
  * Cost: one pending timer while a project is open; nothing renders until a tip shows.
  */
 
 const ASK_AFTER_MS = 90_000;
 const ASK_AFTER_TEST_MS = 4_000;
+/** How long the project stays quiet after a turn before a tip may ask. */
+const QUIET_AFTER_TURN_MS = 30_000;
 
 /** The tip to offer next: the first in this computer's random order not tried or shown yet. */
 function nextTip(): AdeTip | null {
@@ -34,22 +38,30 @@ function nextTip(): AdeTip | null {
   return machineTipOrder().find((tip) => tipOfferedAsCard(tip) && !done.has(tip.id)) ?? null;
 }
 
-export function useFeatureTipCard(enabled: boolean): void {
+export function useFeatureTipCard(enabled: boolean, agentWorking: boolean): void {
   const goTo = useGoTo();
   const rulesVersion = useSuggestionRulesVersion();
   const [tip, setTip] = useState<AdeTip | null>(null);
   /** When this project session began: the first ask waits for it to settle. */
   const sessionStartRef = useRef(0);
   const [retry, setRetry] = useState(0);
+  /** When the last agent turn in the project ended, or 0 when none ended in this session. */
+  const quietSinceRef = useRef(0);
+  const wasWorkingRef = useRef(agentWorking);
+  // Declared before the ask effect, so it runs first when a turn ends.
+  useEffect(() => {
+    if (wasWorkingRef.current && !agentWorking) quietSinceRef.current = Date.now();
+    wasWorkingRef.current = agentWorking;
+  }, [agentWorking]);
 
   useEffect(() => {
     if (!enabled) {
       sessionStartRef.current = 0;
       return undefined;
     }
-    if (tip) return undefined;
     const now = Date.now();
     if (!sessionStartRef.current) sessionStartRef.current = now;
+    if (tip || agentWorking) return undefined;
     const allowedAt = nextTipCardAt(now);
     if (allowedAt == null) return undefined;
     const settle = sessionStartRef.current + (suggestionsTestMode() ? ASK_AFTER_TEST_MS : ASK_AFTER_MS);
@@ -67,13 +79,14 @@ export function useFeatureTipCard(enabled: boolean): void {
       const next = nextTip();
       if (next && claimTipCard(next.id)) setTip(next);
     };
-    const timer = window.setTimeout(ask, Math.max(0, settle - now, allowedAt - now));
+    const quiet = quietSinceRef.current ? quietSinceRef.current + QUIET_AFTER_TURN_MS : 0;
+    const timer = window.setTimeout(ask, Math.max(0, settle - now, allowedAt - now, quiet - now));
     return () => {
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
     // `rulesVersion`: an answer or a suggestion changes when the next tip may come.
-  }, [enabled, retry, rulesVersion, tip]);
+  }, [agentWorking, enabled, retry, rulesVersion, tip]);
 
   const icon = useMemo(() => {
     if (!tip) return null;

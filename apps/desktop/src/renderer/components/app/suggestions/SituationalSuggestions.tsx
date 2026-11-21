@@ -79,11 +79,14 @@ export function SituationalSuggestions(props: Props): null {
   useMachineMentionSuggestion(props, machinesSettled ? onlineMachineName : null);
   useChatSecretSuggestion(props);
   useIssueTrackerSuggestion(props);
-  useParallelChatsSuggestion(props);
+  // Chats and CLIs running in the open project: read once for the two hooks that use it.
+  const working = useOpenProjectWorkingCount();
+  useParallelChatsSuggestion(props, working);
   useRepeatPromptSuggestion(props);
   usePairPhoneSuggestion(props, machinesSettled && otherMachines.length === 0);
-  // Last: a tip only asks for the slot once these have had their chance.
-  useFeatureTipCard(props.enabled);
+  // Last: a tip only asks for the slot once these have had their chance, and
+  // never while an agent works in the project, so it does not cover the composer then.
+  useFeatureTipCard(props.enabled, working > 0);
   return null;
 }
 
@@ -273,13 +276,17 @@ function workingChatCount(
   return countActivityBoardColumns(inProject).working;
 }
 
-/** Three or more chats are running at once in the open project and the Work grid is not in use. */
-function useParallelChatsSuggestion({ enabled, navigate }: Props): void {
+/** Chats and CLIs running now in the open project, on any machine. */
+function useOpenProjectWorkingCount(): number {
   const rootPath = useAppStore(selectActiveProjectRoot);
   const projectName = useAppStore((state) => (
     state.projectBinding?.kind === "remote" ? state.projectBinding.displayName : state.project?.displayName
   ) ?? null);
-  const working = useActivityStore((state) => workingChatCount(state.itemsById, { rootPath, name: projectName }));
+  return useActivityStore((state) => workingChatCount(state.itemsById, { rootPath, name: projectName }));
+}
+
+/** Three or more chats are running at once in the open project and the Work grid is not in use. */
+function useParallelChatsSuggestion({ enabled, navigate }: Props, working: number): void {
   const running = enabled && working >= 3;
   const gridOn = useWorkFocusGridOn(running);
   const start = useCallback(() => {
