@@ -199,11 +199,15 @@ struct LaneDetailScreen: View {
       commitDiffPickerSheet
     }
     .sheet(isPresented: $movePresented) {
-      LaneMoveSheet(
+      LaneMoveSheet(source: laneMoveSource(
+        laneId: laneId,
         // The primary lane is the main checkout in every screen's copy.
-        laneName: currentSnapshot.lane.laneType == "primary" ? "The main checkout" : currentSnapshot.lane.name,
-        chats: detail?.chatSessions ?? []
-      )
+        laneName: currentSnapshot.lane.displayName,
+        machineName: machineName,
+        sessions: detail?.sessions ?? [],
+        chats: detail?.chatSessions ?? [],
+        sync: syncService
+      ))
     }
     // "Wake and move" on the lane at rest: the computer is up, so the move
     // sheet opens once the lane's chats are read.

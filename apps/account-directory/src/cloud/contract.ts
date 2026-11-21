@@ -98,6 +98,10 @@
  * With `{ keepLane: { branchRef } }` the lane the computer was made for
  * (its lane metadata) stays as a lane without a computer; the 30-day rule
  * keeps the lane the same way. A new computer made for that lane id ends it.
+ * `{ keepLane: { branchRef, onlyIfSaved: true } }` (a move of the lane from
+ * its saved copy) deletes only a computer that rests with every lane's work
+ * saved, read with no wake; else 409 `computer_awake`, `backup_not_current`
+ * or `backup_never_saved`, and nothing is deleted.
  * `POST /cloud/instances` with `{ moveFromInstanceId }` gives the new computer
  * that computer's disk (a move), under the same plan limits.
  * `POST /cloud/instances/:id/resize` needs `{ computerIdle: true }` to grow the
@@ -215,7 +219,7 @@ export const CLOUD_PATHS = {
   sessions: "/cloud/sessions",
   /** Git summaries saved at rest (`gitSummaries.ts`). */
   git: "/cloud/git",
-  /** Fork capsules saved before a delete (`forkCapsules.ts`). */
+  /** Fork capsules saved at rest (`forkCapsules.ts`). */
   capsules: "/cloud/capsules",
   /** Lane backups saved at rest: the work of each lane that is not on GitHub yet (`laneBackups.ts`). */
   backups: "/cloud/backups",
@@ -299,6 +303,15 @@ export const CLOUD_LANE_METADATA = {
  * chats stay readable from the saved copy. The next send to it makes a new
  * computer on the same branch, and that computer's create ends this record.
  */
+/**
+ * `POST /cloud/lanes/without-computer/:lane/moved`: the kept lane came back on
+ * the person's own machine (`toMachineKey`). The record goes, and so does the
+ * lane's data under every other machine key; what moved to `toMachineKey`
+ * stays. `keepBackups`: the lane there has other work than its backup, so the
+ * backup stays for the person.
+ */
+export type CloudLaneMovedRequest = { toMachineKey: string; keepBackups: boolean };
+
 export type CloudLaneWithoutComputer = {
   laneId: string;
   laneName: string;
@@ -388,6 +401,8 @@ export type CloudInstance = {
    * its last save couldn't save, each with why. Null before its first report.
    */
   backups?: { saved: boolean; problems: CloudBackupProblem[] } | null;
+  /** The files git ignores on it, as it last read them: no saved copy holds them. Null before its first read. */
+  ignoredFiles?: CloudIgnoredFiles | null;
 };
 
 /**
@@ -1436,10 +1451,11 @@ export const CLOUD_COMPUTER_COMMANDS = {
   unfreeze: "ade cloud unfreeze --json",
   /**
    * Before the person's Sleep of an awake computer: stop the turns and save
-   * the chats, so a cut turn reads Stopped while it sleeps. An older ADE
-   * ignores `--chats-only` and also saves the lane backups.
+   * the chats, so a cut turn reads Stopped while it sleeps. Then, in the
+   * time left, save every lane's backup: a computer that rests saved can
+   * move its lanes later with no wake.
    */
-  prepareForSleep: "ade cloud prepare-stop --timeout 20 --chats-only --json",
+  prepareForSleep: "ade cloud prepare-stop --timeout 20 --json",
 } as const;
 /**
  * What a computer's ADE can do, in its boot report
@@ -1598,8 +1614,13 @@ export type CloudBackupProblem = { laneId: string; laneName: string | null; reas
 
 /* ---- Chat move after a fork restore ---- */
 
-/** `POST /cloud/chats/:oldMachine/:chat/move`, from the new computer that restored the chat. */
-export type CloudChatMoveRequest = { toMachineKey: string; instanceId: string };
+/**
+ * `POST /cloud/chats/:oldMachine/:chat/move`, from the new computer that restored the chat
+ * (`instanceId` names it). With no `instanceId`, the person's own signed-in machine moves a
+ * chat whose computer is deleted onto its own machine key (a kept lane moved to it): the
+ * key must be one of the account's machines and no ADE Cloud computer's.
+ */
+export type CloudChatMoveRequest = { toMachineKey: string; instanceId?: string };
 /**
  * The chat's row under its new machine key, with its full history (the
  * saved parts stay where they are; nothing is uploaded again). `lastSeq` is

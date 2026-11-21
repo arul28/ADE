@@ -5214,6 +5214,8 @@ export type AgentChatCrossMachineBatchMoveArgs = {
   includeChanges?: boolean;
   whenBusy?: "wait" | "interrupt";
   note?: string;
+  /** Set the repository up on the destination first when it is missing (GitHub only). */
+  clone?: boolean;
 };
 
 export type AgentChatCrossMachineBatchMoveItemState =
@@ -5277,6 +5279,8 @@ export type AgentChatCrossMachineBatchMoveRecord = {
   includeChanges: boolean;
   whenBusy: "wait" | "interrupt";
   note: string | null;
+  /** The destination sets the repository up first when it is missing. Absent on older records: no. */
+  clone?: boolean;
   items: AgentChatCrossMachineBatchMoveItem[];
 };
 

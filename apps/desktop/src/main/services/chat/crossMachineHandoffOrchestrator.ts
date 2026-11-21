@@ -1415,9 +1415,10 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
           requireTransport,
           resolveMachine: (selector) => resolveMachine(selector),
           callPreflight,
-          importLane: async (transport, machine, payload) => unwrapActionResult((await transport.callAction({
+          importLane: async (transport, machine, payload, options) => unwrapActionResult((await transport.callAction({
             machine,
             originUrl: payload.originUrl,
+            ...(options?.clone ? { clone: true } : {}),
             action: "importCrossMachineHandoffLane",
             args: payload,
             timeoutMs: ACCEPT_TIMEOUT_MS,

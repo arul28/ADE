@@ -431,21 +431,27 @@ describe("ADE Cloud account", () => {
 
   // A sleep freezes the computer: a turn it cuts must be stopped and saved first,
   // or its saved copy reads Done while it sleeps. A sleeping computer is never woken for it.
-  it.each<[string, "running" | "sleeping", boolean]>([
-    ["an awake computer stops its turns and saves its chats, then sleeps", "running", true],
-    ["a computer that already sleeps gets no command, so no wake", "sleeping", false],
-  ])("the person's Sleep: %s", async (_label, status, prepares) => {
+  // When the prepare also saved every lane, the computer rests saved: a move needs no wake.
+  const SLEEP_REPORT = "e".repeat(32);
+  const prepared = (backups: string) => JSON.stringify({ result: { stillRunning: 0, chatsNotUploaded: 0, timedOut: false, backups: { reportId: SLEEP_REPORT, state: backups } } });
+  it.each<[string, "running" | "sleeping", string | null, boolean]>([
+    ["an awake computer stops its turns, saves its chats and lanes, then sleeps saved", "running", "current", true],
+    ["a lane save that didn't finish: it sleeps, not saved", "running", "failed", false],
+    ["a computer that already sleeps gets no command, so no wake", "sleeping", null, false],
+  ])("the person's Sleep: %s", async (_label, status, backups, restsSaved) => {
     seedAccount(harness, OWNER);
-    seedComputer(harness, { machine_key: "key-a" });
+    seedComputer(harness, { machine_key: "key-a", backup_report_id: SLEEP_REPORT, backup_report_state: backups === "current" ? "current" : "failed" });
     provide(harness);
     harness.net.instances.get(INSTANCE)!.status = status;
+    if (backups) harness.net.hooks.exec = (_id, command) => command.includes("prepare-stop") ? { exit_code: 0, stdout: prepared(backups) } : null;
 
     expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/sleep`)).status).toBe(200);
 
     const lifecycle = providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/(exec|sleep)$`)).map((call) => call.url.endsWith("/exec") ? String(call.body?.command) : "sleep");
-    expect(lifecycle).toEqual(prepares
-      ? [expect.stringContaining("ade cloud prepare-stop --timeout 20 --chats-only --json"), "sleep"]
+    expect(lifecycle).toEqual(backups
+      ? [expect.stringContaining("ade cloud prepare-stop --timeout 20 --json"), "sleep"]
       : ["sleep"]);
+    expect(computer(harness).backup_rest_at != null).toBe(restsSaved);
   });
 
   function webhook(event: Row): Promise<Response> {
@@ -1241,6 +1247,27 @@ describe("ADE Cloud account", () => {
     expect((await errorOf(response))?.code).toBe(code);
     expect(providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`))).toEqual([]);
     expect(computer(harness)).toEqual(expect.objectContaining({ deleted_at: null, lane_keep_reason: null }));
+  });
+
+  // A move from the saved copy deletes the computer only while it rests right after a save of all its work.
+  const SAVED_REPORT = "d".repeat(32);
+  it.each<[string, string, Row, number, string | null]>([
+    ["it rests with every lane saved", "sleeping", { backup_rest_at: NOW - HOUR, backup_report_id: SAVED_REPORT, backup_report_state: "current" }, 200, null],
+    ["it woke after the save", "running", { backup_rest_at: NOW - HOUR, backup_report_id: SAVED_REPORT, backup_report_state: "current" }, 409, "computer_awake"],
+    ["its last save failed", "sleeping", { backup_rest_at: null, backup_report_id: SAVED_REPORT, backup_report_state: "failed" }, 409, "backup_not_current"],
+    ["it never saved", "sleeping", { backup_rest_at: null, backup_report_id: null }, 409, "backup_never_saved"],
+  ])("a keep-the-lane delete only if saved: %s", async (_label, status, backup, expected, code) => {
+    seedComputer(harness, { status, awake_since: status === "running" ? NOW : null, lane_id: "lane_pricing", lane_name: "pricing", ...backup });
+    provide(harness, INSTANCE, status);
+
+    const response = await harness.send(OWNER, "DELETE", instancePath, { reason: "moved", keepLane: { branchRef: "ade/pricing", onlyIfSaved: true } });
+
+    expect(response.status).toBe(expected);
+    expect(code ? (await errorOf(response))?.code : null).toBe(code);
+    expect(providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`))).toHaveLength(code ? 0 : 1);
+    // A refusal deletes nothing and leaves no keep-the-lane mark behind; a delete keeps the lane.
+    if (code) expect(computer(harness)).toEqual(expect.objectContaining({ deleted_at: null, lane_keep_reason: null }));
+    expect(harness.rows("select lane_id from cloud_lanes_without_computer")).toEqual(code ? [] : [{ lane_id: "lane_pricing" }]);
   });
 
   it("a repeated create by the same account gets its first computer back, and makes no second one", async () => {
@@ -3142,6 +3169,46 @@ describe("ADE Cloud without a computer", () => {
     expect(await partsOf("key-new")).toEqual(["third\n", "second\n", "first\n"]);
     seedComputer(harness, { instance_id: "thirdbox12", machine_key: "key-old" });
     expect((await savePart("thirdbox12", "key-old", 1, "other\n")).status).toBe(409);
+  });
+
+  it("a kept lane moved to the person's own machine: only that account's machine takes a deleted computer's chat onto its key, and the lane's forget keeps what moved there", async () => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { machine_key: "key-old" });
+    expect((await savePart(INSTANCE, "key-old", 1, "first\n")).status).toBe(200);
+    harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
+    harness.insert("cloud_lanes_without_computer", {
+      user_id: OWNER, lane_id: LANE, lane_name: "Fix the login page", project_origin: "https://github.com/acme/widgets", branch_ref: "ade/fix-login",
+      reason: "idle_cleanup", type: "default", cpu: 2, memory_gb: 4, former_instance_id: INSTANCE, former_machine_key: "key-old", created_at: NOW,
+    });
+    harness.insert("machines", { user_id: OWNER, machine_key: "key-mac", last_seen_at: NOW });
+    harness.insert("machines", { user_id: OTHER, machine_key: "key-theirs", last_seen_at: NOW });
+    const move = (caller: string, from: string, toMachineKey: string) => harness.send(caller, "POST", `/cloud/chats/${from}/c1/move`, { toMachineKey });
+
+    // Another account, to its own machine or to the owner's: no such chat or machine of theirs.
+    expect([(await move(OTHER, "key-old", "key-theirs")).status, (await move(OTHER, "key-old", "key-mac")).status]).toEqual([404, 404]);
+    // The owner's chat, to a key that is no machine of the owner's.
+    expect((await move(OWNER, "key-old", "key-theirs")).status).toBe(404);
+    // A copy whose computer still exists stays with it.
+    seedComputer(harness, { instance_id: SECOND, machine_key: "key-live" });
+    expect((await savePart(SECOND, "key-live", 1, "live\n")).status).toBe(200);
+    expect((await move(OWNER, "key-live", "key-mac")).status).toBe(409);
+
+    const moved = await move(OWNER, "key-old", "key-mac");
+    expect(moved.status).toBe(200);
+    expect(await moved.json()).toEqual({ chat: expect.objectContaining({ machineKey: "key-mac", lastSeq: 1, forkedFrom: { machineKey: "key-old", chatId: "c1" } }), moved: true });
+    // It lists as the machine's chat, not as a deleted computer's.
+    const listed = (await (await harness.send(OWNER, "GET", "/cloud/chats")).json()) as { chats: Array<{ machineKey: string; computer?: unknown }> };
+    expect(listed.chats.find((chat) => chat.machineKey === "key-mac")?.computer).toBeNull();
+    // From there it is no deleted computer's copy: it doesn't move on to another machine this way.
+    harness.insert("machines", { user_id: OWNER, machine_key: "key-desk", last_seen_at: NOW });
+    expect((await move(OWNER, "key-mac", "key-desk")).status).toBe(404);
+
+    // The lane is on the machine now: the record goes, the chat that moved there stays.
+    const forgot = await harness.send(OWNER, "POST", `/cloud/lanes/without-computer/${LANE}/moved`, { toMachineKey: "key-mac", keepBackups: false });
+    expect(await forgot.json()).toEqual({ forgotten: true });
+    expect(harness.rows("select lane_id from cloud_lanes_without_computer")).toEqual([]);
+    const kept = (await (await harness.send(OWNER, "GET", "/cloud/chats/key-mac/c1")).json()) as { parts: Array<{ text: string }> };
+    expect(kept.parts.map((part) => part.text)).toEqual(["first\n"]);
   });
 
   it.each([

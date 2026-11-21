@@ -28847,3 +28847,42 @@ final class ADETestDefaultsObserver: NSObject, XCTestObservation {
     }
   }
 }
+
+/// A lane moved off ADE Cloud deletes its computer and saved chats only when
+/// the batch record proves everything arrived. Each case goes through the
+/// record's decoding, as the brain's answer does, then the check; a record
+/// the phone can't read never allows a delete.
+final class LaneMoveComputerDeleteGateTests: XCTestCase {
+  private let lane = #"{"id":"l1","kind":"lane","state":"continued","destinationLaneId":"lane-dest"}"#
+  private let chat = #"{"id":"c1","kind":"chat","state":"continued","sourceSessionId":"s1","destinationSessionId":"chat-dest"}"#
+
+  private func allowsDelete(state: String, items: [String]) -> Bool {
+    let json = #"{"batchId":"b1","state":"\#(state)","machineKey":"studio","machineName":"Mac Studio","items":[\#(items.joined(separator: ","))]}"#
+    guard let record = try? JSONDecoder().decode(LaneMoveBatchRecord.self, from: Data(json.utf8)) else { return false }
+    return laneMoveBatchAllowsComputerDelete(record)
+  }
+
+  func testDeleteOnlyWhenEverythingArrived() {
+    let cases: [(name: String, state: String, items: [String], allowed: Bool)] = [
+      ("completed, all continued", "completed", [lane, chat], true),
+      ("partial", "partial", [lane, chat], false),
+      ("cancelled", "cancelled", [lane, chat], false),
+      ("still running", "running", [lane, chat], false),
+      ("chat continued without its new chat", "completed",
+       [lane, #"{"id":"c1","kind":"chat","state":"continued","sourceSessionId":"s1","destinationSessionId":null}"#], false),
+      ("lane continued without its new lane", "completed",
+       [#"{"id":"l1","kind":"lane","state":"continued","destinationLaneId":" "}"#, chat], false),
+      ("no lane item", "completed", [chat], false),
+      ("no items", "completed", [], false),
+      ("an item unknown", "completed",
+       [lane, chat, #"{"id":"c2","kind":"chat","state":"unknown","sourceSessionId":"s2","destinationSessionId":"chat-dest-2"}"#], false),
+      ("an item of a kind the phone does not know", "completed",
+       [lane, chat, #"{"id":"x1","kind":"files","state":"continued"}"#], false),
+      // Dropping an unreadable item would leave the rest looking complete.
+      ("an item the phone can't read", "completed", [lane, chat, #"{"id":"c2","kind":"chat"}"#], false),
+    ]
+    for entry in cases {
+      XCTAssertEqual(allowsDelete(state: entry.state, items: entry.items), entry.allowed, entry.name)
+    }
+  }
+}

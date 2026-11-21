@@ -61,14 +61,14 @@ export type CloudComputerRestDeps = {
 export type CloudComputerRest = {
   attach: (parts: { save: CloudRestSave | null; queue: CloudChatMessageQueue | null }) => void;
   /**
-   * The idle step's save (no capsules); stops early once someone uses the
+   * The idle step's save, capsules too; stops early once someone uses the
    * computer. Answers the backup report id when every lane is saved: the
    * computer's sleep request names it, so it rests with those backups.
    */
   saveAtIdle: (stillIdle: () => boolean) => Promise<string | null>;
   /** The save in `prepare-stop`, in the time left after the chats. */
   saveBeforeStop: ((budgetMs: number) => Promise<{ sessions: number; git: number; backups: CloudBackupSaveSummary | null }>) | null;
-  /** `ade cloud save-for-rest [--capsules]`: the server's idle cleanup. */
+  /** `ade cloud save-for-rest [--capsules]`: the server's idle cleanup. Every save makes capsules; the flag names the cleanup. */
   saveForCleanup: (capsules: boolean) => Promise<CloudSaveForRestReport>;
   /** One drain round, started and left to run (start, wake). */
   drain: (reason: string) => void;
@@ -128,14 +128,14 @@ export function createCloudComputerRest(deps: CloudComputerRestDeps): CloudCompu
       queue = parts.queue;
     },
     async saveAtIdle(stillIdle) {
-      const saved = await save?.save({ capsules: false, budgetMs: IDLE_SAVE_BUDGET_MS, reason: "idle", stillIdle });
+      const saved = await save?.save({ budgetMs: IDLE_SAVE_BUDGET_MS, reason: "idle", stillIdle });
       return saved?.backups?.state === "current" ? saved.backups.reportId : null;
     },
     get saveBeforeStop() {
       const current = save;
       if (!current) return null;
       return async (budgetMs: number) => {
-        const saved = await current.save({ capsules: false, budgetMs, reason: "prepare_stop" });
+        const saved = await current.save({ budgetMs, reason: "prepare_stop" });
         return { sessions: saved.sessions, git: saved.git, backups: saved.backups ?? null };
       };
     },
@@ -145,7 +145,6 @@ export function createCloudComputerRest(deps: CloudComputerRestDeps): CloudCompu
       if (!current || !holdFor) return { ok: false, capsules: 0, sessions: 0, git: 0, skipped: 0, error: "This computer can't save for rest." };
       cleanupUntil = now() + CLEANUP_WINDOW_MS;
       return await holdFor("save_for_rest", CLEANUP_SAVE_HOLD_MS, () => current.save({
-        capsules,
         budgetMs: CLEANUP_SAVE_BUDGET_MS,
         reason: capsules ? "cleanup" : "command",
       }));

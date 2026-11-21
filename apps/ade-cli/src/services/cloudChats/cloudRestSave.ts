@@ -13,17 +13,22 @@
  *    (`cloudLaneBackup.ts`), then a report of every lane's state, which a
  *    cleanup reads to delete the computer with no wake. Before the copies:
  *    code is what a person needs back most.
- * 4. With `capsules` (the delete path only): a
- *    fork capsule per chat and agent CLI whose provider has its own history
- *    (Claude, Codex, OpenCode chats; Claude Code and Codex CLIs). A new
- *    computer restores the chat from it with the same chat id. Every other
- *    provider needs none: the restore replays the saved transcript.
+ * 4. A fork capsule per chat and agent CLI whose provider has its own
+ *    history (Claude, Codex, OpenCode chats; Claude Code and Codex CLIs), at
+ *    every save: a computer the idle cleanup deletes with no wake has only
+ *    what its last save sent. The capsule holds only that history
+ *    (`prepareCloudRestCapsule`): no Git check and no bundle, since the lane
+ *    backup carries the code. A chat that did not change since its last
+ *    capsule is not sent again. A new computer, or the person's own machine,
+ *    restores the chat from it with the same chat id. Every other provider
+ *    needs none: the restore replays the saved transcript.
  *
  * Only projects whose runtime is open count: a project nobody opened since
  * boot has no new terminal output and no new chat turns.
  *
- * Runs at the idle step (`cloudKeepAwake` `saveForRest`, no capsules), in
- * `prepare-stop`, and as `ade cloud save-for-rest [--capsules] --json`.
+ * Runs at the idle step (`cloudKeepAwake` `saveForRest`), in `prepare-stop`,
+ * and as `ade cloud save-for-rest [--capsules] --json` (capsules are always
+ * on; the flag only names the cleanup in the log).
  * Text is redacted (`redactSecrets`) before it leaves the computer, and no
  * log line names a chat's text, a lane name or a path.
  */
@@ -74,8 +79,6 @@ const GIT_TIMEOUT_MS = 15_000;
 const STATE_FILE = "rest-save.json";
 
 export type CloudRestSaveOptions = {
-  /** Fork capsules too (the delete path, after prepare-stop). */
-  capsules: boolean;
   /**
    * Time for the whole save, counted from the call: a save that waits behind
    * an earlier one has that much less. Work not started by then waits for the
@@ -615,91 +618,93 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
       }
     }
 
-    // 4. Capsules: the delete path only (after prepare-stop), never at the idle step.
+    // 4. Capsules, at every save: a chat's history only, when it changed since its last capsule.
     const capsuleTasks: Array<() => Promise<void>> = [];
-    if (options.capsules) {
-      for (const runtime of runtimes) {
-        const chat = runtime.agentChatService;
-        if (!chat) continue;
-        let rows: TerminalSessionSummary[] = [];
-        try {
-          rows = runtime.sessionService.list({ limit: 500, includeArchived: false });
-        } catch (error) {
-          logger.warn("cloud.rest_save_sessions_read_failed", { error: errorText(error) });
-        }
-        for (const row of rows) {
-          const isChat = isChatToolType(row.toolType);
-          const isCli = !isChat && Boolean(row.toolType && CAPSULE_CLI_TOOLS.has(row.toolType));
-          if (!isChat && !isCli) continue;
-          capsuleTasks.push(async () => {
-            try {
-              let provider: string;
-              let modelId: string;
-              let mark: string;
-              if (isChat) {
-                const summary = await chat.getSessionSummary(row.id);
-                if (!summary || (summary.surface ?? "work") !== "work") return;
-                provider = summary.provider;
-                if (!CAPSULE_CHAT_PROVIDERS.has(provider)) {
-                  // Replayed from the saved transcript: no capsule needed.
-                  report.skipped += 1;
-                  return;
-                }
-                modelId = summary.modelId ?? summary.model;
-                mark = `${summary.lastActivityAt ?? ""}|${modelId}`;
-              } else {
-                provider = row.toolType === "codex" ? "codex" : "claude";
-                modelId = "";
-                mark = `${row.lastActivityAt ?? row.startedAt}|${row.status}`;
-              }
-              if (state.capsules[row.id] === mark) return;
-              const prepared = await chat.prepareCrossMachineHandoff({
-                sourceSessionId: row.id,
-                handoffId: `cloud-rest-${randomUUID()}`,
-                mode: "fork",
-                targetModelId: modelId,
-              });
-              const capsule = prepared.capsule;
-              const transportKind = isChat
-                ? capsule.forkTransport?.kind ?? null
-                : capsule.cli?.conversation?.kind ?? null;
-              if (!transportKind) {
-                // No native history to carry (a Codex `.zst` rollout, a CLI that starts fresh): the restore replays.
+    for (const runtime of runtimes) {
+      const chat = runtime.agentChatService;
+      if (!chat) continue;
+      let rows: TerminalSessionSummary[] = [];
+      try {
+        rows = runtime.sessionService.list({ limit: 500, includeArchived: false });
+      } catch (error) {
+        logger.warn("cloud.rest_save_sessions_read_failed", { error: errorText(error) });
+      }
+      for (const row of rows) {
+        const isChat = isChatToolType(row.toolType);
+        const isCli = !isChat && Boolean(row.toolType && CAPSULE_CLI_TOOLS.has(row.toolType));
+        if (!isChat && !isCli) continue;
+        capsuleTasks.push(async () => {
+          if (!idle()) return;
+          try {
+            let provider: string;
+            let modelId: string;
+            let mark: string;
+            if (isChat) {
+              const summary = await chat.getSessionSummary(row.id);
+              if (!summary || (summary.surface ?? "work") !== "work") return;
+              provider = summary.provider;
+              if (!CAPSULE_CHAT_PROVIDERS.has(provider)) {
+                // Replayed from the saved transcript: no capsule needed.
                 report.skipped += 1;
-                state.capsules[row.id] = mark;
                 return;
               }
-              // The restore reads the FULL saved transcript, so the capsule leaves out its own newest-3-MiB copy.
-              const { transcriptEnvelopes: _envelopes, ...kept } = capsule;
-              const bytes = gzipSync(Buffer.from(JSON.stringify({ v: 1, capsule: kept }), "utf8"));
-              const parts = splitCapsule(bytes);
-              if (!parts) {
-                logger.warn("cloud.rest_capsule_over_cap", { sessionId: row.id, bytes: bytes.byteLength });
-                report.skipped += 1;
-                state.capsules[row.id] = mark;
-                return;
-              }
-              for (let index = 0; index < parts.length; index += 1) {
-                await api.putCapsulePart(machineKey, row.id, index + 1, instanceId, parts[index]!);
-              }
-              await api.commitCapsule(machineKey, row.id, {
-                instanceId,
-                parts: parts.length,
-                bytes: bytes.byteLength,
-                provider,
-                transportKind,
-                laneId: row.laneId ?? null,
-                sessionKind: isChat ? "chat" : "cli",
-              });
-              state.capsules[row.id] = mark;
-              report.capsules += 1;
-            } catch (error) {
-              // A lane that isn't pushed, a chat with a turn running, a server that refused: replay instead.
-              report.skipped += 1;
-              logger.warn("cloud.rest_capsule_failed", { sessionId: row.id, error: errorText(error) });
+              modelId = summary.modelId ?? summary.model;
+              mark = `${summary.lastActivityAt ?? ""}|${modelId}`;
+            } else {
+              provider = row.toolType === "codex" ? "codex" : "claude";
+              modelId = "";
+              mark = `${row.lastActivityAt ?? row.startedAt}|${row.status}`;
             }
-          });
-        }
+            if (state.capsules[row.id] === mark) return;
+            // History only: the lane's code is in its backup, so unpushed or uncommitted work is fine here.
+            const prepared = await chat.prepareCloudRestCapsule({
+              sourceSessionId: row.id,
+              handoffId: `cloud-rest-${randomUUID()}`,
+              targetModelId: modelId,
+            });
+            const capsule = prepared.capsule;
+            const transportKind = isChat
+              ? capsule.forkTransport?.kind ?? null
+              : capsule.cli?.conversation?.kind ?? null;
+            if (!transportKind) {
+              // No native history to carry (a Codex `.zst` rollout, a CLI that starts fresh): the restore replays.
+              report.skipped += 1;
+              state.capsules[row.id] = mark;
+              return;
+            }
+            // The restore reads the FULL saved transcript, so the capsule leaves out its own newest-3-MiB copy.
+            const { transcriptEnvelopes: _envelopes, ...kept } = capsule;
+            const bytes = gzipSync(Buffer.from(JSON.stringify({ v: 1, capsule: kept }), "utf8"));
+            const parts = splitCapsule(bytes);
+            if (!parts) {
+              logger.warn("cloud.rest_capsule_over_cap", { sessionId: row.id, bytes: bytes.byteLength });
+              report.skipped += 1;
+              state.capsules[row.id] = mark;
+              return;
+            }
+            // Part 1 replaces the capsule saved before, so the check comes first and never between
+            // parts: an upload cut short would leave the chat with no capsule at all.
+            if (!idle() || Date.now() >= deadline) return;
+            for (let index = 0; index < parts.length; index += 1) {
+              await api.putCapsulePart(machineKey, row.id, index + 1, instanceId, parts[index]!);
+            }
+            await api.commitCapsule(machineKey, row.id, {
+              instanceId,
+              parts: parts.length,
+              bytes: bytes.byteLength,
+              provider,
+              transportKind,
+              laneId: row.laneId ?? null,
+              sessionKind: isChat ? "chat" : "cli",
+            });
+            state.capsules[row.id] = mark;
+            report.capsules += 1;
+          } catch (error) {
+            // A chat with a turn running, a server that refused: tried again at the next save.
+            report.skipped += 1;
+            logger.warn("cloud.rest_capsule_failed", { sessionId: row.id, error: errorText(error) });
+          }
+        });
       }
     }
 

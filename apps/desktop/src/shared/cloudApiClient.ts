@@ -86,7 +86,7 @@ import {
   type CloudRemoteSignInStatus,
   type CloudServerLaunchRequest,
 } from "../../../account-directory/src/cloud/contract";
-import type { CloudLaneWithoutComputer } from "../../../account-directory/src/cloud/contract";
+import type { CloudLaneMovedRequest, CloudLaneWithoutComputer } from "../../../account-directory/src/cloud/contract";
 import {
   CLOUD_EDGE_PATHS,
   cloudInstanceEventWakesPath,
@@ -269,7 +269,11 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     /** The server wakes a sleeping computer first. `computerIdle` is needed to grow the disk of a running one. */
     resize: (instanceId: string, args: { cpu?: number; memory?: number; disk?: number; computerIdle?: boolean }) =>
       request<{ status: string }>("POST", `${instancePath(instanceId)}/resize`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
-    deleteComputer: (instanceId: string, args: { who?: string | null; reason?: string | null } = {}) =>
+    /** `keepLane.onlyIfSaved`: only while it rests with every lane's work saved (409 otherwise, nothing deleted). */
+    deleteComputer: (
+      instanceId: string,
+      args: { who?: string | null; reason?: string | null; keepLane?: { branchRef: string | null; onlyIfSaved?: boolean } } = {},
+    ) =>
       request<{ deleted: true }>("DELETE", instancePath(instanceId), { body: args }),
     /** Runs a shell command on the computer; the server wakes a sleeping one for it (that uses hours). */
     exec: (instanceId: string, command: string, timeoutMs: number) =>
@@ -330,6 +334,12 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       (await orNullOn404(() => request<{ lanes?: CloudLaneWithoutComputer[] }>("GET", CLOUD_PATHS.lanesWithoutComputer)))?.lanes ?? [],
     forgetLaneWithoutComputer: (laneId: string) =>
       request<{ forgotten?: boolean }>("DELETE", `${CLOUD_PATHS.lanesWithoutComputer}/${encodeURIComponent(laneId)}`),
+    /**
+     * The kept lane came back on this machine (`toMachineKey`): its record goes, and its
+     * data under every other key; what moved here stays. An older server answers 404 and deletes nothing.
+     */
+    forgetMovedLaneWithoutComputer: (laneId: string, moved: CloudLaneMovedRequest) =>
+      request<{ forgotten?: boolean }>("POST", `${CLOUD_PATHS.lanesWithoutComputer}/${encodeURIComponent(laneId)}/moved`, { body: moved }),
     /**
      * The account's saved chats (the server's copy, readable with no computer
      * running). A 404 is an account without ADE Cloud: no chats, not a failure.

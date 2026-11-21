@@ -64,11 +64,69 @@ enum CloudAtRestPreviews {
         fixtureCopy: CloudSessionCopy(session: Data.shellCopy, format: "text", text: "$ git status --short\n M apps/web/src/upload.ts\n$")
       ))
     case "duo-lane-move":
-      return AnyView(LaneMoveFixture(chats: Data.laneChats, options: Data.moveOptions))
+      // The machine list of a lane on one of the person's computers.
+      return AnyView(LaneMoveMenuFixture(source: LaneMoveData.ownSource, fixture: LaneMoveFixture(options: Data.moveOptions, items: LaneMoveData.items)))
+    case "duo-lane-move-cloud":
+      // The machine list of an awake ADE Cloud lane: Change size… under the machines.
+      return AnyView(LaneMoveMenuFixture(source: LaneMoveData.cloudSource, fixture: LaneMoveFixture(options: Data.moveOptions, items: LaneMoveData.items)))
     case "duo-lane-move-asleep":
+      // An asleep computer lists the same places; its move comes from the saved copy.
+      return AnyView(LaneMoveMenuFixture(
+        source: LaneMoveData.asleepSource,
+        fixture: LaneMoveFixture(restoreTargets: LaneMoveData.restoreTargets, preview: LaneMoveData.asleepPreview(saved: true))
+      ))
+    case "duo-lane-move-asleep-wake":
+      // A computer that holds other lanes too wakes first.
       return AnyView(CloudLaneMoveFixture(deleted: false))
+    case "duo-lane-move-review-asleep":
+      return AnyView(LaneMoveReviewFixture(
+        source: LaneMoveData.asleepSource,
+        target: LaneMoveData.restoreTargets[0],
+        items: [],
+        preview: LaneMoveData.asleepPreview(saved: true)
+      ))
+    case "duo-lane-move-review-asleep-unsaved":
+      return AnyView(LaneMoveReviewFixture(
+        source: LaneMoveData.asleepSource,
+        target: LaneMoveData.restoreTargets[0],
+        items: [],
+        preview: LaneMoveData.asleepPreview(saved: false)
+      ))
+    case "duo-lane-move-releasing":
+      return AnyView(LaneMoveProgressFixture(run: LaneMoveData.asleepRun(wakeInstead: false), source: LaneMoveData.asleepSource))
+    case "duo-lane-move-wake-instead":
+      return AnyView(LaneMoveProgressFixture(run: LaneMoveData.asleepRun(wakeInstead: true), source: LaneMoveData.asleepSource))
     case "duo-lane-move-deleted":
-      return AnyView(CloudLaneMoveFixture(deleted: true))
+      // A kept lane: the computers that have this project open.
+      return AnyView(LaneMoveMenuFixture(
+        source: LaneMoveData.keptSource,
+        fixture: LaneMoveFixture(restoreTargets: LaneMoveData.restoreTargets, preview: LaneMoveData.preview)
+      ))
+    case "duo-lane-move-review":
+      // Own computer to own computer; one chat and one CLI arrive as a summary.
+      return AnyView(LaneMoveReviewFixture(source: LaneMoveData.ownSource, target: LaneMoveData.studio, items: LaneMoveData.items))
+    case "duo-lane-move-review-cloud":
+      // ADE Cloud to a computer without the project: the clone and the delete notes.
+      return AnyView(LaneMoveReviewFixture(source: LaneMoveData.cloudSource, target: LaneMoveData.air, items: LaneMoveData.items))
+    case "duo-lane-move-review-restore":
+      // A kept lane back from saved copies onto the Mac Studio.
+      return AnyView(LaneMoveReviewFixture(
+        source: LaneMoveData.keptSource,
+        target: LaneMoveData.restoreTargets[0],
+        items: [],
+        preview: LaneMoveData.preview
+      ))
+    case "duo-lane-move-moving":
+      return AnyView(LaneMoveProgressFixture(run: LaneMoveData.run(.moving)))
+    case "duo-lane-move-arrived":
+      return AnyView(LaneMoveProgressFixture(run: LaneMoveData.run(.done)))
+    case "duo-lane-move-failed":
+      return AnyView(LaneMoveProgressFixture(run: LaneMoveData.run(.failed)))
+    case "duo-lane-move-delete-failed":
+      return AnyView(LaneMoveProgressFixture(run: LaneMoveData.run(.deleteFailed)))
+    case "duo-lane-move-tag":
+      // The prompt box's machine label, as a control and as a plain label.
+      return AnyView(LaneMoveTagFixture())
     case "duo-cloud-move-asleep":
       return AnyView(CloudMoveFixture(deleted: false))
     case "duo-cloud-move-deleted":
@@ -320,16 +378,273 @@ private struct CloudWorkFixture: View {
   }
 }
 
-/// The live lane's "Move to…" sheet, with fixed places and no send.
-private struct LaneMoveFixture: View {
-  let chats: [AgentChatSessionSummary]
-  let options: AgentChatCrossMachineHandoffOptions
+/// The data of the "Move this lane to" fixtures. Nothing here reaches a brain.
+@MainActor
+private enum LaneMoveData {
+  static let route = LaneMoveRoute(machineKey: "fleet-macbook-pro", projectId: "project-northwind", rootPath: "/Users/sam/northwind")
+
+  static let ownSource = LaneMoveSource(
+    kind: .own,
+    laneId: "lane-upload",
+    laneName: "Fix flaky upload test",
+    machineName: "MacBook Pro",
+    viaSessionId: "chat-a",
+    fleetKey: "fleet-macbook-pro",
+    computer: nil,
+    sessions: [],
+    chats: CloudAtRestPreviews.Data.laneChats
+  )
+
+  static let cloudSource = LaneMoveSource(
+    kind: .cloud,
+    laneId: "lane-upload",
+    laneName: "Fix flaky upload test",
+    machineName: ADECloudMachine.name,
+    viaSessionId: "chat-a",
+    fleetKey: "cloud-fixture",
+    computer: LaneMoveCloudComputer(instanceId: "inst-fixture", accountMachineKey: CloudAtRestPreviews.Data.machineKey, laneId: "lane-upload"),
+    sessions: [],
+    chats: CloudAtRestPreviews.Data.laneChats
+  )
+
+  static let asleepSource = LaneMoveSource(
+    kind: .cloudAsleep,
+    laneId: "lane-upload",
+    laneName: "Fix flaky upload test",
+    machineName: ADECloudMachine.name,
+    viaSessionId: "chat-a",
+    fleetKey: "cloud-fixture",
+    computer: LaneMoveCloudComputer(instanceId: "inst-fixture", accountMachineKey: CloudAtRestPreviews.Data.machineKey, laneId: "lane-upload")
+  )
+
+  static let keptSource = LaneMoveSource(
+    kind: .cloudGone,
+    laneId: "lane-upload",
+    laneName: "Fix flaky upload test",
+    machineName: ADECloudMachine.name,
+    viaSessionId: nil,
+    fleetKey: nil,
+    computer: nil
+  )
+
+  /// Two chats with full history, one that arrives as a summary, and two CLIs.
+  static let items: [LaneMoveItem] = [
+    LaneMoveItem(id: "chat-a", title: "Fix the flaky upload test", kind: .chat, provider: "claude", history: .full),
+    LaneMoveItem(id: "chat-sub", title: "Find every fixed sleep", kind: .chat, provider: "claude", history: .full),
+    LaneMoveItem(id: "chat-b", title: "Update the changelog", kind: .chat, provider: "kimi", history: .summary),
+    LaneMoveItem(id: "cli-a", title: "Run the upload tests 50 times", kind: .cli, provider: "codex", history: .full),
+    LaneMoveItem(id: "cli-b", title: "Check the docs links", kind: .cli, provider: "qwen", history: .summary),
+  ]
+
+  static let studio = LaneMoveTarget(id: "studio", machineKey: "studio", name: "Mac Studio", ready: true, reason: nil, hasRepository: true, route: nil)
+  static let air = LaneMoveTarget(id: "air", machineKey: "air", name: "MacBook Air", ready: true, reason: nil, hasRepository: false, route: nil)
+
+  static let restoreTargets: [LaneMoveTarget] = [
+    LaneMoveTarget(id: "fleet-studio", machineKey: "fleet-studio", name: "Mac Studio", ready: true, reason: nil, hasRepository: true,
+                   route: LaneMoveRoute(machineKey: "fleet-studio", projectId: "project-northwind", rootPath: nil)),
+    LaneMoveTarget(id: "fleet-mini", machineKey: "fleet-mini", name: "Mac mini", ready: false, reason: "Mac mini is not on.", hasRepository: true,
+                   route: LaneMoveRoute(machineKey: "fleet-mini", projectId: "project-northwind", rootPath: nil)),
+  ]
+
+  static let preview = CloudKeptLaneRestorePreview(
+    laneId: "lane-upload",
+    laneName: "Fix flaky upload test",
+    branchRef: "fix-flaky-upload-test",
+    hasRepository: true,
+    work: CloudKeptLaneRestorePreview.Work(unpushedCommits: 2, changedFiles: 3, bytes: 48_000),
+    chats: [
+      CloudKeptLaneRestorePreview.Chat(chatId: "chat-a", title: "Fix the flaky upload test", provider: "claude", kind: "chat", history: .full),
+      CloudKeptLaneRestorePreview.Chat(chatId: "chat-b", title: "Update the changelog", provider: "kimi", kind: "chat", history: .transcript),
+      CloudKeptLaneRestorePreview.Chat(chatId: "cli-b", title: "Check the docs links", provider: "qwen", kind: "cli", history: .fresh),
+    ]
+  )
+
+  /// The asleep computer's saved copy: complete, or not (the move then wakes it).
+  static func asleepPreview(saved: Bool) -> CloudKeptLaneRestorePreview {
+    CloudKeptLaneRestorePreview(
+      laneId: preview.laneId,
+      laneName: preview.laneName,
+      branchRef: preview.branchRef,
+      hasRepository: true,
+      work: preview.work,
+      chats: preview.chats,
+      fromComputer: CloudKeptLaneRestorePreview.FromComputer(
+        saved: saved,
+        reason: saved ? nil : "ADE couldn't save this lane's work when the computer went to sleep.",
+        ignored: LaneMoveIgnoredFiles(paths: [".env", ".env.local", "tmp/upload-cache.db"], more: 2, rebuildable: 1, incomplete: nil)
+      )
+    )
+  }
+
+  /// A move off the asleep computer onto the Mac Studio: deleting it first, or refused.
+  static func asleepRun(wakeInstead: Bool) -> LaneMoveRun {
+    let reason = "The computer woke, so its saved copy may not be current."
+    return LaneMoveRun(
+      id: "restore-fixture",
+      kind: .restore,
+      laneId: "lane-upload",
+      laneName: "Fix flaky upload test",
+      targetName: "Mac Studio",
+      route: restoreTargets[0].route ?? route,
+      computer: nil,
+      phase: wakeInstead ? .failed : .moving,
+      error: wakeInstead ? reason : nil,
+      startedAt: Date().addingTimeInterval(-6),
+      fromComputer: "inst-fixture",
+      restore: CloudKeptLaneRestoreRecord(
+        restoreId: "restore-fixture",
+        laneId: "lane-upload",
+        laneName: "Fix flaky upload test",
+        state: wakeInstead ? "failed" : "running",
+        localLaneId: nil,
+        step: "release",
+        chats: preview.chats.map {
+          CloudKeptLaneRestoreRecord.Chat(chatId: $0.chatId, title: $0.title, state: "pending", history: $0.history, error: nil)
+        },
+        error: wakeInstead ? reason : nil,
+        wakeInstead: wakeInstead
+      )
+    )
+  }
+
+  /// A move off ADE Cloud onto the Mac Studio, in one of its phases.
+  static func run(_ phase: LaneMoveRun.Phase) -> LaneMoveRun {
+    let ended = phase != .moving
+    let failedChat = phase == .failed
+    let batch = LaneMoveBatchRecord(
+      batchId: "batch-fixture",
+      state: phase == .moving ? "running" : (failedChat ? "partial" : "completed"),
+      machineKey: "studio",
+      machineName: "Mac Studio",
+      items: [
+        LaneMoveBatchItem(id: "lane-item", kind: "lane", state: "continued", destinationLaneId: "lane-studio"),
+        LaneMoveBatchItem(id: "item-a", kind: "chat", state: "continued", sourceSessionId: "chat-a", destinationSessionId: "dest-a"),
+        LaneMoveBatchItem(id: "item-sub", kind: "chat", state: ended ? "continued" : "sending", sourceSessionId: "chat-sub",
+                          destinationSessionId: ended ? "dest-sub" : nil),
+        LaneMoveBatchItem(id: "item-b", kind: "chat", state: failedChat ? "failed" : (ended ? "continued" : "pending"),
+                          sourceSessionId: "chat-b", destinationSessionId: ended && !failedChat ? "dest-b" : nil,
+                          error: failedChat ? "Mac Studio couldn't start a Kimi chat: Kimi isn't signed in there." : nil),
+      ]
+    )
+    return LaneMoveRun(
+      id: "batch-fixture",
+      kind: .live,
+      laneId: "lane-upload",
+      laneName: "Fix flaky upload test",
+      targetName: "Mac Studio",
+      route: route,
+      computer: cloudSource.computer,
+      phase: phase,
+      error: phase == .deleteFailed ? "ADE Cloud took the delete but the computer is still there. Check again in a minute; if it stays, delete it again." : nil,
+      startedAt: Date().addingTimeInterval(-40),
+      arrived: phase == .done || phase == .deleteFailed,
+      batch: batch
+    )
+  }
+}
+
+/// "Move this lane to": the machine list, with fixed places and no send.
+private struct LaneMoveMenuFixture: View {
+  let source: LaneMoveSource
+  let fixture: LaneMoveFixture
+
+  var body: some View {
+    ADEColor.pageBackground.ignoresSafeArea()
+      .onAppear {
+        LaneMoveFixtureFlag.active = true
+        LaneMoveRuns.shared.seedPreview([])
+      }
+      .sheet(isPresented: .constant(true)) {
+        LaneMoveSheet(source: source, fixture: fixture)
+      }
+  }
+}
+
+/// The review step, opened on one machine. Move sends nothing.
+private struct LaneMoveReviewFixture: View {
+  let source: LaneMoveSource
+  let target: LaneMoveTarget
+  let items: [LaneMoveItem]
+  var preview: CloudKeptLaneRestorePreview? = nil
+
+  var body: some View {
+    ADEColor.pageBackground.ignoresSafeArea()
+      .onAppear {
+        LaneMoveFixtureFlag.active = true
+        LaneMoveRuns.shared.seedPreview([])
+      }
+      .sheet(isPresented: .constant(true)) {
+        NavigationStack {
+          LaneMoveReviewView(
+            source: source,
+            target: target,
+            route: target.route ?? LaneMoveData.route,
+            items: items,
+            changes: AgentChatCrossMachineHandoffChanges(unpushedCommits: 2, changedFiles: 3),
+            initialRunId: nil,
+            close: {},
+            wake: source.kind == .cloudAsleep ? {} : nil,
+            fixturePreview: preview
+          )
+        }
+      }
+  }
+}
+
+/// The same screen following a move: moving, arrived, failed, or arrived
+/// with the ADE Cloud computer still there.
+private struct LaneMoveProgressFixture: View {
+  let run: LaneMoveRun
+  var source: LaneMoveSource = LaneMoveData.cloudSource
 
   var body: some View {
     ADEColor.pageBackground.ignoresSafeArea()
       .sheet(isPresented: .constant(true)) {
-        LaneMoveSheet(laneName: "Fix flaky upload test", chats: chats, fixtureOptions: options)
+        NavigationStack {
+          LaneMoveReviewView(
+            source: source,
+            target: LaneMoveData.studio,
+            route: LaneMoveData.route,
+            items: LaneMoveData.items,
+            changes: nil,
+            initialRunId: run.id,
+            close: {},
+            wake: source.kind == .cloudAsleep ? {} : nil
+          )
+        }
       }
+      .onAppear {
+        LaneMoveFixtureFlag.active = true
+        LaneMoveRuns.shared.seedPreview([run])
+      }
+  }
+}
+
+/// The prompt box's machine label: a control when the lane can move, a quiet label when not.
+private struct LaneMoveTagFixture: View {
+  @State private var opened: LaneMoveSource?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 18) {
+      HStack(spacing: 8) {
+        Text("Sonnet 4.5").font(.system(size: 12, weight: .medium)).foregroundStyle(ADEColor.textSecondary)
+        WorkComposerMachineTag(name: "MacBook Pro") { opened = LaneMoveData.ownSource }
+      }
+      HStack(spacing: 8) {
+        Text("Sonnet 4.5").font(.system(size: 12, weight: .medium)).foregroundStyle(ADEColor.textSecondary)
+        WorkComposerMachineTag(name: "Mac Studio")
+      }
+    }
+    .padding(20)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .background(ADEColor.pageBackground.ignoresSafeArea())
+    .onAppear {
+      LaneMoveFixtureFlag.active = true
+      LaneMoveRuns.shared.seedPreview([])
+    }
+    .sheet(item: $opened) { source in
+      LaneMoveSheet(source: source, fixture: LaneMoveFixture(options: CloudAtRestPreviews.Data.moveOptions, items: LaneMoveData.items))
+    }
   }
 }
 
@@ -342,6 +657,7 @@ private struct CloudLaneMoveFixture: View {
       .sheet(isPresented: .constant(true)) {
         CloudLaneRestingMoveSheet(
           laneId: "lane-upload",
+          laneName: "Fix flaky upload test",
           fleetKey: deleted ? ADECloudMachine.savedFleetKeyPrefix + "mk_cloud_fixture" : "cloud-fixture",
           deleted: deleted,
           onAwake: {}

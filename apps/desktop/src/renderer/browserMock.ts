@@ -97,6 +97,8 @@ import {
   type AgentChatRecoverTurnResult,
   type AgentChatPrepareCrossMachineHandoffArgs,
   type AgentChatCrossMachineHandoffRecord,
+  type AgentChatCrossMachineBatchMoveArgs,
+  type AgentChatCrossMachineBatchMoveRecord,
   type AgentChatCrossMachineHandoffSessionArgs,
   type AgentChatRetryCrossMachineHandoffArgs,
   type AgentChatPreviewCrossMachineHandoffArgs,
@@ -313,6 +315,7 @@ function createMockBrowserAgentAccess() {
 
 /** The browser preview's move records, by source chat id. */
 const browserMockCrossMachineMoves = new Map<string, AgentChatCrossMachineHandoffRecord>();
+const browserMockBatchMoves = new Map<string, { record: AgentChatCrossMachineBatchMoveRecord; startedAt: number }>();
 
 const resolvedArg =
   <T>(v: T) =>
@@ -8592,6 +8595,50 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           gitBundleSupport: true,
         },
       }),
+      // A lane move the preview can follow: the lane arrives after 2 s, each chat 2 s later.
+      startCrossMachineBatchMove: async (args: AgentChatCrossMachineBatchMoveArgs) => {
+        const batchId = `mock-batch-${Date.now()}`;
+        const now = new Date().toISOString();
+        const record: AgentChatCrossMachineBatchMoveRecord = {
+          batchId,
+          state: "running",
+          machineKey: args.machine,
+          machineName: BROWSER_MOCK_DEMO ? "Mac Studio" : "Mock remote",
+          requestedBy: "user",
+          requestedAt: now,
+          updatedAt: now,
+          includeChanges: args.includeChanges === true,
+          whenBusy: args.whenBusy ?? "wait",
+          note: null,
+          items: [
+            { id: "lane:mock", kind: "lane", state: "pending", dependsOn: [], sourceLaneId: "mock-lane", importId: "mock-import", updatedAt: now },
+            ...(args.sessionIds ?? []).map((sessionId) => ({
+              id: `chat:${sessionId}`,
+              kind: "chat" as const,
+              state: "pending" as const,
+              dependsOn: ["lane:mock"],
+              sourceLaneId: "mock-lane",
+              sourceSessionId: sessionId,
+              handoffId: `${batchId}:chat:${sessionId}`,
+              mode: "fork" as const,
+              updatedAt: now,
+            })),
+          ],
+        };
+        browserMockBatchMoves.set(batchId, { record, startedAt: Date.now() });
+        return record;
+      },
+      getCrossMachineBatchMove: async (args: { batchId: string }) => {
+        const entry = browserMockBatchMoves.get(args.batchId);
+        if (!entry) return null;
+        const arrivedCount = Math.floor((Date.now() - entry.startedAt) / 2_000);
+        const items = entry.record.items.map((item, index) => (index < arrivedCount
+          ? { ...item, state: "continued" as const, destinationLaneId: "mock-dest-lane", ...(item.kind === "chat" ? { destinationSessionId: `dest-${item.id}` } : {}) }
+          : index === arrivedCount ? { ...item, state: "sending" as const } : item));
+        const done = items.every((item) => item.state === "continued");
+        return { ...entry.record, items, state: done ? "completed" as const : "running" as const, updatedAt: new Date().toISOString() };
+      },
+      retryCrossMachineBatchMove: async (args: { batchId: string }) => browserMockBatchMoves.get(args.batchId)!.record,
       startCrossMachineHandoff: async (args: AgentChatStartCrossMachineHandoffArgs) => {
         const now = new Date().toISOString();
         const record: AgentChatCrossMachineHandoffRecord = {

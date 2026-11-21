@@ -1243,6 +1243,13 @@ export const IPC = {
   cloudLaneBackupSavePatch: "ade.cloud.laneBackupSavePatch",
   cloudLaneBackupToBranch: "ade.cloud.laneBackupToBranch",
   cloudLaneBackupForget: "ade.cloud.laneBackupForget",
+  /**
+   * A kept ADE Cloud lane moved to a machine (shared/cloudKeptLaneRestore.ts). The brain of the
+   * pinned project runs it; these answer only a call with no project runtime (it needs one).
+   */
+  cloudPreviewKeptLaneRestore: "ade.cloud.previewKeptLaneRestore",
+  cloudRestoreKeptLane: "ade.cloud.restoreKeptLane",
+  cloudGetKeptLaneRestore: "ade.cloud.getKeptLaneRestore",
   cloudKeepIdleComputer: "ade.cloud.keepIdleComputer",
   cloudComputerStatus: "ade.cloud.computerStatus",
   /** Delete lane, keep a lane on a fresh computer, lanes without a computer, tier changes (`cloudLaneLife.ts`). Account level. */

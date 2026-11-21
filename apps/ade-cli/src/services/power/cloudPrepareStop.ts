@@ -53,7 +53,7 @@ export async function prepareCloudComputerToStop(args: {
   logger?: { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
   /** A disk grow's restart: the turns keep running (they continue after it), only the chat copy is written. */
   keepTurns?: boolean;
-  /** The rest save without capsules, in the time left after the chats (`cloudRestSave.ts`). */
+  /** The rest save (capsules too), in the time left after the chats (`cloudRestSave.ts`). */
   saveForRest?: (budgetMs: number) => Promise<{ sessions: number; git: number; backups?: CloudBackupSaveSummary | null }>;
   /** The server deletes the computer next: freeze new work until then (`cloudDeleteFreeze.ts`). */
   forDelete?: boolean;

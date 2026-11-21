@@ -21892,7 +21892,7 @@ function buildCloudPrepareStopPlan(args: string[]): CliPlan {
     throw new CliUsageError("ade cloud prepare-stop --timeout <seconds> --disk-grow <GB>");
   }
   // `--for-delete`: the server deletes the computer next, so new work is frozen (`cloudDeleteFreeze.ts`).
-  // `--chats-only`: the person's Sleep; only the turns stop and the chats are saved, with no lane backups.
+  // `--chats-only`: an older server's Sleep; only the turns stop and the chats are saved, with no lane backups.
   // An older ADE ignores both flags and does a normal prepare.
   const forDelete = args.includes("--for-delete");
   const chatsOnly = args.includes("--chats-only");
@@ -21926,9 +21926,10 @@ function buildCloudUnfreezePlan(): CliPlan {
 }
 
 /**
- * `ade cloud save-for-rest [--capsules] --json`: shell and CLI copies and
- * Git summaries, and with `--capsules` the fork capsules (the idle cleanup
- * runs it between push-work and the check). Prints `CloudSaveForRestReport`.
+ * `ade cloud save-for-rest [--capsules] --json`: shell and CLI copies, Git
+ * summaries and fork capsules (every save makes capsules; `--capsules` names
+ * the idle cleanup, which runs it between push-work and the check). Prints
+ * `CloudSaveForRestReport`.
  * It fits inside the server's 4-minute exec.
  */
 function buildCloudSaveForRestPlan(args: string[]): CliPlan {
@@ -32724,6 +32725,13 @@ async function runServe(
       },
     });
   }
+  // The person's own machine: a kept ADE Cloud lane (its computer deleted) can come back
+  // here from the server copies (`cloud.restoreKeptLane`). An ADE Cloud computer brings a
+  // kept lane back through its own launch instead, so it has no store.
+  if (!embedded && !cloudInstanceId) {
+    const { createKeptLaneRestores, setKeptLaneRestores } = await import("./services/cloudChats/keptLaneRestore");
+    setKeptLaneRestores(createKeptLaneRestores({ api: accountCloudApi, machineKey: thisMachineKey, logger: headlessProjectLogger }));
+  }
   if (bootLaunchEnv) {
     startCloudBootLaunch(bootLaunchEnv, {
       cloudInstanceId,
@@ -33028,7 +33036,7 @@ async function runServe(
               (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null));
             const personal = await personalChatScope.bootedRuntime().catch(() => null);
             const runtimes = [...booted, personal].filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
-            // The person's Sleep (`--chats-only`) saves no lane backups: the sleep waits for this prepare.
+            // `--chats-only` (an older server's Sleep) saves no lane backups: the sleep waits for this prepare.
             const saveForRest = chatsOnly ? null : cloudRest?.saveBeforeStop ?? null;
             return await prepareCloudComputerToStop({
               runtimes,

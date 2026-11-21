@@ -14,7 +14,7 @@ import {
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
 import { openBytes, openJson, sealBytes, sealJson, userKeys, type UserKeys } from "./seal";
-import { logCloud, ownedComputer, type CloudEnv, type ComputerRow } from "./store";
+import { logCloud, ownMachineMoveRefusal, ownedComputer, type CloudEnv, type ComputerRow } from "./store";
 
 /**
  * CLI-session and shell copies (README, "ADE without a computer"). A cloud
@@ -321,13 +321,24 @@ async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, use
   const body = await readCappedJson(request, BODY_OVERHEAD_BYTES);
   if (!body.ok) return unreadable();
   const toMachineKey = typeof body.value.toMachineKey === "string" ? body.value.toMachineKey.trim() : "";
-  const instanceId = typeof body.value.instanceId === "string" ? body.value.instanceId.trim() : "";
-  if (!ROW_ID.test(toMachineKey) || !CLOUD_INSTANCE_ID.test(instanceId)) return unreadable();
-  const computer = await ownedComputer(env, userId, instanceId);
-  // Only the caller's own computer, and only to its own machine key.
-  if (!computer || computer.deleted_at != null) return fail("not_found", "ADE Cloud has no such computer.", 404);
-  if (computer.machine_key && computer.machine_key.toLowerCase() !== toMachineKey.toLowerCase()) {
-    return fail("wrong_machine", "A session moves only to the machine key of the computer that asks.", 409);
+  const named = body.value.instanceId;
+  const instanceId = typeof named === "string" ? named.trim() : "";
+  // No `instanceId`: the person's own machine takes a CLI whose computer is deleted (a kept lane moved to it).
+  const ownMachine = named == null;
+  if (!ROW_ID.test(toMachineKey) || (!ownMachine && !CLOUD_INSTANCE_ID.test(instanceId))) return unreadable();
+  let computer: { instance_id: string | null };
+  if (ownMachine) {
+    const refusal = await ownMachineMoveRefusal(env, userId, machineKey, toMachineKey);
+    if (refusal) return fail(refusal.code, refusal.message, refusal.status);
+    computer = { instance_id: null };
+  } else {
+    const owned = await ownedComputer(env, userId, instanceId);
+    // Only the caller's own computer, and only to its own machine key.
+    if (!owned || owned.deleted_at != null) return fail("not_found", "ADE Cloud has no such computer.", 404);
+    if (owned.machine_key && owned.machine_key.toLowerCase() !== toMachineKey.toLowerCase()) {
+      return fail("wrong_machine", "A session moves only to the machine key of the computer that asks.", 409);
+    }
+    computer = owned;
   }
   const rowAt = (key: string) => env.DB.prepare("select * from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and kind = 'cli'")
     .bind(userId, key, sessionId).first<SessionRow>();

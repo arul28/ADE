@@ -229,9 +229,11 @@ struct CloudLaneAtRestScreen: View {
           .adeInspectable("CloudLane.AtRest.Delete")
         }
       }
-      // The system puts a secondary action in the bar's ⋯ menu. A lane
-      // moves only with its chats, so a lane with no saved chat has no item.
-      if hasSavedChats {
+      // The system puts a secondary action in the bar's ⋯ menu. An asleep
+      // lane moves with its chats (from its saved copy, with no wake), so one
+      // with no saved chat has no item; a kept lane comes back from its
+      // saved copies, branch and work too.
+      if hasSavedChats || keptLane != nil {
         ToolbarItem(placement: .secondaryAction) {
           Button("Move to…", systemImage: "arrow.right.circle") { movePresented = true }
             .adeInspectable("CloudLane.AtRest.Move")
@@ -241,6 +243,7 @@ struct CloudLaneAtRestScreen: View {
     .sheet(isPresented: $movePresented) {
       CloudLaneRestingMoveSheet(
         laneId: subject.laneId,
+        laneName: subject.laneName,
         fleetKey: subject.fleetKey,
         deleted: subject.fleetKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix),
         onAwake: onAwake

@@ -1927,6 +1927,8 @@ export function createHeadlessGitHubService(
     answersShells: accountApp.enabled,
     readAccountAppToken: () => accountApp.readToken(),
     peekAccountAppToken: () => accountApp.peekToken(),
+    // The account's copy of a `gh` login, for an owner without the App.
+    peekAccountGhToken: () => ghAccountSync.readAccountToken(),
     readGrant: readAppIssueGrant,
     readRepoOwner: async () => (await detectGitHubRepoAsync(projectRoot).catch(() => null))?.owner ?? null,
     // A chat's environment is built synchronously. Without this, the first

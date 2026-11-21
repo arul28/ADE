@@ -287,8 +287,10 @@ When the chat's computer was deleted, the send starts a server launch with
 chat continues on the new computer in the same chat row.
 
 - Claude, Codex and OpenCode chats, and Claude Code and Codex CLIs, restore
-  from a native capsule the old computer saved before its delete
-  (`forkCapsules.ts`). The other 10 providers replay the saved transcript.
+  from a native capsule the old computer saved at its last rest save (the
+  idle step, `prepare-stop` or `save-for-rest`; `forkCapsules.ts`). The
+  capsule holds only the provider's history; the lane's code comes from the
+  lane backup. The other 10 providers replay the saved transcript.
 - The new computer moves the saved chat to its own machine key
   (`POST /cloud/chats/:m/:c/move`); the queued messages move with it. A CLI's
   saved copy moves the same way (`POST /cloud/sessions/:m/:s/move`), sealed
@@ -1244,6 +1246,34 @@ account, never a pin.
     row) turns into that kept row, with New computer and Delete; it reads
     the list a few times for about half a minute. When the read fails, the
     ADE Cloud page says so with Try again, never "No cloud lanes yet".
+- **Move this lane to** one of the person's own computers
+  (`components/laneMove/`, the chat composer's machine chip; the iPhone's
+  `LaneMoveSheet`). The review lists every chat with how much history it
+  keeps, the unpushed work, and the files git ignores
+  (`instance.ignoredFiles`, from the disk report): those do not move. ADE
+  Cloud is never a destination. The way depends on the lane's computer:
+  - **Awake:** the batch move carries the lane and its chats, then ADE
+    deletes the computer.
+  - **Asleep, with every lane saved at its rest** (`backups.saved`): no wake.
+    The destination brain (`keptLaneRestore.ts`, step `release`) deletes the
+    computer with `keepLane: { onlyIfSaved: true }`. The server refuses with
+    409 (`computer_awake`, `backup_not_current`, `backup_never_saved`) unless
+    the computer rests right after that save, and it checks again just before
+    the delete. Then the kept-lane restore runs: lane from its backup, chats
+    from their saved copies and capsules, then the kept row goes. A refusal
+    deletes nothing and sets `wakeInstead`; the dialog offers **Wake and
+    move**. A failure after the delete leaves the lane kept, so the move can
+    run again.
+  - **Asleep, not saved** (the rest save failed or ran out of time: Git LFS,
+    a submodule, a crash): the dialog says why and offers
+    **Wake and move**, which wakes the computer and moves it live.
+  - **Deleted:** the kept-lane restore with no release step.
+  - Claude, Codex and OpenCode chats, and Claude Code and Codex CLIs, keep
+    their native history from the capsule saved at each rest; the other
+    providers replay the saved transcript.
+  - The preview, the start and the status reads go to the destination's pin
+    (`cloud.previewKeptLaneRestore`, `cloud.restoreKeptLane`,
+    `cloud.getKeptLaneRestore`, with `fromComputer: { instanceId }`).
 - **Keep the lane on a fresh computer.** ADE pushes the work first; a push that
   can't save everything keeps the computer, and freeing is refused while the
   agent works ("Stop it or wait, then free the computer"). Then the server
@@ -1481,9 +1511,12 @@ One busy list, `decideCloudBusy` in
   chat turns and agent CLIs, writes the saved chat copy, and saves each lane's
   backup (`backups` in its `--json` result).
 - **The person's Sleep** of an awake computer first runs
-  `prepare-stop --timeout 20 --chats-only` (`prepareForPersonSleep` in
-  `routes.ts`): the running turns stop and the chats are saved, then the
-  computer sleeps whatever the prepare says.
+  `prepare-stop --timeout 20` (`prepareForPersonSleep` in `routes.ts`): the
+  running turns stop, the chats are saved, and each lane's backup is saved in
+  the time left. Then the computer sleeps whatever the prepare says. When the
+  prepare reports every lane saved, the server marks the rest
+  (`markRestedWithBackups`), so a later move or cleanup needs no wake. A save
+  that didn't finish in time marks nothing.
 - **A turn stopped for a rest reads Stopped.** Each chat whose turn a
   prepare-stop interrupts is marked (`noteCloudChatStoppedForRest`). Its saved
   row then has status `interrupted` (`SAVED_CHAT_STOPPED_STATUS`), and the

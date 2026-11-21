@@ -496,6 +496,8 @@ export type CloudMachine = {
   diskUsage?: CloudDiskUsage | null;
   /** Its lane's work as it last read it while awake (unpushed, the pull request); null before its first report. */
   laneWork?: CloudLaneWork | null;
+  /** The files git ignores on it, as it last read them: a delete loses them. Null before its first read. */
+  ignoredFiles?: CloudIgnoredFiles | null;
 };
 
 /**

@@ -9070,6 +9070,8 @@ describe("CTO-gated Linear sync commands", () => {
         // Making, waking, resizing or deleting a cloud machine spends or
         // deletes: the phone's controller only, never a read-only viewer.
         "cloud.write",
+        // Moving a kept ADE Cloud lane here brings its branch and chats and forgets it on ADE Cloud.
+        "cloud.restoreKeptLane",
         // An MCP App request runs a tool or reads a resource on the host, so a
         // read-only viewer never sends one.
         "chat.mcpAppRequest",
@@ -9092,6 +9094,7 @@ describe("CTO-gated Linear sync commands", () => {
         "machine.updateAndRestart",
       ]);
       const controllerAllowedActions = new Set<string>([
+        "cloud.restoreKeptLane",
         "work.runShellBlock",
         "machine.updateImpact",
         "machine.updateAndRestart",

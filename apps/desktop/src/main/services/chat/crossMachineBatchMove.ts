@@ -139,13 +139,17 @@ export type CrossMachineBatchMoveHook = {
   resolveMachine: (selector: string) => Promise<CrossMachineHandoffMachine>;
   callPreflight: (
     transport: CrossMachineHandoffTransport,
-    input: { machine: string; originUrl: string; args: Record<string, unknown> },
+    input: { machine: string; originUrl: string; clone?: boolean; args: Record<string, unknown> },
   ) => Promise<AgentChatCrossMachineDestinationPreflightResult>;
-  /** Sends one lane import to the destination; its answer, unwrapped from the transport envelope. */
+  /**
+   * Sends one lane import to the destination; its answer, unwrapped from the
+   * transport envelope. `clone` sets the repository up there first.
+   */
   importLane: (
     transport: CrossMachineHandoffTransport,
     machine: string,
     payload: AgentChatCrossMachineLaneImportArgs,
+    options?: { clone?: boolean },
   ) => Promise<unknown>;
   isLostAnswer: (transport: CrossMachineHandoffTransport, error: unknown) => boolean;
   /** The inspection's branch, commit and origin, or the refusal naming `label` (orchestrator's `requireMovable`). */
@@ -467,6 +471,8 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
     const machine = await moves.resolveMachine(selector);
     const transport = moves.requireTransport();
     const includeChanges = input.includeChanges !== false;
+    // A destination without the repository sets it up first (GitHub only).
+    const clone = input.clone === true;
     const requestedMode = input.mode === "brief" ? "brief" : "fork";
     const laneInspections = new Map<string, { movable: CrossMachineMovableSource; hasChanges: boolean }>();
     for (const lane of orderedLanes) {
@@ -513,6 +519,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
       });
       let preflight = await moves.callPreflight(transport, {
         machine: machine.machineKey,
+        ...(clone ? { clone: true } : {}),
         originUrl,
         args: makePreflightArgs(mode),
       });
@@ -530,6 +537,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
         mode = "brief";
         preflight = await moves.callPreflight(transport, {
           machine: machine.machineKey,
+          ...(clone ? { clone: true } : {}),
           originUrl,
           args: makePreflightArgs(mode),
         });
@@ -553,6 +561,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
       const hasBundle = includeChanges && inspected.hasChanges;
       const preflight = await moves.callPreflight(transport, {
         machine: machine.machineKey,
+        ...(clone ? { clone: true } : {}),
         originUrl: movable.originUrl,
         args: {
           targetModelId: modelForLanePreflight,
@@ -665,6 +674,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
       updatedAt: requestedAt,
       includeChanges,
       whenBusy: input.whenBusy === "interrupt" ? "interrupt" : "wait",
+      ...(clone ? { clone: true } : {}),
       note,
       items: [...laneItems, ...chatItems],
     };
@@ -712,7 +722,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
     moves.outbox.writeLane(importId, { payload, sent: true });
     let answer: unknown;
     try {
-      answer = await moves.importLane(transport, batch.machineKey, payload);
+      answer = await moves.importLane(transport, batch.machineKey, payload, { clone: batch.clone === true });
     } catch (error) {
       warnBatchItemFailure(batchId, item.id, "lane_import_transport", error);
       updateBatchItem(batchId, item.id, {
@@ -831,6 +841,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
       targetModelId: selectedChat.modelId?.trim() || selectedChat.model,
       mode: item.mode,
       includeChanges: batch.includeChanges,
+      ...(batch.clone ? { clone: true } : {}),
       whenTurnEnds: true,
     }, {
       requestedBy: batch.requestedBy,

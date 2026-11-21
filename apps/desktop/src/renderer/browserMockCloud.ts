@@ -39,6 +39,14 @@ import {
   type CloudPlanCleanup,
 } from "../shared/adeCloud";
 import { githubRepoOf, type CloudLaneMachine, type CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
+import type {
+  CloudKeptLaneRestoreArgs,
+  CloudKeptLaneRestorePreview,
+  CloudKeptLaneRestorePreviewArgs,
+  CloudKeptLaneRestoreRecord,
+} from "../shared/cloudKeptLaneRestore";
+
+const mockRestores = new Map<string, { record: CloudKeptLaneRestoreRecord; startedAt: number; refused: boolean }>();
 import {
   CLOUD_BACKUP_NOT_SAVED_SENTENCE,
   CLOUD_BACKUP_TOO_LARGE_SENTENCE,
@@ -600,6 +608,8 @@ export function applyBrowserMockCloud(ade: any): void {
   if (!requested) return;
   const scenario: Scenario = SCENARIOS.includes(requested) ? requested : "free";
   const accessOn = param("mockCloudAccess") !== "off";
+  // Read once: the app routes away from the first URL and drops its query.
+  const savedParam = param("mockCloudSaved");
   const now = Date.now();
   const fix = fixture(scenario);
   const machines = fix.lanes.map((spec) => machine(spec, now));
@@ -744,6 +754,70 @@ export function applyBrowserMockCloud(ade: any): void {
     openBillingPortal: async () => {
       console.info("[browser mock] cloud.openBillingPortal");
       return { opened: true };
+    },
+    // A lane move from saved copies (`keptLaneRestore.ts`). `?mockCloudSaved=0`: the
+    // asleep computer's save isn't complete; `=refused`: it woke after the preview.
+    previewKeptLaneRestore: async (args: CloudKeptLaneRestorePreviewArgs): Promise<CloudKeptLaneRestorePreview> => {
+      const saved = savedParam !== "0";
+      return {
+        laneId: args.laneId,
+        laneName: "auth-refresh",
+        branchRef: "feature/auth-refresh",
+        hasRepository: true,
+        work: { unpushedCommits: 2, changedFiles: 3, bytes: 48_000 },
+        chats: [
+          { chatId: "mock-restore-1", title: "Refresh tokens before they expire", provider: "claude", kind: "chat", history: "full" },
+          { chatId: "mock-restore-2", title: "Review the session cookie", provider: "codex", kind: "chat", history: "full" },
+          { chatId: "mock-restore-3", title: "Try the redirect on staging", provider: "cursor", kind: "chat", history: "transcript" },
+        ],
+        ...(args.fromComputer ? {
+          fromComputer: {
+            saved,
+            reason: saved ? null : CLOUD_BACKUP_NOT_SAVED_SENTENCE,
+            ignored: { checkedAt: now - 3 * HOUR, paths: [".env", ".env.local", "data/dev.sqlite"], more: 0, rebuildable: 2 },
+          },
+        } : {}),
+      };
+    },
+    restoreKeptLane: async (args: CloudKeptLaneRestoreArgs): Promise<CloudKeptLaneRestoreRecord> => {
+      const at = new Date().toISOString();
+      const record: CloudKeptLaneRestoreRecord = {
+        restoreId: `mock-restore-${Date.now()}`,
+        laneId: args.laneId,
+        laneName: "auth-refresh",
+        state: "running",
+        localLaneId: null,
+        step: args.fromComputer ? "release" : "lane",
+        chats: [],
+        error: null,
+        startedAt: at,
+        updatedAt: at,
+      };
+      mockRestores.set(record.restoreId, { record, startedAt: Date.now(), refused: savedParam === "refused" });
+      return record;
+    },
+    // Each step takes 2 s: release, lane, then one chat at a time.
+    getKeptLaneRestore: async (args: { restoreId: string }): Promise<CloudKeptLaneRestoreRecord | null> => {
+      const entry = mockRestores.get(args.restoreId);
+      if (!entry) return null;
+      const ticks = Math.floor((Date.now() - entry.startedAt) / 2_000);
+      const base = { ...entry.record, updatedAt: new Date().toISOString() };
+      if (entry.record.step === "release" && entry.refused && ticks >= 1) {
+        return { ...base, state: "failed", wakeInstead: true, error: "The ADE Cloud computer is awake, so its saved copy may be older than its work." };
+      }
+      const steps = entry.record.step === "release" ? ticks - 1 : ticks;
+      if (steps < 0) return base;
+      if (steps === 0) return { ...base, step: "lane" };
+      const titles = ["Refresh tokens before they expire", "Review the session cookie", "Try the redirect on staging"];
+      const chats = titles.map((title, index) => ({
+        chatId: `mock-restore-${index + 1}`,
+        title,
+        state: index < steps - 1 ? "restored" as const : "pending" as const,
+        history: index < steps - 1 ? (index === 2 ? "transcript" as const : "full" as const) : null,
+        error: null,
+      }));
+      const done = steps - 1 >= titles.length;
+      return { ...base, localLaneId: "lane-auth-here", step: done ? "done" : "chats", state: done ? "completed" : "running", chats };
     },
     openFreeUnlock: async () => {
       console.info("[browser mock] cloud.openFreeUnlock");

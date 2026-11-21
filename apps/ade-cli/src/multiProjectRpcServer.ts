@@ -442,7 +442,7 @@ export type MultiProjectRpcHandlerOptions = {
   unfreezeCloudComputer?: (() => Promise<unknown>) | null;
   /** On a cloud computer: commits and pushes every lane's work (`ade cloud push-work`). */
   pushCloudWork?: ((args: { check: boolean; message?: string | null }) => Promise<unknown>) | null;
-  /** On a cloud computer: saves what clients read at rest, capsules too on the delete path (`ade cloud save-for-rest`). */
+  /** On a cloud computer: saves what clients read at rest, fork capsules too (`ade cloud save-for-rest`). */
   saveCloudForRest?: ((args: { capsules: boolean }) => Promise<unknown>) | null;
   /** On a cloud computer: sends the messages queued for its existing chats (`ade cloud messages drain`). */
   drainCloudMessages?: (() => Promise<unknown>) | null;

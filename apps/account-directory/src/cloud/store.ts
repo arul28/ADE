@@ -439,6 +439,42 @@ export async function ownedComputer(env: CloudEnv, userId: string, instanceId: s
     .bind(instanceId, userId).first<ComputerRow>();
 }
 
+/**
+ * Why a saved copy may not move from `fromMachineKey` to the person's own
+ * machine `toMachineKey` with no ADE Cloud computer asking (a kept lane moved
+ * to their computer), or null when it may. Everything is read under the
+ * caller's own account, so another account's keys answer `not_found`:
+ *
+ * - the destination is one of the account's machines (signed in, not
+ *   revoked) and no ADE Cloud computer's key (a computer moves a copy with
+ *   its `instanceId`);
+ * - the source is a deleted ADE Cloud computer's key: no live computer of the
+ *   account has it, and a deleted one does. A live computer's copies stay
+ *   with it.
+ */
+export async function ownMachineMoveRefusal(
+  env: CloudDb,
+  userId: string,
+  fromMachineKey: string,
+  toMachineKey: string,
+): Promise<{ code: "not_found" | "wrong_machine" | "computer_exists"; message: string; status: number } | null> {
+  const [machine, revoked, cloudTarget, source] = await Promise.all([
+    env.DB.prepare("select 1 as n from machines where user_id = ? and lower(machine_key) = lower(?) limit 1").bind(userId, toMachineKey).first<{ n: number }>(),
+    env.DB.prepare("select 1 as n from revoked_machines where user_id = ? and lower(machine_key) = lower(?) limit 1").bind(userId, toMachineKey).first<{ n: number }>(),
+    env.DB.prepare("select 1 as n from cloud_computers where user_id = ? and lower(machine_key) = lower(?) limit 1").bind(userId, toMachineKey).first<{ n: number }>(),
+    env.DB.prepare(`
+      select coalesce(sum(case when deleted_at is null then 1 else 0 end), 0) as live,
+        coalesce(sum(case when deleted_at is not null then 1 else 0 end), 0) as gone
+      from cloud_computers where user_id = ? and lower(machine_key) = lower(?)
+    `).bind(userId, fromMachineKey).first<{ live: number; gone: number }>(),
+  ]);
+  if (!machine || revoked) return { code: "not_found", message: "ADE doesn't know that machine of yours.", status: 404 };
+  if (cloudTarget) return { code: "wrong_machine", message: "An ADE Cloud computer moves a saved copy to itself with its own id.", status: 409 };
+  if ((source?.live ?? 0) > 0) return { code: "computer_exists", message: "This copy's ADE Cloud computer still exists: move the chat from it instead.", status: 409 };
+  if ((source?.gone ?? 0) === 0) return { code: "not_found", message: "That saved copy isn't on a deleted ADE Cloud computer.", status: 404 };
+  return null;
+}
+
 export async function listComputers(env: CloudDb, userId: string): Promise<ComputerRow[]> {
   const rows = await env.DB.prepare("select * from cloud_computers where user_id = ? and deleted_at is null")
     .bind(userId).all<ComputerRow>();

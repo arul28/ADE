@@ -1834,6 +1834,7 @@ function parseStartCrossMachineBatchMoveArgs(value: Record<string, unknown>): Ag
     ...(typeof value.includeChanges === "boolean" ? { includeChanges: value.includeChanges } : {}),
     ...(value.whenBusy === "wait" || value.whenBusy === "interrupt" ? { whenBusy: value.whenBusy } : {}),
     ...(typeof value.note === "string" ? { note: value.note } : {}),
+    ...(value.clone === true ? { clone: true } : {}),
   };
 }
 
@@ -8794,6 +8795,24 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     const { approval: _ignored, ...rest } = input;
     return await (handler as (input: unknown) => Promise<unknown>).call(domain, { ...rest, approval: { by: "person" } });
   };
+  // A kept ADE Cloud lane moved to THIS machine, in this project (shared/cloudKeptLaneRestore.ts):
+  // ADE Web and the phone pin the destination machine. The preview and the progress are reads;
+  // the move needs a controlling device, and the person asking is the person.
+  const keptLaneCall = async (action: "previewKeptLaneRestore" | "restoreKeptLane" | "getKeptLaneRestore", payload: Record<string, unknown>) => {
+    const handler = args.cloudActions?.()?.[action];
+    if (typeof handler !== "function") throw new Error(`cloud has no "${action}" here. Update ADE on this computer.`);
+    return await (handler as (input: unknown) => Promise<unknown>)({
+      ...(typeof payload.laneId === "string" ? { laneId: payload.laneId } : {}),
+      ...(typeof payload.restoreId === "string" ? { restoreId: payload.restoreId } : {}),
+      // The lane's asleep ADE Cloud computer, released first (the store checks the id).
+      ...(payload.fromComputer && typeof payload.fromComputer === "object" && typeof (payload.fromComputer as { instanceId?: unknown }).instanceId === "string"
+        ? { fromComputer: { instanceId: (payload.fromComputer as { instanceId: string }).instanceId } }
+        : {}),
+    });
+  };
+  register("cloud.previewKeptLaneRestore", { viewerAllowed: true }, async (payload) => await keptLaneCall("previewKeptLaneRestore", payload));
+  register("cloud.restoreKeptLane", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => await keptLaneCall("restoreKeptLane", payload));
+  register("cloud.getKeptLaneRestore", { viewerAllowed: true }, async (payload) => await keptLaneCall("getKeptLaneRestore", payload));
   register("cloud.read", { viewerAllowed: true }, async (payload) =>
     await cloudCall(payload, CLOUD_REMOTE_READS), "runtime");
   register("cloud.write", { viewerAllowed: false, controllerAllowed: true }, async (payload) =>

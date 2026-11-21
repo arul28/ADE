@@ -26,7 +26,8 @@ export type MachineFacts = {
 let localMachineKey: string | null = null;
 let localIdentityRead: Promise<string | null> | null = null;
 
-function readLocalMachineKey(): Promise<string | null> {
+/** This computer's account machine key, read once per window. */
+export function readLocalMachineKey(): Promise<string | null> {
   if (localMachineKey) return Promise.resolve(localMachineKey);
   localIdentityRead ??= window.ade?.account?.getLocalMachineIdentity?.()
     .then((identity) => {

@@ -169,39 +169,230 @@ extension SyncService {
     )
   }
 
-  /// A lane move (`chat.startCrossMachineBatchMove`): the lane's open Work
-  /// chats move to `machineKey`, each after its parent, and the lane with
-  /// its commits and uncommitted work arrives there first. The batch runs on
-  /// the brain that owns the lane, reached through one of its chats
-  /// (`viaSessionId`), as every chat action is. The person asked, so no
-  /// approval waits. Returns the batch id when the brain sent one.
-  @discardableResult
-  func startLaneMove(viaSessionId: String, sessionIds: [String], machineKey: String) async throws -> String? {
-    let projectAction = "chat.startCrossMachineBatchMove"
-    let action = chatActionName(projectAction, sessionId: viaSessionId)
-    try requireInvokableChatAction(projectAction, sessionId: viaSessionId)
-    let scope = chatCommandScope(for: viaSessionId)
-    let raw = try await sendCommand(
-      action: action,
-      args: [
-        "machine": machineKey,
-        "sessionIds": sessionIds,
-        "includeDescendants": true,
-        "includeChanges": true,
-        "mode": "fork",
-      ],
-      disconnectOnTimeout: false,
-      timeoutNanoseconds: 60_000_000_000,
-      targetProjectId: scope.projectId,
-      targetProjectRootPath: scope.rootPath
-    )
-    return (raw as? [String: Any])?["batchId"] as? String
+  // MARK: Lane move ("Move this lane to")
+
+  /// The machine and project a lane move acts on: the lane's own brain for a
+  /// live move. A lane of another machine carries that machine in its id
+  /// (`fleet|<machineKey>|<laneId>`); a lane of the focused machine is in
+  /// the chat's project there. The route is kept for the whole move, so its
+  /// start, its reads, its retry and the delete after it all name the same
+  /// machine, even when the phone's focus moves meanwhile.
+  func laneMoveRoute(laneId: String, viaSessionId: String?) throws -> LaneMoveRoute {
+    let via = viaSessionId?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let remote = workParseRemoteLaneId(laneId), remote.machineKey != focusedMachineKey {
+      if let via, let chat = routedRemoteMachineChat(via) {
+        guard chat.machineKey == remote.machineKey else {
+          throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This lane and its chat are on different machines."])
+        }
+        return LaneMoveRoute(machineKey: chat.machineKey, projectId: chat.projectId, rootPath: nonEmptyTrimmed(chat.rootPath))
+      }
+      let repo = try requireRemoteLaneRepo(machineKey: remote.machineKey)
+      return LaneMoveRoute(machineKey: repo.machineKey, projectId: repo.projectId, rootPath: repo.rootPath)
+    }
+    if let via {
+      if let chat = routedRemoteMachineChat(via) {
+        return LaneMoveRoute(machineKey: chat.machineKey, projectId: chat.projectId, rootPath: nonEmptyTrimmed(chat.rootPath))
+      }
+      let scope = chatCommandScope(for: via)
+      if let marked = syncFleetParseMarkedProjectId(scope.projectId) {
+        return LaneMoveRoute(machineKey: marked.machineKey, projectId: marked.projectId, rootPath: scope.rootPath)
+      }
+      if let projectId = scope.projectId {
+        return LaneMoveRoute(machineKey: focusedMachineKey, projectId: projectId, rootPath: scope.rootPath)
+      }
+    }
+    guard let projectId = activeProjectId else {
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "Open this lane's project on a computer first."])
+    }
+    return LaneMoveRoute(machineKey: focusedMachineKey, projectId: projectId, rootPath: activeProject?.rootPath)
   }
 
-  /// The lane's brain can run a lane move.
-  func laneMoveAvailable(viaSessionId: String) -> Bool {
-    supportsChatRemoteAction("chat.getCrossMachineHandoffOptions", sessionId: viaSessionId)
-      && supportsChatRemoteAction("chat.startCrossMachineBatchMove", sessionId: viaSessionId)
+  /// The machine of `route` has `action` and lets the phone call it.
+  func laneMoveActionAvailable(_ action: String, route: LaneMoveRoute) -> Bool {
+    machineAllowsPhoneAction(action, onMachine: route.machineKey)
+  }
+
+  /// Sends one lane-move command to the route's machine and project, never
+  /// to another one (`sendMachineCommand` throws when that machine is not
+  /// connected rather than falling back to the focused one).
+  private func sendLaneMoveCommand(
+    _ action: String,
+    args: [String: Any],
+    route: LaneMoveRoute,
+    timeoutNanoseconds: UInt64 = 30_000_000_000
+  ) async throws -> Any {
+    guard laneMoveActionAvailable(action, route: route) else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: "That computer needs an ADE update to move a lane from the phone. Update ADE there, then try again."
+      ])
+    }
+    return try await sendMachineCommand(
+      action: action,
+      args: args,
+      projectId: route.projectId,
+      projectRootPath: route.rootPath,
+      timeoutNanoseconds: timeoutNanoseconds,
+      onMachine: route.machineKey
+    )
+  }
+
+  /// `chat.getCrossMachineHandoffOptions` through one of the lane's chats,
+  /// on the lane's brain: the machines it may move to, its blockers and the
+  /// work that travels.
+  func laneMoveOptions(route: LaneMoveRoute, viaSessionId: String) async throws -> AgentChatCrossMachineHandoffOptions {
+    let raw = try await sendLaneMoveCommand(
+      "chat.getCrossMachineHandoffOptions",
+      args: ["sourceSessionId": viaSessionId],
+      route: route
+    )
+    return try decode(raw, as: AgentChatCrossMachineHandoffOptions.self)
+  }
+
+  /// The lane's sessions and chats, read on the lane's own brain
+  /// (`lanes.getDetail`), for a move opened from a chat. Nothing is cached.
+  func readLaneMoveDetail(route: LaneMoveRoute, laneId: String) async throws -> LaneDetailPayload {
+    let plain = workParseRemoteLaneId(laneId)?.laneId ?? laneId
+    let raw = try await sendLaneMoveCommand("lanes.getDetail", args: ["laneId": plain], route: route)
+    return try decode(raw, as: LaneDetailPayload.self)
+  }
+
+  /// A lane move (`chat.startCrossMachineBatchMove`) on the lane's brain: the
+  /// lane with its commits and uncommitted work arrives on `machineKey`
+  /// first, then each chat and CLI, each after its parent. The person asked,
+  /// so no approval waits. `clone` lets a computer without the project clone
+  /// it from GitHub first.
+  func startLaneMoveBatch(
+    route: LaneMoveRoute,
+    sessionIds: [String],
+    machineKey: String,
+    clone: Bool
+  ) async throws -> LaneMoveBatchRecord {
+    var args: [String: Any] = [
+      "machine": machineKey,
+      "sessionIds": sessionIds,
+      "includeDescendants": true,
+      "mode": "fork",
+      "includeChanges": true,
+      "whenBusy": "wait",
+    ]
+    if clone { args["clone"] = true }
+    let raw = try await sendLaneMoveCommand(
+      "chat.startCrossMachineBatchMove",
+      args: args,
+      route: route,
+      timeoutNanoseconds: 60_000_000_000
+    )
+    return try decode(raw, as: LaneMoveBatchRecord.self)
+  }
+
+  /// `chat.getCrossMachineBatchMove` on the lane's brain; nil when it no longer knows the batch.
+  func readLaneMoveBatch(route: LaneMoveRoute, batchId: String) async throws -> LaneMoveBatchRecord? {
+    let raw = try await sendLaneMoveCommand("chat.getCrossMachineBatchMove", args: ["batchId": batchId], route: route)
+    guard raw is [String: Any] else { return nil }
+    return try decode(raw, as: LaneMoveBatchRecord.self)
+  }
+
+  /// `chat.retryCrossMachineBatchMove`: the same batch id goes on, so
+  /// what already arrived is not sent again.
+  func retryLaneMoveBatch(route: LaneMoveRoute, batchId: String) async throws -> LaneMoveBatchRecord {
+    let raw = try await sendLaneMoveCommand(
+      "chat.retryCrossMachineBatchMove",
+      args: ["batchId": batchId],
+      route: route,
+      timeoutNanoseconds: 60_000_000_000
+    )
+    return try decode(raw, as: LaneMoveBatchRecord.self)
+  }
+
+  /// `cloud.previewKeptLaneRestore` on the DESTINATION: what a move from
+  /// saved copies brings to that machine's project. `fromComputer` names the
+  /// lane's asleep ADE Cloud computer: the preview then says whether its
+  /// saved copy is complete. Nothing wakes.
+  func previewKeptLaneRestore(route: LaneMoveRoute, laneId: String, fromComputer: String? = nil) async throws -> CloudKeptLaneRestorePreview {
+    let raw = try await sendLaneMoveCommand(
+      "cloud.previewKeptLaneRestore",
+      args: keptLaneRestoreArgs(laneId: laneId, fromComputer: fromComputer),
+      route: route
+    )
+    return try decode(raw, as: CloudKeptLaneRestorePreview.self)
+  }
+
+  /// `cloud.restoreKeptLane` on the DESTINATION. It answers at once with a
+  /// running record; a second start for the same lane joins the first. With
+  /// `fromComputer`, the destination first deletes that asleep computer and
+  /// keeps its lane, only while its saved copy is complete.
+  func restoreKeptLane(route: LaneMoveRoute, laneId: String, fromComputer: String? = nil) async throws -> CloudKeptLaneRestoreRecord {
+    let raw = try await sendLaneMoveCommand(
+      "cloud.restoreKeptLane",
+      args: keptLaneRestoreArgs(laneId: laneId, fromComputer: fromComputer),
+      route: route,
+      timeoutNanoseconds: 60_000_000_000
+    )
+    return try decode(raw, as: CloudKeptLaneRestoreRecord.self)
+  }
+
+  private func keptLaneRestoreArgs(laneId: String, fromComputer: String?) -> [String: Any] {
+    var args: [String: Any] = ["laneId": laneId]
+    if let instanceId = fromComputer.flatMap({ nonEmptyTrimmed($0) }) {
+      args["fromComputer"] = ["instanceId": instanceId]
+    }
+    return args
+  }
+
+  /// `cloud.getKeptLaneRestore` on the DESTINATION; nil when it no longer knows the restore.
+  func readKeptLaneRestore(route: LaneMoveRoute, restoreId: String) async throws -> CloudKeptLaneRestoreRecord? {
+    let raw = try await sendLaneMoveCommand("cloud.getKeptLaneRestore", args: ["restoreId": restoreId], route: route)
+    guard raw is [String: Any] else { return nil }
+    return try decode(raw, as: CloudKeptLaneRestoreRecord.self)
+  }
+
+  /// Where a kept lane can come back: each of the person's computers that has
+  /// this project open, the focused one first. ADE Cloud computers are left
+  /// out. Each target carries its own route: the restore runs there.
+  func keptLaneRestoreTargets() -> [LaneMoveTarget] {
+    var focused: LaneMoveTarget?
+    var others: [LaneMoveTarget] = []
+    var seen = Set<String>()
+    func reason(online: Bool, name: String, route: LaneMoveRoute) -> String? {
+      if !online { return "\(name) is not on." }
+      if !laneMoveActionAvailable("cloud.restoreKeptLane", route: route) {
+        return "\(name) needs an ADE update to bring a lane back."
+      }
+      return nil
+    }
+    if let projectId = activeProjectId, !isCloudFleetKey(focusedMachineKey) {
+      let route = LaneMoveRoute(machineKey: focusedMachineKey, projectId: projectId, rootPath: activeProject?.rootPath)
+      let name = focusedMachineDisplayName
+      let why = reason(online: connectionState == .connected, name: name, route: route)
+      focused = LaneMoveTarget(
+        id: focusedMachineKey ?? "focused",
+        machineKey: focusedMachineKey ?? "",
+        name: name,
+        ready: why == nil,
+        reason: why,
+        hasRepository: true,
+        route: route
+      )
+      seen.insert(focusedMachineKey ?? "focused")
+    }
+    for repo in remoteReposForActiveProject() where !isCloudFleetKey(repo.machineKey) && seen.insert(repo.machineKey).inserted {
+      let route = LaneMoveRoute(machineKey: repo.machineKey, projectId: repo.projectId, rootPath: repo.rootPath)
+      let why = reason(online: machineFleet?.isLive(repo.machineKey) == true, name: repo.machineName, route: route)
+      others.append(LaneMoveTarget(
+        id: repo.machineKey,
+        machineKey: repo.machineKey,
+        name: repo.machineName,
+        ready: why == nil,
+        reason: why,
+        hasRepository: true,
+        route: route
+      ))
+    }
+    // The focused machine stays first; the rest go ready first, then by name.
+    let rest = others.sorted {
+      $0.ready != $1.ready ? $0.ready : $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+    }
+    return (focused.map { [$0] } ?? []) + rest
   }
 
   /// Approves or denies the entire batch waiting on this caller chat. The

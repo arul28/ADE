@@ -136,4 +136,14 @@ export function registerCloudLaneBackupIpc(args: { accountApi: () => CloudApiCli
     logger.info("cloud.lane_backup_forgot", {});
     return deleted;
   });
+  // A kept lane moved to a machine runs in that project's brain (`cloud.restoreKeptLane`,
+  // reached through the destination's pin). A call lands here only with no project runtime,
+  // and the move needs the lane's project open there.
+  const needsProject = (channel: string) => async (event: Electron.IpcMainInvokeEvent): Promise<never> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, channel)) throw new Error("ADE can't do that from here.");
+    throw new AdeExpectedError("Open the lane's project on this computer, then move the lane there.", "user");
+  };
+  ipcMain.handle(IPC.cloudPreviewKeptLaneRestore, needsProject(IPC.cloudPreviewKeptLaneRestore));
+  ipcMain.handle(IPC.cloudRestoreKeptLane, needsProject(IPC.cloudRestoreKeptLane));
+  ipcMain.handle(IPC.cloudGetKeptLaneRestore, needsProject(IPC.cloudGetKeptLaneRestore));
 }

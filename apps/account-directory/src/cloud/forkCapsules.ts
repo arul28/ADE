@@ -13,14 +13,14 @@ import { logCloud, type CloudEnv } from "./store";
 /**
  * Fork capsules (README, "ADE without a computer"): what a provider needs to
  * resume a chat or CLI session on a new computer (its own transcript file or
- * export). The computer saves one before a delete, in parts of at most
- * `CLOUD_CAPSULE_MAX_PART_BYTES`, then commits it. A new computer reads it to
- * continue the chat. Each part is sealed with the user's key and names its
- * place in the additional data, so a part moved to another capsule or place
- * does not open.
+ * export). The computer saves one at each rest save when the chat changed,
+ * in parts of at most `CLOUD_CAPSULE_MAX_PART_BYTES`, then commits it. A new
+ * computer reads it to continue the chat. Each part is sealed with the user's
+ * key and names its place in the additional data, so a part moved to another
+ * capsule or place does not open.
  *
- * One capsule per (machine, chat): part 1 again starts a new upload. A
- * capsule reads only once committed.
+ * One capsule per (machine, chat): part 1 again starts a new upload, which
+ * replaces the older capsule. A capsule reads only once committed.
  */
 
 /** The seal's own bytes on each part: the IV and the tag. */

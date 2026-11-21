@@ -14,7 +14,7 @@
  */
 
 import { CLOUD_LANE_METADATA, CLOUD_PATHS, type CloudLaneWithoutComputer } from "./contract";
-import { fail, json } from "./http";
+import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
 import type { CloudDb, ComputerRow } from "./store";
 
 const LANE_ID = /^[A-Za-z0-9._:-]{1,160}$/;
@@ -198,8 +198,21 @@ export async function listLanesWithoutComputer(env: CloudDb, userId: string): Pr
   return (rows.results ?? []).map(toLane);
 }
 
-/** `GET /cloud/lanes/without-computer` and `DELETE /cloud/lanes/without-computer/:lane`. Needs no provider. */
-export async function routeLanesWithoutComputer(request: Request, path: string, env: CloudDb, userId: string, deleteLaneData?: (laneId: string) => Promise<unknown>): Promise<Response> {
+/** What a forget deletes with the record: everything, or (a lane moved to the person's machine) all but what moved there. */
+export type KeptLaneDataDelete = (laneId: string, keep?: { machineKey: string; backups: boolean }) => Promise<unknown>;
+
+/**
+ * `GET /cloud/lanes/without-computer`, `DELETE /cloud/lanes/without-computer/:lane`
+ * and `POST /cloud/lanes/without-computer/:lane/moved` (`CloudLaneMovedRequest`).
+ * Needs no provider.
+ *
+ * `moved` is the forget of a lane that came back on the person's own machine:
+ * the chats and CLI copies that moved to its machine key stay, and with
+ * `keepBackups` (the lane there has other work than its backup) so do the
+ * backups. A new route rather than a flag on the delete, so an older server
+ * answers 404 and deletes nothing.
+ */
+export async function routeLanesWithoutComputer(request: Request, path: string, env: CloudDb, userId: string, deleteLaneData?: KeptLaneDataDelete): Promise<Response> {
   const rest = path.slice(CLOUD_PATHS.lanesWithoutComputer.length).split("/").filter(Boolean);
   if (rest.length === 0) {
     return request.method === "GET" ? json({ lanes: await listLanesWithoutComputer(env, userId) }) : notFound();
@@ -210,13 +223,22 @@ export async function routeLanesWithoutComputer(request: Request, path: string, 
   } catch {
     laneId = "";
   }
-  if (rest.length !== 1 || !LANE_ID.test(laneId) || request.method !== "DELETE") return notFound();
+  const moved = rest.length === 2 && rest[1] === "moved" && request.method === "POST";
+  if (!LANE_ID.test(laneId) || !(moved || (rest.length === 1 && request.method === "DELETE"))) return notFound();
+  let keep: { machineKey: string; backups: boolean } | undefined;
+  if (moved) {
+    const body = await readJson(request);
+    const machineKey = typeof body?.toMachineKey === "string" ? body.toMachineKey.trim() : "";
+    if (!ROW_ID.test(machineKey) || typeof body?.keepBackups !== "boolean") return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
+    keep = { machineKey, backups: body.keepBackups };
+  }
   // A lane a computer still holds is not a lane without one: its saved work stays with it.
   const live = await env.DB.prepare("select 1 as n from cloud_computers where user_id = ? and lane_id = ? and deleted_at is null limit 1").bind(userId, laneId).first<{ n: number }>();
   if (live) return fail("lane_has_computer", "This lane has a computer on ADE Cloud. Delete the lane instead.", 409);
   const result = await env.DB.prepare("delete from cloud_lanes_without_computer where user_id = ? and lane_id = ?").bind(userId, laneId).run();
-  // The lane is gone, so its saved work and its chats on every computer go with it.
-  await deleteLaneData?.(laneId);
+  // The lane is gone from ADE Cloud, so its saved work and its chats on every computer go with it
+  // (all but what moved to the person's machine).
+  await deleteLaneData?.(laneId, keep);
   return json({ forgotten: (result.meta?.changes ?? 0) > 0 });
 }
 

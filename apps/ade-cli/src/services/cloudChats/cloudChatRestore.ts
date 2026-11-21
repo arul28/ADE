@@ -38,7 +38,8 @@ const PAGE_LIMIT = 50;
 
 export type CloudChatRestoreDeps = {
   api: CloudApiClient;
-  instanceId: string;
+  /** The ADE Cloud computer that restores; null on the person's own machine (a kept lane moved to it). */
+  instanceId: string | null;
   /** This computer's machine key: the saved copy moves here. */
   machineKey: string;
   logger: Logger;
@@ -81,6 +82,12 @@ export type CloudChatRestoreResult = {
 };
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** A saved copy moves to this machine's key: a cloud computer names itself; the person's own machine names none. */
+const moveRequest = (deps: Pick<CloudChatRestoreDeps, "machineKey" | "instanceId">) => ({
+  toMachineKey: deps.machineKey,
+  ...(deps.instanceId ? { instanceId: deps.instanceId } : {}),
+});
 
 /** The chat events in saved transcript text (JSON lines); a line that is not one is left out. */
 export function parseSavedTranscript(texts: readonly string[]): AgentChatEventEnvelope[] {
@@ -215,7 +222,7 @@ async function restoreCloudCli(deps: CloudChatRestoreDeps, args: CloudChatRestor
     // and the continue stands; a later send to the old address then starts another computer.
     let moved = false;
     if (copy && key !== machineKey) {
-      moved = await api.moveSavedSession(key, args.chatId, { toMachineKey: machineKey, instanceId: deps.instanceId }).then(() => true, (error: unknown) => {
+      moved = await api.moveSavedSession(key, args.chatId, moveRequest(deps)).then(() => true, (error: unknown) => {
         logger.warn("cloud.restore_move_failed", { chatId: args.chatId, kind: "cli", error: errorText(error) });
         return false;
       });
@@ -258,7 +265,7 @@ export async function restoreCloudChat(
   let moved = from === machineKey;
   if (!moved) {
     try {
-      const answer = await api.moveSavedChat(from, args.chatId, { toMachineKey: machineKey, instanceId: deps.instanceId });
+      const answer = await api.moveSavedChat(from, args.chatId, moveRequest(deps));
       lastSeq = answer.chat.lastSeq;
       moved = answer.moved;
     } catch (error) {
