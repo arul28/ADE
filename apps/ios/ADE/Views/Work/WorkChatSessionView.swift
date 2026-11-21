@@ -1231,7 +1231,10 @@ struct WorkChatSessionView: View {
        workClaudePassKey(ofAccountId: account) == nil {
       return nil
     }
-    return "ade-cloud-claude:\(session.id)"
+    // The chat's account is part of the key: a switch to another pass drops
+    // the old answer and reads again.
+    let account = providerSignInInstanceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return "ade-cloud-claude:\(session.id):\(account)"
   }
 
   /// The account's answer for this chat, never another chat's.
