@@ -2544,7 +2544,10 @@ struct WorkChatSessionView: View {
         WorkAdeCloudClaudePassCard(
           need: { if case .needsPass(let need)? = read { return need } else { return nil } }(),
           reason: signIn.reason,
-          ownPass: workClaudePassKey(ofAccountId: providerSignInInstanceId) != nil,
+          // Only a pass the account still has: a removed one runs on the "New chats" pass.
+          ownPass: workClaudePassKey(ofAccountId: providerSignInInstanceId).map { key in
+            adeCloudClaudeRead?.status.claudePasses?.contains { $0.key == key } == true
+          } ?? false,
           passWorks: read == .passWorks,
           onOpenPass: { adeCloudClaudePassPageShown = true },
           onSendAgain: {

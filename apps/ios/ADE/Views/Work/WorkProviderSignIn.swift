@@ -707,12 +707,12 @@ func workClaudePassKey(ofAccountId id: String?) -> String? {
 func workAdeCloudClaudeRead(_ status: ProviderLoginsPhoneStatus, accountId: String? = nil) -> WorkAdeCloudClaudeRead? {
   guard status.readsAccount else { return nil }
   if !status.cloud.enabled { return .signInsOff }
-  if let passKey = workClaudePassKey(ofAccountId: accountId), let passes = status.claudePasses {
-    // The chat's own pass decides: another pass that works does not fix it.
-    guard let pass = passes.first(where: { $0.key == passKey }) else {
-      // The account no longer has it: a new pass is what fixes the chat.
-      return .needsPass(providerCloudClaudePassNeed(status) ?? .noPass)
-    }
+  // The chat's own pass decides: another pass that works does not fix it.
+  // A pass the account no longer has is not this case: the host runs that
+  // chat on its default account, which takes the "New chats" pass, so the
+  // account-wide answer below applies.
+  if let passKey = workClaudePassKey(ofAccountId: accountId),
+     let pass = status.claudePasses?.first(where: { $0.key == passKey }) {
     // A pass this brain can't read is not known either way.
     if pass.unreadable == true { return nil }
     if pass.state == "ended" { return .needsPass(.ended(at: pass.endedAt.map { Date(timeIntervalSince1970: $0 / 1000) })) }
