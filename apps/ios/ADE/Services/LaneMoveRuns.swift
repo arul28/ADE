@@ -135,6 +135,8 @@ final class LaneMoveRuns: ObservableObject {
   /// Reads come quickly at first, when a small lane is done in seconds, then slower.
   private static let fastRead: Duration = .seconds(2)
   private static let slowRead: Duration = .seconds(6)
+  /// How often a run past `readFor` asks a machine that didn't answer.
+  private static let unreachedRead: Duration = .seconds(60)
   private static let fastReadsFor: TimeInterval = 60
   /// A move still running after this long stops being read; its chats' banners still show it.
   private static let readFor: TimeInterval = 2 * 60 * 60
@@ -304,13 +306,17 @@ final class LaneMoveRuns: ObservableObject {
   }
 
   /// `unreached`: the last read didn't reach the machine. A run that old
-  /// then stops reading but stays saved, so the next launch asks again.
+  /// then reads once a minute, so it goes on when the machine is back.
   private func schedule(_ id: String, unreached: Bool = false) {
     timers.removeValue(forKey: id)?.cancel()
     guard let run = self.run(id: id) else { return }
     let age = Date().timeIntervalSince(run.startedAt)
-    guard age < Self.readFor else {
-      if unreached { return }
+    let wait: Duration
+    if age < Self.readFor {
+      wait = age < Self.fastReadsFor ? Self.fastRead : Self.slowRead
+    } else if unreached {
+      wait = Self.unreachedRead
+    } else {
       // Too long to keep reading. Nothing is deleted; Try again asks the
       // same machine again, and it goes on from what already arrived.
       update(id) {
@@ -319,7 +325,6 @@ final class LaneMoveRuns: ObservableObject {
       }
       return
     }
-    let wait = age < Self.fastReadsFor ? Self.fastRead : Self.slowRead
     timers[id] = Task { @MainActor [weak self] in
       try? await Task.sleep(for: wait)
       guard !Task.isCancelled else { return }

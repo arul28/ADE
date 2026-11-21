@@ -56814,12 +56814,13 @@ export function createAgentChatService(args: {
       idempotencyKey: handoffId,
     });
     // A restore that fails after it made the row takes the row away again: a
-    // kept-lane move counts a chat whose row is here as restored.
+    // kept-lane move counts a chat whose row is here as restored. Only the
+    // row: the saved copy is the chat's one full history, so it stays.
     try {
       return await finishSavedCloudChatRestore(session, restoreArgs, { sessionId, provider, descriptor, capsule, handoffId, reused });
     } catch (error) {
       if (!reused) {
-        await deleteSession({ sessionId: session.id }).catch((cleanupError: unknown) => {
+        await deleteSession({ sessionId: session.id }, { localOnly: true }).catch((cleanupError: unknown) => {
           logger.warn("agent_chat.cloud_restore_cleanup_failed", { sessionId, error: getErrorMessage(cleanupError) });
         });
       }
@@ -77926,7 +77927,7 @@ export function createAgentChatService(args: {
    */
   const deleteSession = async (
     { sessionId }: AgentChatDeleteArgs,
-    deleteOptions: { remember?: boolean } = {},
+    deleteOptions: { remember?: boolean; localOnly?: boolean } = {},
   ): Promise<AgentChatDeleteResult> => {
     const trimmedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
     if (!trimmedSessionId.length) {
@@ -78139,8 +78140,9 @@ export function createAgentChatService(args: {
 
     sessionService.deleteSession(trimmedSessionId);
     notifyChatSessionEnded(trimmedSessionId);
+    // `localOnly`: the row goes, but the account's saved copy of the chat stays.
     try {
-      onChatDeleted?.(trimmedSessionId);
+      if (!deleteOptions.localOnly) onChatDeleted?.(trimmedSessionId);
     } catch (error) {
       logger.warn("agent_chat.on_deleted_failed", { sessionId: trimmedSessionId, error: getErrorMessage(error) });
     }
