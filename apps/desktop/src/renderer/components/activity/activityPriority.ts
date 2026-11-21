@@ -74,6 +74,17 @@ export function activityFeedItems(
 }
 
 /**
+ * Every agent item that has not expired, dismissed or not. Dismissing hides a
+ * row; it does not stop the agent, so a count of the work in progress reads this.
+ */
+export function activityAgentItemsWithDismissed(
+  input: ActivityItemsInput,
+  now = Date.now(),
+): AttentionItem[] {
+  return activityInputItems(input).filter((item) => item.kind === "agent" && !activityItemIsExpired(item, now));
+}
+
+/**
  * The notification side: everything that is not an agent and would have pushed
  * a notification. Inbox eligibility is the filter rather than "every PR",
  * because an open pull request nobody is waiting on is not a notification.

@@ -1550,7 +1550,12 @@ startup-context tip points at the provider's initial context inventory.
   random order. One corner card at a time with suggestions, never during
   onboarding, not within 30 minutes of a suggestion; up to two a week, two
   days apart, within the unasked budget, each once (trying it elsewhere
-  counts); it never uses a suggestion's per-launch slot. ADE Tips' header turns them off. A tip with
+  counts); it never uses a suggestion's per-launch slot. It never asks or
+  shows while a chat or CLI turn runs in the open project on any machine (an
+  Activity row the user dismissed still counts), nor for 30 s after the last
+  turn ends; a card already up steps aside and comes back (`useAgentBusy`).
+  Another machine's items match the project by name; an item from the
+  project's own device matches only by folder. ADE Tips' header turns them off. A tip with
   `card: false` (setup and power-user tips such as Beta track, Headless,
   Keyboard, Quick slots, Music) stays in ADE Tips but is never a card, and
   ADE Web never offers a `desktopOnly` tip (`tipOfferedAsCard`).
