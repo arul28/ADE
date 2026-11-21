@@ -4013,6 +4013,20 @@ function writeComposerDraftSnapshot(storageKey: string, snapshot: ComposerDraftS
   }
 }
 
+/** Whether the saved draft at `storageKey` was edited after `snapshot`. */
+function storedComposerDraftIsNewer(storageKey: string, snapshot: ComposerDraftStorageSnapshot): boolean {
+  const pendingAt = Date.parse(snapshot.updatedAt);
+  if (!Number.isFinite(pendingAt)) return false;
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) return false;
+    const storedAt = Date.parse((JSON.parse(raw) as { updatedAt?: unknown }).updatedAt as string);
+    return Number.isFinite(storedAt) && storedAt > pendingAt;
+  } catch {
+    return false;
+  }
+}
+
 function stripComposerDraftScreenshots(snapshot: ComposerDraftStorageSnapshot): ComposerDraftStorageSnapshot {
   return {
     ...snapshot,
@@ -12834,7 +12848,9 @@ export function AgentChatPane({
     }
     const pending = pendingComposerDraftWriteRef.current;
     pendingComposerDraftWriteRef.current = null;
-    if (pending) {
+    // Two panes on one chat flush in mount order at Quit, not in edit order:
+    // the one that holds the older edit does not overwrite the newer one.
+    if (pending && !storedComposerDraftIsNewer(pending.storageKey, pending.snapshot)) {
       writeComposerDraftSnapshot(pending.storageKey, pending.snapshot);
     }
   }, []);
