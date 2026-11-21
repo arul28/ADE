@@ -58,6 +58,11 @@ export type CloudLaneWorkState = {
 export type CloudLaneDeleteOptions = {
   /** Keep its saved chats on ADE Cloud. Off: they go with the lane. */
   keepChats?: boolean;
+  /**
+   * Delete only these saved chats of the computer, by chat id: the ones a
+   * move carried to another machine. The rest stay readable from ADE Cloud.
+   */
+  onlyChats?: readonly string[];
 };
 
 export type CloudLaneDeleteResult = {

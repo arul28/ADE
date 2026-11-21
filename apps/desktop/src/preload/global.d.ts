@@ -411,6 +411,8 @@ import type {
   AgentChatCrossMachineBatchMoveArgs,
   AgentChatGetCrossMachineBatchMoveArgs,
   AgentChatRetryCrossMachineBatchMoveArgs,
+  AgentChatCrossMachineBatchSourceChangedArgs,
+  AgentChatCrossMachineBatchSourceChangedResult,
   AgentChatResolveCrossMachineBatchMoveApprovalArgs,
   AgentChatCrossMachineBatchMoveRecord,
   AgentChatValidateCrossMachineSourceArgs,
@@ -2863,6 +2865,11 @@ declare global {
           args: AgentChatRetryCrossMachineBatchMoveArgs,
           pin: OpenProjectBinding,
         ) => Promise<AgentChatCrossMachineBatchMoveRecord>;
+        /** Whether the batch's source lanes changed after the move carried them; on the source brain. */
+        crossMachineBatchSourceChanged: (
+          args: AgentChatCrossMachineBatchSourceChangedArgs,
+          pin: OpenProjectBinding,
+        ) => Promise<AgentChatCrossMachineBatchSourceChangedResult>;
         resolveCrossMachineBatchMoveApproval: (
           args: AgentChatResolveCrossMachineBatchMoveApprovalArgs,
           pin: OpenProjectBinding,
@@ -5274,6 +5281,25 @@ declare global {
          * ADE Cloud id (the brain refuses a call that reached another one).
          */
         clearCaches?: (pin: OpenProjectBinding, instanceId: string) => Promise<{ freedGb: number }>;
+        /**
+         * A kept ADE Cloud lane (its computer deleted) moved to a machine of the person's,
+         * restored there from the server copies (shared/cloudKeptLaneRestore.ts). `pin` is
+         * the DESTINATION project's binding; keep it for the preview, the start and every
+         * progress read. `restoreKeptLane` returns at once with a running record; a second
+         * start for a lane that runs returns that one, and a start after a failure goes on.
+         */
+        previewKeptLaneRestore?: (
+          args: import("../shared/cloudKeptLaneRestore").CloudKeptLaneRestorePreviewArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/cloudKeptLaneRestore").CloudKeptLaneRestorePreview>;
+        restoreKeptLane?: (
+          args: import("../shared/cloudKeptLaneRestore").CloudKeptLaneRestoreArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/cloudKeptLaneRestore").CloudKeptLaneRestoreRecord>;
+        getKeptLaneRestore?: (
+          args: import("../shared/cloudKeptLaneRestore").CloudKeptLaneRestoreGetArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/cloudKeptLaneRestore").CloudKeptLaneRestoreRecord | null>;
       };
       /**
        * The account settings store (the `account_settings` action domain),

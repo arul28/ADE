@@ -961,6 +961,78 @@ extension View {
   }
 }
 
+/// The steps of a cloud lane's account delete once the person (or a checked
+/// lane move) decided it: the computer goes, then its row on the account,
+/// then the lane's saved chats. No wake and no work check. The delete sheet
+/// and the move after a lane moved off ADE Cloud both run it; the move
+/// deletes only the saved copies of the chats that moved (`onlyChats`).
+enum CloudLaneComputerDelete {
+  struct Outcome {
+    /// Why the computer is still there; nil when it is gone.
+    let failure: String?
+    /// The computer is gone but some of its saved chats are not.
+    let chatsLeft: Bool
+  }
+
+  @MainActor
+  static func run(
+    client: CloudServerClient,
+    instanceId: String,
+    accountMachineKey: String?,
+    laneId: String,
+    onlyChats: Set<String>? = nil,
+    sync: SyncService
+  ) async -> Outcome {
+    do {
+      // Waits until ADE Cloud confirms the computer is gone.
+      guard try await client.deleteInstanceConfirmed(instanceId) else {
+        return Outcome(failure: "ADE Cloud took the delete but the computer is still there. Check again in a minute; if it stays, delete it again.", chatsLeft: true)
+      }
+    } catch {
+      return Outcome(failure: cloudServerFailureMessage(error), chatsLeft: true)
+    }
+    // Off the account's machines too, as the desktop's delete does: else the
+    // lane stays in Lanes and Work from the machine list.
+    let account = AccountService.shared
+    if let key = accountMachineKey,
+       let row = account.machines.first(where: { $0.machineKey.caseInsensitiveCompare(key) == .orderedSame }) {
+      do {
+        try await account.removeMachineFromAccount(row)
+      } catch {
+        cloudLaneDeleteLog.notice("cloud_lane delete account_row=left error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      }
+    }
+    // The server may have taken the row off already: read the list again so
+    // this phone's copy drops it either way.
+    await account.loadMachines()
+    // The chats go after the computer, so a last saved part can't bring one back.
+    var chatsLeft = false
+    if let machineKey = accountMachineKey {
+      if let onlyChats {
+        // A move: the chats it left (Done, archived, another surface) stay
+        // readable from ADE Cloud. Its chats are all under this key.
+        for chatId in onlyChats.sorted() {
+          do {
+            try await client.deleteSavedChat(machineKey: machineKey, chatId: chatId)
+          } catch {
+            chatsLeft = true
+          }
+        }
+      } else {
+        do {
+          try await client.deleteSavedChats(machineKey: machineKey, laneId: laneId)
+        } catch {
+          chatsLeft = true
+        }
+      }
+    }
+    // The lists drop the lane and its chats now (after a move, only the chats
+    // it carried); an older read can't bring them back.
+    sync.noteCloudLaneDeleted(laneId, onlyChats: onlyChats, machineKey: accountMachineKey)
+    return Outcome(failure: nil, chatsLeft: chatsLeft)
+  }
+}
+
 /// "Delete <lane>?": the account delete of a cloud lane, the desktop's
 /// `deleteCloudLane.tsx` on the phone. It deletes the lane's computer through
 /// the account server (no wake, so it works on an asleep computer too), then
@@ -1058,39 +1130,18 @@ struct CloudLaneDeleteSheet: View {
     } catch {
       // A read that didn't answer: the delete below says whether it worked.
     }
-    do {
-      // Waits until ADE Cloud confirms the computer is gone.
-      guard try await client.deleteInstanceConfirmed(target.instanceId) else {
-        fail("ADE Cloud took the delete but the computer is still there. Check again in a minute; if it stays, delete it again.")
-        return
-      }
-    } catch {
-      fail(cloudServerFailureMessage(error))
+    let outcome = await CloudLaneComputerDelete.run(
+      client: client,
+      instanceId: target.instanceId,
+      accountMachineKey: target.accountMachineKey,
+      laneId: target.laneId,
+      sync: syncService
+    )
+    if let why = outcome.failure {
+      fail(why)
       return
     }
-    // Off the account's machines too, as the desktop's delete does: else the
-    // lane stays in Lanes and Work from the machine list.
-    let account = AccountService.shared
-    if let key = target.accountMachineKey,
-       let row = account.machines.first(where: { $0.machineKey.caseInsensitiveCompare(key) == .orderedSame }) {
-      do {
-        try await account.removeMachineFromAccount(row)
-      } catch {
-        cloudLaneDeleteLog.notice("cloud_lane delete account_row=left error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
-      }
-    }
-    // The server may have taken the row off already: read the list again so
-    // this phone's copy drops it either way.
-    await account.loadMachines()
-    // The chats go after the computer, so a last saved part can't bring one back.
-    var chatsLeft = false
-    if let machineKey = target.accountMachineKey {
-      do {
-        try await client.deleteSavedChats(machineKey: machineKey, laneId: target.laneId)
-      } catch {
-        chatsLeft = true
-      }
-    }
+    let chatsLeft = outcome.chatsLeft
     ADEHaptics.success()
     actions.deleted(instanceId: target.instanceId)
     actions.toast = ADEToastMessage(

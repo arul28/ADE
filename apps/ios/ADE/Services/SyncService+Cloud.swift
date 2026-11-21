@@ -696,13 +696,40 @@ extension SyncService {
 
   /// The server deleted this lane and its saved chats: they leave the lists
   /// now, and a read that started before the delete can't bring them back.
-  func noteCloudLaneDeleted(_ laneId: String) {
+  /// `onlyChats`: a move deleted only these saved chats (by chat id) of the
+  /// lane's computer `machineKey`; the lane's other saved chats stay listed.
+  func noteCloudLaneDeleted(_ laneId: String, onlyChats: Set<String>? = nil, machineKey: String? = nil) {
     cloudLaneDeleteTick &+= 1
-    cloudDeletedLaneTicks[laneId] = cloudLaneDeleteTick
-    guard cloudSavedChats.contains(where: { $0.laneId == laneId }) else { return }
-    cloudSavedChats.removeAll { $0.laneId == laneId }
+    let gone: (CloudSavedChatRow) -> Bool
+    if let onlyChats {
+      for chatId in onlyChats {
+        cloudDeletedLaneTicks[Self.deletedChatKey(machineKey: machineKey, chatId: chatId)] = cloudLaneDeleteTick
+      }
+      gone = { row in onlyChats.contains(row.chatId) && (machineKey == nil || row.machineKey == machineKey) }
+    } else {
+      cloudDeletedLaneTicks[laneId] = cloudLaneDeleteTick
+      gone = { $0.laneId == laneId }
+    }
+    guard cloudSavedChats.contains(where: gone) else { return }
+    cloudSavedChats.removeAll(where: gone)
     objectWillChange.send()
     resolveCloudMachineKeys()
+  }
+
+  /// The `cloudDeletedLaneTicks` key of one deleted saved chat; lane keys are plain lane ids.
+  private static func deletedChatKey(machineKey: String?, chatId: String) -> String {
+    "chat:\(machineKey ?? "")/\(chatId)"
+  }
+
+  /// The newest delete that covers the row: its lane's, or its own chat's
+  /// (by machine, or with no machine). An older lane delete must not hide a
+  /// newer chat delete.
+  private func deletedTick(of row: CloudSavedChatRow) -> UInt64? {
+    [
+      row.laneId.flatMap { cloudDeletedLaneTicks[$0] },
+      cloudDeletedLaneTicks[Self.deletedChatKey(machineKey: row.machineKey, chatId: row.chatId)],
+      cloudDeletedLaneTicks[Self.deletedChatKey(machineKey: nil, chatId: row.chatId)],
+    ].compactMap { $0 }.max()
   }
 
   private func readCloudServer() async {
@@ -764,7 +791,7 @@ extension SyncService {
     }
     if let chats {
       cloudSavedChats = chats.filter { row in
-        guard let laneId = row.laneId, let tick = cloudDeletedLaneTicks[laneId] else { return true }
+        guard let tick = deletedTick(of: row) else { return true }
         return tick <= startTick
       }
       // The deletes this read started after are the server's answer now.

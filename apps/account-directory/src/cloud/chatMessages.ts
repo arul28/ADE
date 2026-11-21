@@ -461,39 +461,69 @@ type SendInput = {
   sizeId?: CloudTierId | null;
 };
 
+type InsertWhere = { instanceId: string | null; launchId: string | null; viaLaunch: boolean };
+type Inserted = { row: ChatMessageRow; created: boolean };
+
+/**
+ * Queues one message. With `copyAt`, only while the chat's or CLI's saved
+ * copy is still at this address, read in the insert itself: a move that took
+ * the copy since `resolveTarget` read it leaves nothing queued here, where no
+ * computer would drain it. Null then.
+ */
+async function insertRow(env: CloudEnv, keys: UserKeys, userId: string, chat: Pick<QueueTarget, "machine_key" | "chat_id">, input: SendInput, where: InsertWhere & { copyAt: QueueTarget["kind"] }, now: number): Promise<Inserted | null>;
+async function insertRow(env: CloudEnv, keys: UserKeys, userId: string, chat: Pick<QueueTarget, "machine_key" | "chat_id">, input: SendInput, where: InsertWhere, now: number): Promise<Inserted>;
 async function insertRow(
   env: CloudEnv,
   keys: UserKeys,
   userId: string,
   chat: Pick<QueueTarget, "machine_key" | "chat_id">,
   input: SendInput,
-  where: { instanceId: string | null; launchId: string | null; viaLaunch: boolean },
+  where: InsertWhere & { copyAt?: QueueTarget["kind"] },
   now: number,
-): Promise<{ row: ChatMessageRow; created: boolean }> {
+): Promise<Inserted | null> {
   const sealed = await sealJson(keys, bodyAad({ user_id: userId, message_id: input.messageId }), {
     text: input.text,
     attachments: input.attachments,
     ...(input.settings ? { settings: input.settings } : {}),
   });
+  const copyHere = where.copyAt === "cli"
+    ? "where exists (select 1 from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and kind = 'cli')"
+    : where.copyAt === "chat"
+      ? "where exists (select 1 from cloud_chat_copies where user_id = ? and machine_key = ? and chat_id = ?)"
+      : "";
   const insert = () => env.DB.prepare(`
     insert into cloud_chat_messages (user_id, machine_key, chat_id, message_id, instance_id, launch_id, via_launch, seq, body_sealed, provider, model_id, state, created_at, updated_at)
     select ?, ?, ?, ?, ?, ?, ?, coalesce((select max(seq) from cloud_chat_messages where user_id = ? and machine_key = ? and chat_id = ?), 0) + 1, ?, ?, ?, 'queued', ?, ?
+    ${copyHere}
     on conflict (user_id, machine_key, chat_id, message_id) do nothing
+    returning *
   `).bind(
     userId, chat.machine_key, chat.chat_id, input.messageId, where.instanceId, where.launchId, where.viaLaunch ? 1 : 0,
     userId, chat.machine_key, chat.chat_id,
     sealed, input.provider, input.modelId, now, now,
-  ).run();
-  let changes = 0;
+    ...(copyHere ? [userId, chat.machine_key, chat.chat_id] : []),
+  ).all<ChatMessageRow>();
+  let inserted: ChatMessageRow | null;
   try {
-    changes = (await insert()).meta?.changes ?? 0;
+    inserted = (await insert()).results?.[0] ?? null;
   } catch (error) {
     // Two sends raced for the same place: the next one is free now.
     if (!(error instanceof Error && /UNIQUE/i.test(error.message))) throw error;
-    changes = (await insert()).meta?.changes ?? 0;
+    inserted = (await insert()).results?.[0] ?? null;
   }
-  const row = (await readRow(env, userId, chat.machine_key, chat.chat_id, input.messageId))!;
-  return { row, created: changes === 1 };
+  // The row the insert wrote, as it wrote it: a move that takes it to another key right after still finds it sent.
+  if (inserted) return { row: inserted, created: true };
+  // Nothing inserted: the same message id again (its row answers), or the copy moved before the insert.
+  const existing = await readRow(env, userId, chat.machine_key, chat.chat_id, input.messageId);
+  if (existing) return { row: existing, created: false };
+  if (where.copyAt) {
+    // The same id again, which a move took to the chat's new key right after the first send stored it:
+    // a move keeps the chat's id and its messages' ids, so the message is found by those. It was sent.
+    const moved = await env.DB.prepare("select * from cloud_chat_messages where user_id = ? and chat_id = ? and message_id = ? limit 1")
+      .bind(userId, chat.chat_id, input.messageId).first<ChatMessageRow>();
+    return moved ? { row: moved, created: false } : null;
+  }
+  throw new Error("A queued message wasn't stored.");
 }
 
 async function handleSend(request: Request, env: CloudEnv, userId: string, machineKey: string, chatId: string, deps: ChatMessageDeps): Promise<Response> {
@@ -543,7 +573,10 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
     // Every refusal runs before the row is written: a refused send stores nothing.
     const checked = await deps.wake.check(computer);
     if (checked instanceof Response) return checked;
-    const { row, created } = await insertRow(env, keys, userId, chat, input, { instanceId: computer.instance_id, launchId: null, viaLaunch: false }, now);
+    const inserted = await insertRow(env, keys, userId, chat, input, { instanceId: computer.instance_id, launchId: null, viaLaunch: false, copyAt: chat.kind }, now);
+    // The chat moved to another machine since it was read: nothing is queued, and a send again reaches it there.
+    if (!inserted) return fail("chat_moved", "This chat moved to another machine just as the message was sent. Send it again.", 409);
+    const { row, created } = inserted;
     const work = deps.wake.wakeAndDrain(computer).catch((error: unknown) => {
       logCloud("cloud.chat_message_wake_failed", { userId, instanceId: computer.instance_id, error: error instanceof Error ? error.message : "unknown" });
     });

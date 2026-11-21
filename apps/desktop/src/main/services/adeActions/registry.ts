@@ -333,6 +333,8 @@ import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
 import { buildCloudAgentActions } from "../adeCloud/cloudAgentActions";
 import { createCloudLaneAccount } from "../adeCloud/cloudLaneAccount";
 import { cloudDiskGrowHost } from "../adeCloud/cloudDiskGrowHost";
+import type { KeptLaneRestoreProject } from "../../../../../ade-cli/src/services/cloudChats/keptLaneRestore";
+import { pickKeptLaneRestoreArgs, type CloudKeptLaneRestorePreview, type CloudKeptLaneRestoreRecord } from "../../../shared/cloudKeptLaneRestore";
 import { createCloudBrainMaker, type CloudBrainMaker, type CloudBrainMakerBase } from "../adeCloud/cloudBrainMaker";
 import {
   cloudLaneLaunchRecordsDir,
@@ -660,7 +662,7 @@ type OpaqueService = Record<string, unknown>;
  * (buildMachineAccountDomainServices).
  */
 export type AccountDomainRuntime = Pick<AdeRuntime, "logger">
-  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "accountSettingsStore" | "agentChatService" | "getCloudDesktop" | "productAnalyticsService" | "passwordService">>
+  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "accountSettingsStore" | "agentChatService" | "getCloudDesktop" | "productAnalyticsService" | "passwordService" | "laneService" | "sessionService">>
   & { projectRoot?: string | null };
 
 function toService(value: unknown): OpaqueService | null {
@@ -4903,8 +4905,82 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
     ...verbs,
     ...cloudSignIns,
     ...savedChatReads(credentials),
+    ...keptLaneRestoreActions(runtime),
     /** Whether ADE Cloud exists for this account; the only `cloud` action served when it doesn't. */
     access: async () => ({ enabled: await cloudAccessEnabled(credentials) }),
+  };
+}
+
+/**
+ * "Move it to my computer" for a kept ADE Cloud lane
+ * (shared/cloudKeptLaneRestore.ts): this project's brain restores the lane
+ * from the account's server copies. The job runs in the brain's one store
+ * (`keptLaneRestores`, ade-cli keptLaneRestore.ts), installed only on a
+ * machine that is not an ADE Cloud computer; this project gives it the lane
+ * and chat services. `kept_lane_move` is the person's only
+ * (`ADE_ACTION_USER_ONLY`).
+ */
+function keptLaneRestoreActions(runtime: AccountDomainRuntime): {
+  kept_lane_move_preview: (args?: unknown) => Promise<CloudKeptLaneRestorePreview>;
+  kept_lane_move: (args?: unknown) => Promise<CloudKeptLaneRestoreRecord>;
+  kept_lane_move_status: (args?: unknown) => Promise<CloudKeptLaneRestoreRecord | null>;
+} {
+  const store = async () => {
+    const { keptLaneRestores } = await import("../../../../../ade-cli/src/services/cloudChats/keptLaneRestore");
+    const installed = keptLaneRestores();
+    if (!installed) {
+      throw new AdeExpectedError("This computer can't take a kept ADE Cloud lane. Move it to one of your own computers with ADE open.", "user");
+    }
+    return installed;
+  };
+  const project = async (): Promise<KeptLaneRestoreProject> => {
+    const { projectRoot, laneService, sessionService, agentChatService } = runtime;
+    if (!projectRoot || !laneService?.importBranch || !sessionService || !agentChatService) {
+      throw new AdeExpectedError("Open the lane's project on this computer, then move the lane there.", "user");
+    }
+    const [{ restoreKeptLaneBranch }, uploader] = await Promise.all([
+      import("../../../../../ade-cli/src/services/cloudChats/keptLaneRestore"),
+      import("../../../../../ade-cli/src/services/cloudChats/cloudChatUploader"),
+    ]);
+    return {
+      projectRoot,
+      originUrl: readGitOriginUrl(projectRoot),
+      restoreLane: (args) => restoreKeptLaneBranch({
+        ...args,
+        projectRoot,
+        logger: runtime.logger,
+        lanes: {
+          list: async () => (await laneService.list({ includeArchived: true, includeStatus: false })).map((lane) => ({
+            id: lane.id,
+            branchRef: lane.branchRef,
+            worktreePath: lane.worktreePath,
+            archived: Boolean(lane.archivedAt),
+            primary: lane.laneType === "primary",
+          })),
+          importBranch: (importArgs, options) => laneService.importBranch(importArgs, options),
+        },
+      }),
+      hasSession: async (sessionId) => Boolean(sessionService.get(sessionId)),
+      restore: (args) => agentChatService.restoreSavedCloudChat(args),
+      restoreCli: (args) => agentChatService.restoreSavedCloudCli(args),
+      adopt: uploader.adoptRestoredCloudChat,
+      hold: uploader.holdRestoringCloudChat,
+      release: uploader.releaseRestoringCloudChat,
+    };
+  };
+  // `fromComputer`: the lane's asleep ADE Cloud computer, released first (the store checks the id).
+  const restoreArgs = (args: unknown) => {
+    const { laneId, fromComputer } = pickKeptLaneRestoreArgs(args);
+    return { laneId: laneId ?? "", ...(fromComputer ? { fromComputer } : {}) };
+  };
+  return {
+    kept_lane_move_preview: async (args) => await (await store()).preview(await project(), restoreArgs(args)),
+    kept_lane_move: async (args) => await (await store()).start(await project(), restoreArgs(args)),
+    // Null where no restore ran (or no store is installed): nothing to show.
+    kept_lane_move_status: async (args) => {
+      const { keptLaneRestores } = await import("../../../../../ade-cli/src/services/cloudChats/keptLaneRestore");
+      return keptLaneRestores()?.get({ restoreId: pickKeptLaneRestoreArgs(args).restoreId ?? "" }) ?? null;
+    },
   };
 }
 

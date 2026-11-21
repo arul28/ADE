@@ -2440,6 +2440,8 @@ export function createGithubService({
     answersShells: accountApp.enabled,
     readAccountAppToken: () => accountApp.readToken(),
     peekAccountAppToken: () => accountApp.peekToken(),
+    // The account's copy of a `gh` login, for an owner without the App.
+    peekAccountGhToken: () => ghAccountSync.readAccountToken(),
     readGrant: readAppIssueGrant,
     readRepoOwner: async () => (await detectRepo().catch(() => null))?.owner ?? null,
     peekRepoOwner: () => peekGithubRepoOwnerFromGitConfig(projectRoot),

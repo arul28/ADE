@@ -469,6 +469,7 @@ import { CloudLaneHeaderButton } from "../cloudLane/CloudLaneHeaderButton";
 import { CloudLaneDeletingSoonBand } from "../cloudLane/CloudLaneDeletingSoonBand";
 import { newerLaunchDefaults, publishLaunchDefaults, readAccountLaunchDefaults } from "./accountLaunchDefaults";
 import { AdeCloudTray, CloudSizeButton, useCloudLaneWithoutComputerForChat } from "./AdeCloudComposerParts";
+import { useChatLaneMoveSource } from "../laneMove/useChatLaneMoveSource";
 import { cloudLaneRestartBranchRef, cloudLaneRestartProblem, cloudLaneRestartTier } from "../cloudLane/CloudLaneWithoutComputer";
 import type { CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
@@ -20373,6 +20374,17 @@ export function AgentChatPane({
     ],
   );
 
+  // Above the early return below: a hook must run on every render.
+  // The machine chip moves the open chat's whole lane ("Move this lane to").
+  // Not for a host surface (CTO, personal chats) or a subagent's view.
+  const laneMoveSource = useChatLaneMoveSource({
+    sessionId: selectedSessionId,
+    laneId: selectedSession?.laneId ?? null,
+    pin: selectedSessionId ? activeComposerRuntimeBinding : null,
+    enabled: Boolean(selectedSessionId) && !chatScope && !subagentView && !machineChipAction
+      && (selectedSession?.surface ?? "work") === "work",
+  });
+
   // A personal pane has no lane by design; everything below handles that.
   // A draft on an ADE Cloud tab needs none either: it starts or picks an ADE
   // Cloud lane (`adeCloudLaneId`).
@@ -21896,6 +21908,7 @@ export function AgentChatPane({
             composerMachineBinding={composerMachineBinding}
             composerMachineLabel={launchRunsOnAdeCloud ? ADE_CLOUD_NAME : null}
             machineChipAction={machineChipAction}
+            laneMove={laneMoveSource}
             cursorRuntime={composerCloudRuntime}
             modelRuntimePin={activeComposerRuntimeBinding}
             attachmentPersistenceUnavailableReason={draftAttachmentUnavailableReason}

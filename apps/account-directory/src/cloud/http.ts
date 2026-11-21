@@ -34,6 +34,25 @@ export function clippedText(value: unknown, max: number): string | null {
 
 /** A saved row's id in a path or a body: a machine key, chat, session or lane id. */
 export const ROW_ID = /^[A-Za-z0-9._:-]{1,160}$/;
+/**
+ * A saved-copy list's page position, newest first: `updatedAt:id/machineKey`.
+ * The machine key breaks a tie, since one id can be saved under two machines
+ * in the same millisecond; a cursor from before it (`updatedAt:id`) still
+ * reads, without the tie-break. Ids and keys are `ROW_ID`s, which have no `/`.
+ */
+export function pageCursorSql(raw: string | null | undefined, idColumn: "chat_id" | "session_id"): { sql: string; binds: Array<string | number> } | null {
+  const cursor = raw?.match(/^(\d+):([^/]+)(?:\/(.+))?$/) ?? null;
+  if (!cursor) return null;
+  const at = Number(cursor[1]);
+  const id = cursor[2]!;
+  const machine = cursor[3];
+  return machine == null
+    ? { sql: `(updated_at < ? or (updated_at = ? and ${idColumn} < ?))`, binds: [at, at, id] }
+    : { sql: `(updated_at < ? or (updated_at = ? and (${idColumn} < ? or (${idColumn} = ? and machine_key < ?))))`, binds: [at, at, id, id, machine] };
+}
+
+export const pageCursorOf = (updatedAt: number, id: string, machineKey: string): string => `${updatedAt}:${id}/${machineKey}`;
+
 /** A lowercase 8-4-4-4-12 UUID: a launch, a lane on a launch, a delete job. Callers lowercase first. */
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 

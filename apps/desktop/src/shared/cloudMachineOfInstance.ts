@@ -63,6 +63,7 @@ export function cloudMachineOfInstance(instance: CloudInstance, catalog: CloudCa
     awakeSinceMs: instance.awakeSince ?? null,
     diskUsage: instance.diskUsage ?? null,
     laneWork: instance.laneWork ?? null,
+    ignoredFiles: instance.ignoredFiles ?? null,
     ...(lane ? { lane } : {}),
     replacesInstanceId: instance.metadata.ade_moved_from ?? instance.metadata.ade_copied_from ?? null,
   };

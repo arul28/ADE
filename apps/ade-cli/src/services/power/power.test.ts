@@ -42,7 +42,7 @@ import { CloudProviderError } from "../../../../desktop/src/main/services/adeClo
 import { cloudDiskGrowStatePath } from "./cloudDiskGuard";
 import { cloudCatalogOf } from "../../../../desktop/src/shared/adeCloud";
 import { prepareCloudComputerToStop } from "./cloudPrepareStop";
-import { CLOUD_COMPUTER_REMOVING_SENTENCE, CLOUD_DELETE_FREEZE_MS, cloudDeleteFreezeRefusal, liftCloudDeleteFreeze } from "./cloudDeleteFreeze";
+import { CLOUD_COMPUTER_REMOVING_SENTENCE, CLOUD_COMPUTER_SLEEPING_SENTENCE, CLOUD_DELETE_FREEZE_MS, CLOUD_SLEEP_FREEZE_AFTER_PREPARE_MS, cloudDeleteFreezeRefusal, liftCloudDeleteFreeze } from "./cloudDeleteFreeze";
 import { cloudChatStoppedForRest } from "../cloudChats/cloudChatUploader";
 
 // The brain's power surface as one contract: reading what the hardware says
@@ -1249,6 +1249,7 @@ describe("cloud setup upsize for a lane setup that ran out of memory", () => {
 // must end whenever the server will keep the computer.
 describe("cloud prepare-stop before a delete", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     liftCloudDeleteFreeze();
   });
 
@@ -1267,22 +1268,36 @@ describe("cloud prepare-stop before a delete", () => {
     } as never;
   }
 
-  it.each<[string, { forDelete: boolean; busy: () => number; timeoutMs: number }, boolean]>([
+  // The person's Sleep freezes the same way, so the lanes' backups it saves are all the computer's work when it rests.
+  it.each<[string, { forDelete: boolean; forSleep?: boolean; busy: () => number; timeoutMs: number; saveEndsAfterFreeze?: boolean }, boolean]>([
     ["confirmed for a delete: frozen until the delete", { forDelete: true, busy: () => 0, timeoutMs: 40_000 }, true],
+    // Work could start once the freeze ran out, so the backups saved before that aren't all its work.
+    ["a Sleep whose rest save ends after its freeze ran out: not frozen", { forDelete: false, forSleep: true, busy: () => 0, timeoutMs: 40_000, saveEndsAfterFreeze: true }, false],
     ["a turn still runs at the deadline: the server keeps it, so no freeze", { forDelete: true, busy: () => 1, timeoutMs: 1_000 }, false],
-    ["not for a delete (the 0-hours stop, a Sleep): no freeze", { forDelete: false, busy: () => 0, timeoutMs: 40_000 }, false],
+    ["confirmed for the person's Sleep: frozen until it sleeps", { forDelete: false, forSleep: true, busy: () => 0, timeoutMs: 40_000 }, true],
+    ["a Sleep whose turn still runs at the deadline: no freeze, so it rests not saved", { forDelete: false, forSleep: true, busy: () => 1, timeoutMs: 1_000 }, false],
+    ["neither (the 0-hours stop): no freeze", { forDelete: false, busy: () => 0, timeoutMs: 40_000 }, false],
   ])("%s", async (_label, input, frozen) => {
     let refusedDuringPrepare: string | null = null;
     const result = await prepareCloudComputerToStop({
       runtimes: [runtimeWith({ busy: input.busy, onInterrupt: () => { refusedDuringPrepare = cloudDeleteFreezeRefusal(); } })],
       timeoutMs: input.timeoutMs,
       forDelete: input.forDelete,
+      forSleep: input.forSleep,
+      saveForRest: async () => {
+        if (input.saveEndsAfterFreeze) {
+          const late = Date.now() + input.timeoutMs + CLOUD_SLEEP_FREEZE_AFTER_PREPARE_MS + 1;
+          vi.spyOn(Date, "now").mockReturnValue(late);
+        }
+        return { sessions: 0, git: 0 };
+      },
     });
+    const sentence = input.forDelete ? CLOUD_COMPUTER_REMOVING_SENTENCE : input.forSleep ? CLOUD_COMPUTER_SLEEPING_SENTENCE : null;
 
     expect(result.frozen).toBe(frozen);
-    // From the start of a delete's prepare, so nothing starts between the interrupts and the save.
-    expect(refusedDuringPrepare).toBe(input.forDelete ? CLOUD_COMPUTER_REMOVING_SENTENCE : null);
-    expect(cloudDeleteFreezeRefusal()).toBe(frozen ? CLOUD_COMPUTER_REMOVING_SENTENCE : null);
+    // From the start of the prepare, so nothing starts between the interrupts and the save.
+    expect(refusedDuringPrepare).toBe(sentence);
+    expect(cloudDeleteFreezeRefusal()).toBe(frozen ? sentence : null);
     // A computer the server never deletes takes work again on its own.
     expect(cloudDeleteFreezeRefusal(Date.now() + CLOUD_DELETE_FREEZE_MS + 1)).toBeNull();
     // The stopped chat's saved row reads Stopped while the computer rests.

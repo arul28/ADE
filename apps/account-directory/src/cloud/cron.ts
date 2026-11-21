@@ -8,6 +8,7 @@ import { runPhoneChecks, stopPhonesDue } from "./phones";
 import { sendCloudEmail } from "./email";
 import { laneFactsStatement } from "./lanesWithoutComputer";
 import { markRestedWithBackups } from "./laneBackups";
+import { sweepLeftovers } from "./storageSweeps";
 import type { CloudHoursState, CloudInstance } from "./contract";
 import { refreshCostEstimate, runDailyCostReport } from "./costReport";
 import { AWAKE_COMPUTER_CAP, cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
@@ -87,6 +88,10 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   // Rows only, no provider: a queued message never arrives days late, and final rows don't pile up.
   await expireChatMessages(env, now).catch((error: unknown) => {
     reportCloudFailure("cloud.chat_messages_sweep_failed", { message: error instanceof Error ? error.message : "unknown" });
+  });
+  // Saved storage a request let go of but didn't finish deleting (`storageSweeps.ts`).
+  await sweepLeftovers(env, now).catch((error: unknown) => {
+    reportCloudFailure("cloud.storage_sweeps_failed", { message: error instanceof Error ? error.message : "unknown" });
   });
   // No provider either: a renewed Linear grant whose publish failed during the request is published here, so it is not lost.
   await runLinearRenewalCron(env, now).catch((error: unknown) => {

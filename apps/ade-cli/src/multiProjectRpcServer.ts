@@ -435,14 +435,16 @@ export type MultiProjectRpcHandlerOptions = {
     growId?: string | null;
     /** The server deletes the computer next: new work is frozen (`cloudDeleteFreeze.ts`). */
     forDelete?: boolean;
-    /** The person's Sleep: stop the turns and save the chats, with no lane backups. */
+    /** The person's Sleep comes next: new work is frozen until it (`cloudDeleteFreeze.ts`). */
+    forSleep?: boolean;
+    /** An older server's Sleep: stop the turns and save the chats, with no lane backups. */
     chatsOnly?: boolean;
   }) => Promise<unknown>) | null;
   /** On a cloud computer: the server keeps a computer it prepared for a delete, so the freeze ends (`ade cloud unfreeze`). */
   unfreezeCloudComputer?: (() => Promise<unknown>) | null;
   /** On a cloud computer: commits and pushes every lane's work (`ade cloud push-work`). */
   pushCloudWork?: ((args: { check: boolean; message?: string | null }) => Promise<unknown>) | null;
-  /** On a cloud computer: saves what clients read at rest, capsules too on the delete path (`ade cloud save-for-rest`). */
+  /** On a cloud computer: saves what clients read at rest, fork capsules too (`ade cloud save-for-rest`). */
   saveCloudForRest?: ((args: { capsules: boolean }) => Promise<unknown>) | null;
   /** On a cloud computer: sends the messages queued for its existing chats (`ade cloud messages drain`). */
   drainCloudMessages?: (() => Promise<unknown>) | null;
@@ -3712,6 +3714,7 @@ export function createMultiProjectRpcRequestHandler(
         diskGrowToGb: typeof params.diskGrowToGb === "number" && Number.isFinite(params.diskGrowToGb) && params.diskGrowToGb > 0 ? params.diskGrowToGb : null,
         growId: typeof params.growId === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(params.growId) ? params.growId : null,
         forDelete: params.forDelete === true,
+        forSleep: params.forSleep === true,
         chatsOnly: params.chatsOnly === true,
       });
     }

@@ -3109,6 +3109,61 @@ describe("createAgentChatService", () => {
         expect(prepared.capsule.brief).toBe("Fork handoff — full conversation history transported.");
       });
 
+      it("packages an ADE Cloud rest capsule of a lane with uncommitted work: history only, no Git check, no bundle", async () => {
+        // The lane is dirty: a move refuses it, but at rest the lane backup carries the code.
+        installCleanCrossMachineGitFixture("feature/primary", " M src/dirty.ts\n");
+        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-rest-capsule");
+        installClaudeResponseFixture({ sdkSessionId: "claude-rest-source", responseText: "ready" });
+        const { service } = createService();
+        const source = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "claude-sonnet-5",
+          modelId: "anthropic/claude-sonnet-5",
+        });
+        await startClaudeThread(service, source.id);
+        await vi.waitFor(() => expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy());
+        const sdkSessionId = String(readPersistedChatState(source.id).sdkSessionId);
+        const providerTranscript = `${JSON.stringify({ type: "user", sessionId: sdkSessionId, cwd: tmpRoot, message: { role: "user", content: "Keep my history" } })}\n`;
+        const providerDir = path.join(process.env.CLAUDE_CONFIG_DIR, "projects", tmpRoot.replace(/[^A-Za-z0-9]/g, "-"));
+        fs.mkdirSync(providerDir, { recursive: true });
+        fs.writeFileSync(path.join(providerDir, `${sdkSessionId}.jsonl`), providerTranscript, "utf8");
+        vi.mocked(runGit).mockClear();
+
+        const prepared = await service.prepareCloudRestCapsule({
+          sourceSessionId: source.id,
+          handoffId: "cloud-rest-dirty-1",
+          targetModelId: "anthropic/claude-sonnet-5",
+        });
+
+        expect(prepared.capsule.forkTransport).toMatchObject({ provider: "claude", kind: "claude-jsonl", nativeSessionId: sdkSessionId });
+        expect(zlib.gunzipSync(Buffer.from(prepared.capsule.forkTransport!.mainFile.contentBase64Gzip, "base64")).toString("utf8")).toBe(providerTranscript);
+        expect(prepared.capsule.gitBundle).toBeUndefined();
+        expect(prepared.capsule.source.headSha).toBe("");
+        // Nothing asked origin or packed the lane's work.
+        expect(vi.mocked(runGit).mock.calls.some(([args]) => args[0] === "ls-remote" || args[0] === "bundle")).toBe(false);
+
+        // The restore takes it with no Git facts: the history lands where Claude looks for the lane.
+        const restored = await service.restoreSavedCloudChat({
+          sessionId: "restored-rest-1",
+          laneId: "lane-1",
+          modelId: "anthropic/claude-sonnet-5",
+          title: null,
+          envelopes: [],
+          capsule: prepared.capsule,
+        });
+        expect(restored.restoredWith).toBe("capsule");
+        const placedId = String(readPersistedChatState("restored-rest-1").sdkSessionId);
+        expect(placedId).not.toBe(sdkSessionId);
+        // Under the project folder named for the lane's real path, as Claude names it.
+        const projectsDir = path.join(process.env.CLAUDE_CONFIG_DIR, "projects");
+        const placed = fs.readdirSync(projectsDir)
+          .map((dir) => path.join(projectsDir, dir, `${placedId}.jsonl`))
+          .filter((file) => fs.existsSync(file));
+        expect(placed).toEqual([path.join(projectsDir, fs.realpathSync(tmpRoot).replace(/[^A-Za-z0-9]/g, "-"), `${placedId}.jsonl`)]);
+        expect(fs.readFileSync(placed[0]!, "utf8")).toContain("Keep my history");
+      });
+
       it("packages only the transcript suffix after the original arrival boundary", async () => {
         installCleanCrossMachineGitFixture();
         installRealTranscriptParser();

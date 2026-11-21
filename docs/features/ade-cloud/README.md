@@ -294,8 +294,10 @@ When the chat's computer was deleted, the send starts a server launch with
 chat continues on the new computer in the same chat row.
 
 - Claude, Codex and OpenCode chats, and Claude Code and Codex CLIs, restore
-  from a native capsule the old computer saved before its delete
-  (`forkCapsules.ts`). The other 10 providers replay the saved transcript.
+  from a native capsule the old computer saved at its last rest save (the
+  idle step, `prepare-stop` or `save-for-rest`; `forkCapsules.ts`). The
+  capsule holds only the provider's history; the lane's code comes from the
+  lane backup. The other 10 providers replay the saved transcript.
 - The new computer moves the saved chat to its own machine key
   (`POST /cloud/chats/:m/:c/move`); the queued messages move with it. A CLI's
   saved copy moves the same way (`POST /cloud/sessions/:m/:s/move`), sealed
@@ -1251,6 +1253,51 @@ account, never a pin.
     row) turns into that kept row, with New computer and Delete; it reads
     the list a few times for about half a minute. When the read fails, the
     ADE Cloud page says so with Try again, never "No cloud lanes yet".
+- **Move this lane to** one of the person's own computers
+  (`components/laneMove/`, the chat composer's machine chip; the iPhone's
+  `LaneMoveSheet`). The review lists every chat with how much history it
+  keeps, the unpushed work, and the files git ignores
+  (`instance.ignoredFiles`, from the disk report): those do not move. ADE
+  Cloud is never a destination. The way depends on the lane's computer:
+  - **Awake:** the batch move carries the lane and its Work chats and CLIs,
+    then ADE deletes the computer. Only the saved copies of the chats that
+    arrived go with it (`deleteLane` with `onlyChats`); a Done, archived or
+    other-surface chat the move left stays readable from ADE Cloud.
+    Before the delete, the source answers two checks: no chat or CLI started
+    on the lane during the move, and the lane's HEAD and working tree match
+    what the move carried (`chat.crossMachineBatchSourceChanged`, against the
+    lane item's `carriedHeadSha` and `carriedTreeSha`). A chat that started
+    there keeps the computer and ends the run as "move again", which does not
+    block a new move. Changed files, or a computer whose ADE is too old to
+    check, end it at "Push to GitHub and delete": ADE pushes the lane's files
+    to its branch, checks nothing is left off GitHub, then deletes the
+    computer, and the person pulls the branch on the destination. "Keep
+    computer" leaves it. A check that can't read the source keeps the
+    computer, and its retry runs the checks again.
+  - **Asleep, with every lane saved at its rest** (`backups.saved`): no wake.
+    The destination brain (`keptLaneRestore.ts`, step `release`) deletes the
+    computer with `keepLane: { onlyIfSaved: true }`. The server refuses with
+    409 (`computer_awake`, `backup_not_current`, `backup_never_saved`) unless
+    the computer rests right after that save, and it checks again just before
+    the delete. Then the kept-lane restore runs: lane from its backup, chats
+    from their saved copies and capsules, then the kept row goes. A refusal
+    deletes nothing and sets `wakeInstead`; the dialog offers **Wake and
+    move**. A failure after the delete leaves the lane kept, so the move can
+    run again.
+  - **Asleep, not saved** (the rest save failed or ran out of time: Git LFS,
+    a submodule, a crash): the dialog says why and offers
+    **Wake and move**, which wakes the computer and moves it live.
+  - **Deleted:** the kept-lane restore with no release step.
+  - Claude, Codex and OpenCode chats, and Claude Code and Codex CLIs, keep
+    their native history from the capsule saved at each rest; the other
+    providers replay the saved transcript.
+  - The preview, the start and the status reads go to the destination's pin
+    (runtime actions `cloud.kept_lane_move_preview`, `cloud.kept_lane_move`
+    and `cloud.kept_lane_move_status`; the phone's sync commands
+    `cloud.previewKeptLaneRestore`, `cloud.restoreKeptLane` and
+    `cloud.getKeptLaneRestore`; all with `fromComputer: { instanceId }`).
+  - A restore lists at most 100 chats and CLIs to bring. When more are left,
+    it ends as failed and keeps the lane; a new start brings the next ones.
 - **Keep the lane on a fresh computer.** ADE pushes the work first; a push that
   can't save everything keeps the computer, and freeing is refused while the
   agent works ("Stop it or wait, then free the computer"). Then the server
@@ -1488,9 +1535,37 @@ One busy list, `decideCloudBusy` in
   chat turns and agent CLIs, writes the saved chat copy, and saves each lane's
   backup (`backups` in its `--json` result).
 - **The person's Sleep** of an awake computer first runs
-  `prepare-stop --timeout 20 --chats-only` (`prepareForPersonSleep` in
-  `routes.ts`): the running turns stop and the chats are saved, then the
-  computer sleeps whatever the prepare says.
+  `prepare-stop --timeout 20 --for-sleep` (`prepareForPersonSleep` in
+  `routes.ts`): the running turns stop, the chats are saved, and each lane's
+  backup is saved in the time left. `--for-sleep` freezes new work from the
+  start of the prepare until 30 s after it answers; a wake lifts it. Then the
+  computer sleeps whatever the prepare says. The server marks the rest
+  (`markRestedWithBackups`), so a later move or cleanup needs no wake, only
+  when the prepare reports every lane saved, answers `frozen: true`, and the
+  sleep follows within 20 s. A save that didn't finish in time, or an older
+  ADE that doesn't freeze, marks nothing.
+- **The saved-only delete** (a move from an asleep computer) claims the
+  computer with one conditional write (`claimSavedDelete`, `idle_deleting_at`)
+  while it rests with current backups. While the claim holds, start, exec,
+  sign-in, message sends, `/use` and event wakes answer 409
+  `computer_deleting`. A path that deletes nothing gives the claim back. The
+  client sends `onlyIfSaved` only to a server whose computer reads
+  `deleteOnlyIfSaved: true`; an older server gets no delete, and the move
+  asks for a wake.
+- **Native-history capsules** are replaced atomically: a new upload writes
+  under its own prefix and its commit swaps it in (migration 0051), so a
+  failed upload leaves the old capsule readable. A chat capsule records the
+  newest turn it holds (`transcriptEnd`); a restore drops a capsule older
+  than the saved transcript and replays the transcript. A restore moves the
+  chat with `keepCapsule: true` and deletes the capsule
+  (`DELETE /cloud/capsules/:machineKey/:chatId`) only after the local
+  restore succeeds.
+- **Each saved copy owns its storage.** A new chat copy, capsule upload or
+  CLI copy save gets its own R2 key (`storageSweeps.ts`), so a delete or a
+  move touches only the storage it read. The write that lets storage go also
+  writes a row in `cloud_storage_sweeps` (migration 0051); the objects go
+  after it, and the minute tick finishes a sweep that failed. Older rows keep
+  their keys.
 - **A turn stopped for a rest reads Stopped.** Each chat whose turn a
   prepare-stop interrupts is marked (`noteCloudChatStoppedForRest`). Its saved
   row then has status `interrupted` (`SAVED_CHAT_STOPPED_STATUS`), and the

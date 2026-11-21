@@ -207,7 +207,7 @@ export async function deleteCloudLaneWithCheck(input: CloudLaneDeleteOptions & {
 
     setDeletePhase(instanceId, "deleting");
     progress("Deleting its computer…");
-    const done = await deleteCloudLane(instanceId, { skipCheck: true, keepChats });
+    const done = await deleteCloudLane(instanceId, { skipCheck: true, keepChats, ...(input.onlyChats ? { onlyChats: input.onlyChats } : {}) });
     if (!done.ok) return fail(new Error(done.message));
     deleted = true;
     setDeletePhase(instanceId, "deleted");
@@ -220,6 +220,8 @@ export async function deleteCloudLaneWithCheck(input: CloudLaneDeleteOptions & {
         ? "The lane and its computer are gone. Its chats stay in Work to read."
         : chatsKept
           ? "The lane and its computer are gone. ADE couldn't delete all its chats; remove the rest in Work."
+        : input.onlyChats
+          ? "Its computer is gone. The chats that moved are off ADE Cloud; any others stay in Work to read."
           : "The lane, its computer and its chats are gone.",
       durationMs: chatsKept && !keepChats ? READABLE_TOAST_DURATION_MS : undefined,
       replayMask: { title: true },

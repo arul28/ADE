@@ -4135,7 +4135,11 @@ function scopeCrossMachineMoveArgs(
     return { ...startArgs, requestedBy: "agent", requestingSessionId: boundChatSessionId };
   }
 
-  if (action === "getCrossMachineBatchMove" || action === "retryCrossMachineBatchMove") {
+  if (
+    action === "getCrossMachineBatchMove"
+    || action === "retryCrossMachineBatchMove"
+    || action === "crossMachineBatchSourceChanged"
+  ) {
     const batchId = asOptionalTrimmedString(rawArgs.batchId);
     if (!batchId) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `chat.${action} requires batchId.`);
@@ -4264,6 +4268,7 @@ const CROSS_MACHINE_MOVE_ACTIONS = new Set([
   "getCrossMachineHandoffOptions",
   "startCrossMachineBatchMove",
   "getCrossMachineBatchMove",
+  "crossMachineBatchSourceChanged",
   "retryCrossMachineBatchMove",
 ]);
 

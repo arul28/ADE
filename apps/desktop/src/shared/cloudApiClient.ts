@@ -14,6 +14,7 @@
  */
 
 import {
+  CLOUD_CAPSULE_UPLOAD_HEADER,
   CLOUD_INSTANCE_HEADER,
   CLOUD_PATHS,
   cloudBackupPath,
@@ -39,6 +40,7 @@ import {
   type CloudLaneBackup,
   type CloudCapsuleCommit,
   type CloudCapsuleManifest,
+  type CloudCapsulePartResult,
   type CloudChatMessageAddResult,
   type CloudChatMessageReport,
   type CloudChatMessageRequest,
@@ -86,7 +88,7 @@ import {
   type CloudRemoteSignInStatus,
   type CloudServerLaunchRequest,
 } from "../../../account-directory/src/cloud/contract";
-import type { CloudLaneWithoutComputer } from "../../../account-directory/src/cloud/contract";
+import type { CloudLaneMovedRequest, CloudLaneWithoutComputer } from "../../../account-directory/src/cloud/contract";
 import {
   CLOUD_EDGE_PATHS,
   cloudInstanceEventWakesPath,
@@ -153,12 +155,26 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   async function request<T>(method: string, path: string, init: RequestOptions = {}): Promise<T> {
+    // One limit for the whole call: the sign-in token's wait counts against it, and the fetch gets what is left.
+    const limitMs = init.timeoutMs ?? timeoutMs;
+    const startedAt = Date.now();
+    const outOfTime = () => new CloudApiError("ADE Cloud did not answer in time. Try again.", "timeout", 0);
     const headers: Record<string, string> = { accept: "application/json", ...init.headers };
     if (!init.anonymous) {
-      const token = await options.accessToken();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(outOfTime()), limitMs);
+      });
+      // Started in the chain, so a token callback that throws rejects here and the timer is cleared.
+      const tokenWait = Promise.resolve().then(() => options.accessToken());
+      // A token that fails after the limit has nobody waiting for it.
+      tokenWait.catch(() => undefined);
+      const token = await Promise.race([tokenWait, late]).finally(() => clearTimeout(timer));
       if (!token) throw new CloudApiError("Sign in to ADE to use ADE Cloud.", "unauthorized", 401);
       headers.authorization = `Bearer ${token}`;
     }
+    const leftMs = limitMs - (Date.now() - startedAt);
+    if (leftMs <= 0) throw outOfTime();
     let body: BodyInit | undefined;
     if (init.raw) {
       body = init.raw.bytes;
@@ -173,7 +189,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     };
     let response: Response;
     try {
-      response = await fetcher(`${base}${path}`, { method, headers, body, signal: AbortSignal.timeout(init.timeoutMs ?? timeoutMs) });
+      response = await fetcher(`${base}${path}`, { method, headers, body, signal: AbortSignal.timeout(leftMs) });
     } catch (error) {
       throw noAnswer(error);
     }
@@ -269,7 +285,11 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     /** The server wakes a sleeping computer first. `computerIdle` is needed to grow the disk of a running one. */
     resize: (instanceId: string, args: { cpu?: number; memory?: number; disk?: number; computerIdle?: boolean }) =>
       request<{ status: string }>("POST", `${instancePath(instanceId)}/resize`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
-    deleteComputer: (instanceId: string, args: { who?: string | null; reason?: string | null } = {}) =>
+    /** `keepLane.onlyIfSaved`: only while it rests with every lane's work saved (409 otherwise, nothing deleted). */
+    deleteComputer: (
+      instanceId: string,
+      args: { who?: string | null; reason?: string | null; keepLane?: { branchRef: string | null; onlyIfSaved?: boolean } } = {},
+    ) =>
       request<{ deleted: true }>("DELETE", instancePath(instanceId), { body: args }),
     /** Runs a shell command on the computer; the server wakes a sleeping one for it (that uses hours). */
     exec: (instanceId: string, command: string, timeoutMs: number) =>
@@ -331,12 +351,21 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     forgetLaneWithoutComputer: (laneId: string) =>
       request<{ forgotten?: boolean }>("DELETE", `${CLOUD_PATHS.lanesWithoutComputer}/${encodeURIComponent(laneId)}`),
     /**
+     * The kept lane came back on this machine (`toMachineKey`): its record goes, and its
+     * data under every other key; what moved here stays. An older server answers 404 and deletes nothing.
+     */
+    forgetMovedLaneWithoutComputer: (laneId: string, moved: CloudLaneMovedRequest) =>
+      request<{ forgotten?: boolean }>("POST", `${CLOUD_PATHS.lanesWithoutComputer}/${encodeURIComponent(laneId)}/moved`, { body: moved }),
+    /**
      * The account's saved chats (the server's copy, readable with no computer
      * running). A 404 is an account without ADE Cloud: no chats, not a failure.
      */
-    savedChats: async (args: { machineKey?: string | null; projectKey?: string | null; limit?: number; cursor?: string | null } = {}) => {
+    savedChats: async (args: { machineKey?: string | null; notMachineKey?: string | null; projectKey?: string | null; laneId?: string | null; limit?: number; cursor?: string | null } = {}) => {
       const query = new URLSearchParams();
       if (args.machineKey) query.set("machine", args.machineKey);
+      // An older server ignores these two and lists every chat: callers filter what comes back too.
+      if (args.notMachineKey) query.set("notMachine", args.notMachineKey);
+      if (args.laneId) query.set("lane", args.laneId);
       if (args.projectKey) query.set("project", args.projectKey);
       if (args.limit) query.set("limit", String(args.limit));
       if (args.cursor) query.set("cursor", args.cursor);
@@ -372,9 +401,12 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     projectOverview: (origin: string) =>
       orNullOn404(() => request<CloudProjectOverview>("GET", `${CLOUD_PATHS.projectsOverview}?origin=${encodeURIComponent(origin)}`)),
     /** CLI-session and shell copies; null from an older server. */
-    savedSessions: (args: { machineKey?: string | null; projectKey?: string | null; cursor?: string | null } = {}) => {
+    savedSessions: (args: { machineKey?: string | null; notMachineKey?: string | null; projectKey?: string | null; laneId?: string | null; cursor?: string | null } = {}) => {
       const query = new URLSearchParams();
       if (args.machineKey) query.set("machine", args.machineKey);
+      // As `savedChats`: an older server ignores these two.
+      if (args.notMachineKey) query.set("notMachine", args.notMachineKey);
+      if (args.laneId) query.set("lane", args.laneId);
       if (args.projectKey) query.set("project", args.projectKey);
       if (args.cursor) query.set("cursor", args.cursor);
       const suffix = query.toString() ? `?${query.toString()}` : "";
@@ -483,15 +515,18 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     /** `kept`: the server holds a newer read and kept it. */
     putGitSummary: (machineKey: string, laneId: string, upload: CloudGitSummaryUpload) =>
       request<{ ok: true; kept: boolean }>("PUT", cloudGitPath(machineKey, laneId), { body: upload }),
-    /** Part `part` (1-based, at most 6 MiB) of a capsule; a put of part 1 starts a new capsule. */
-    putCapsulePart: (machineKey: string, chatId: string, part: number, instanceId: string, bytes: Uint8Array | ArrayBuffer | Blob) =>
-      request<{ ok: true; bytes: number }>("PUT", cloudCapsulePath(machineKey, chatId, { part }), {
+    /**
+     * Part `part` (1-based, at most 6 MiB) of a capsule; a put of part 1 starts a new upload and answers its
+     * `uploadId`, which later parts send (`upload.uploadId`). `upload.timeoutMs` shortens the request's own limit.
+     */
+    putCapsulePart: (machineKey: string, chatId: string, part: number, instanceId: string, bytes: Uint8Array | ArrayBuffer | Blob, upload: { uploadId?: string | null; timeoutMs?: number } = {}) =>
+      request<CloudCapsulePartResult>("PUT", cloudCapsulePath(machineKey, chatId, { part }), {
         raw: { bytes: bytes as BodyInit, contentType: "application/octet-stream" },
-        headers: { [CLOUD_INSTANCE_HEADER]: instanceId },
-        timeoutMs: timeoutMs * 2,
+        headers: { [CLOUD_INSTANCE_HEADER]: instanceId, ...(upload.uploadId ? { [CLOUD_CAPSULE_UPLOAD_HEADER]: upload.uploadId } : {}) },
+        timeoutMs: Math.max(1, Math.min(timeoutMs * 2, upload.timeoutMs ?? Infinity)),
       }),
-    commitCapsule: (machineKey: string, chatId: string, commit: CloudCapsuleCommit) =>
-      request<CloudCapsuleManifest>("POST", cloudCapsulePath(machineKey, chatId, "commit"), { body: commit }),
+    commitCapsule: (machineKey: string, chatId: string, commit: CloudCapsuleCommit, limit: { timeoutMs?: number } = {}) =>
+      request<CloudCapsuleManifest>("POST", cloudCapsulePath(machineKey, chatId, "commit"), { body: commit, timeoutMs: Math.max(1, Math.min(timeoutMs, limit.timeoutMs ?? Infinity)) }),
     /** The capsule saved for a chat; null when there is none (replay the saved transcript). */
     capsuleManifest: (machineKey: string, chatId: string) =>
       orNullOn404(() => request<CloudCapsuleManifest>("GET", cloudCapsulePath(machineKey, chatId))),
@@ -499,6 +534,9 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       const response = await request<Response>("GET", cloudCapsulePath(machineKey, chatId, { part }), { rawResponse: true, timeoutMs: timeoutMs * 2 });
       return await response.arrayBuffer();
     },
+    /** Deletes a capsule a restore used (a move that kept it). Null on an older server, whose move deleted it already. */
+    deleteCapsule: (machineKey: string, chatId: string) =>
+      orNullOn404(() => request<{ deleted: boolean }>("DELETE", cloudCapsulePath(machineKey, chatId))),
     /* ---- Lane backups at rest (`laneBackups.ts`) ---- */
     /** The account's lane backups (of one lane with `laneId`, made on one computer with `machineKey`), newest first; empty from an older server. */
     laneBackups: async (laneId?: string | null, machineKey?: string | null): Promise<CloudLaneBackup[]> => {

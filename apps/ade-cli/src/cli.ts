@@ -754,7 +754,7 @@ import {
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/src/shared/types/recovery";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { cloudDiskGrowStatePath, cloudDiskGuardOptions, readCloudDiskGrowState } from "./services/power/cloudDiskGuard";
-import { cloudDeleteFreezeRefusal, liftCloudDeleteFreeze } from "./services/power/cloudDeleteFreeze";
+import { cloudDeleteFreezeRefusal, liftCloudDeleteFreeze, liftCloudSleepFreeze } from "./services/power/cloudDeleteFreeze";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
@@ -21892,9 +21892,11 @@ function buildCloudPrepareStopPlan(args: string[]): CliPlan {
     throw new CliUsageError("ade cloud prepare-stop --timeout <seconds> --disk-grow <GB>");
   }
   // `--for-delete`: the server deletes the computer next, so new work is frozen (`cloudDeleteFreeze.ts`).
-  // `--chats-only`: the person's Sleep; only the turns stop and the chats are saved, with no lane backups.
-  // An older ADE ignores both flags and does a normal prepare.
+  // `--for-sleep`: the person's Sleep comes next, so new work is frozen until it (a short freeze).
+  // `--chats-only`: an older server's Sleep; only the turns stop and the chats are saved, with no lane backups.
+  // An older ADE ignores these flags and does a normal prepare.
   const forDelete = args.includes("--for-delete");
+  const forSleep = args.includes("--for-sleep");
   const chatsOnly = args.includes("--chats-only");
   return {
     kind: "execute",
@@ -21906,6 +21908,7 @@ function buildCloudPrepareStopPlan(args: string[]): CliPlan {
         timeoutMs: Math.round(seconds * 1000),
         ...(diskGrowToGb != null ? { diskGrowToGb, ...(growId ? { growId } : {}) } : {}),
         ...(forDelete ? { forDelete: true } : {}),
+        ...(forSleep ? { forSleep: true } : {}),
         ...(chatsOnly ? { chatsOnly: true } : {}),
       },
     }],
@@ -21926,9 +21929,10 @@ function buildCloudUnfreezePlan(): CliPlan {
 }
 
 /**
- * `ade cloud save-for-rest [--capsules] --json`: shell and CLI copies and
- * Git summaries, and with `--capsules` the fork capsules (the idle cleanup
- * runs it between push-work and the check). Prints `CloudSaveForRestReport`.
+ * `ade cloud save-for-rest [--capsules] --json`: shell and CLI copies, Git
+ * summaries and fork capsules (every save makes capsules; `--capsules` names
+ * the idle cleanup, which runs it between push-work and the check). Prints
+ * `CloudSaveForRestReport`.
  * It fits inside the server's 4-minute exec.
  */
 function buildCloudSaveForRestPlan(args: string[]): CliPlan {
@@ -31128,8 +31132,11 @@ async function runServe(
         reportUse: async (lastWorkAt, stillIdle) => await cloudDiskUsageReporter?.report(lastWorkAt, stillIdle),
         // Copies and Git summaries before the sleep: the lane reads the same with no computer awake.
         saveForRest: async (stillIdle: () => boolean): Promise<string | null> => (cloudRest ? await cloudRest.saveAtIdle(stillIdle) : null),
-        // Messages queued for its chats while it slept go now.
-        onWoke: () => cloudRest?.drain("woke"),
+        // Messages queued for its chats while it slept go now. The freeze of the person's Sleep ends first.
+        onWoke: () => {
+          if (liftCloudSleepFreeze()) headlessProjectLogger.info("cloud.sleep_freeze_lifted", { at: "woke" });
+          cloudRest?.drain("woke");
+        },
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
         reportBooted: async () => await cloudComputerReports?.reportBooted() ?? { sleepWhenIdle: false },
@@ -32724,6 +32731,13 @@ async function runServe(
       },
     });
   }
+  // The person's own machine: a kept ADE Cloud lane (its computer deleted) can come back
+  // here from the server copies (`cloud.restoreKeptLane`). An ADE Cloud computer brings a
+  // kept lane back through its own launch instead, so it has no store.
+  if (!embedded && !cloudInstanceId) {
+    const { createKeptLaneRestores, setKeptLaneRestores } = await import("./services/cloudChats/keptLaneRestore");
+    setKeptLaneRestores(createKeptLaneRestores({ api: accountCloudApi, machineKey: thisMachineKey, logger: headlessProjectLogger }));
+  }
   if (bootLaunchEnv) {
     startCloudBootLaunch(bootLaunchEnv, {
       cloudInstanceId,
@@ -33019,7 +33033,7 @@ async function runServe(
         ? async () => await cloudRest.drainAnswer()
         : null,
       prepareCloudStop: cloudKeepAwake
-        ? async ({ timeoutMs, diskGrowToGb, growId, forDelete, chatsOnly }) => {
+        ? async ({ timeoutMs, diskGrowToGb, growId, forDelete, forSleep, chatsOnly }) => {
             const { prepareCloudComputerToStop } = await import("./services/power/cloudPrepareStop");
             // A disk grow's restart continues the turns it cuts (`continueAfterRestartAllowed`): keep them
             // running, once the note that marks the restart is written. No note: stop them, as before.
@@ -33028,7 +33042,7 @@ async function runServe(
               (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null));
             const personal = await personalChatScope.bootedRuntime().catch(() => null);
             const runtimes = [...booted, personal].filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
-            // The person's Sleep (`--chats-only`) saves no lane backups: the sleep waits for this prepare.
+            // `--chats-only` (an older server's Sleep) saves no lane backups: the sleep waits for this prepare.
             const saveForRest = chatsOnly ? null : cloudRest?.saveBeforeStop ?? null;
             return await prepareCloudComputerToStop({
               runtimes,
@@ -33036,8 +33050,9 @@ async function runServe(
               logger: headlessProjectLogger,
               keepTurns,
               ...(saveForRest ? { saveForRest } : {}),
-              // A disk grow keeps the computer; only a delete freezes it.
+              // A disk grow keeps the computer; only a delete or the person's Sleep freezes it.
               ...(forDelete && !keepTurns ? { forDelete: true } : {}),
+              ...(forSleep && !keepTurns ? { forSleep: true } : {}),
             });
           }
         : null,

@@ -435,16 +435,24 @@ export function createCliSessionLifecycle(deps: CliSessionLifecycleDeps) {
   };
 
   /**
+   * The row with its conversation id, when the CLI has not named it yet:
+   * ADE reads it from the agent's own files (`ensureResumeTargets`, bounded
+   * by `RESUME_TARGET_WAIT_MS`), then reads the row again. The CLI keeps
+   * running.
+   */
+  const withResumeTarget = async (row: TerminalSessionSummary): Promise<TerminalSessionSummary> => {
+    if (row.resumeMetadata?.targetId || !deps.ptyService?.ensureResumeTargets) return row;
+    await withTimeout(deps.ptyService.ensureResumeTargets([row.id]), RESUME_TARGET_WAIT_MS);
+    return sessionService.get(row.id) ?? row;
+  };
+
+  /**
    * The context a handoff or fork from a CLI carries: the agent's own
    * conversation file when ADE knows its id and can read it, else the CLI's
    * last message and terminal lines.
    */
   const handoffContext = async (row: TerminalSessionSummary): Promise<CliHandoffContext> => {
-    let current = row;
-    if (!current.resumeMetadata?.targetId && deps.ptyService?.ensureResumeTargets) {
-      await withTimeout(deps.ptyService.ensureResumeTargets([row.id]), RESUME_TARGET_WAIT_MS);
-      current = sessionService.get(row.id) ?? row;
-    }
+    const current = await withResumeTarget(row);
     const resumeProvider = current.resumeMetadata?.provider ?? providerFromTool(current.toolType ?? null);
     const provider = resumeProvider && isExternalSessionProvider(resumeProvider) ? resumeProvider : null;
     const conversationId = provider && current.resumeMetadata?.provider === provider
@@ -600,7 +608,7 @@ export function createCliSessionLifecycle(deps: CliSessionLifecycleDeps) {
     return { mode: "fresh", notice: null };
   };
 
-  return { deleteCli, archiveCli, stopArchivedAfterTurn, unarchiveCli, reopenCli, readTerminalTail, handoffContext, stopForMove, launchMovedCli };
+  return { deleteCli, archiveCli, stopArchivedAfterTurn, unarchiveCli, reopenCli, readTerminalTail, withResumeTarget, handoffContext, stopForMove, launchMovedCli };
 }
 
 export type CliSessionLifecycle = ReturnType<typeof createCliSessionLifecycle>;

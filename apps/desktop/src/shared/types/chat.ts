@@ -5214,6 +5214,8 @@ export type AgentChatCrossMachineBatchMoveArgs = {
   includeChanges?: boolean;
   whenBusy?: "wait" | "interrupt";
   note?: string;
+  /** Set the repository up on the destination first when it is missing (GitHub only). */
+  clone?: boolean;
 };
 
 export type AgentChatCrossMachineBatchMoveItemState =
@@ -5244,6 +5246,13 @@ export type AgentChatCrossMachineBatchMoveLaneItem = AgentChatCrossMachineBatchM
   returnToLaneId?: string | null;
   carriedChanges?: boolean;
   snapshotSha?: string | null;
+  /**
+   * The source lane's Git work as the move carried it: its HEAD commit and the
+   * tree of its working tree (untracked files in, ignored files out). Set when
+   * the lane leaves the source; absent on records from older ADE.
+   */
+  carriedHeadSha?: string | null;
+  carriedTreeSha?: string | null;
   warning?: string | null;
   laneSetupStatus?: AgentChatCrossMachineLaneSetupStatus;
 };
@@ -5277,6 +5286,8 @@ export type AgentChatCrossMachineBatchMoveRecord = {
   includeChanges: boolean;
   whenBusy: "wait" | "interrupt";
   note: string | null;
+  /** The destination sets the repository up first when it is missing. Absent on older records: no. */
+  clone?: boolean;
   items: AgentChatCrossMachineBatchMoveItem[];
 };
 
@@ -5291,6 +5302,13 @@ export type AgentChatCrossMachineBatchMoveApproval = {
 
 export type AgentChatGetCrossMachineBatchMoveArgs = { batchId: string };
 export type AgentChatRetryCrossMachineBatchMoveArgs = { batchId: string };
+export type AgentChatCrossMachineBatchSourceChangedArgs = { batchId: string };
+/** Whether a batch's source lanes have Git work the move did not carry. */
+export type AgentChatCrossMachineBatchSourceChangedResult = {
+  changed: boolean;
+  /** What changed, for logs. */
+  reason?: string | null;
+};
 export type AgentChatResolveCrossMachineBatchMoveApprovalArgs = { batchId: string; approve: boolean };
 
 /** A branch-only lane import, used for lanes that have no selected chat. */

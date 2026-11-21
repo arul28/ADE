@@ -8,6 +8,12 @@
 
 /* Begin PBXBuildFile section */
 		C1AE00000000000000B00012 /* LaneMoveSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00012 /* LaneMoveSheet.swift */; };
+		C1AE00000000000000B00013 /* LaneMoveModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00013 /* LaneMoveModel.swift */; };
+		C1AE00000000000000B00014 /* LaneMoveRuns.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00014 /* LaneMoveRuns.swift */; };
+		C1AE00000000000000B00015 /* LaneMoveSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00015 /* LaneMoveSource.swift */; };
+		C1AE00000000000000B00016 /* LaneMoveBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00016 /* LaneMoveBackend.swift */; };
+		C1AE00000000000000B00017 /* LaneMoveReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00017 /* LaneMoveReviewView.swift */; };
+		C1AE00000000000000B00018 /* LaneMoveRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00018 /* LaneMoveRows.swift */; };
 		C1AE00000000000000B00005 /* CloudAtRestReads.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00005 /* CloudAtRestReads.swift */; };
 		C1AE00000000000000B00006 /* GitHubDirectClient+Contents.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00006 /* GitHubDirectClient+Contents.swift */; };
 		C1AE00000000000000B00007 /* SyncService+LinearAccount.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00007 /* SyncService+LinearAccount.swift */; };
@@ -590,6 +596,12 @@
 
 /* Begin PBXFileReference section */
 		C1AE00000000000000A00012 /* LaneMoveSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMoveSheet.swift; path = ADE/Views/Lanes/LaneMoveSheet.swift; sourceTree = "<group>"; };
+		C1AE00000000000000A00013 /* LaneMoveModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMoveModel.swift; path = ADE/Views/Lanes/LaneMoveModel.swift; sourceTree = "<group>"; };
+		C1AE00000000000000A00014 /* LaneMoveRuns.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMoveRuns.swift; path = ADE/Services/LaneMoveRuns.swift; sourceTree = "<group>"; };
+		C1AE00000000000000A00015 /* LaneMoveSource.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMoveSource.swift; path = ADE/Views/Lanes/LaneMoveSource.swift; sourceTree = "<group>"; };
+		C1AE00000000000000A00016 /* LaneMoveBackend.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMoveBackend.swift; path = ADE/Views/Lanes/LaneMoveBackend.swift; sourceTree = "<group>"; };
+		C1AE00000000000000A00017 /* LaneMoveReviewView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMoveReviewView.swift; path = ADE/Views/Lanes/LaneMoveReviewView.swift; sourceTree = "<group>"; };
+		C1AE00000000000000A00018 /* LaneMoveRows.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMoveRows.swift; path = ADE/Views/Lanes/LaneMoveRows.swift; sourceTree = "<group>"; };
 		C1AE00000000000000A00005 /* CloudAtRestReads.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudAtRestReads.swift; path = ADE/Services/CloudAtRestReads.swift; sourceTree = "<group>"; };
 		C1AE00000000000000A00006 /* GitHubDirectClient+Contents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "GitHubDirectClient+Contents.swift"; path = "ADE/Services/GitHubDirectClient+Contents.swift"; sourceTree = "<group>"; };
 		C1AE00000000000000A00007 /* SyncService+LinearAccount.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+LinearAccount.swift"; path = "ADE/Services/SyncService+LinearAccount.swift"; sourceTree = "<group>"; };
@@ -1310,6 +1322,11 @@
 				A1C10DE00000000000000001 /* LaneKeptCloudRows.swift */,
 				A1000000000000000000000F /* LaneManageSheet.swift */,
 				C1AE00000000000000A00012 /* LaneMoveSheet.swift */,
+				C1AE00000000000000A00013 /* LaneMoveModel.swift */,
+				C1AE00000000000000A00015 /* LaneMoveSource.swift */,
+				C1AE00000000000000A00016 /* LaneMoveBackend.swift */,
+				C1AE00000000000000A00017 /* LaneMoveReviewView.swift */,
+				C1AE00000000000000A00018 /* LaneMoveRows.swift */,
 				A1000000000000000000001C /* LaneRootStateViews.swift */,
 				A10000000000000000000017 /* LaneTreeRow.swift */,
 				D20000000000000000000F11 /* LaneRemoteMachines.swift */,
@@ -1689,6 +1706,7 @@
 				5F0000000000000000000C03 /* ProductAnalyticsException.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
 				D10000000000000000000F82 /* SyncService+SessionHandoff.swift */,
+				C1AE00000000000000A00014 /* LaneMoveRuns.swift */,
 				D20000000000000000000F02 /* MachineFleet.swift */,
 				D20000000000000000000F01 /* MachineConnection.swift */,
 				D2000000000000000000DE05 /* MachineConnection+Terminal.swift */,
@@ -2478,6 +2496,12 @@
 				B1C10DE00000000000000001 /* LaneKeptCloudRows.swift in Sources */,
 				B1000000000000000000000F /* LaneManageSheet.swift in Sources */,
 				C1AE00000000000000B00012 /* LaneMoveSheet.swift in Sources */,
+				C1AE00000000000000B00013 /* LaneMoveModel.swift in Sources */,
+				C1AE00000000000000B00014 /* LaneMoveRuns.swift in Sources */,
+				C1AE00000000000000B00015 /* LaneMoveSource.swift in Sources */,
+				C1AE00000000000000B00016 /* LaneMoveBackend.swift in Sources */,
+				C1AE00000000000000B00017 /* LaneMoveReviewView.swift in Sources */,
+				C1AE00000000000000B00018 /* LaneMoveRows.swift in Sources */,
 				B1000000000000000000001C /* LaneRootStateViews.swift in Sources */,
 				B1000000000000000000001E /* LaneColorPalette.swift in Sources */,
 				B1000000000000000000001F /* LaneColorSwatchPicker.swift in Sources */,

@@ -23,6 +23,10 @@ import { UnsupportedRemoteCommandError } from "./infra/commandCaller";
 import type { AccountCloudLaunchesBridge } from "../../../shared/accountCloudLaunches";
 import type { BrowserAccountClient } from "../account/client";
 import type { CloudAccessIpcAnswer } from "../../../shared/adeCloudMachine";
+import type { CloudKeptLaneRestorePreview, CloudKeptLaneRestoreRecord } from "../../../shared/cloudKeptLaneRestore";
+import { isAccountAnsweredPin } from "../../../shared/adeCloud/binding";
+import { markExpected } from "../../../shared/expectedError";
+import type { OpenProjectBinding } from "../../../shared/types";
 
 /**
  * `window.ade.cloud` for the web app: enough for Settings › ADE Cloud (the
@@ -170,6 +174,15 @@ async function webMachineAction(api: CloudApiClient, args: CloudMachineActionArg
     });
   }
 }
+
+/** A kept lane's move names the computer it goes to: one of the person's own, never ADE Cloud. */
+function keptLaneDestination(pin: OpenProjectBinding | null | undefined): void {
+  if (!pin) throw markExpected(new Error("Pick the computer to move the lane to."), "user");
+  if (isAccountAnsweredPin(pin)) throw markExpected(new Error("A kept lane moves to one of your own computers, not to ADE Cloud."), "user");
+}
+
+const keptLaneUnsupported = (): Error =>
+  markExpected(new Error("ADE on that computer can't take a kept lane yet. Update ADE there, then try again."), "user");
 
 export function createWebCloudNamespace(
   infra: Pick<AdapterInfra, "client" | "commands">,
@@ -408,6 +421,32 @@ export function createWebCloudNamespace(
       const api = accountClient.cloudApi();
       if (!api) throw new Error("Sign in to ADE to delete your lane's work.");
       return await api.forgetLaneBackup(machineKey, laneId);
+    },
+    // A kept lane moved to one of the person's computers, run by that computer's brain in the
+    // pinned project. The federated adapter sends a pinned call to the pin's machine (connecting
+    // it first), so each runs on this adapter's machine; with no pin there is no destination.
+    previewKeptLaneRestore: async (args, pin) => {
+      keptLaneDestination(pin);
+      return await commands.call<CloudKeptLaneRestorePreview>("cloud.previewKeptLaneRestore", { laneId: args.laneId, ...(args.fromComputer ? { fromComputer: args.fromComputer } : {}) }, {
+        fallback: () => { throw keptLaneUnsupported(); },
+        authoritative: true,
+        requireProject: true,
+        retainLastRead: false,
+      });
+    },
+    restoreKeptLane: async (args, pin) => {
+      keptLaneDestination(pin);
+      if (!commands.hasAction("cloud.restoreKeptLane")) throw keptLaneUnsupported();
+      return await commands.call<CloudKeptLaneRestoreRecord>("cloud.restoreKeptLane", { laneId: args.laneId, ...(args.fromComputer ? { fromComputer: args.fromComputer } : {}) }, { idempotent: false });
+    },
+    getKeptLaneRestore: async (args, pin) => {
+      keptLaneDestination(pin);
+      return await commands.call<CloudKeptLaneRestoreRecord | null>("cloud.getKeptLaneRestore", { restoreId: args.restoreId }, {
+        fallback: null,
+        authoritative: true,
+        requireProject: true,
+        retainLastRead: false,
+      });
     },
     carriedSignIns: async () => {
       const answer = await accountClient.cloudApi()?.accountSignIns().catch(() => null);

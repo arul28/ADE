@@ -1,4 +1,4 @@
-import { CaretDown, Check, GearSix, Info, Warning } from "@phosphor-icons/react";
+import { CaretDown, Check, GearSix, Info, SlidersHorizontal, Warning } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
@@ -17,6 +17,8 @@ import { usePortalContainer } from "../ui/portalContainer";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { Z_LAYERS } from "../ui/zLayers";
 import type { AdeCloudTrayAction, AdeCloudTrayNotice } from "./useAdeCloudDraft";
+import { LaneMoveControl } from "../laneMove/LaneMoveControl";
+import type { LaneMoveSource } from "../laneMove/laneMoveModel";
 
 
 /**
@@ -294,25 +296,32 @@ export function useComposerAdeCloudLane(
   );
 }
 
-/** The composer's machine chip for a chat on an ADE Cloud lane: the cloud mark, and the size change when it has a computer. */
+/**
+ * The composer's machine chip for a chat on an ADE Cloud lane: the cloud
+ * mark. With a lane to move, it opens "Move this lane to" (and the size
+ * change, when the lane has a computer); else it opens the size change alone.
+ */
 export function AdeCloudMachineChip({
   machineName,
   lane,
+  laneMove = null,
   wrapperClassName,
 }: {
   machineName: string;
   lane: ComposerAdeCloudLane;
+  laneMove?: LaneMoveSource | null;
   wrapperClassName: string;
 }) {
   const [sizing, setSizing] = useState(false);
   // A person changes the lane's size here; the change is account level (no pin), by the computer's id.
   // ADE Web opens the same picker: a move to the other kind runs on the server there.
   const canResize = !lane.noComputer && Boolean(lane.instanceId) && (cloudLaneChangesAvailable() || cloudLaneMovesAvailable());
+  const pressable = canResize || Boolean(laneMove);
   // The same chip as every other machine: plain text and its icon, no box.
   const chipClass = cn(
     "inline-flex h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md px-1",
     "font-sans text-[9px] font-medium text-muted-fg/60",
-    canResize && "cursor-pointer transition-colors hover:bg-fg/[0.05] hover:text-fg/85 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/60",
+    pressable && "cursor-pointer transition-colors hover:bg-fg/[0.05] hover:text-fg/85 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/60",
   );
   const chipBody = (
     <>
@@ -324,20 +333,53 @@ export function AdeCloudMachineChip({
       )}
     </>
   );
+  const tooltip = {
+    label: ADE_CLOUD_NAME,
+    description: lane.noComputer
+      ? laneMove
+        ? "This lane has no computer now. ADE makes a new one when you send. Click to move the lane to one of your computers."
+        : "This lane has no computer now. ADE makes a new one when you send."
+      : laneMove
+        ? "This chat runs on its lane's own ADE Cloud computer. It wakes when you send. Click to move the lane or change its size."
+        : canResize
+          ? "This chat runs on its lane's own ADE Cloud computer. It wakes when you send. Click to change its size."
+          : "This chat runs on its lane's own ADE Cloud computer. It wakes when you send.",
+  };
+  const sizeDialog = sizing && lane.instanceId ? (
+    <CloudTierChangeDialog instanceId={lane.instanceId} laneName={lane.laneName} onClose={() => setSizing(false)} />
+  ) : null;
+  if (laneMove) {
+    return (
+      <>
+        <LaneMoveControl
+          source={laneMove}
+          extras={canResize ? [{ key: "size", label: "Change size…", icon: SlidersHorizontal, onSelect: () => setSizing(true) }] : []}
+        >
+          {(trigger) => (
+            <SmartTooltip forceEnabled wrapperClassName={wrapperClassName} content={tooltip}>
+              <button
+                ref={trigger.ref}
+                type="button"
+                data-chat-composer-machine-chip="ade-cloud"
+                aria-haspopup="menu"
+                aria-expanded={trigger.open}
+                aria-label={`Running on ${ADE_CLOUD_NAME}. Move this lane${canResize ? " or change its size" : ""}`}
+                className={cn(chipClass, trigger.open && "bg-fg/[0.05] text-fg/85")}
+                style={{ whiteSpace: "nowrap" }}
+                onClick={trigger.onClick}
+              >
+                {chipBody}
+              </button>
+            </SmartTooltip>
+          )}
+        </LaneMoveControl>
+        {sizeDialog}
+      </>
+    );
+  }
   return (
     <>
-      <SmartTooltip
-        forceEnabled
-        wrapperClassName={wrapperClassName}
-        content={{
-          label: ADE_CLOUD_NAME,
-          description: lane.noComputer
-            ? "This lane has no computer now. ADE makes a new one when you send."
-            : canResize
-              ? "This chat runs on its lane's own ADE Cloud computer. It wakes when you send. Click to change its size."
-              : "This chat runs on its lane's own ADE Cloud computer. It wakes when you send.",
-        }}
-      >
+      <SmartTooltip forceEnabled wrapperClassName={wrapperClassName} content={tooltip}>
         {canResize ? (
           <button
             type="button"
@@ -362,9 +404,7 @@ export function AdeCloudMachineChip({
           </span>
         )}
       </SmartTooltip>
-      {sizing && lane.instanceId ? (
-        <CloudTierChangeDialog instanceId={lane.instanceId} laneName={lane.laneName} onClose={() => setSizing(false)} />
-      ) : null}
+      {sizeDialog}
     </>
   );
 }

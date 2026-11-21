@@ -439,6 +439,80 @@ export async function ownedComputer(env: CloudEnv, userId: string, instanceId: s
     .bind(instanceId, userId).first<ComputerRow>();
 }
 
+/**
+ * Where a saved copy moves from `fromMachineKey` to the person's own machine
+ * `toMachineKey` with no ADE Cloud computer asking (a kept lane moved to
+ * their computer), or why it may not. Everything is read under the caller's
+ * own account, so another account's keys answer `not_found`:
+ *
+ * - the destination is one of the account's machines (signed in, not
+ *   revoked) and no ADE Cloud computer's key (a computer moves a copy with
+ *   its `instanceId`);
+ * - the source is a deleted ADE Cloud computer's key: no live computer of the
+ *   account has it, and a deleted one does. A live computer's copies stay
+ *   with it.
+ *
+ * The match is case-insensitive, and the answer is the key as the account
+ * registered it: every later read matches the key exactly, so the move
+ * writes that spelling.
+ */
+export async function ownMachineMoveTarget(
+  env: CloudDb,
+  userId: string,
+  fromMachineKey: string,
+  toMachineKey: string,
+): Promise<{ ok: true; machineKey: string } | { ok: false; code: "not_found" | "wrong_machine" | "computer_exists"; message: string; status: number }> {
+  const [machine, revoked, cloudTarget, source] = await Promise.all([
+    env.DB.prepare("select machine_key from machines where user_id = ? and lower(machine_key) = lower(?) limit 1").bind(userId, toMachineKey).first<{ machine_key: string }>(),
+    env.DB.prepare("select 1 as n from revoked_machines where user_id = ? and lower(machine_key) = lower(?) limit 1").bind(userId, toMachineKey).first<{ n: number }>(),
+    env.DB.prepare("select 1 as n from cloud_computers where user_id = ? and lower(machine_key) = lower(?) limit 1").bind(userId, toMachineKey).first<{ n: number }>(),
+    env.DB.prepare(`
+      select coalesce(sum(case when deleted_at is null then 1 else 0 end), 0) as live,
+        coalesce(sum(case when deleted_at is not null then 1 else 0 end), 0) as gone
+      from cloud_computers where user_id = ? and lower(machine_key) = lower(?)
+    `).bind(userId, fromMachineKey).first<{ live: number; gone: number }>(),
+  ]);
+  if (!machine || revoked) return { ok: false, code: "not_found", message: "ADE doesn't know that machine of yours.", status: 404 };
+  if (cloudTarget) return { ok: false, code: "wrong_machine", message: "An ADE Cloud computer moves a saved copy to itself with its own id.", status: 409 };
+  if ((source?.live ?? 0) > 0) return { ok: false, code: "computer_exists", message: "This copy's ADE Cloud computer still exists: move the chat from it instead.", status: 409 };
+  if ((source?.gone ?? 0) === 0) return { ok: false, code: "not_found", message: "That saved copy isn't on a deleted ADE Cloud computer.", status: 404 };
+  return { ok: true, machineKey: machine.machine_key };
+}
+
+/** A queued message to a chat that moves to the person's own machine: no computer drains it there, so it ends as failed and keeps its text. */
+export const MOVED_TO_OWN_MACHINE_MESSAGE_ERROR = "This chat moved to your computer before ADE Cloud sent this message. Send it again there.";
+
+/**
+ * The queued messages of a moved chat or CLI follow it to `toMachineKey`.
+ * To an ADE Cloud computer (`instanceId`), its queue drains them. The
+ * person's own machine drains no queue, so a message still queued there
+ * ends as failed with `MOVED_TO_OWN_MACHINE_MESSAGE_ERROR` (its text stays,
+ * so the person can send it again). A message that rides a launch keeps
+ * its launch. `onlyIf`: a condition the move's own batch holds (its claim
+ * of the source), so a move that lost re-keys nothing.
+ */
+export function moveQueuedMessagesStatement(
+  env: CloudDb,
+  args: { userId: string; fromMachineKey: string; toMachineKey: string; chatId: string; instanceId: string | null; now: number; onlyIf?: { sql: string; binds: Array<string | number> } },
+): D1PreparedStatement {
+  const { userId, fromMachineKey, toMachineKey, chatId, instanceId, now } = args;
+  const onlyIf = args.onlyIf ? ` and ${args.onlyIf.sql}` : "";
+  const onlyIfBinds = args.onlyIf?.binds ?? [];
+  if (instanceId) {
+    return env.DB.prepare(`
+      update cloud_chat_messages set machine_key = ?, instance_id = case when via_launch = 0 and state = 'queued' then ? else instance_id end
+      where user_id = ? and machine_key = ? and chat_id = ?${onlyIf}
+    `).bind(toMachineKey, instanceId, userId, fromMachineKey, chatId, ...onlyIfBinds);
+  }
+  return env.DB.prepare(`
+    update cloud_chat_messages set machine_key = ?,
+      state = case when via_launch = 0 and state = 'queued' then 'failed' else state end,
+      error = case when via_launch = 0 and state = 'queued' then ? else error end,
+      updated_at = case when via_launch = 0 and state = 'queued' then ? else updated_at end
+    where user_id = ? and machine_key = ? and chat_id = ?${onlyIf}
+  `).bind(toMachineKey, MOVED_TO_OWN_MACHINE_MESSAGE_ERROR, now, userId, fromMachineKey, chatId, ...onlyIfBinds);
+}
+
 export async function listComputers(env: CloudDb, userId: string): Promise<ComputerRow[]> {
   const rows = await env.DB.prepare("select * from cloud_computers where user_id = ? and deleted_at is null")
     .bind(userId).all<ComputerRow>();
@@ -537,6 +611,31 @@ export function powerLogStatement(env: CloudEnv, computer: Pick<ComputerRow, "in
  * stretch, logs the power change, and updates `computer` in place so the rest
  * of a tick sees it. Writes nothing when the status didn't change.
  */
+/** As long as the idle cleanup's claim holds (`CLAIM_STALE_MS` in idleCleanup.ts): a claim older than this died with its request. */
+export const SAVED_DELETE_CLAIM_STALE_MS = 20 * 60_000;
+
+/**
+ * A wake's side of the delete claim (`claimSavedDelete`, the idle cleanup's
+ * `claimDelete`): one conditional write, read fresh in D1, that holds only
+ * while no delete claims the row, and that clears the backups it rested with,
+ * which every delete claim needs. Of a wake and a delete claim at once,
+ * exactly one write passes: a claim first refuses the wake here, and a wake
+ * first makes the claim fail. It clears the report too, as a wake's status
+ * write does, so a Sleep that saved before this wake can't mark the computer
+ * resting with that report after it (`markRestedWithBackups` needs the
+ * report). False when a delete holds the computer. A start that then fails
+ * leaves the computer resting not saved; its next sleep saves it. Every
+ * path that starts a resting computer takes it first: a person's wake, an
+ * event wake, a resize, a free's and a move's wake (`frees.ts`, `moves.ts`).
+ */
+export async function takeFromDeletes(env: CloudEnv, instanceId: string, now: number): Promise<boolean> {
+  const taken = await env.DB.prepare(`
+    update cloud_computers set backup_rest_at = null, backup_report_state = null, backup_report_id = null
+    where instance_id = ? and deleted_at is null and (idle_deleting_at is null or idle_deleting_at < ?)
+  `).bind(instanceId, now - SAVED_DELETE_CLAIM_STALE_MS).run();
+  return (taken.meta?.changes ?? 0) === 1;
+}
+
 /**
  * The account's machine row for a cloud computer that just named its account
  * key takes the computer's name, unless a name was set on it already (the
@@ -712,9 +811,22 @@ export function goneFromProviderStatements(env: CloudEnv, computer: ComputerRow,
 }
 
 /**
+ * The provider deleted the computer, but its row couldn't be closed: the row
+ * stays open with what it was marked with (a lane to keep), so a retry of the
+ * delete, or the tick finding the computer gone, closes it.
+ */
+export class ComputerCloseError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "ADE Cloud deleted the computer but couldn't record it. Try again.", { cause });
+    this.name = "ComputerCloseError";
+  }
+}
+
+/**
  * Deletes a computer on the provider, then logs it and closes its row. Its events
  * go with it, so they're read first. Already gone counts as deleted; any other
- * provider failure throws, with the row left open.
+ * provider failure throws, with the row left open. A close that fails after
+ * the provider's delete throws `ComputerCloseError`.
  */
 export async function deleteComputer(
   env: CloudDb,
@@ -732,7 +844,11 @@ export async function deleteComputer(
   } catch (error) {
     if (!(error instanceof CloudProviderError && error.status === 404)) throw error;
   }
-  await env.DB.batch(closedComputerStatements(env, computer, { ...args, events }, now));
+  try {
+    await env.DB.batch(closedComputerStatements(env, computer, { ...args, events }, now));
+  } catch (error) {
+    throw new ComputerCloseError(error);
+  }
 }
 
 /**

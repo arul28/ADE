@@ -1735,9 +1735,18 @@ these steps in order, four uploads at a time, inside one time budget:
    terminal screen when it fits, else its last lines. The text is redacted
    first. A terminal with no new output since the last save is not sent again.
 3. A Git summary for each lane, when it changed.
-4. Fork capsules, only with `--capsules` (the delete path): Claude, Codex and
-   OpenCode chats, and Claude Code and Codex CLIs. A capsule over 20 MiB is
-   skipped, and the continue replays the saved transcript.
+4. Fork capsules, at every save: Claude, Codex and OpenCode chats, and Claude
+   Code and Codex CLIs. A capsule holds only the provider's own history
+   (`prepareCloudRestCapsule` in `agentChatService.ts`). It runs no Git check
+   and packs no bundle, because the lane backup carries the code, so a lane
+   with unpushed or uncommitted work still gets one. A chat with a turn
+   running is skipped and tried at the next save. A CLI is not stopped. An
+   OpenCode capsule is read through OpenCode's server, which the save starts
+   when none runs. A chat that did not change since its last capsule is not
+   sent again. The
+   upload starts only with time left, and once part 1 is sent the rest
+   follows, since part 1 replaces the capsule saved before. A capsule over
+   20 MiB is skipped, and the continue replays the saved transcript.
 5. Native subagent transcripts of Claude, Muse and OpenCode chats, as saved
    chats under their parent (`parentChatId`, `spawnKind: "native_subagent"`).
    The newest 20 subagents of each chat go, one part of at most 4 MiB each.
@@ -1748,11 +1757,13 @@ these steps in order, four uploads at a time, inside one time budget:
 
 The save runs at three points:
 
-| When | Budget | Capsules |
-|---|---|---|
-| The idle step, before the computer sleeps (`cloudKeepAwake.ts`) | 60 s | no |
-| `ade cloud prepare-stop`, in the time left after the chats | what is left | no |
-| `ade cloud save-for-rest [--capsules]`, which the server's idle cleanup runs between push-work and the check | 225 s | with the flag |
+| When | Budget |
+|---|---|
+| The idle step, before the computer sleeps (`cloudKeepAwake.ts`) | 90 s |
+| `ade cloud prepare-stop`, in the time left after the chats | what is left |
+| `ade cloud save-for-rest [--capsules]`, which the server's idle cleanup runs between push-work and the check | 200 s |
+
+Each one makes capsules. `--capsules` only names the cleanup in the log.
 
 What the save already sent is kept in `<ADE home>/cloud/rest-save.json`. A
 disk copy under a new machine key saves everything again.

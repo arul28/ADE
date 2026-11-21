@@ -17,6 +17,7 @@ import type {
   AgentChatCrossMachineHandoffOptionsResult,
   AgentChatCrossMachineHandoffRecord,
   AgentChatCrossMachineBatchMoveRecord,
+  AgentChatCrossMachineBatchSourceChangedResult,
   AgentChatResolveCrossMachineBatchMoveApprovalArgs,
   AgentChatPreviewCrossMachineHandoffResult,
   AgentChatModelCatalog,
@@ -409,6 +410,34 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     resolveCrossMachineHandoffApproval: async (args, pin) => {
       guardPin("resolveCrossMachineHandoffApproval", pin);
       return await callRequiredMutation<AgentChatCrossMachineHandoffRecord | null>("chat.resolveCrossMachineHandoffApproval", args);
+    },
+    // "Move this lane to": the batch runs on the source brain the pin names.
+    startCrossMachineBatchMove: async (args, pin) => {
+      guardPin("startCrossMachineBatchMove", pin);
+      return await callRequiredMutation<AgentChatCrossMachineBatchMoveRecord>("chat.startCrossMachineBatchMove", args);
+    },
+    getCrossMachineBatchMove: async (args, pin) => {
+      guardPin("getCrossMachineBatchMove", pin);
+      return await callRequiredRead<AgentChatCrossMachineBatchMoveRecord | null>("chat.getCrossMachineBatchMove", args);
+    },
+    crossMachineBatchSourceChanged: async (args, pin) => {
+      guardPin("crossMachineBatchSourceChanged", pin);
+      // Its answer decides a delete: only the host's answer now counts, never a kept one.
+      return await commands.call<AgentChatCrossMachineBatchSourceChangedResult>(
+        "chat.crossMachineBatchSourceChanged",
+        asRecord(args),
+        {
+          fallback: () => {
+            throw new Error("Chat history action 'chat.crossMachineBatchSourceChanged' is unavailable on the connected ADE host.");
+          },
+          authoritative: true,
+          retainLastRead: false,
+        },
+      );
+    },
+    retryCrossMachineBatchMove: async (args, pin) => {
+      guardPin("retryCrossMachineBatchMove", pin);
+      return await callRequiredMutation<AgentChatCrossMachineBatchMoveRecord>("chat.retryCrossMachineBatchMove", args);
     },
     resolveCrossMachineBatchMoveApproval: async (args: AgentChatResolveCrossMachineBatchMoveApprovalArgs, pin) => {
       guardPin("resolveCrossMachineBatchMoveApproval", pin);

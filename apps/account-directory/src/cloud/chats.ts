@@ -12,14 +12,15 @@ import {
   type CloudComputerDeleteReason,
   CLOUD_INSTANCE_ID,
 } from "./contract";
-import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
+import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, pageCursorOf, pageCursorSql, readJson } from "./http";
 import { rewardAfterCloudChat } from "./referrals";
 import { captureCloudSafety, type CloudWaitUntil } from "./analytics";
-import { logCloud, ownedComputer, type CloudEnv } from "./store";
+import { logCloud, moveQueuedMessagesStatement, ownMachineMoveTarget, ownedComputer, type CloudEnv } from "./store";
 import { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type UserKeys } from "./seal";
 import { deleteCapsule, deleteCapsulesForLane } from "./forkCapsules";
 import { deleteGitSummaryForLaneStatement } from "./gitSummaries";
 import { deleteSessionCopiesForLane } from "./sessionCopies";
+import { publishedStatement, storageGeneration, sweep, sweepStatement, unclaimedUpload } from "./storageSweeps";
 
 /**
  * Saved chats (README, "Saved chats"). After each turn a computer sends the new
@@ -62,8 +63,14 @@ const partAad = (userId: string, machineKey: string, chatId: string, seq: number
 const summaryAad = (userId: string, machineKey: string, chatId: string): string =>
   `ade.cloud.chat.summary.v1\0${userId}\0${machineKey}\0${chatId}`;
 
-/** Every object of one chat sits under this prefix (`cloud_chat_copies.r2_key`). */
-const chatPrefix = (userId: string, machineKey: string, chatId: string): string => `chats/${userId}/${machineKey}/${chatId}/`;
+/**
+ * Every object of one chat copy sits under its row's prefix (`cloud_chat_copies.r2_key`). A new copy
+ * takes a prefix of its own (`~` is in no row id), so a copy saved again after a delete never writes
+ * where that delete still sweeps. An older row keeps `chats/{user}/{machine}/{chat}/`, which holds no
+ * newer copy's objects.
+ */
+const newChatPrefix = (userId: string, machineKey: string, chatId: string): string =>
+  `chats/${userId}/${machineKey}/${chatId}~${storageGeneration()}/`;
 const partKey = (prefix: string, seq: number): string => `${prefix}${String(seq).padStart(10, "0")}`;
 
 export type CopyRow = {
@@ -220,12 +227,12 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
 
   const existing = await copyRow(env, userId, machineKey, chatId);
   if (!existing && await movedRow(env, userId, machineKey, chatId)) {
-    // Its parts still live under this key's prefix: a new copy here would write over them.
+    // The chat lives on under the other computer's key: a new copy here would list it twice.
     return fail("chat_moved", "This chat moved to another computer. Save it from there.", 409);
   }
   const lastSeq = existing?.last_seq ?? 0;
   // A chat a fork restore moved here keeps its parts where they are, sealed under its first machine key.
-  const prefix = existing?.r2_key ?? chatPrefix(userId, machineKey, chatId);
+  const prefix = existing?.r2_key ?? newChatPrefix(userId, machineKey, chatId);
   const sealKey = existing ? sealKeyOf(existing) : machineKey;
   const key = partKey(prefix, seq);
   const digest = await digestFor(keys, plain);
@@ -255,6 +262,10 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     return fail("account_full", "This account's saved chats are full. Delete some chats to save new ones.", 413);
   }
 
+  // A new copy's prefix is recorded before its first part goes up, and the insert that publishes it
+  // clears the record: a save that dies in between leaves parts the tick finds.
+  const newPrefix = existing ? null : { key: prefix, exact: false };
+  if (newPrefix) await sweepStatement(env, userId, newPrefix, now).run();
   await bucket.put(key, sealed, { customMetadata: { digest } });
 
   const row: CloudChatRow = {
@@ -286,25 +297,46 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     projectRoot: row.projectRoot,
   })));
   const lastActivityMs = rowInput.lastActivityAt ? Date.parse(rowInput.lastActivityAt) : null;
-  await env.DB.prepare(`
-    insert into cloud_chat_copies (user_id, machine_key, chat_id, instance_id, project_key, lane_id, summary_sealed, r2_key, last_activity_at, last_seq, bytes, updated_at, parent_chat_id, spawn_kind)
-    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    on conflict (user_id, machine_key, chat_id) do update set
-      instance_id = excluded.instance_id,
-      project_key = coalesce(excluded.project_key, project_key),
-      lane_id = coalesce(excluded.lane_id, lane_id),
-      summary_sealed = excluded.summary_sealed,
-      last_activity_at = coalesce(excluded.last_activity_at, last_activity_at),
-      last_seq = max(last_seq, excluded.last_seq),
-      bytes = max(0, bytes + ?),
-      updated_at = excluded.updated_at,
-      parent_chat_id = coalesce(excluded.parent_chat_id, parent_chat_id),
-      spawn_kind = coalesce(excluded.spawn_kind, spawn_kind)
-  `).bind(
-    userId, machineKey, chatId, instanceId, row.projectKey, row.laneId, summary, prefix, lastActivityMs, row.lastSeq, sealed.byteLength, now,
-    rowInput.parentChatId ?? null, rowInput.spawnKind ?? null,
-    delta,
-  ).run();
+  // The row this part was read against, and only it: a copy deleted or made again since takes
+  // nothing of this part. The computer then starts its copy over.
+  const written = existing
+    ? await env.DB.prepare(`
+      update cloud_chat_copies set
+        instance_id = ?, project_key = coalesce(?, project_key), lane_id = coalesce(?, lane_id), summary_sealed = ?,
+        last_activity_at = coalesce(?, last_activity_at), last_seq = max(last_seq, ?), bytes = max(0, bytes + ?), updated_at = ?,
+        parent_chat_id = coalesce(?, parent_chat_id), spawn_kind = coalesce(?, spawn_kind)
+      where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ?
+    `).bind(
+      instanceId, row.projectKey, row.laneId, summary, lastActivityMs, row.lastSeq, delta, now, rowInput.parentChatId ?? null, rowInput.spawnKind ?? null,
+      userId, machineKey, chatId, prefix,
+    ).run()
+    : (await env.DB.batch([
+      // Only while the tick has not claimed the new prefix: a claimed one is gone.
+      env.DB.prepare(`
+        insert into cloud_chat_copies (user_id, machine_key, chat_id, instance_id, project_key, lane_id, summary_sealed, r2_key, last_activity_at, last_seq, bytes, updated_at, parent_chat_id, spawn_kind)
+        select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? where ${unclaimedUpload(prefix).sql}
+        on conflict (user_id, machine_key, chat_id) do nothing
+      `).bind(
+        userId, machineKey, chatId, instanceId, row.projectKey, row.laneId, summary, prefix, lastActivityMs, row.lastSeq, sealed.byteLength, now,
+        rowInput.parentChatId ?? null, rowInput.spawnKind ?? null, ...unclaimedUpload(prefix).binds,
+      ),
+      publishedStatement(env, prefix, {
+        sql: "exists (select 1 from cloud_chat_copies where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ?)",
+        binds: [userId, machineKey, chatId, prefix],
+      }),
+    ]))[0]!;
+  if ((written.meta?.changes ?? 0) !== 1) {
+    if (newPrefix) {
+      // Never published: no row reads the new prefix.
+      await sweep(env, [newPrefix]);
+    } else {
+      // The part goes unless a row still reads its prefix (a move took the copy, parts and all).
+      const kept = await env.DB.prepare("select 1 as kept from cloud_chat_copies where user_id = ? and r2_key = ?").bind(userId, prefix).first();
+      if (!kept) await bucket.delete(key);
+    }
+    logCloud("cloud.chat_part_conflict", { userId, machineKey, chatId, seq, lastSeq, changed: true });
+    return fail("sequence_conflict", "This chat's saved copy changed while that part was saved.", 409);
+  }
   // A saved part is the server's proof a chat ran on an ADE Cloud computer: it pays an
   // invited friend's pending referral (`referrals.ts`). Every save asks, not only a chat's
   // first, so a reward that failed is retried by the next save; with nothing pending that is
@@ -480,29 +512,40 @@ async function savedChatComputers(
   };
 }
 
-/** One page of saved chats, newest activity first; `cursor` is `updatedAt:chatId` of the last row of the previous page. */
+/**
+ * One page of saved chats, newest activity first; `cursor` names the last row of the previous page (`pageCursorSql`).
+ * `lane` keeps one lane's; `notMachine` leaves out one machine's (a kept lane's restore lists what is not on it yet).
+ */
 export async function listSavedChats(
   env: CloudEnv,
   keys: UserKeys,
   userId: string,
-  filter: { machine?: string | null; project?: string | null; cursor?: string | null; limit: number },
+  filter: { machine?: string | null; notMachine?: string | null; project?: string | null; lane?: string | null; cursor?: string | null; limit: number },
 ): Promise<{ chats: CloudChatRow[]; nextCursor: string | null }> {
-  const cursor = filter.cursor?.match(/^(\d+):(.+)$/) ?? null;
+  const cursor = pageCursorSql(filter.cursor, "chat_id");
   const where = ["user_id = ?"];
   const binds: Array<string | number> = [userId];
   if (filter.machine) {
     where.push("machine_key = ?");
     binds.push(filter.machine);
   }
+  if (filter.notMachine) {
+    where.push("lower(machine_key) <> lower(?)");
+    binds.push(filter.notMachine);
+  }
+  if (filter.lane) {
+    where.push("lane_id = ?");
+    binds.push(filter.lane);
+  }
   if (filter.project) {
     where.push("project_key = ?");
     binds.push(filter.project);
   }
   if (cursor) {
-    where.push("(updated_at < ? or (updated_at = ? and chat_id < ?))");
-    binds.push(Number(cursor[1]), Number(cursor[1]), cursor[2]!);
+    where.push(cursor.sql);
+    binds.push(...cursor.binds);
   }
-  const rows = await env.DB.prepare(`select * from cloud_chat_copies where ${where.join(" and ")} order by updated_at desc, chat_id desc limit ?`)
+  const rows = await env.DB.prepare(`select * from cloud_chat_copies where ${where.join(" and ")} order by updated_at desc, chat_id desc, machine_key desc limit ?`)
     .bind(...binds, filter.limit + 1).all<CopyRow>();
   const results = rows.results ?? [];
   const page = results.slice(0, filter.limit);
@@ -512,17 +555,21 @@ export async function listSavedChats(
   ]);
   const chats: CloudChatRow[] = page.map((row, index) => ({ ...rowToJson(row, summaries[index] ?? null), computer: computerOf(row) }));
   const last = page[page.length - 1];
-  return { chats, nextCursor: results.length > filter.limit && last ? `${last.updated_at}:${last.chat_id}` : null };
+  return { chats, nextCursor: results.length > filter.limit && last ? pageCursorOf(last.updated_at, last.chat_id, last.machine_key) : null };
 }
 
-/** `GET /cloud/chats?machine&project&limit&cursor`: newest activity first. */
+/** `GET /cloud/chats?machine&notMachine&project&lane&limit&cursor`: newest activity first. */
 async function handleList(url: URL, env: CloudEnv, userId: string, now: number): Promise<Response> {
   const machine = url.searchParams.get("machine")?.trim() || null;
-  if (machine && !ROW_ID.test(machine)) return json({ chats: [], nextCursor: null });
+  const notMachine = url.searchParams.get("notMachine")?.trim() || null;
+  const lane = url.searchParams.get("lane")?.trim() || null;
+  if ([machine, notMachine, lane].some((value) => value && !ROW_ID.test(value))) return json({ chats: [], nextCursor: null });
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
   return json(await listSavedChats(env, keys, userId, {
     machine,
+    notMachine,
+    lane,
     project: url.searchParams.get("project")?.trim() || null,
     cursor: url.searchParams.get("cursor"),
     limit: clampedInt(url.searchParams.get("limit"), DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT),
@@ -593,29 +640,37 @@ async function deleteObjectsUnder(bucket: R2Bucket, prefix: string): Promise<num
 /**
  * Deletes one saved chat. A chat the account doesn't have is already deleted.
  * A client that still names the old machine key of a moved chat deletes it
- * where it is now, as its read does (`handleGetChat`).
+ * where it is now, as its read does (`handleGetChat`); a lane's cleanup
+ * (`followMove: false`) deletes only the row under the key it listed.
  */
-export async function deleteSavedChat(env: CloudEnv, userId: string, namedMachineKey: string, chatId: string): Promise<boolean> {
+export async function deleteSavedChat(env: CloudEnv, userId: string, namedMachineKey: string, chatId: string, options: { followMove?: boolean } = {}): Promise<boolean> {
   const bucket = bucketFor(env);
   if (!bucket) throw new Error("cloud_chats_bucket_missing");
-  const row = await copyRow(env, userId, namedMachineKey, chatId) ?? await movedRow(env, userId, namedMachineKey, chatId);
+  const row = await copyRow(env, userId, namedMachineKey, chatId)
+    ?? (options.followMove === false ? null : await movedRow(env, userId, namedMachineKey, chatId));
   if (!row) return false;
   const machineKey = row.machine_key;
-  await deleteObjectsUnder(bucket, row.r2_key);
-  await env.DB.batch([
-    env.DB.prepare("delete from cloud_chat_copies where user_id = ? and machine_key = ? and chat_id = ?").bind(userId, machineKey, chatId),
-    deleteChatMessagesStatement(env, userId, machineKey, chatId),
+  // The exact row's delete is the claim, before its parts go: a move that took the row since
+  // keeps it under its new key, and its parts with it (a move leaves the parts where they are).
+  // The same write records its prefix to sweep, so a sweep that fails is finished by the tick.
+  const exactRow = {
+    sql: "exists (select 1 from cloud_chat_copies where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ?)",
+    binds: [userId, machineKey, chatId, row.r2_key],
+  };
+  // The messages go first, while the row is still the one read: a newer copy at this address keeps its own.
+  const deleted = await env.DB.batch([
+    env.DB.prepare(`delete from cloud_chat_messages where user_id = ? and machine_key = ? and chat_id = ? and ${exactRow.sql}`)
+      .bind(userId, machineKey, chatId, ...exactRow.binds),
+    sweepStatement(env, userId, { key: row.r2_key, exact: false }, Date.now(), exactRow),
+    env.DB.prepare("delete from cloud_chat_copies where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ?").bind(userId, machineKey, chatId, row.r2_key),
   ]);
+  if ((deleted[2]?.meta?.changes ?? 0) !== 1) return false;
   // Its fork capsule goes too: under this key, and under the key it moved from.
   await deleteCapsule(env, userId, machineKey, chatId);
   if (row.forked_from_machine_key && row.forked_from_machine_key !== machineKey) await deleteCapsule(env, userId, row.forked_from_machine_key, chatId);
+  await sweep(env, [{ key: row.r2_key, exact: false }]);
   logCloud("cloud.chat_deleted", { userId, machineKey, chatId });
   return true;
-}
-
-/** A chat's queued messages go with the chat. */
-export function deleteChatMessagesStatement(env: Pick<CloudEnv, "DB">, userId: string, machineKey: string, chatId: string): D1PreparedStatement {
-  return env.DB.prepare("delete from cloud_chat_messages where user_id = ? and machine_key = ? and chat_id = ?").bind(userId, machineKey, chatId);
 }
 
 /**
@@ -623,19 +678,43 @@ export function deleteChatMessagesStatement(env: Pick<CloudEnv, "DB">, userId: s
  * re-keys the saved chat to the new computer's machine key with its full
  * history. The parts stay where they are, sealed under the first key
  * (`aad_machine_key`), so nothing is uploaded again and the chat lists once.
- * Its queued messages follow it; its capsule, now used, goes. The same move
- * again answers the moved row.
+ * Its queued messages follow it (`moveQueuedMessagesStatement`); its
+ * capsule, now used, goes, unless the caller keeps it (`keepCapsule`) and
+ * deletes it after its restore. The same move again answers the moved row.
+ *
+ * With no `instanceId`, the person's own signed-in machine takes the chat
+ * (a kept lane moved to it): only from a deleted computer's key, only to one
+ * of the account's own machines (`ownMachineMoveTarget`). The row then has
+ * no computer, so it lists as that machine's chat, not a deleted computer's.
+ * The row takes the destination key as the account stores it.
  */
 async function handleMove(request: Request, env: CloudEnv, userId: string, machineKey: string, chatId: string, now: number): Promise<Response> {
   const body = await readJson(request);
-  const toMachineKey = typeof body?.toMachineKey === "string" ? body.toMachineKey.trim() : "";
-  const instanceId = typeof body?.instanceId === "string" ? body.instanceId.trim() : "";
-  if (!ROW_ID.test(toMachineKey) || !CLOUD_INSTANCE_ID.test(instanceId)) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
-  const computer = await ownedComputer(env, userId, instanceId);
-  // Only the caller's own computer, and only to its own machine key.
-  if (!computer || computer.deleted_at != null) return fail("not_found", "ADE Cloud has no such computer.", 404);
-  if (computer.machine_key && computer.machine_key.toLowerCase() !== toMachineKey.toLowerCase()) {
-    return fail("wrong_machine", "A chat moves only to the machine key of the computer that asks.", 409);
+  const requestedKey = typeof body?.toMachineKey === "string" ? body.toMachineKey.trim() : "";
+  const named = body?.instanceId;
+  const instanceId = typeof named === "string" ? named.trim() : "";
+  // No `instanceId`: the person's own machine takes a chat whose computer is deleted (a kept lane moved to it).
+  const ownMachine = named == null;
+  // `keepCapsule`: the caller deletes the capsule itself once its restore succeeded, so a failed restore can read it again.
+  const keepCapsule = body?.keepCapsule === true;
+  if (!ROW_ID.test(requestedKey) || (!ownMachine && !CLOUD_INSTANCE_ID.test(instanceId))) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
+  // The row's computer after the move: the cloud computer that asks, or none for the person's own machine.
+  let targetInstanceId: string | null = null;
+  // The destination key as the account stores it: reads match it exactly.
+  let toMachineKey = requestedKey;
+  if (ownMachine) {
+    const target = await ownMachineMoveTarget(env, userId, machineKey, requestedKey);
+    if (!target.ok) return fail(target.code, target.message, target.status);
+    toMachineKey = target.machineKey;
+  } else {
+    const computer = await ownedComputer(env, userId, instanceId);
+    // Only the caller's own computer, and only to its own machine key.
+    if (!computer || computer.deleted_at != null) return fail("not_found", "ADE Cloud has no such computer.", 404);
+    if (computer.machine_key && computer.machine_key.toLowerCase() !== requestedKey.toLowerCase()) {
+      return fail("wrong_machine", "A chat moves only to the machine key of the computer that asks.", 409);
+    }
+    targetInstanceId = computer.instance_id;
+    toMachineKey = computer.machine_key ?? requestedKey;
   }
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
@@ -653,15 +732,13 @@ async function handleMove(request: Request, env: CloudEnv, userId: string, machi
       update cloud_chat_copies set machine_key = ?, instance_id = ?, forked_from_machine_key = ?, forked_from_chat_id = ?,
         aad_machine_key = coalesce(aad_machine_key, machine_key), updated_at = ?
       where user_id = ? and machine_key = ? and chat_id = ?
-    `).bind(toMachineKey, computer.instance_id, machineKey, chatId, now, userId, machineKey, chatId),
-    env.DB.prepare(`
-      update cloud_chat_messages set machine_key = ?, instance_id = case when via_launch = 0 and state = 'queued' then ? else instance_id end
-      where user_id = ? and machine_key = ? and chat_id = ?
-    `).bind(toMachineKey, computer.instance_id, userId, machineKey, chatId),
+    `).bind(toMachineKey, targetInstanceId, machineKey, chatId, now, userId, machineKey, chatId),
+    moveQueuedMessagesStatement(env, { userId, fromMachineKey: machineKey, toMachineKey, chatId, instanceId: targetInstanceId, now }),
   ]);
   if ((moved[0]?.meta?.changes ?? 0) !== 1) return notFound();
-  await deleteCapsule(env, userId, machineKey, chatId);
-  logCloud("cloud.chat_moved", { userId, instanceId: computer.instance_id });
+  // Used now. A caller that keeps it reads it from the key the row moved from (`forkedFrom`) until its restore succeeds.
+  if (!keepCapsule) await deleteCapsule(env, userId, machineKey, chatId);
+  logCloud("cloud.chat_moved", { userId, instanceId: targetInstanceId, ownMachine, keptCapsule: keepCapsule });
   const row = await copyRow(env, userId, toMachineKey, chatId);
   return row ? answer(row, true) : notFound();
 }
@@ -672,7 +749,7 @@ export async function deleteSavedChatsForLane(env: CloudEnv, userId: string, mac
     .bind(userId, machineKey, laneId).all<{ chat_id: string }>();
   let removed = 0;
   for (const row of rows.results ?? []) {
-    if (await deleteSavedChat(env, userId, machineKey, row.chat_id)) removed += 1;
+    if (await deleteSavedChat(env, userId, machineKey, row.chat_id, { followMove: false })) removed += 1;
   }
   // The lane's CLI and shell copies, Git summary and left capsules go with it.
   await deleteSessionCopiesForLane(env, userId, machineKey, laneId);
@@ -686,7 +763,7 @@ export async function deleteSavedChatsForLane(env: CloudEnv, userId: string, mac
  * lane kept without a computer can have had several (a move, a new computer),
  * and a client sees only the keys of the chats it listed.
  */
-export async function deleteSavedChatsForLaneEverywhere(env: CloudEnv, userId: string, laneId: string): Promise<number> {
+export async function deleteSavedChatsForLaneEverywhere(env: CloudEnv, userId: string, laneId: string, keepMachineKey: string | null = null): Promise<number> {
   const keys = await env.DB.prepare(`
     select machine_key from cloud_chat_copies where user_id = ? and lane_id = ?
     union select machine_key from cloud_session_copies where user_id = ? and lane_id = ?
@@ -694,7 +771,11 @@ export async function deleteSavedChatsForLaneEverywhere(env: CloudEnv, userId: s
     union select machine_key from cloud_git_summaries where user_id = ? and lane_id = ?
   `).bind(userId, laneId, userId, laneId, userId, laneId, userId, laneId).all<{ machine_key: string }>();
   let removed = 0;
-  for (const row of keys.results ?? []) removed += await deleteSavedChatsForLane(env, userId, row.machine_key, laneId);
+  for (const row of keys.results ?? []) {
+    // A lane moved to the person's own machine keeps what moved there.
+    if (keepMachineKey && row.machine_key.toLowerCase() === keepMachineKey.toLowerCase()) continue;
+    removed += await deleteSavedChatsForLane(env, userId, row.machine_key, laneId);
+  }
   return removed;
 }
 
@@ -717,6 +798,8 @@ export async function deleteAllAccountChats(env: Pick<CloudEnv, "DB" | "CLOUD_CH
     env.DB.prepare("delete from cloud_fork_capsules where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_lane_backups where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_user_keys where user_id = ?").bind(userId),
+    // Their objects went with the account's prefixes above.
+    env.DB.prepare("delete from cloud_storage_sweeps where user_id = ?").bind(userId),
   ]);
   logCloud("cloud.chats_deleted_for_account", { userId, removed });
   return removed;

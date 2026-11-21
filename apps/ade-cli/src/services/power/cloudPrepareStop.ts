@@ -9,13 +9,16 @@
  * its saved row reads Stopped, not Done, while the computer rests. Before a
  * delete (`forDelete`), the computer also freezes new work from the start
  * (`cloudDeleteFreeze.ts`), and lifts the freeze again when the prepare is
- * not confirmed, because then the server keeps the computer.
+ * not confirmed, because then the server keeps the computer. Before the
+ * person's Sleep (`forSleep`) it freezes new work the same way, for a short
+ * time: the server counts the lanes' backups for a move with no wake only
+ * when no work could start after them (`frozen`).
  */
 
 import type { CloudBackupSaveSummary } from "../../../../account-directory/src/cloud/contract";
 import type { AdeRuntime } from "../../bootstrap";
 import { noteCloudChatStoppedForRest, uploadPendingCloudChats } from "../cloudChats/cloudChatUploader";
-import { freezeCloudComputerForDelete, liftCloudDeleteFreeze } from "./cloudDeleteFreeze";
+import { CLOUD_SLEEP_FREEZE_AFTER_PREPARE_MS, cloudFreezeHolds, freezeCloudComputerForDelete, freezeCloudComputerForSleep, liftCloudDeleteFreeze, liftCloudSleepFreeze } from "./cloudDeleteFreeze";
 
 const POLL_MS = 400;
 /** Held back from the timeout for writing the chat copy. */
@@ -34,7 +37,7 @@ export type CloudPrepareStopResult = {
   /** The lane backups of the save (`cloudLaneBackup.ts`): the server's 0-hours stop rests the computer with them when `current`. */
   backups: CloudBackupSaveSummary | null;
   timedOut: boolean;
-  /** A prepare for a delete: new work stays refused after it (`cloudDeleteFreeze.ts`). False when not asked, or not confirmed. */
+  /** A prepare for a delete or the person's Sleep: new work stays refused after it (`cloudDeleteFreeze.ts`). False when not asked, or not confirmed. */
   frozen: boolean;
 };
 
@@ -53,21 +56,34 @@ export async function prepareCloudComputerToStop(args: {
   logger?: { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
   /** A disk grow's restart: the turns keep running (they continue after it), only the chat copy is written. */
   keepTurns?: boolean;
-  /** The rest save without capsules, in the time left after the chats (`cloudRestSave.ts`). */
+  /** The rest save (capsules too), in the time left after the chats (`cloudRestSave.ts`). */
   saveForRest?: (budgetMs: number) => Promise<{ sessions: number; git: number; backups?: CloudBackupSaveSummary | null }>;
   /** The server deletes the computer next: freeze new work until then (`cloudDeleteFreeze.ts`). */
   forDelete?: boolean;
+  /** The person's Sleep comes next: freeze new work until it (a short freeze, `cloudDeleteFreeze.ts`). */
+  forSleep?: boolean;
 }): Promise<CloudPrepareStopResult> {
+  const forSleep = args.forSleep === true && !args.forDelete;
   // First, so no new turn or terminal starts between the interrupts and the save.
   if (args.forDelete) freezeCloudComputerForDelete();
+  // The prepare's own time, then the time the server takes to sleep it once the prepare answers.
+  if (forSleep) freezeCloudComputerForSleep(Date.now(), Math.max(1_000, args.timeoutMs) + CLOUD_SLEEP_FREEZE_AFTER_PREPARE_MS);
+  const lift = () => {
+    if (args.forDelete) liftCloudDeleteFreeze();
+    if (forSleep) liftCloudSleepFreeze();
+  };
   try {
-    const result = await prepare(args);
-    if (args.forDelete && !result.frozen) liftCloudDeleteFreeze();
+    const prepared = await prepare({ ...args, forSleep });
+    // Frozen means no work could start after the save: not when the freeze ran out (or was lifted) before the save ended.
+    const result = prepared.frozen && !cloudFreezeHolds(args.forDelete ? "delete" : "sleep") ? { ...prepared, frozen: false } : prepared;
+    if ((args.forDelete || forSleep) && !result.frozen) lift();
+    // Counted from the answer, so a prepare that ran long still covers the sleep that follows.
+    else if (forSleep) freezeCloudComputerForSleep();
     args.logger?.info("cloud.prepare_stop", result);
     return result;
   } catch (error) {
     // The server reads a failed prepare as "keep the computer": nothing stays frozen.
-    if (args.forDelete) liftCloudDeleteFreeze();
+    lift();
     throw error;
   }
 }
@@ -122,6 +138,6 @@ async function prepare(args: Parameters<typeof prepareCloudComputerToStop>[0]): 
     sessionsSaved: rest.sessions,
     gitSaved: rest.git,
     backups: rest.backups ?? null,
-    frozen: args.forDelete === true && prepareConfirmed(counted),
+    frozen: (args.forDelete === true || args.forSleep === true) && prepareConfirmed(counted),
   };
 }
