@@ -40,7 +40,7 @@ import { machineLaunchMinVersion, readLaunch, startMachineLaunch } from "./launc
 import { deleteBackupsWithComputer } from "./laneBackups";
 import { cloudSizeFor, cloudSizeForTier, isMeteredStatus, type CloudSize } from "./plans";
 import { CloudProviderError } from "./provider";
-import { deleteComputer, logCloud, ownedComputer, reportCloudFailure, statusChangeStatements, type CloudEnv, type ComputerRow } from "./store";
+import { deleteComputer, logCloud, ownedComputer, reportCloudFailure, statusChangeStatements, takeFromDeletes, type CloudEnv, type ComputerRow } from "./store";
 import { readUpdateChannel } from "./updates";
 
 /**
@@ -318,6 +318,8 @@ async function wake(env: CloudEnv, job: JobRow, ctx: JobContext, params: MovePar
   if (ctx.now - started > WAKE_WAIT_MAX_MS) return { kind: "fail", error: "it didn't wake up in time." };
   const waking = instance.status === "starting" || instance.status === "waking" || instance.status === "creating";
   if (!waking && facts.wakeAskedAt == null) {
+    // A delete holds it (a move from its saved copy, the idle cleanup): a wake now would put work after the save.
+    if (!await takeFromDeletes(env, source.instance_id, ctx.now)) return { kind: "fail", error: "it's being deleted." };
     // Noted first: a tick that dies after the ask doesn't ask twice.
     await ctx.save({ facts_json: withFacts(job, { wakeAskedAt: ctx.now }) });
     const status = await ctx.provider.startInstance(source.instance_id);

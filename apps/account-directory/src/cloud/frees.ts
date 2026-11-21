@@ -4,7 +4,7 @@ import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, fail, json, readJ
 import { JOB_RECORD_TTL_MS, nudgeJob, readJob, registerJobKind, runJob, type CloudJobDeps, type JobContext, type JobRow, type StepResult } from "./jobs";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
 import { CloudProviderError } from "./provider";
-import { deleteComputer, logCloud, ownedComputer, statusChangeStatements, type CloudEnv, type ComputerRow } from "./store";
+import { deleteComputer, logCloud, ownedComputer, statusChangeStatements, takeFromDeletes, type CloudEnv, type ComputerRow } from "./store";
 
 /**
  * "Free the computer, keep the lane", run by the server (a `cloud_jobs` kind,
@@ -126,6 +126,8 @@ async function awake(env: CloudEnv, job: JobRow, ctx: JobContext, computer: Comp
   if (asked != null && ctx.now - asked > WAKE_WAIT_MAX_MS) return { kind: "fail", error: "The computer didn't wake up in time, so ADE couldn't push its work. Nothing was deleted." };
   const waking = instance.status === "starting" || instance.status === "waking" || instance.status === "creating";
   if (!waking && asked == null) {
+    // A delete holds it (a move from its saved copy, the idle cleanup): a wake now would put work after the save.
+    if (!await takeFromDeletes(env, computer.instance_id, ctx.now)) return { kind: "fail", error: "ADE Cloud is deleting this computer already, so ADE couldn't push its work." };
     // Noted first: a tick that dies after the ask doesn't ask twice.
     await ctx.save({ facts_json: withFacts(job, { wakeAskedAt: ctx.now }) });
     const status = await ctx.provider.startInstance(computer.instance_id);

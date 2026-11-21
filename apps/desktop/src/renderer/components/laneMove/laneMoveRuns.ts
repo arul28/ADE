@@ -105,9 +105,18 @@ function emit(): void {
   for (const listener of listeners) listener();
 }
 
+/**
+ * Runs that still need this window or the person: a move or delete under way,
+ * and every end that kept the computer and waits on the person (try the
+ * delete again, move again, push then delete). They survive a reload until
+ * the person finishes or closes them, so the step is still in the lane's
+ * machine menu while the computer stays.
+ */
+const KEPT_PHASES: ReadonlySet<LaneMovePhase> = new Set(["moving", "deleting", "deleteFailed", "moveAgain", "pushFirst"]);
+
 function save(): void {
   try {
-    const unfinished = runs.filter((run) => run.phase === "moving" || run.phase === "deleting" || run.phase === "deleteFailed");
+    const unfinished = runs.filter((run) => KEPT_PHASES.has(run.phase));
     if (unfinished.length === 0) window.localStorage.removeItem(STORAGE_KEY);
     else window.localStorage.setItem(STORAGE_KEY, JSON.stringify(unfinished.map((run) => ({ ...run, record: null }))));
   } catch {
@@ -190,6 +199,7 @@ function forgetLater(id: string): void {
   timers.set(id, setTimeout(() => {
     timers.delete(id);
     runs = runs.filter((run) => run.id !== id);
+    save();
     emit();
   }, KEEP_ENDED_MS));
 }
@@ -225,8 +235,11 @@ const SOURCE_CHANGED_ACTION = "crossMachineBatchSourceChanged";
 function isMissingSourceCheck(error: unknown): boolean {
   if (isUnsupportedAdeActionError(error)) return true;
   const message = errorText(error);
-  return message.includes(SOURCE_CHANGED_ACTION)
-    && /unknown ade action|unsupported remote command|no handler registered|not callable|not exposed/i.test(message);
+  if (!message.includes(SOURCE_CHANGED_ACTION)) return false;
+  // ADE Web's own answer for a command the host doesn't list (`UnsupportedRemoteCommandError`).
+  const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+  if (code === "unsupported_action") return true;
+  return /unknown ade action|unsupported remote command|no handler registered|not callable|not exposed|is unavailable on the connected ade host/i.test(message);
 }
 
 /** What the lane's files on the source are since the batch carried them. */
@@ -307,7 +320,7 @@ async function deleteComputer(id: string): Promise<void> {
         message,
         durationMs: READABLE_TOAST_DURATION_MS,
       });
-      forgetLater(id);
+      // Kept until the person closes it or moves the lane again.
       return;
     }
     if (error instanceof FilesLeftError) {
@@ -402,8 +415,19 @@ async function read(id: string): Promise<void> {
   }
 }
 
+/** An end that kept the computer and asks for a new move or a push; a fresh move of the lane replaces it. */
+function waitsOnPerson(run: LaneMoveRun): boolean {
+  return run.phase === "moveAgain" || run.phase === "pushFirst";
+}
+
 function add(run: LaneMoveRun): void {
-  runs = [...runs.filter((entry) => entry.id !== run.id), run];
+  for (const ended of runs) {
+    if (ended.id !== run.id && ended.laneId === run.laneId && waitsOnPerson(ended)) {
+      clearTimeout(timers.get(ended.id));
+      timers.delete(ended.id);
+    }
+  }
+  runs = [...runs.filter((entry) => entry.id !== run.id && !(entry.laneId === run.laneId && waitsOnPerson(entry))), run];
   save();
   emit();
   void read(run.id);
@@ -516,7 +540,6 @@ export async function pushAndDeleteLaneMoveComputer(id: string): Promise<void> {
         : `${left} chats started on the lane since the move, so ADE kept the computer. Move the lane again to bring them.`;
       update(id, (entry) => ({ ...entry, phase: "moveAgain", error: message }));
       showToast({ tone: "warning", title: `Kept ${run.laneName}'s ${ADE_CLOUD_NAME} computer`, message, durationMs: READABLE_TOAST_DURATION_MS });
-      forgetLater(id);
       return;
     }
     showToast({

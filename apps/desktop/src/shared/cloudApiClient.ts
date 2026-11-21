@@ -165,7 +165,8 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       const late = new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => reject(outOfTime()), limitMs);
       });
-      const tokenWait = Promise.resolve(options.accessToken());
+      // Started in the chain, so a token callback that throws rejects here and the timer is cleared.
+      const tokenWait = Promise.resolve().then(() => options.accessToken());
       // A token that fails after the limit has nobody waiting for it.
       tokenWait.catch(() => undefined);
       const token = await Promise.race([tokenWait, late]).finally(() => clearTimeout(timer));

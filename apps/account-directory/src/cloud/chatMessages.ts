@@ -516,7 +516,13 @@ async function insertRow(
   // Nothing inserted: the same message id again (its row answers), or the copy moved before the insert.
   const existing = await readRow(env, userId, chat.machine_key, chat.chat_id, input.messageId);
   if (existing) return { row: existing, created: false };
-  if (where.copyAt) return null;
+  if (where.copyAt) {
+    // The same id again, which a move took to the chat's new key right after the first send stored it:
+    // a move keeps the chat's id and its messages' ids, so the message is found by those. It was sent.
+    const moved = await env.DB.prepare("select * from cloud_chat_messages where user_id = ? and chat_id = ? and message_id = ? limit 1")
+      .bind(userId, chat.chat_id, input.messageId).first<ChatMessageRow>();
+    return moved ? { row: moved, created: false } : null;
+  }
   throw new Error("A queued message wasn't stored.");
 }
 

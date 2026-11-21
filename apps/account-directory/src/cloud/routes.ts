@@ -125,6 +125,8 @@ import {
   settleStatements,
   statusChangeStatements,
   statusGuard,
+  SAVED_DELETE_CLAIM_STALE_MS,
+  takeFromDeletes,
   takeRequest,
   type AccountRow,
   type CloudEnv,
@@ -455,25 +457,6 @@ async function eventWakeComputer(env: CloudEnv, computer: ComputerRow, now: numb
   return "woken";
 }
 
-/**
- * A wake's side of the delete claim (`claimSavedDelete`, the idle cleanup's
- * `claimDelete`): one conditional write, read fresh in D1, that holds only
- * while no delete claims the row, and that clears the backups it rested with,
- * which every delete claim needs. Of a wake and a delete claim at once,
- * exactly one write passes: a claim first refuses the wake here, and a wake
- * first makes the claim fail. It clears the report too, as a wake's status
- * write does, so a Sleep that saved before this wake can't mark the computer
- * resting with that report after it (`markRestedWithBackups` needs the
- * report). False when a delete holds the computer. A start that then fails
- * leaves the computer resting not saved; its next sleep saves it.
- */
-async function takeFromDeletes(env: CloudEnv, instanceId: string, now: number): Promise<boolean> {
-  const taken = await env.DB.prepare(`
-    update cloud_computers set backup_rest_at = null, backup_report_state = null, backup_report_id = null
-    where instance_id = ? and deleted_at is null and (idle_deleting_at is null or idle_deleting_at < ?)
-  `).bind(instanceId, now - SAVED_DELETE_CLAIM_STALE_MS).run();
-  return (taken.meta?.changes ?? 0) === 1;
-}
 
 async function markGone(env: CloudEnv, computer: ComputerRow, now: number): Promise<void> {
   await env.DB.batch(goneFromProviderStatements(env, computer, now));
@@ -1309,8 +1292,6 @@ async function refuseUnlessRestsSaved(env: CloudEnv, provider: CloudProvider, co
 }
 
 const COMPUTER_ALREADY_DELETING_MESSAGE = "ADE Cloud is deleting this computer already. Nothing else was deleted.";
-/** As long as the idle cleanup's claim holds (`CLAIM_STALE_MS` in idleCleanup.ts): a claim older than this died with its request. */
-const SAVED_DELETE_CLAIM_STALE_MS = 20 * 60_000;
 
 /**
  * The delete claim of a move from the saved copy (`idle_deleting_at`, the

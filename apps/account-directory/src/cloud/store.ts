@@ -611,6 +611,31 @@ export function powerLogStatement(env: CloudEnv, computer: Pick<ComputerRow, "in
  * stretch, logs the power change, and updates `computer` in place so the rest
  * of a tick sees it. Writes nothing when the status didn't change.
  */
+/** As long as the idle cleanup's claim holds (`CLAIM_STALE_MS` in idleCleanup.ts): a claim older than this died with its request. */
+export const SAVED_DELETE_CLAIM_STALE_MS = 20 * 60_000;
+
+/**
+ * A wake's side of the delete claim (`claimSavedDelete`, the idle cleanup's
+ * `claimDelete`): one conditional write, read fresh in D1, that holds only
+ * while no delete claims the row, and that clears the backups it rested with,
+ * which every delete claim needs. Of a wake and a delete claim at once,
+ * exactly one write passes: a claim first refuses the wake here, and a wake
+ * first makes the claim fail. It clears the report too, as a wake's status
+ * write does, so a Sleep that saved before this wake can't mark the computer
+ * resting with that report after it (`markRestedWithBackups` needs the
+ * report). False when a delete holds the computer. A start that then fails
+ * leaves the computer resting not saved; its next sleep saves it. Every
+ * path that starts a resting computer takes it first: a person's wake, an
+ * event wake, a resize, a free's and a move's wake (`frees.ts`, `moves.ts`).
+ */
+export async function takeFromDeletes(env: CloudEnv, instanceId: string, now: number): Promise<boolean> {
+  const taken = await env.DB.prepare(`
+    update cloud_computers set backup_rest_at = null, backup_report_state = null, backup_report_id = null
+    where instance_id = ? and deleted_at is null and (idle_deleting_at is null or idle_deleting_at < ?)
+  `).bind(instanceId, now - SAVED_DELETE_CLAIM_STALE_MS).run();
+  return (taken.meta?.changes ?? 0) === 1;
+}
+
 /**
  * The account's machine row for a cloud computer that just named its account
  * key takes the computer's name, unless a name was set on it already (the

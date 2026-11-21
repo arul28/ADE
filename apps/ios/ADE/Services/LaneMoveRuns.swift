@@ -300,10 +300,11 @@ final class LaneMoveRuns: ObservableObject {
     timers.removeValue(forKey: run.id)?.cancel()
     // A fresh move of the lane replaces the run that asked for it.
     let plain = laneMovePlainLaneId(run.laneId)
-    for ended in runs where ended.phase == .moveAgain && laneMovePlainLaneId(ended.laneId) == plain {
+    let waitsOnPerson: (LaneMoveRun) -> Bool = { ($0.phase == .moveAgain || $0.phase == .pushFirst) && laneMovePlainLaneId($0.laneId) == plain }
+    for ended in runs where waitsOnPerson(ended) {
       timers.removeValue(forKey: ended.id)?.cancel()
     }
-    runs.removeAll { $0.id == run.id || ($0.phase == .moveAgain && laneMovePlainLaneId($0.laneId) == plain) }
+    runs.removeAll { $0.id == run.id || waitsOnPerson($0) }
     runs.append(run)
     save()
     Task { await read(run.id) }
@@ -674,7 +675,10 @@ final class LaneMoveRuns: ObservableObject {
     #if DEBUG
     if fixture { return }
     #endif
-    let unfinished = runs.filter { $0.phase == .moving || $0.phase == .deleting || $0.phase == .deleteFailed }
+    // Every run that still needs the phone or the person: a move or delete
+    // under way, and every end that kept the computer and waits on the person
+    // (delete again, move again, push then delete), until they finish or close it.
+    let unfinished = runs.filter { $0.phase == .moving || $0.phase == .deleting || $0.isOpenAfterEnd }
     if unfinished.isEmpty {
       UserDefaults.standard.removeObject(forKey: Self.storageKey)
     } else if let data = try? JSONEncoder().encode(unfinished) {
@@ -693,6 +697,6 @@ final class LaneMoveRuns: ObservableObject {
 }
 
 private extension LaneMoveRun {
-  /// A computer still to delete stays listed until the person deletes it or closes it.
-  var isOpenAfterEnd: Bool { phase == .deleteFailed }
+  /// A kept computer that waits on the person stays listed until they finish or close it.
+  var isOpenAfterEnd: Bool { phase == .deleteFailed || phase == .moveAgain || phase == .pushFirst }
 }

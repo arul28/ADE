@@ -11,6 +11,7 @@ import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http
 import { openBytes, sealBytes, userKeys } from "./seal";
 import { callingComputer, segmentsAfter } from "./sessionCopies";
 import { logCloud, type CloudEnv } from "./store";
+import { sweep, sweepStatement, type SweepTarget } from "./storageSweeps";
 
 /**
  * Fork capsules (README, "ADE without a computer"): what a provider needs to
@@ -73,18 +74,18 @@ const uploadPrefix = (userId: string, machineKey: string, chatId: string, upload
   `${capsulePrefix(userId, machineKey, chatId)}u/${uploadId}/`;
 const uploadIdOf = (prefix: string): string | null => /\/u\/([0-9a-f]{32})\/$/.exec(prefix)?.[1] ?? null;
 
-/** Every object under `prefix`, page by page. */
-async function deleteUnder(bucket: R2Bucket, prefix: string): Promise<void> {
-  let cursor: string | undefined;
-  for (;;) {
-    const listed = await bucket.list({ prefix, cursor, limit: 1000 });
-    const keys = listed.objects.map((object) => object.key);
-    if (keys.length) await bucket.delete(keys);
-    if (!listed.truncated) return;
-    cursor = listed.cursor;
-  }
-}
 const partKey = (prefix: string, part: number): string => `${prefix}part/${String(part).padStart(5, "0")}`;
+/**
+ * One upload's parts, to sweep. Every part of a capsule is under its upload's `part/`, and a
+ * capsule from before uploads had their own prefix has its parts under the capsule's `part/`:
+ * neither holds another upload's parts.
+ */
+const partsOf = (prefix: string): SweepTarget => ({ key: `${prefix}part/`, exact: false });
+/** The row is still as read: its committed parts and its upload. */
+const rowStill = (row: CapsuleRow) => ({
+  sql: "exists (select 1 from cloud_fork_capsules where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ? and pending_r2_key is ?)",
+  binds: [row.user_id, row.machine_key, row.chat_id, row.r2_key, row.pending_r2_key],
+});
 const partAad = (userId: string, machineKey: string, chatId: string, part: number): string =>
   `ade.cloud.capsule.part.v1\0${userId}\0${machineKey}\0${chatId}\0${part}`;
 
@@ -122,7 +123,7 @@ function manifestOf(row: CapsuleRow): CloudCapsuleManifest {
  * the same write that adopts it), so its parts belong to nothing and go.
  * Null when other part 1s kept replacing it.
  */
-async function startUpload(env: CloudEnv, bucket: R2Bucket, userId: string, machineKey: string, chatId: string, instanceId: string, now: number): Promise<{ id: string; prefix: string } | null> {
+async function startUpload(env: CloudEnv, userId: string, machineKey: string, chatId: string, instanceId: string, now: number): Promise<{ id: string; prefix: string } | null> {
   const id = crypto.randomUUID().replace(/-/g, "");
   const prefix = uploadPrefix(userId, machineKey, chatId, id);
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -137,13 +138,21 @@ async function startUpload(env: CloudEnv, bucket: R2Bucket, userId: string, mach
       if ((inserted.meta?.changes ?? 0) === 1) return { id, prefix };
       continue;
     }
-    const swapped = await env.DB.prepare(`
-      update cloud_fork_capsules set pending_r2_key = ?, pending_parts = 0, pending_bytes = 0, pending_instance_id = ?, updated_at = ?
-      where user_id = ? and machine_key = ? and chat_id = ? and pending_r2_key is ?
-    `).bind(prefix, instanceId, now, userId, machineKey, chatId, row.pending_r2_key).run();
-    if ((swapped.meta?.changes ?? 0) !== 1) continue;
-    const abandoned = row.pending_r2_key;
-    if (abandoned && (row.committed_at == null || abandoned !== row.r2_key)) await deleteUnder(bucket, abandoned);
+    const abandoned = row.pending_r2_key && (row.committed_at == null || row.pending_r2_key !== row.r2_key) ? partsOf(row.pending_r2_key) : null;
+    const stillPending = {
+      sql: "exists (select 1 from cloud_fork_capsules where user_id = ? and machine_key = ? and chat_id = ? and pending_r2_key is ?)",
+      binds: [userId, machineKey, chatId, row.pending_r2_key],
+    };
+    // The swap and the record of the upload it abandons, in one write.
+    const swapped = await env.DB.batch([
+      ...(abandoned ? [sweepStatement(env, userId, abandoned, now, stillPending)] : []),
+      env.DB.prepare(`
+        update cloud_fork_capsules set pending_r2_key = ?, pending_parts = 0, pending_bytes = 0, pending_instance_id = ?, updated_at = ?
+        where user_id = ? and machine_key = ? and chat_id = ? and pending_r2_key is ?
+      `).bind(prefix, instanceId, now, userId, machineKey, chatId, row.pending_r2_key),
+    ]);
+    if ((swapped[swapped.length - 1]?.meta?.changes ?? 0) !== 1) continue;
+    if (abandoned) await sweep(env, [abandoned]);
     return { id, prefix };
   }
   return null;
@@ -164,7 +173,7 @@ async function handlePutPart(request: Request, env: CloudEnv, bucket: R2Bucket, 
   // The committed capsule stays as it is until this upload commits.
   let upload: { prefix: string; parts: number; bytes: number };
   if (part === 1) {
-    const started = await startUpload(env, bucket, userId, machineKey, chatId, computer.instance_id, now);
+    const started = await startUpload(env, userId, machineKey, chatId, computer.instance_id, now);
     if (!started) return unavailable();
     upload = { prefix: started.prefix, parts: 0, bytes: 0 };
   } else {
@@ -237,16 +246,23 @@ async function handleCommit(request: Request, env: CloudEnv, bucket: R2Bucket, u
   }
   if (total > CLOUD_CAPSULE_MAX_BYTES) return tooLarge();
   if ((await accountBytes(env, userId, { machineKey, chatId })) + total > CLOUD_CAPSULE_MAX_ACCOUNT_BYTES) return accountFull();
-  // One write switches the capsule to the new parts; the older capsule read until here.
-  const committed = await env.DB.prepare(`
-    update cloud_fork_capsules set provider = ?, transport_kind = ?, lane_id = ?, session_kind = ?, bytes = ?, committed_at = ?, updated_at = ?,
-      r2_key = pending_r2_key, parts = pending_parts, instance_id = coalesce(pending_instance_id, instance_id),
-      pending_r2_key = null, pending_parts = 0, pending_bytes = 0, pending_instance_id = null
-    where user_id = ? and machine_key = ? and chat_id = ? and pending_r2_key = ? and pending_parts = ?
-  `).bind(provider, transportKind, laneId, sessionKind, total, now, now, userId, machineKey, chatId, pending, parts).run();
-  if ((committed.meta?.changes ?? 0) !== 1) return fail("capsule_incomplete", "This saved session copy changed while it was committed. Upload it again from part 1.", 409);
+  // One write switches the capsule to the new parts, and records the capsule it replaced to sweep;
+  // the older capsule read until here.
+  const replacedParts = row.r2_key !== pending ? partsOf(row.r2_key) : null;
+  const commitWhere = "user_id = ? and machine_key = ? and chat_id = ? and r2_key = ? and pending_r2_key = ? and pending_parts = ?";
+  const commitBinds = [userId, machineKey, chatId, row.r2_key, pending, parts];
+  const results = await env.DB.batch([
+    ...(replacedParts ? [sweepStatement(env, userId, replacedParts, now, { sql: `exists (select 1 from cloud_fork_capsules where ${commitWhere})`, binds: commitBinds })] : []),
+    env.DB.prepare(`
+      update cloud_fork_capsules set provider = ?, transport_kind = ?, lane_id = ?, session_kind = ?, bytes = ?, committed_at = ?, updated_at = ?,
+        r2_key = pending_r2_key, parts = pending_parts, instance_id = coalesce(pending_instance_id, instance_id),
+        pending_r2_key = null, pending_parts = 0, pending_bytes = 0, pending_instance_id = null
+      where ${commitWhere}
+    `).bind(provider, transportKind, laneId, sessionKind, total, now, now, ...commitBinds),
+  ]);
+  if ((results[results.length - 1]?.meta?.changes ?? 0) !== 1) return fail("capsule_incomplete", "This saved session copy changed while it was committed. Upload it again from part 1.", 409);
   // The capsule it replaced: its parts go only now. Parts past the count are from an older, longer upload.
-  if (row.r2_key !== pending) await deleteUnder(bucket, `${row.r2_key}part/`);
+  if (replacedParts) await sweep(env, [replacedParts]);
   const listed = await bucket.list({ prefix: `${pending}part/`, limit: 1000 });
   const stale = listed.objects.map((object) => object.key).filter((key) => Number(key.slice(key.lastIndexOf("/") + 1)) > parts);
   if (stale.length) await bucket.delete(stale);
@@ -270,25 +286,30 @@ async function handleReadPart(env: CloudEnv, bucket: R2Bucket, userId: string, m
 
 /**
  * Removes one capsule: its parts, any upload in progress, and its row. The
- * row is marked first (unreadable, no upload pending), so a part in flight
- * counts nothing and removes its own object, and a sweep that fails leaves
- * the row for a delete again to finish.
+ * row's delete records the uploads it held to sweep, in the same write, and
+ * only those: a part 1 after it starts a new row with an upload of its own,
+ * which no sweep of this delete reaches. A part still in flight for a
+ * deleted upload counts nothing and removes its own object. A sweep that
+ * fails is finished by the tick (`sweepLeftovers`).
  */
 export async function deleteCapsule(env: CloudEnv, userId: string, machineKey: string, chatId: string): Promise<void> {
-  const row = await readRow(env, userId, machineKey, chatId);
-  if (!row) return;
-  await env.DB.prepare(`
-    update cloud_fork_capsules set committed_at = null, pending_r2_key = null, pending_parts = 0, pending_bytes = 0
-    where user_id = ? and machine_key = ? and chat_id = ?
-  `).bind(userId, machineKey, chatId).run();
-  const bucket = env.CLOUD_CHATS;
-  if (bucket) {
-    // Every upload's prefix is under the capsule's own prefix.
-    await deleteUnder(bucket, capsulePrefix(userId, machineKey, chatId));
+  // Twice at most: an upload that started or committed between the read and the delete reads again.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const row = await readRow(env, userId, machineKey, chatId);
+    if (!row) return;
+    const targets = [partsOf(row.r2_key), ...(row.pending_r2_key && row.pending_r2_key !== row.r2_key ? [partsOf(row.pending_r2_key)] : [])];
+    const now = Date.now();
+    const still = rowStill(row);
+    const results = await env.DB.batch([
+      ...targets.map((target) => sweepStatement(env, userId, target, now, still)),
+      env.DB.prepare("delete from cloud_fork_capsules where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ? and pending_r2_key is ?")
+        .bind(userId, machineKey, chatId, row.r2_key, row.pending_r2_key),
+    ]);
+    if ((results[results.length - 1]?.meta?.changes ?? 0) !== 1) continue;
+    await sweep(env, targets);
+    return;
   }
-  // Still as marked: a new save that started meanwhile is a capsule of its own, and stays.
-  await env.DB.prepare("delete from cloud_fork_capsules where user_id = ? and machine_key = ? and chat_id = ? and pending_r2_key is null and committed_at is null")
-    .bind(userId, machineKey, chatId).run();
+  logCloud("cloud.capsule_delete_changed", { userId, machineKey });
 }
 
 /** A lane's capsules on one machine go with the lane. Bounded: a lane has few chats. */

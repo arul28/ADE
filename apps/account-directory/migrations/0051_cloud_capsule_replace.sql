@@ -11,3 +11,17 @@ alter table cloud_fork_capsules add column pending_r2_key text;
 alter table cloud_fork_capsules add column pending_parts integer not null default 0;
 alter table cloud_fork_capsules add column pending_bytes integer not null default 0;
 alter table cloud_fork_capsules add column pending_instance_id text;
+
+-- Saved storage no row reads any more (src/cloud/storageSweeps.ts): a chat
+-- copy's prefix, a capsule upload's parts, a CLI copy's object. Written in
+-- the same write that lets go of it, removed only once its objects are gone,
+-- so a delete that fails part way is finished by the minute tick. Each saved
+-- row has its own prefix or key, so a sweep never reaches a newer row's
+-- objects. `exact` = 1 names one object; else every object under a prefix.
+create table if not exists cloud_storage_sweeps (
+  r2_key text primary key,
+  user_id text not null,
+  exact integer not null default 0,
+  created_at integer not null
+);
+create index if not exists cloud_storage_sweeps_created on cloud_storage_sweeps (created_at);

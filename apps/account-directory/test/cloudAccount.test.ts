@@ -3268,6 +3268,21 @@ describe("ADE Cloud without a computer", () => {
     expect(await readPart(1)).toBe("new 1");
     expect(await (await harness.send(OWNER, "DELETE", capsule)).json()).toEqual({ deleted: true });
     expect([await manifestParts(), await stored()]).toEqual([null, 0]);
+
+    // A new save starts while a delete sweeps: the delete takes only the uploads it ended, never the new one's parts.
+    const putAs = async (part: number, text: string) => (await harness.send(OWNER, "PUT", `${capsule}/parts/${part}`, text, { "x-ade-instance": SECOND })).status;
+    expect(await putAs(1, "gone 1")).toBe(200);
+    const bucket = harness.env.CLOUD_CHATS!;
+    const list = bucket.list.bind(bucket);
+    let savedDuring: number | null = null;
+    bucket.list = async (options) => {
+      if (savedDuring == null && options?.prefix?.startsWith("capsules/")) savedDuring = await putAs(1, "kept 1");
+      return list(options);
+    };
+    expect(await (await harness.send(OWNER, "DELETE", capsule)).json()).toEqual({ deleted: true });
+    bucket.list = list;
+    const committed = await harness.send(OWNER, "POST", `${capsule}/commit`, { instanceId: SECOND, parts: 1, provider: "claude", transportKind: "claude-jsonl", sessionKind: "chat", laneId: LANE });
+    expect([savedDuring, committed.status, await readPart(1), await stored()]).toEqual([200, 200, "kept 1", 1]);
   });
 
   it("two uploads of one capsule never mix, and a new upload never deletes one that committed while it started", async () => {
@@ -3356,33 +3371,55 @@ describe("ADE Cloud without a computer", () => {
     expect([copy.status, ((await copy.json()) as { text: string }).text]).toEqual([200, "$ ready\n"]);
   });
 
-  it("a CLI copy's move to a computer whose own copy goes meanwhile keeps the old copy and moves it there", async () => {
+  it("a CLI copy's move reads again when the copies change under it: a new computer's copy that goes, or a newer save, never loses the copy or its messages", async () => {
     seedAccount(harness, OWNER);
     seedComputer(harness, { machine_key: "key-cli" });
     const save = (instanceId: string, key: string, text: string) => harness.send(OWNER, "PUT", `/cloud/sessions/${key}/cli-1`, {
       instanceId, format: "text", text, row: { kind: "cli", toolType: "cursor-cli", laneId: LANE, projectKey: "github.com/acme/widgets" },
     });
+    const textAt = async (key: string) => {
+      const copy = await harness.send(OWNER, "GET", `/cloud/sessions/${key}/cli-1`);
+      return copy.status === 200 ? ((await copy.json()) as { text: string }).text : copy.status;
+    };
+    const waitingAt = () => harness.rows("select machine_key from cloud_chat_messages where message_id = 'm-wait'");
     expect((await save(INSTANCE, "key-cli", "$ ready\n")).status).toBe(200);
+    harness.insert("cloud_chat_messages", { user_id: OWNER, machine_key: "key-cli", chat_id: "cli-1", message_id: "m-wait", via_launch: 0, seq: 1, body_sealed: "sealed", state: "queued", created_at: NOW, updated_at: NOW });
     harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
     seedComputer(harness, { instance_id: SECOND, machine_key: "key-new" });
     expect((await save(SECOND, "key-new", "$ new\n")).status).toBe(200);
-    // The new computer's copy is deleted between the move's read and its write.
+    // The new computer's copy is deleted after the move read it, before its write: the write moves nothing,
+    // and the move's second read finds no copy there and moves the old one, with its message.
     let gone = false;
+    let waitingOnRetry: unknown = null;
     harness.injectFault((sql) => {
-      if (!gone && /^\s*delete from cloud_session_copies/.test(sql)) {
+      if (!gone && /^\s*update cloud_chat_messages set machine_key/.test(sql)) {
         gone = true;
         harness.exec("delete from cloud_session_copies where machine_key = 'key-new'");
+      } else if (gone && waitingOnRetry == null && /^\s*insert into cloud_session_copies/.test(sql)) {
+        waitingOnRetry = waitingAt();
       }
       return false;
     });
-
     const moved = await harness.send(OWNER, "POST", "/cloud/sessions/key-cli/cli-1/move", { toMachineKey: "key-new", instanceId: SECOND });
     harness.injectFault(null);
+    expect([gone, waitingOnRetry, moved.status, await moved.json()]).toEqual([true, [{ machine_key: "key-cli" }], 200, { moved: true }]);
+    expect([harness.rows("select machine_key from cloud_session_copies"), waitingAt(), await textAt("key-new")]).toEqual([[{ machine_key: "key-new" }], [{ machine_key: "key-new" }], "$ ready\n"]);
 
-    expect([gone, moved.status, await moved.json()]).toEqual([true, 200, { moved: true }]);
-    expect(harness.rows("select machine_key from cloud_session_copies")).toEqual([{ machine_key: "key-new" }]);
-    const copy = await harness.send(OWNER, "GET", "/cloud/sessions/key-new/cli-1");
-    expect([copy.status, ((await copy.json()) as { text: string }).text]).toEqual([200, "$ ready\n"]);
+    // A newer save lands just after a move read the copy: the move takes the newer save, never the one it read first.
+    expect((await save(SECOND, "key-new", "$ again\n")).status).toBe(200);
+    seedComputer(harness, { instance_id: "thirdbox12", machine_key: "key-third" });
+    const bucket = harness.env.CLOUD_CHATS!;
+    const get = bucket.get.bind(bucket);
+    let savedDuring: number | null = null;
+    bucket.get = async (key) => {
+      const object = await get(key);
+      if (savedDuring == null && key.startsWith("sessions/")) savedDuring = (await save(SECOND, "key-new", "$ newer\n")).status;
+      return object;
+    };
+    const movedOn = await harness.send(OWNER, "POST", "/cloud/sessions/key-new/cli-1/move", { toMachineKey: "key-third", instanceId: "thirdbox12" });
+    bucket.get = get;
+    expect([savedDuring, movedOn.status, await textAt("key-third"), harness.rows("select machine_key from cloud_session_copies")]).toEqual([200, 200, "$ newer\n", [{ machine_key: "key-third" }]]);
+    expect(harness.rows("select r2_key from cloud_storage_sweeps")).toEqual([]);
   });
 
   it("a kept lane moved to the person's own machine: only that account's machine takes a deleted computer's chat onto its key, and the lane's forget keeps what moved there", async () => {
@@ -3463,6 +3500,39 @@ describe("ADE Cloud without a computer", () => {
     expect(harness.rows("select machine_key, chat_id from cloud_chat_copies")).toEqual([{ machine_key: "key-mac", chat_id: "c2" }]);
     const kept = (await (await harness.send(OWNER, "GET", "/cloud/chats/key-mac/c2")).json()) as { parts: Array<{ text: string }> };
     expect(kept.parts.map((part) => part.text)).toEqual(["two\n"]);
+  });
+
+  it("a saved chat's delete sweeps only its own copy's storage, and a sweep that fails is finished by the tick", async () => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { machine_key: "key-a" });
+    const read = async () => {
+      const response = await harness.send(OWNER, "GET", "/cloud/chats/key-a/c1");
+      return response.status === 200 ? ((await response.json()) as { parts: Array<{ text: string }> }).parts.map((part) => part.text) : response.status;
+    };
+    const objects = async () => (await harness.env.CLOUD_CHATS!.list({ prefix: `chats/${OWNER}/` })).objects.length;
+    const bucket = harness.env.CLOUD_CHATS!;
+
+    // The computer starts its copy over while the delete sweeps: the new copy keeps its part.
+    expect((await savePart(INSTANCE, "key-a", 1, "first\n")).status).toBe(200);
+    const list = bucket.list.bind(bucket);
+    let savedDuring: number | null = null;
+    bucket.list = async (options) => {
+      if (savedDuring == null && options?.prefix?.startsWith("chats/")) savedDuring = (await savePart(INSTANCE, "key-a", 1, "again\n")).status;
+      return list(options);
+    };
+    expect(await (await harness.send(OWNER, "DELETE", "/cloud/chats/key-a/c1")).json()).toEqual({ deleted: true });
+    bucket.list = list;
+    expect([savedDuring, await read(), await objects()]).toEqual([200, ["again\n"], 1]);
+
+    // The storage fails mid-delete: the chat is gone at once, and the next tick removes what was left.
+    const remove = bucket.delete.bind(bucket);
+    bucket.delete = async () => { throw new Error("R2 down"); };
+    await expect(harness.send(OWNER, "DELETE", "/cloud/chats/key-a/c1")).rejects.toThrow("R2 down");
+    bucket.delete = remove;
+    expect([await read(), await objects()]).toEqual([404, 1]);
+    clock = NOW + 11 * 60_000;
+    await harness.tick();
+    expect([await objects(), harness.rows("select r2_key from cloud_storage_sweeps")]).toEqual([0, []]);
   });
 
   it.each([
@@ -3634,6 +3704,21 @@ describe("ADE Cloud without a computer", () => {
     harness.injectFault(null);
     expect([moved, late.status, ((await late.json()) as { error?: { code?: string } }).error?.code]).toEqual([true, 409, "chat_moved"]);
     expect(harness.rows("select machine_key from cloud_chat_messages where message_id = 'm5'")).toEqual([]);
+
+    // The same message again, which a move took to the copy's new key with the copy: it was sent, once.
+    harness.exec("update cloud_chat_messages set machine_key = 'key-fourth' where message_id = 'm4'");
+    let movedAgain = false;
+    harness.injectFault((sql) => {
+      if (!movedAgain && /update cloud_computers set last_awake_at/.test(sql)) {
+        movedAgain = true;
+        harness.exec("update cloud_session_copies set machine_key = 'key-fourth' where session_id = 'cli-1'");
+      }
+      return false;
+    });
+    const again = await harness.send(OWNER, "POST", "/cloud/chats/key-third/cli-1/messages", { messageId: "m4", text: "Run the tests." });
+    harness.injectFault(null);
+    expect([movedAgain, again.status, ((await again.json()) as { message?: { messageId?: string } }).message?.messageId]).toEqual([true, 200, "m4"]);
+    expect(harness.rows("select machine_key from cloud_chat_messages where message_id = 'm4'")).toEqual([{ machine_key: "key-fourth" }]);
   });
 });
 
@@ -4709,13 +4794,18 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
     expect(harness.net.instances.has(INSTANCE)).toBe(false);
   });
 
-  it("wakes a resting computer to push its work", async () => {
+  it.each([
+    { name: "wakes a resting computer to push its work", held: false },
+    // A move from its saved copy claimed the delete after this free started: a wake now would put work after that save.
+    { name: "never wakes a resting computer a delete holds", held: true },
+  ])("$name", async ({ held }) => {
     harness.net.instances.get(INSTANCE)!.status = "sleeping";
     harness.exec("update cloud_computers set status = 'sleeping' where instance_id = ?", INSTANCE);
     expect((await start()).status).toBe(201);
+    if (held) harness.exec("update cloud_computers set idle_deleting_at = ? where instance_id = ?", clock, INSTANCE);
     await drive();
-    expect(providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/start$`)).length).toBeGreaterThan(0);
-    expect(await record()).toEqual(expect.objectContaining({ state: "done", laneKept: true }));
+    expect(providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/start$`)).length > 0).toBe(!held);
+    expect(await record()).toEqual(expect.objectContaining(held ? { state: "failed", laneKept: null } : { state: "done", laneKept: true }));
   });
 
   it.each<[string, () => void, string]>([

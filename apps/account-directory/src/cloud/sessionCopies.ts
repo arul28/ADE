@@ -15,6 +15,7 @@ import {
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, pageCursorOf, pageCursorSql } from "./http";
 import { openBytes, openJson, sealBytes, sealJson, userKeys, type UserKeys } from "./seal";
 import { logCloud, moveQueuedMessagesStatement, ownMachineMoveTarget, ownedComputer, type CloudEnv, type ComputerRow } from "./store";
+import { storageGeneration, sweep, sweepStatement, type SweepTarget } from "./storageSweeps";
 
 /**
  * CLI-session and shell copies (README, "ADE without a computer"). A cloud
@@ -88,7 +89,39 @@ type SessionRow = {
   updated_at: number;
 };
 
-const objectKey = (userId: string, machineKey: string, sessionId: string): string => `sessions/${userId}/${machineKey}/${sessionId}`;
+/**
+ * Each save, and each move, writes the copy to an object of its own (`~` is in no row id) and
+ * publishes it with its row in one write, so a move or a delete that read one save never takes
+ * a later save's object for it. A row from before keeps `sessions/{user}/{machine}/{session}`.
+ */
+const newObjectKey = (userId: string, machineKey: string, sessionId: string): string =>
+  `sessions/${userId}/${machineKey}/${sessionId}~${storageGeneration()}`;
+const objectOf = (key: string): SweepTarget => ({ key, exact: true });
+/** The row at `machineKey` is still the one with object `r2Key`. */
+const rowWithObject = (userId: string, machineKey: string, sessionId: string, r2Key: string) => ({
+  sql: "exists (select 1 from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and r2_key = ?)",
+  binds: [userId, machineKey, sessionId, r2Key],
+});
+/**
+ * Deletes copy rows as read, with their queued messages, and records their objects to sweep, in
+ * one write; a row that changed since (a later save) stays. Answers the objects to sweep now.
+ */
+async function deleteCopyRows(env: CloudEnv, userId: string, rows: Array<{ machine_key: string; session_id: string; r2_key: string }>, now: number): Promise<SweepTarget[]> {
+  if (!rows.length) return [];
+  const statements = rows.flatMap((row) => {
+    const still = rowWithObject(userId, row.machine_key, row.session_id, row.r2_key);
+    return [
+      sweepStatement(env, userId, objectOf(row.r2_key), now, still),
+      // Messages queued to a CLI go with its copy.
+      env.DB.prepare(`delete from cloud_chat_messages where user_id = ? and machine_key = ? and chat_id = ? and ${still.sql}`)
+        .bind(userId, row.machine_key, row.session_id, ...still.binds),
+      env.DB.prepare("delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and r2_key = ?")
+        .bind(userId, row.machine_key, row.session_id, row.r2_key),
+    ];
+  });
+  const results = await env.DB.batch(statements);
+  return rows.filter((_row, index) => (results[index * 3 + 2]?.meta?.changes ?? 0) === 1).map((row) => objectOf(row.r2_key));
+}
 const copyAad = (userId: string, machineKey: string, sessionId: string): string => `ade.cloud.session.copy.v1\0${userId}\0${machineKey}\0${sessionId}`;
 const summaryAad = (userId: string, machineKey: string, sessionId: string): string => `ade.cloud.session.summary.v1\0${userId}\0${machineKey}\0${sessionId}`;
 
@@ -176,15 +209,6 @@ async function handlePut(request: Request, env: CloudEnv, bucket: R2Bucket, user
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
   const sealed = await sealBytes(keys.aes, copyAad(userId, machineKey, sessionId), encoder.encode(JSON.stringify({ format, text: copy.text })));
-  const existing = await env.DB.prepare("select bytes, r2_key from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ?")
-    .bind(userId, machineKey, sessionId).first<{ bytes: number; r2_key: string }>();
-  const total = await env.DB.prepare("select coalesce(sum(bytes), 0) as total from cloud_session_copies where user_id = ?").bind(userId).first<{ total: number }>();
-  if ((total?.total ?? 0) - (existing?.bytes ?? 0) + sealed.byteLength > CLOUD_SESSION_MAX_ACCOUNT_BYTES) {
-    logCloud("cloud.session_account_full", { userId, limitBytes: CLOUD_SESSION_MAX_ACCOUNT_BYTES });
-    return fail("account_full", "This account's saved sessions are full. Delete some to save new ones.", 413);
-  }
-  const key = objectKey(userId, machineKey, sessionId);
-  await bucket.put(key, sealed);
   const summary = await sealJson(keys, summaryAad(userId, machineKey, sessionId), {
     title: input.title,
     laneName: input.laneName,
@@ -194,33 +218,65 @@ async function handlePut(request: Request, env: CloudEnv, bucket: R2Bucket, user
     format,
   });
   const lastActivity = input.lastActivityAt ? Date.parse(input.lastActivityAt) : null;
-  await env.DB.prepare(`
-    insert into cloud_session_copies (user_id, machine_key, session_id, instance_id, project_key, lane_id, kind, parent_chat_id, summary_sealed, r2_key, bytes, line_count, last_activity_at, updated_at)
-    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    on conflict (user_id, machine_key, session_id) do update set
-      instance_id = excluded.instance_id, project_key = coalesce(excluded.project_key, project_key), lane_id = coalesce(excluded.lane_id, lane_id),
-      kind = excluded.kind, parent_chat_id = coalesce(excluded.parent_chat_id, parent_chat_id), summary_sealed = excluded.summary_sealed,
-      r2_key = excluded.r2_key, bytes = excluded.bytes, line_count = excluded.line_count, last_activity_at = coalesce(excluded.last_activity_at, last_activity_at), updated_at = excluded.updated_at
-  `).bind(
-    userId, machineKey, sessionId, computer.instance_id, input.projectKey, input.laneId, input.kind, input.parentChatId, summary, key,
-    sealed.byteLength, copy.lines, lastActivity, now,
-  ).run();
-  // A moved copy's own object (`handleMove`): this upload replaces it.
-  if (existing?.r2_key && existing.r2_key !== key) await bucket.delete(existing.r2_key);
-  await pruneComputer(env, bucket, userId, computer.instance_id);
+  const key = newObjectKey(userId, machineKey, sessionId);
+  let written = false;
+  // Twice at most: a save, move or delete between the read and the write reads again.
+  for (let attempt = 0; attempt < 2 && !written; attempt += 1) {
+    const existing = await env.DB.prepare("select bytes, r2_key from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ?")
+      .bind(userId, machineKey, sessionId).first<{ bytes: number; r2_key: string }>();
+    const total = await env.DB.prepare("select coalesce(sum(bytes), 0) as total from cloud_session_copies where user_id = ?").bind(userId).first<{ total: number }>();
+    if ((total?.total ?? 0) - (existing?.bytes ?? 0) + sealed.byteLength > CLOUD_SESSION_MAX_ACCOUNT_BYTES) {
+      if (attempt > 0) await bucket.delete(key);
+      logCloud("cloud.session_account_full", { userId, limitBytes: CLOUD_SESSION_MAX_ACCOUNT_BYTES });
+      return fail("account_full", "This account's saved sessions are full. Delete some to save new ones.", 413);
+    }
+    if (attempt === 0) await bucket.put(key, sealed);
+    if (existing) {
+      // This save's object replaces the one read, and that one is recorded to sweep, in one write.
+      const still = rowWithObject(userId, machineKey, sessionId, existing.r2_key);
+      const results = await env.DB.batch([
+        sweepStatement(env, userId, objectOf(existing.r2_key), now, still),
+        env.DB.prepare(`
+          update cloud_session_copies set
+            instance_id = ?, project_key = coalesce(?, project_key), lane_id = coalesce(?, lane_id), kind = ?, parent_chat_id = coalesce(?, parent_chat_id),
+            summary_sealed = ?, r2_key = ?, bytes = ?, line_count = ?, last_activity_at = coalesce(?, last_activity_at), updated_at = ?
+          where user_id = ? and machine_key = ? and session_id = ? and r2_key = ?
+        `).bind(
+          computer.instance_id, input.projectKey, input.laneId, input.kind, input.parentChatId, summary, key, sealed.byteLength, copy.lines, lastActivity, now,
+          userId, machineKey, sessionId, existing.r2_key,
+        ),
+      ]);
+      written = (results[1]?.meta?.changes ?? 0) === 1;
+      if (written) await sweep(env, [objectOf(existing.r2_key)]);
+    } else {
+      const inserted = await env.DB.prepare(`
+        insert into cloud_session_copies (user_id, machine_key, session_id, instance_id, project_key, lane_id, kind, parent_chat_id, summary_sealed, r2_key, bytes, line_count, last_activity_at, updated_at)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict (user_id, machine_key, session_id) do nothing
+      `).bind(
+        userId, machineKey, sessionId, computer.instance_id, input.projectKey, input.laneId, input.kind, input.parentChatId, summary, key,
+        sealed.byteLength, copy.lines, lastActivity, now,
+      ).run();
+      written = (inserted.meta?.changes ?? 0) === 1;
+    }
+  }
+  if (!written) {
+    // Never published: no row reads it.
+    await bucket.delete(key);
+    return fail("session_changed", "This session's saved copy changed while it was saved. Try again.", 409);
+  }
+  await pruneComputer(env, userId, computer.instance_id);
   return json({ ok: true, updatedAt: now });
 }
 
 /** A computer keeps its newest copies only: the rest go, rows and objects. */
-async function pruneComputer(env: CloudEnv, bucket: R2Bucket, userId: string, instanceId: string): Promise<void> {
+async function pruneComputer(env: CloudEnv, userId: string, instanceId: string): Promise<void> {
   const old = (await env.DB.prepare(`
     select machine_key, session_id, r2_key from cloud_session_copies where instance_id = ? and user_id = ?
     order by updated_at desc limit 50 offset ?
   `).bind(instanceId, userId, CLOUD_SESSION_MAX_PER_COMPUTER).all<{ machine_key: string; session_id: string; r2_key: string }>()).results ?? [];
   if (!old.length) return;
-  await bucket.delete(old.map((row) => row.r2_key));
-  await env.DB.batch(old.map((row) => env.DB.prepare("delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ?")
-    .bind(userId, row.machine_key, row.session_id)));
+  await sweep(env, await deleteCopyRows(env, userId, old, Date.now()));
 }
 
 function clampedInt(raw: string | null, fallback: number, max: number): number {
@@ -291,33 +347,26 @@ async function handleGet(env: CloudEnv, bucket: R2Bucket, userId: string, machin
 }
 
 export async function deleteSessionCopy(env: CloudEnv, userId: string, machineKey: string, sessionId: string): Promise<boolean> {
-  const row = await env.DB.prepare("select r2_key from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ?")
-    .bind(userId, machineKey, sessionId).first<{ r2_key: string }>();
-  if (!row) return false;
-  await env.CLOUD_CHATS?.delete(row.r2_key);
-  // Messages queued to a CLI go with its copy.
-  await env.DB.batch([
-    env.DB.prepare("delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ?").bind(userId, machineKey, sessionId),
-    env.DB.prepare("delete from cloud_chat_messages where user_id = ? and machine_key = ? and chat_id = ?").bind(userId, machineKey, sessionId),
-  ]);
-  return true;
+  // Twice at most: a save between the read and the delete reads again.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const row = await env.DB.prepare("select machine_key, session_id, r2_key from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ?")
+      .bind(userId, machineKey, sessionId).first<{ machine_key: string; session_id: string; r2_key: string }>();
+    if (!row) return false;
+    const swept = await deleteCopyRows(env, userId, [row], Date.now());
+    if (!swept.length) continue;
+    await sweep(env, swept);
+    return true;
+  }
+  return false;
 }
 
-/** A lane's copies on one machine go with the lane. */
+/** A lane's copies on one machine go with the lane: the rows read here, each as read. */
 export async function deleteSessionCopiesForLane(env: CloudEnv, userId: string, machineKey: string, laneId: string): Promise<number> {
-  const rows = (await env.DB.prepare("select session_id, r2_key from cloud_session_copies where user_id = ? and machine_key = ? and lane_id = ?")
-    .bind(userId, machineKey, laneId).all<{ session_id: string; r2_key: string }>()).results ?? [];
-  if (!rows.length) return 0;
-  if (env.CLOUD_CHATS) await env.CLOUD_CHATS.delete(rows.map((row) => row.r2_key));
-  // Messages queued to its CLIs go first: the copies name which ones.
-  await env.DB.batch([
-    env.DB.prepare(`
-      delete from cloud_chat_messages where user_id = ? and machine_key = ?
-        and chat_id in (select session_id from cloud_session_copies where user_id = ? and machine_key = ? and lane_id = ?)
-    `).bind(userId, machineKey, userId, machineKey, laneId),
-    env.DB.prepare("delete from cloud_session_copies where user_id = ? and machine_key = ? and lane_id = ?").bind(userId, machineKey, laneId),
-  ]);
-  return rows.length;
+  const rows = (await env.DB.prepare("select machine_key, session_id, r2_key from cloud_session_copies where user_id = ? and machine_key = ? and lane_id = ?")
+    .bind(userId, machineKey, laneId).all<{ machine_key: string; session_id: string; r2_key: string }>()).results ?? [];
+  const swept = await deleteCopyRows(env, userId, rows, Date.now());
+  await sweep(env, swept);
+  return swept.length;
 }
 
 /** Rows of an account deletion; the objects go with the account's whole R2 prefix (`deleteAllAccountChats`). */
@@ -391,16 +440,15 @@ async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, use
       // The new computer saved its own copy already: the old one only goes, and only while that copy is
       // still there, in the same write. The delete is the claim; only the move that makes it re-keys messages.
       const targetStillHere = stillAt(toMachineKey, target.r2_key);
+      const both = { sql: `${sourceStillHere.sql} and ${targetStillHere.sql}`, binds: [...sourceStillHere.binds, ...targetStillHere.binds] };
       const results = await env.DB.batch([
-        moveQueuedMessagesStatement(env, {
-          userId, fromMachineKey: machineKey, toMachineKey, chatId: sessionId, instanceId: computer.instance_id, now,
-          onlyIf: { sql: `${sourceStillHere.sql} and ${targetStillHere.sql}`, binds: [...sourceStillHere.binds, ...targetStillHere.binds] },
-        }),
+        moveQueuedMessagesStatement(env, { userId, fromMachineKey: machineKey, toMachineKey, chatId: sessionId, instanceId: computer.instance_id, now, onlyIf: both }),
+        sweepStatement(env, userId, objectOf(source.r2_key), now, both),
         env.DB.prepare(`delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and r2_key = ? and ${targetStillHere.sql}`)
           .bind(userId, machineKey, sessionId, source.r2_key, ...targetStillHere.binds),
       ]);
-      if ((results[1]?.meta?.changes ?? 0) !== 1) continue;
-      await bucket.delete(source.r2_key);
+      if ((results[2]?.meta?.changes ?? 0) !== 1) continue;
+      await sweep(env, [objectOf(source.r2_key)]);
       return done(true);
     }
     const keys = await userKeys(env, userId, now);
@@ -409,11 +457,13 @@ async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, use
     const opened = object ? await openBytes(keys.aes, copyAad(userId, machineKey, sessionId), new Uint8Array(await object.arrayBuffer())) : null;
     const summary = await openJson(keys, summaryAad(userId, machineKey, sessionId), source.summary_sealed);
     if (!opened) {
+      // A newer save replaced the copy (and its object) since the read: read it again.
+      if ((await rowAt(machineKey))?.r2_key !== source.r2_key) continue;
       logCloud("cloud.session_copy_unreadable", { userId, machineKey, sessionId });
       return fail("copy_unreadable", "This session copy can't be read right now.", 503);
     }
-    // This move's own object: no other move, and no upload of the new computer's own copy, writes it.
-    const staged = `${objectKey(userId, toMachineKey, sessionId)}.move-${crypto.randomUUID().replace(/-/g, "")}`;
+    // This move's own object: no other move, and no save of the new computer's own copy, writes it.
+    const staged = newObjectKey(userId, toMachineKey, sessionId);
     await bucket.put(staged, await sealBytes(keys.aes, copyAad(userId, toMachineKey, sessionId), opened));
     const resealed = summary == null ? null : await sealJson(keys, summaryAad(userId, toMachineKey, sessionId), summary);
     const insertedHere = stillAt(toMachineKey, staged);
@@ -427,11 +477,12 @@ async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, use
       `).bind(userId, toMachineKey, sessionId, computer.instance_id, source.project_key, source.lane_id, source.kind, source.parent_chat_id, resealed, staged,
         source.bytes, source.line_count, source.last_activity_at, now, ...sourceStillHere.binds, userId, toMachineKey, sessionId),
       moveQueuedMessagesStatement(env, { userId, fromMachineKey: machineKey, toMachineKey, chatId: sessionId, instanceId: computer.instance_id, now, onlyIf: insertedHere }),
+      sweepStatement(env, userId, objectOf(source.r2_key), now, insertedHere),
       env.DB.prepare(`delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and r2_key = ? and ${insertedHere.sql}`)
         .bind(userId, machineKey, sessionId, source.r2_key, ...insertedHere.binds),
     ]);
     if ((results[0]?.meta?.changes ?? 0) === 1) {
-      await bucket.delete(source.r2_key);
+      await sweep(env, [objectOf(source.r2_key)]);
       return done(true);
     }
     // Another move, or the new computer's own upload, got there first: only this move's object goes.
