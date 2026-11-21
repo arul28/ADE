@@ -18,10 +18,14 @@ alter table cloud_fork_capsules add column pending_instance_id text;
 -- so a delete that fails part way is finished by the minute tick. Each saved
 -- row has its own prefix or key, so a sweep never reaches a newer row's
 -- objects. `exact` = 1 names one object; else every object under a prefix.
+-- `retry_at`: when the minute tick may sweep it. `claimed` = 1: the tick
+-- took it, so an upload it names can no longer be published.
 create table if not exists cloud_storage_sweeps (
   r2_key text primary key,
   user_id text not null,
   exact integer not null default 0,
-  created_at integer not null
+  created_at integer not null,
+  retry_at integer not null,
+  claimed integer not null default 0
 );
-create index if not exists cloud_storage_sweeps_created on cloud_storage_sweeps (created_at);
+create index if not exists cloud_storage_sweeps_retry on cloud_storage_sweeps (retry_at);

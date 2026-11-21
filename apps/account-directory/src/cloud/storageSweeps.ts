@@ -18,6 +18,8 @@ export type SweepTarget = { key: string; exact: boolean };
 
 /** A sweep this old died with its request: the tick finishes it. */
 const SWEEP_RETRY_AFTER_MS = 10 * 60_000;
+/** A tick's sweep that failed waits this long, so the next records get their turn. */
+const SWEEP_BACKOFF_MS = 30 * 60_000;
 const SWEEPS_PER_TICK = 25;
 
 /** A storage generation's own id: what makes a new row's prefix or key its own. */
@@ -31,10 +33,19 @@ export const storageGeneration = (): string => crypto.randomUUID().replace(/-/g,
  */
 export function sweepStatement(env: Pick<CloudEnv, "DB">, userId: string, target: SweepTarget, now: number, onlyIf?: { sql: string; binds: unknown[] }): D1PreparedStatement {
   return env.DB.prepare(`
-    insert into cloud_storage_sweeps (r2_key, user_id, exact, created_at)
-    select ?, ?, ?, ? ${onlyIf ? `where ${onlyIf.sql}` : ""}
+    insert into cloud_storage_sweeps (r2_key, user_id, exact, created_at, retry_at)
+    select ?, ?, ?, ?, ? where ${onlyIf ? onlyIf.sql : "1"}
     on conflict (r2_key) do nothing
-  `).bind(target.key, userId, target.exact ? 1 : 0, now, ...(onlyIf?.binds ?? []));
+  `).bind(target.key, userId, target.exact ? 1 : 0, now, now + SWEEP_RETRY_AFTER_MS, ...(onlyIf?.binds ?? []));
+}
+
+/**
+ * The condition a write that publishes an upload holds to: the upload's
+ * record is still there and the tick has not claimed it. A tick that claims
+ * it first deletes the objects; the publish then writes nothing.
+ */
+export function unclaimedUpload(key: string): { sql: string; binds: unknown[] } {
+  return { sql: "exists (select 1 from cloud_storage_sweeps where r2_key = ? and claimed = 0)", binds: [key] };
 }
 
 /**
@@ -74,14 +85,23 @@ export async function sweep(env: Pick<CloudEnv, "DB" | "CLOUD_CHATS">, targets: 
   }
 }
 
-/** The minute tick: sweeps a few that a request started and didn't finish. */
+/**
+ * The minute tick: sweeps a few that a request started and didn't finish.
+ * Each is claimed first, in one conditional write that also sets its next
+ * try: a publish after the claim writes nothing (`unclaimedUpload`), and a
+ * sweep that fails waits its turn behind the others.
+ */
 export async function sweepLeftovers(env: Pick<CloudEnv, "DB" | "CLOUD_CHATS">, now: number): Promise<number> {
   if (!env.CLOUD_CHATS) return 0;
-  const rows = (await env.DB.prepare("select r2_key, exact from cloud_storage_sweeps where created_at < ? order by created_at limit ?")
-    .bind(now - SWEEP_RETRY_AFTER_MS, SWEEPS_PER_TICK).all<{ r2_key: string; exact: number }>()).results ?? [];
+  const rows = (await env.DB.prepare("select r2_key, exact, retry_at from cloud_storage_sweeps where retry_at <= ? order by retry_at limit ?")
+    .bind(now, SWEEPS_PER_TICK).all<{ r2_key: string; exact: number; retry_at: number }>()).results ?? [];
   let swept = 0;
   for (const row of rows) {
     try {
+      const claimed = await env.DB.prepare("update cloud_storage_sweeps set claimed = 1, retry_at = ? where r2_key = ? and retry_at = ?")
+        .bind(now + SWEEP_BACKOFF_MS, row.r2_key, row.retry_at).run();
+      // Published, swept, or claimed by another tick since the read.
+      if ((claimed.meta?.changes ?? 0) !== 1) continue;
       await sweep(env, [{ key: row.r2_key, exact: row.exact === 1 }]);
       swept += 1;
     } catch (error) {

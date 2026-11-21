@@ -20,7 +20,7 @@ import { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type Use
 import { deleteCapsule, deleteCapsulesForLane } from "./forkCapsules";
 import { deleteGitSummaryForLaneStatement } from "./gitSummaries";
 import { deleteSessionCopiesForLane } from "./sessionCopies";
-import { storageGeneration, sweep, sweepStatement } from "./storageSweeps";
+import { publishedStatement, storageGeneration, sweep, sweepStatement, unclaimedUpload } from "./storageSweeps";
 
 /**
  * Saved chats (README, "Saved chats"). After each turn a computer sends the new
@@ -262,6 +262,10 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     return fail("account_full", "This account's saved chats are full. Delete some chats to save new ones.", 413);
   }
 
+  // A new copy's prefix is recorded before its first part goes up, and the insert that publishes it
+  // clears the record: a save that dies in between leaves parts the tick finds.
+  const newPrefix = existing ? null : { key: prefix, exact: false };
+  if (newPrefix) await sweepStatement(env, userId, newPrefix, now).run();
   await bucket.put(key, sealed, { customMetadata: { digest } });
 
   const row: CloudChatRow = {
@@ -306,18 +310,30 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
       instanceId, row.projectKey, row.laneId, summary, lastActivityMs, row.lastSeq, delta, now, rowInput.parentChatId ?? null, rowInput.spawnKind ?? null,
       userId, machineKey, chatId, prefix,
     ).run()
-    : await env.DB.prepare(`
-      insert into cloud_chat_copies (user_id, machine_key, chat_id, instance_id, project_key, lane_id, summary_sealed, r2_key, last_activity_at, last_seq, bytes, updated_at, parent_chat_id, spawn_kind)
-      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      on conflict (user_id, machine_key, chat_id) do nothing
-    `).bind(
-      userId, machineKey, chatId, instanceId, row.projectKey, row.laneId, summary, prefix, lastActivityMs, row.lastSeq, sealed.byteLength, now,
-      rowInput.parentChatId ?? null, rowInput.spawnKind ?? null,
-    ).run();
+    : (await env.DB.batch([
+      // Only while the tick has not claimed the new prefix: a claimed one is gone.
+      env.DB.prepare(`
+        insert into cloud_chat_copies (user_id, machine_key, chat_id, instance_id, project_key, lane_id, summary_sealed, r2_key, last_activity_at, last_seq, bytes, updated_at, parent_chat_id, spawn_kind)
+        select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? where ${unclaimedUpload(prefix).sql}
+        on conflict (user_id, machine_key, chat_id) do nothing
+      `).bind(
+        userId, machineKey, chatId, instanceId, row.projectKey, row.laneId, summary, prefix, lastActivityMs, row.lastSeq, sealed.byteLength, now,
+        rowInput.parentChatId ?? null, rowInput.spawnKind ?? null, ...unclaimedUpload(prefix).binds,
+      ),
+      publishedStatement(env, prefix, {
+        sql: "exists (select 1 from cloud_chat_copies where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ?)",
+        binds: [userId, machineKey, chatId, prefix],
+      }),
+    ]))[0]!;
   if ((written.meta?.changes ?? 0) !== 1) {
-    // The part goes unless a row still reads its prefix (a move took the copy, parts and all).
-    const kept = await env.DB.prepare("select 1 as kept from cloud_chat_copies where user_id = ? and r2_key = ?").bind(userId, prefix).first();
-    if (!kept) await bucket.delete(key);
+    if (newPrefix) {
+      // Never published: no row reads the new prefix.
+      await sweep(env, [newPrefix]);
+    } else {
+      // The part goes unless a row still reads its prefix (a move took the copy, parts and all).
+      const kept = await env.DB.prepare("select 1 as kept from cloud_chat_copies where user_id = ? and r2_key = ?").bind(userId, prefix).first();
+      if (!kept) await bucket.delete(key);
+    }
     logCloud("cloud.chat_part_conflict", { userId, machineKey, chatId, seq, lastSeq, changed: true });
     return fail("sequence_conflict", "This chat's saved copy changed while that part was saved.", 409);
   }
@@ -641,23 +657,20 @@ export async function deleteSavedChat(env: CloudEnv, userId: string, namedMachin
     sql: "exists (select 1 from cloud_chat_copies where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ?)",
     binds: [userId, machineKey, chatId, row.r2_key],
   };
+  // The messages go first, while the row is still the one read: a newer copy at this address keeps its own.
   const deleted = await env.DB.batch([
+    env.DB.prepare(`delete from cloud_chat_messages where user_id = ? and machine_key = ? and chat_id = ? and ${exactRow.sql}`)
+      .bind(userId, machineKey, chatId, ...exactRow.binds),
     sweepStatement(env, userId, { key: row.r2_key, exact: false }, Date.now(), exactRow),
     env.DB.prepare("delete from cloud_chat_copies where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ?").bind(userId, machineKey, chatId, row.r2_key),
-    deleteChatMessagesStatement(env, userId, machineKey, chatId),
   ]);
-  if ((deleted[1]?.meta?.changes ?? 0) !== 1) return false;
+  if ((deleted[2]?.meta?.changes ?? 0) !== 1) return false;
   // Its fork capsule goes too: under this key, and under the key it moved from.
   await deleteCapsule(env, userId, machineKey, chatId);
   if (row.forked_from_machine_key && row.forked_from_machine_key !== machineKey) await deleteCapsule(env, userId, row.forked_from_machine_key, chatId);
   await sweep(env, [{ key: row.r2_key, exact: false }]);
   logCloud("cloud.chat_deleted", { userId, machineKey, chatId });
   return true;
-}
-
-/** A chat's queued messages go with the chat. */
-export function deleteChatMessagesStatement(env: Pick<CloudEnv, "DB">, userId: string, machineKey: string, chatId: string): D1PreparedStatement {
-  return env.DB.prepare("delete from cloud_chat_messages where user_id = ? and machine_key = ? and chat_id = ?").bind(userId, machineKey, chatId);
 }
 
 /**

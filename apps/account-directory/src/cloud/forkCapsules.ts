@@ -292,11 +292,11 @@ async function handleReadPart(env: CloudEnv, bucket: R2Bucket, userId: string, m
  * deleted upload counts nothing and removes its own object. A sweep that
  * fails is finished by the tick (`sweepLeftovers`).
  */
-export async function deleteCapsule(env: CloudEnv, userId: string, machineKey: string, chatId: string): Promise<void> {
+export async function deleteCapsule(env: CloudEnv, userId: string, machineKey: string, chatId: string): Promise<boolean> {
   // Twice at most: an upload that started or committed between the read and the delete reads again.
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const row = await readRow(env, userId, machineKey, chatId);
-    if (!row) return;
+    if (!row) return true;
     const targets = [partsOf(row.r2_key), ...(row.pending_r2_key && row.pending_r2_key !== row.r2_key ? [partsOf(row.pending_r2_key)] : [])];
     const now = Date.now();
     const still = rowStill(row);
@@ -307,9 +307,11 @@ export async function deleteCapsule(env: CloudEnv, userId: string, machineKey: s
     ]);
     if ((results[results.length - 1]?.meta?.changes ?? 0) !== 1) continue;
     await sweep(env, targets);
-    return;
+    return true;
   }
+  // Uploads replaced the row both times: it is still there.
   logCloud("cloud.capsule_delete_changed", { userId, machineKey });
+  return false;
 }
 
 /** A lane's capsules on one machine go with the lane. Bounded: a lane has few chats. */
@@ -342,7 +344,9 @@ export async function routeForkCapsules(request: Request, path: string, env: Clo
   if (segments.length === 2) {
     if (request.method === "DELETE") {
       // The caller's restore used it (a move that kept it, `keepCapsule`): it goes now.
-      await deleteCapsule(env, userId, machineKey, chatId);
+      if (!await deleteCapsule(env, userId, machineKey, chatId)) {
+        return fail("capsule_changed", "This saved session copy changed while it was deleted. Try again.", 409);
+      }
       return json({ deleted: true });
     }
     if (request.method !== "GET") return notFound();

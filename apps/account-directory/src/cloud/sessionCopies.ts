@@ -15,7 +15,7 @@ import {
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, pageCursorOf, pageCursorSql } from "./http";
 import { openBytes, openJson, sealBytes, sealJson, userKeys, type UserKeys } from "./seal";
 import { logCloud, moveQueuedMessagesStatement, ownMachineMoveTarget, ownedComputer, type CloudEnv, type ComputerRow } from "./store";
-import { publishedStatement, storageGeneration, sweep, sweepStatement, type SweepTarget } from "./storageSweeps";
+import { publishedStatement, storageGeneration, sweep, sweepStatement, unclaimedUpload, type SweepTarget } from "./storageSweeps";
 
 /**
  * CLI-session and shell copies (README, "ADE without a computer"). A cloud
@@ -219,11 +219,17 @@ async function handlePut(request: Request, env: CloudEnv, bucket: R2Bucket, user
   });
   const lastActivity = input.lastActivityAt ? Date.parse(input.lastActivityAt) : null;
   const key = newObjectKey(userId, machineKey, sessionId);
+  /** Only while the tick has not claimed this save's object: a claimed one is gone. */
+  const unclaimed = unclaimedUpload(key);
   let written = false;
+  let hadRow = false;
   // Twice at most: a save, move or delete between the read and the write reads again.
   for (let attempt = 0; attempt < 2 && !written; attempt += 1) {
     const existing = await env.DB.prepare("select bytes, r2_key from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ?")
       .bind(userId, machineKey, sessionId).first<{ bytes: number; r2_key: string }>();
+    // The row this save read went since (a move or a delete): a new one here would bring the copy back.
+    if (!existing && hadRow) break;
+    hadRow ||= existing != null;
     const total = await env.DB.prepare("select coalesce(sum(bytes), 0) as total from cloud_session_copies where user_id = ?").bind(userId).first<{ total: number }>();
     if ((total?.total ?? 0) - (existing?.bytes ?? 0) + sealed.byteLength > CLOUD_SESSION_MAX_ACCOUNT_BYTES) {
       if (attempt > 0) await sweep(env, [objectOf(key)]);
@@ -245,10 +251,10 @@ async function handlePut(request: Request, env: CloudEnv, bucket: R2Bucket, user
           update cloud_session_copies set
             instance_id = ?, project_key = coalesce(?, project_key), lane_id = coalesce(?, lane_id), kind = ?, parent_chat_id = coalesce(?, parent_chat_id),
             summary_sealed = ?, r2_key = ?, bytes = ?, line_count = ?, last_activity_at = coalesce(?, last_activity_at), updated_at = ?
-          where user_id = ? and machine_key = ? and session_id = ? and r2_key = ?
+          where user_id = ? and machine_key = ? and session_id = ? and r2_key = ? and ${unclaimed.sql}
         `).bind(
           computer.instance_id, input.projectKey, input.laneId, input.kind, input.parentChatId, summary, key, sealed.byteLength, copy.lines, lastActivity, now,
-          userId, machineKey, sessionId, existing.r2_key,
+          userId, machineKey, sessionId, existing.r2_key, ...unclaimed.binds,
         ),
         published,
       ]);
@@ -258,11 +264,11 @@ async function handlePut(request: Request, env: CloudEnv, bucket: R2Bucket, user
       const [inserted] = await env.DB.batch([
         env.DB.prepare(`
           insert into cloud_session_copies (user_id, machine_key, session_id, instance_id, project_key, lane_id, kind, parent_chat_id, summary_sealed, r2_key, bytes, line_count, last_activity_at, updated_at)
-          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? where ${unclaimed.sql}
           on conflict (user_id, machine_key, session_id) do nothing
         `).bind(
           userId, machineKey, sessionId, computer.instance_id, input.projectKey, input.laneId, input.kind, input.parentChatId, summary, key,
-          sealed.byteLength, copy.lines, lastActivity, now,
+          sealed.byteLength, copy.lines, lastActivity, now, ...unclaimed.binds,
         ),
         published,
       ]);
@@ -477,6 +483,8 @@ async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, use
     await bucket.put(staged, await sealBytes(keys.aes, copyAad(userId, toMachineKey, sessionId), opened));
     const resealed = summary == null ? null : await sealJson(keys, summaryAad(userId, toMachineKey, sessionId), summary);
     const insertedHere = stillAt(toMachineKey, staged);
+    // Only while the tick has not claimed the staged object: a claimed one is gone.
+    const stagedUnclaimed = unclaimedUpload(staged);
     // One transaction: the insert holds only while the source is still the row read above and no copy
     // is at the destination; the messages and the source's delete hold only when this insert did.
     const results = await env.DB.batch([
@@ -484,8 +492,9 @@ async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, use
         insert into cloud_session_copies (user_id, machine_key, session_id, instance_id, project_key, lane_id, kind, parent_chat_id, summary_sealed, r2_key, bytes, line_count, last_activity_at, updated_at)
         select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         where ${sourceStillHere.sql} and not exists (select 1 from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ?)
+          and ${stagedUnclaimed.sql}
       `).bind(userId, toMachineKey, sessionId, computer.instance_id, source.project_key, source.lane_id, source.kind, source.parent_chat_id, resealed, staged,
-        source.bytes, source.line_count, source.last_activity_at, now, ...sourceStillHere.binds, userId, toMachineKey, sessionId),
+        source.bytes, source.line_count, source.last_activity_at, now, ...sourceStillHere.binds, userId, toMachineKey, sessionId, ...stagedUnclaimed.binds),
       moveQueuedMessagesStatement(env, { userId, fromMachineKey: machineKey, toMachineKey, chatId: sessionId, instanceId: computer.instance_id, now, onlyIf: insertedHere }),
       sweepStatement(env, userId, objectOf(source.r2_key), now, insertedHere),
       env.DB.prepare(`delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and r2_key = ? and ${insertedHere.sql}`)
