@@ -291,13 +291,24 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
   // Draft saved shortly after typing stops, so a keystroke is not a storage write.
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  // The text this box last read or wrote, so Quit saves only an edit still in the delay.
+  const savedDraftRef = useRef(draft);
   useEffect(() => {
-    const timer = setTimeout(() => writeCliInputDraft(sessionId, draft), DRAFT_SAVE_DELAY_MS);
+    const timer = setTimeout(() => {
+      savedDraftRef.current = draft;
+      writeCliInputDraft(sessionId, draft);
+    }, DRAFT_SAVE_DELAY_MS);
     return () => clearTimeout(timer);
   }, [draft, sessionId]);
   useEffect(() => () => writeCliInputDraft(sessionId, draftRef.current), [sessionId]);
-  // Quit destroys the window without unmounting the box: save what the delay still holds.
-  useSaveBeforeQuit(() => writeCliInputDraft(sessionId, draftRef.current));
+  // Quit destroys the window without unmounting the box: save what the delay still
+  // holds. A box with no new edit writes nothing, so it cannot overwrite a newer
+  // draft that the same CLI's box in another window saved.
+  useSaveBeforeQuit(() => {
+    if (draftRef.current === savedDraftRef.current) return;
+    savedDraftRef.current = draftRef.current;
+    writeCliInputDraft(sessionId, draftRef.current);
+  });
 
   // The box takes focus when its surface becomes active. The terminal focuses
   // itself on activation too (a frame, then 100 ms later), so focus after it.
