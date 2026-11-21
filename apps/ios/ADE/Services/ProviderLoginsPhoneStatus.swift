@@ -108,6 +108,10 @@ struct ProviderLoginsPhoneStatus: Decodable, Equatable {
     let on: Bool?
     let newChats: Bool?
     let endsInDays: Double?
+    /// `active`, `ending_soon`, `estimate_passed` or `ended`. Nil from an older brain.
+    let state: String?
+    /// When Claude ended it, in ms since 1970; nil while it works.
+    let endedAt: Double?
   }
 
   let thisComputer: ThisComputer
@@ -129,6 +133,11 @@ struct ProviderLoginsPhoneStatus: Decodable, Equatable {
   }
 
   func provider(_ id: String) -> Provider? { providers.first { $0.provider == id } }
+
+  /// The machine really read the account. A brain that cannot (a dev brain,
+  /// sync off, signed out) answers with no sign-ins at all, which means "not
+  /// known", never "not signed in" (desktop `readAdeCloudSignInParts`).
+  var readsAccount: Bool { thisComputer.capture == "on" || thisComputer.reason == "all_off" }
 
   /// The account's sign-ins of one provider, newest first; never a Claude
   /// pass, and never Pi's Claude sign-in (it is not carried).

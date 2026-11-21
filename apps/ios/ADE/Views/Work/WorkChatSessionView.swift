@@ -850,6 +850,16 @@ struct WorkChatSessionView: View {
   /// same status for its before-send card). Keyed, so another provider's or
   /// machine's answer never stands in while a new read runs.
   @State var providerSignedOutBeforeSendKey: String?
+  /// The account's answer on Claude for a chat on an ADE Cloud computer
+  /// (`adeCloudClaudeKey`), kept only when it is definite.
+  @State var adeCloudClaudeRead: WorkAdeCloudClaudeReadState?
+  /// Bumped when the Claude pass page closes, so the account is read again.
+  @State var adeCloudClaudeRecheck = 0
+  @State var adeCloudClaudePassPageShown = false
+  /// The machine that gave `adeCloudClaudeRead`: the pass page reads there too.
+  @State var adeCloudClaudeReadHost: ProviderAccountsHost?
+  /// A "Send again" from the pass card is on its way.
+  @State var adeCloudClaudeResending = false
   /// The free model the sign-in card offers a brand-new person on the chat's
   /// machine, or nil (someone signed in there before, or no free models).
   @State var signInFreeModelId: String?
@@ -1024,6 +1034,13 @@ struct WorkChatSessionView: View {
   var providerSignInMachineName: String = "this computer"
   /// The Claude or Codex account the chat runs as; nil is the machine's default.
   var providerSignInInstanceId: String? = nil
+  /// The chat's machine is an ADE Cloud computer. Claude there runs on the
+  /// account's Claude pass, never on a sign-in on that one computer.
+  var providerSignInIsAdeCloud: Bool = false
+  /// Where the account's sign-ins are read, in order: the chat machine's own
+  /// live connection, then the machine the phone drives. The answer is
+  /// account-wide, so either says the same; neither read wakes a computer.
+  var adeCloudSignInReadHosts: [ProviderAccountsHost] = []
   var onTakeOverSubagent: (@MainActor () async -> Void)? = nil
   var onKeepReportingSubagent: (@MainActor () async -> Void)? = nil
   /// The chat's pending thread comments. Empty on a host that predates them.
@@ -1168,6 +1185,9 @@ struct WorkChatSessionView: View {
     let shown: (key: String, reason: WorkProviderSignInReason)
     if let id = workLatestSignInFailure(transcript, provider: chatSummaryContext.provider) {
       shown = (id, .failedTurn)
+    } else if case .needsPass(let need)? = adeCloudClaudeReadNow, let key = adeCloudClaudeKey {
+      // ADE Cloud has no Claude pass that works: hold the send before it fails.
+      shown = ("\(key):pass:\(need)", .noLogin)
     } else if let key = providerSignedOutBeforeSendKey, key == providerSignInStatusKey {
       shown = ("\(key):no-login", .noLogin)
     } else {
@@ -1180,7 +1200,8 @@ struct WorkChatSessionView: View {
   /// connection, so a connection that comes up after the chat opened reads
   /// again. Nil where no card could show.
   var providerSignInStatusKey: String? {
-    guard providerSignInAllowed, !isPersonalChat, let host = providerSignInHost,
+    // Claude on ADE Cloud asks the account (`adeCloudClaudeKey`), not the computer.
+    guard providerSignInAllowed, !isPersonalChat, !usesAdeCloudPassCard, let host = providerSignInHost,
           workProviderSignInKind(chatSummaryContext.provider) != .settings else { return nil }
     return "\(ObjectIdentifier(host)):\(chatSummaryContext.provider):\(host.providerAccountsConnected)"
   }
@@ -1198,6 +1219,95 @@ struct WorkChatSessionView: View {
     if let status { WorkFreeModelsStatusStore.shared.record(aiStatus: status, for: host, readAtGeneration: generation) }
     let signedOut = status.map { workProviderSignedOutBeforeSend($0, provider: provider) } ?? false
     providerSignedOutBeforeSendKey = signedOut ? key : nil
+  }
+
+  /// A Claude chat on an ADE Cloud computer, where the account's Claude pass
+  /// decides whether a send can work. Nil for any other chat.
+  var adeCloudClaudeKey: String? {
+    guard providerSignInAllowed, !isPersonalChat, providerSignInIsAdeCloud,
+          chatSummaryContext.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "claude"
+    else { return nil }
+    // A chat on a named account that is not a pass (a login made on that
+    // computer) runs on that login: the computer's own sign-in card applies.
+    if let account = providerSignInInstanceId?.trimmingCharacters(in: .whitespacesAndNewlines), !account.isEmpty,
+       workClaudePassKey(ofAccountId: account) == nil {
+      return nil
+    }
+    // The chat's account is part of the key: a switch to another pass drops
+    // the old answer and reads again.
+    let account = providerSignInInstanceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return "ade-cloud-claude:\(session.id):\(account)"
+  }
+
+  /// The account's answer for this chat, never another chat's.
+  var adeCloudClaudeReadNow: WorkAdeCloudClaudeRead? {
+    guard let key = adeCloudClaudeKey, let read = adeCloudClaudeRead, read.key == key else { return nil }
+    return read.read
+  }
+
+  /// The sign-in card here is the Claude pass card. Sign-ins switched off
+  /// for ADE Cloud mean the person signs in on each cloud computer, so the
+  /// computer's own card stays.
+  var usesAdeCloudPassCard: Bool {
+    adeCloudClaudeKey != nil && adeCloudClaudeReadNow != .signInsOff
+  }
+
+  /// What the account read depends on: the chat, which read hosts are up,
+  /// and a recheck after the pass page closes.
+  var adeCloudClaudeReadTaskKey: String? {
+    guard let key = adeCloudClaudeKey else { return nil }
+    let live = adeCloudSignInReadHosts.map { $0.providerAccountsConnected ? "1" : "0" }.joined()
+    return "\(key):\(live):\(adeCloudClaudeRecheck)"
+  }
+
+  /// Reads the account's Claude passes on open, again whenever the account's
+  /// sign-ins change (`provider_logins_changed`), and after a reconnect.
+  /// No timer, no poll.
+  func watchAdeCloudClaudeRead() async {
+    guard adeCloudClaudeKey != nil else { return }
+    guard let service = syncServiceReference.service else {
+      await refreshAdeCloudClaudeRead()
+      return
+    }
+    // The first value is the current one: it reads at once.
+    for await _ in service.$providerLoginsRevision.removeDuplicates().values {
+      guard !Task.isCancelled else { return }
+      await refreshAdeCloudClaudeRead()
+    }
+  }
+
+  /// One read of the account, on the first host that can answer. A failed or
+  /// unknown read keeps the last definite answer: only a definite "no pass
+  /// works" holds a send, and a blip never drops a card that is right.
+  func refreshAdeCloudClaudeRead() async {
+    guard let key = adeCloudClaudeKey else { return }
+    for host in adeCloudSignInReadHosts
+    where host.providerAccountsConnected && host.supportsProviderAccountsAction("providerLogins.status") {
+      guard let status = try? await ProviderLoginsPhoneStatus.read(on: host) else { continue }
+      guard !Task.isCancelled, key == adeCloudClaudeKey else { return }
+      guard let read = workAdeCloudClaudeRead(status, accountId: providerSignInInstanceId) else { continue }
+      adeCloudClaudeRead = WorkAdeCloudClaudeReadState(key: key, read: read, status: status)
+      adeCloudClaudeReadHost = host
+      return
+    }
+  }
+
+  /// Settings › Providers › ADE Cloud › Claude, where the pass card points.
+  @ViewBuilder
+  var adeCloudClaudePassPage: some View {
+    if let host = adeCloudClaudeReadHost {
+      // The machine that answered the card's read: it can show the same passes.
+      WorkAdeCloudClaudePassSheet(readHost: host, status: adeCloudClaudeRead?.status, changes: syncServiceReference.service)
+    } else if let service = syncServiceReference.service {
+      WorkAdeCloudClaudePassSheet(syncService: service)
+    } else {
+      #if DEBUG
+      if let status = adeCloudClaudeRead?.status {
+        // Fixture screens have no machine: the page shows the status the card read.
+        WorkAdeCloudClaudePassSheet(fixture: status)
+      }
+      #endif
+    }
   }
 
   /// A brand-new person's sign-in card also offers the chat machine's free
@@ -1239,14 +1349,19 @@ struct WorkChatSessionView: View {
 
   /// The turn that stopped on the sign-in sends again by itself, with the
   /// files it carried (the machine still holds them).
-  func resendAfterSignIn() {
+  /// `onFinished` gets whether the host took the message; a failed send keeps
+  /// the card that offered it, so the person can try again.
+  func resendAfterSignIn(onFinished: ((Bool) -> Void)? = nil) {
     let last = transcript.reversed().lazy.compactMap { envelope -> (String, [AgentChatFileRef])? in
       guard case .userMessage(let text, let attachments, _, _, _, _) = envelope.event,
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachments?.isEmpty == false
       else { return nil }
       return (text, attachments ?? [])
     }.first
-    guard let last else { return }
+    guard let last else {
+      onFinished?(false)
+      return
+    }
     let (text, refs) = last
     let attachments = refs.map { ref in
       WorkChatInputAttachment(
@@ -1257,7 +1372,10 @@ struct WorkChatSessionView: View {
         state: .ready
       )
     }
-    Task { @MainActor in _ = await onSend(text, attachments, .queue) }
+    Task { @MainActor in
+      let delivered = await onSend(text, attachments, .queue)
+      onFinished?(delivered)
+    }
   }
 
   var shouldShowInterruptControl: Bool {
@@ -2418,7 +2536,34 @@ struct WorkChatSessionView: View {
           .transition(.opacity)
       }
 
-      if let signIn = shownProviderSignIn {
+      if let signIn = shownProviderSignIn, usesAdeCloudPassCard {
+        // Claude on an ADE Cloud computer: what fixes it is the account's
+        // Claude pass, so the card points there instead of a sign-in on the
+        // computer.
+        let read = adeCloudClaudeReadNow
+        WorkAdeCloudClaudePassCard(
+          need: { if case .needsPass(let need)? = read { return need } else { return nil } }(),
+          reason: signIn.reason,
+          // Only a pass the account still has: a removed one runs on the "New chats" pass.
+          ownPass: workClaudePassKey(ofAccountId: providerSignInInstanceId).map { key in
+            adeCloudClaudeRead?.status.claudePasses?.contains { $0.key == key } == true
+          } ?? false,
+          passWorks: read == .passWorks,
+          onOpenPass: { adeCloudClaudePassPageShown = true },
+          onSendAgain: {
+            // The card stays until the host takes the message: a failed
+            // send can go again from here. One send at a time.
+            guard !adeCloudClaudeResending else { return }
+            adeCloudClaudeResending = true
+            resendAfterSignIn { delivered in
+              adeCloudClaudeResending = false
+              if delivered { dismissedSignInFailureId = signIn.key }
+            }
+          },
+          onDismiss: { dismissedSignInFailureId = signIn.key }
+        )
+        .id(signIn.key)
+      } else if let signIn = shownProviderSignIn {
         // The chat's agent is signed out on its machine: the sign-in card
         // takes the composer's place until the machine reads the login back.
         WorkProviderSignInCard(
@@ -2531,6 +2676,13 @@ struct WorkChatSessionView: View {
     }
     .task(id: signInFreeModelOfferKey) {
       await refreshSignInFreeModelOffer()
+    }
+    // Claude on ADE Cloud: whether the account's Claude pass works.
+    .task(id: adeCloudClaudeReadTaskKey) {
+      await watchAdeCloudClaudeRead()
+    }
+    .sheet(isPresented: $adeCloudClaudePassPageShown, onDismiss: { adeCloudClaudeRecheck += 1 }) {
+      adeCloudClaudePassPage
     }
     // A prompt left open when the chat goes away would strand its send
     // forever; answer it for the person.

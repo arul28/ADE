@@ -4,9 +4,10 @@
  * estimate (save + 365 days) never does.
  *
  * The chat's turn already goes to the sign-in card (agentChatService's auth
- * failure path). This module only decides whether the refusal ends the pass,
- * and hands it to the reconcile (claudePassSync.ts `endPass`), which writes the
- * mark once.
+ * failure path). This module only decides whether the refusal may end the
+ * pass, and hands it to the reconcile (claudePassSync.ts `endPass`). That asks
+ * Claude about the token once more (claudePassTokenCheck.ts) and writes the
+ * mark once, only when Claude refuses it again.
  *
  * Signals that END a pass (all come from the Claude turn in agentChatService):
  *   - `system/api_retry` with `error_status: 401`          → "status_401"

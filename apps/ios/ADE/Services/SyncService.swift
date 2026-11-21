@@ -3163,10 +3163,12 @@ enum SyncUserFacingError {
       return "The computer took too long to answer."
     }
     if isSyncHostUnavailableError(error) {
-      if let snapshot = syncHostReadinessSnapshot(from: error) {
+      // The snapshot is read after the refusal, so it can already say
+      // "ready". The command still failed: never show that line as the error.
+      if let snapshot = syncHostReadinessSnapshot(from: error), snapshot.state != .ready {
         return snapshot.body
       }
-      return "This machine's project connection isn't ready yet."
+      return "This machine's project connection isn't ready yet. Try again in a moment."
     }
     if syncCodeIsPairingRejection(nsError.userInfo["ADEErrorCode"] as? String) {
       return "This phone is no longer paired with this machine. Pair again from Settings."
@@ -4532,6 +4534,12 @@ final class SyncService: ObservableObject {
   /// sign-in applied), or the connection came back. An open sign-ins card
   /// reads `providerLogins.status` again.
   @Published private(set) var providerLoginsRevision = 0
+
+  /// Another connected machine said the account's sign-ins changed
+  /// (`provider_logins_changed` on a roster connection).
+  func noteProviderLoginsChanged() {
+    providerLoginsRevision += 1
+  }
   @Published private(set) var proofArtifactsProjectionRevision = 0
 
   private let iso8601WithFractionalSecondsFormatter: ISO8601DateFormatter = {

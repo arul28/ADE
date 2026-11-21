@@ -2714,6 +2714,8 @@ struct WorkSessionDestinationView: View {
       providerSignInHost: providerSignInHost,
       providerSignInMachineName: providerSignInMachineName,
       providerSignInInstanceId: composerChatSummary?.instanceId,
+      providerSignInIsAdeCloud: providerSignInIsAdeCloud,
+      adeCloudSignInReadHosts: adeCloudSignInReadHosts,
       onTakeOverSubagent: canWriteSpawnKind ? takeOverSubagent : nil,
       onKeepReportingSubagent: canWriteSpawnKind ? keepReportingSubagent : nil,
       threadComments: threadCommentsForView,
