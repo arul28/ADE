@@ -1553,6 +1553,12 @@ One busy list, `decideCloudBusy` in
   chat with `keepCapsule: true` and deletes the capsule
   (`DELETE /cloud/capsules/:machineKey/:chatId`) only after the local
   restore succeeds.
+- **Each saved copy owns its storage.** A new chat copy, capsule upload or
+  CLI copy save gets its own R2 key (`storageSweeps.ts`), so a delete or a
+  move touches only the storage it read. The write that lets storage go also
+  writes a row in `cloud_storage_sweeps` (migration 0051); the objects go
+  after it, and the minute tick finishes a sweep that failed. Older rows keep
+  their keys.
 - **A turn stopped for a rest reads Stopped.** Each chat whose turn a
   prepare-stop interrupts is marked (`noteCloudChatStoppedForRest`). Its saved
   row then has status `interrupted` (`SAVED_CHAT_STOPPED_STATUS`), and the
