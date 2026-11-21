@@ -405,6 +405,19 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { jobId: string }",
       example: "ade cloud jobs cancel <job id>",
     },
+    kept_lane_move_preview: {
+      description: "What moving a kept ADE Cloud lane (its computer deleted) to this machine would bring: its branch, its saved work not on GitHub, and each chat and CLI with how much history comes back (full, transcript or fresh). With fromComputer, a lane whose computer is asleep: also whether its saved copy is complete, and the files git ignores on it. Reads only; run it in a folder of the lane's project.",
+      input: "object { laneId: string, fromComputer?: { instanceId: string } }",
+      example: "ade actions run cloud.kept_lane_move_preview --input-json '{\"laneId\":\"<lane id>\"}'",
+    },
+    kept_lane_move: {
+      description: "Move a kept ADE Cloud lane to this machine: its branch and saved work first (nothing pushed, newer work here never overwritten), then each chat and CLI, then ADE Cloud forgets the lane. With fromComputer, a lane whose computer is asleep: ADE first deletes that computer and keeps the lane, with no wake, only while it rests with every lane's work saved (else the record fails with wakeInstead and nothing is deleted). Returns at once with a running record; a failure keeps the lane on ADE Cloud and a new call goes on. The person's only.",
+      input: "object { laneId: string, fromComputer?: { instanceId: string } }",
+    },
+    kept_lane_move_status: {
+      description: "The progress of a kept lane's move to this machine (kept_lane_move's record), or null.",
+      input: "object { restoreId: string }",
+    },
     project_overview: {
       description: "One project's whole ADE Cloud view with no computer awake: its lanes, saved chats, CLI copies, Git summaries and the computers due for deletion. origin defaults to this folder's git origin.",
       input: "object { origin?: string (github.com/<owner>/<repo>) }",

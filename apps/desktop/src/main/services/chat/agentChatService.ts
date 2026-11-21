@@ -55112,7 +55112,18 @@ export function createAgentChatService(args: {
     return { lane, branchRef, headSha, rawOriginUrl, originUrl, remoteHeadSha, changes: inspection.changes };
   };
 
-  const readCrossMachineForkMainFile = (filePath: string): Buffer => {
+  /**
+   * The lane of a history-only capsule (the ADE Cloud rest save). Its code
+   * travels in the lane backup, so no Git check runs: unpushed commits and
+   * uncommitted work are fine. The capsule names no commit or origin.
+   */
+  const readCrossMachineHistoryLane = async (laneId: string) => {
+    const lane = await laneService.getSummary(laneId);
+    if (!lane) throw new Error("The source lane could not be loaded.");
+    return { lane, branchRef: lane.branchRef, headSha: "", rawOriginUrl: "", originUrl: "", remoteHeadSha: null as string | null };
+  };
+
+  const readCrossMachineForkMainFile =(filePath: string): Buffer => {
     const stat = fs.statSync(filePath);
     if (stat.size > CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED) {
       throw crossMachineForkOversizeError(stat.size);
@@ -55286,7 +55297,8 @@ export function createAgentChatService(args: {
     args: AgentChatPrepareCrossMachineHandoffArgs,
     // A lane share move sends the bundle in chunks (`prepareLaneShareMove`),
     // so only the 50 MiB raw cap applies, not one transport frame.
-    internal: { bundleInChunks?: boolean } = {},
+    // `historyOnly`: the ADE Cloud rest save's capsule (`prepareCloudRestCapsule`).
+    internal: { bundleInChunks?: boolean; historyOnly?: boolean } = {},
   ): Promise<AgentChatPrepareCrossMachineHandoffResult> => {
     const handoffId = requireHandoffId(args.handoffId);
     const sourceSessionId = args.sourceSessionId?.trim();
@@ -55327,11 +55339,18 @@ export function createAgentChatService(args: {
     if ((sourceSession.surface ?? managed.session.surface ?? "work") !== "work") {
       throw new Error("Only Work chats can be sent to another machine.");
     }
-    const includeChanges = args.includeChanges === true;
-    const { lane, branchRef, headSha, rawOriginUrl, originUrl, remoteHeadSha } = await requireCrossMachineSourceReady(
-      managed,
-      { includeChanges },
-    );
+    const historyOnly = internal.historyOnly === true;
+    const includeChanges = args.includeChanges === true && !historyOnly;
+    let source: Awaited<ReturnType<typeof readCrossMachineHistoryLane>>;
+    if (historyOnly) {
+      // Still refused while a turn runs: the provider's history must be whole.
+      await recoverWedgedClaudeSessionForHandoff(managed);
+      ensureSessionIdleForHandoff(managed);
+      source = await readCrossMachineHistoryLane(managed.session.laneId);
+    } else {
+      source = await requireCrossMachineSourceReady(managed, { includeChanges });
+    }
+    const { lane, branchRef, headSha, rawOriginUrl, originUrl, remoteHeadSha } = source;
     // Leave room in the ~20 MiB transport frame for the rest of the capsule.
     const gitBundle = includeChanges && (!args.batchMove || targetsStoredOrigin)
       ? await packHandoffGitBundle({
@@ -55509,7 +55528,8 @@ export function createAgentChatService(args: {
     if (!scheduler && args.batchMove) {
       throw new Error("Scheduled work is not ready yet. Try the batch move again in a moment.");
     }
-    if (scheduler) {
+    // A history-only capsule only seeds the provider's history; its restore makes no jobs.
+    if (scheduler && !historyOnly) {
       const activeSchedules = scheduler.list(sourceSessionId)
         .filter((item) => (item.status === "scheduled" || item.status === "paused") && !item.terminalAt);
       if (activeSchedules.length > 50) {
@@ -55894,10 +55914,15 @@ export function createAgentChatService(args: {
    * `--interrupt` presses the cancel key first), then packs its conversation
    * file, launch settings and identity. A `brief` move, or an agent whose
    * conversation can't travel, packs a brief for a fresh CLI instead.
+   *
+   * `historyOnly` (the ADE Cloud rest save, `prepareCloudRestCapsule`): no
+   * lane check and no bundle (the lane backup carries the code), and the CLI
+   * is not stopped. Between turns its conversation file is whole.
    */
   const prepareCliCrossMachineMove = async (
     args: AgentChatPrepareCrossMachineHandoffArgs,
     row: TerminalSessionSummary,
+    internal: { historyOnly?: boolean } = {},
   ): Promise<AgentChatPrepareCrossMachineHandoffResult> => {
     const handoffId = requireHandoffId(args.handoffId);
     const provider = cliMoveProvider(row);
@@ -55908,12 +55933,12 @@ export function createAgentChatService(args: {
     if (source.turnActive) {
       throw new Error("This CLI is still working on a turn. Wait for it to finish, or queue the move for when it does (--when-turn-ends).");
     }
-    const includeChanges = args.includeChanges === true;
+    const historyOnly = internal.historyOnly === true;
+    const includeChanges = args.includeChanges === true && !historyOnly;
     const cliName = cliProviderName(provider);
-    const { lane, branchRef, headSha, originUrl, remoteHeadSha } = await requireCrossMachineLaneReady(row.laneId, {
-      includeChanges,
-      label: "This CLI session",
-    });
+    const { lane, branchRef, headSha, originUrl, remoteHeadSha } = historyOnly
+      ? await readCrossMachineHistoryLane(row.laneId)
+      : await requireCrossMachineLaneReady(row.laneId, { includeChanges, label: "This CLI session" });
     const gitBundle = includeChanges && !args.batchMove
       ? await packHandoffGitBundle({
           worktreePath: lane.worktreePath,
@@ -55929,7 +55954,10 @@ export function createAgentChatService(args: {
 
     // Stopped before anything is read: the conversation file must be whole,
     // and two copies of one CLI must never run on two machines.
-    const stopped = await cliLifecycle.stopForMove(row);
+    // A history-only capsule leaves the CLI running: nothing moves, it is only saved. Its
+    // conversation id is read first when the CLI has not named it yet, or the capsule
+    // would carry no history and the save would not try again until the CLI changes.
+    const stopped = historyOnly ? { row: await cliLifecycle.withResumeTarget(row), stopped: false } : await cliLifecycle.stopForMove(row);
     if (stopped.stopped) cliStoppedByMove.set(row.id, handoffId);
     const current = stopped.row;
     const metadata = current.resumeMetadata ?? null;
@@ -56785,6 +56813,36 @@ export function createAgentChatService(args: {
       surface: "work",
       idempotencyKey: handoffId,
     });
+    // A restore that fails after it made the row takes the row away again: a
+    // kept-lane move counts a chat whose row is here as restored. Only the
+    // row: the saved copy is the chat's one full history, so it stays.
+    try {
+      return await finishSavedCloudChatRestore(session, restoreArgs, { sessionId, provider, descriptor, capsule, handoffId, reused });
+    } catch (error) {
+      if (!reused) {
+        await deleteSession({ sessionId: session.id }, { localOnly: true }).catch((cleanupError: unknown) => {
+          logger.warn("agent_chat.cloud_restore_cleanup_failed", { sessionId, error: getErrorMessage(cleanupError) });
+        });
+      }
+      throw error;
+    }
+  };
+  const finishSavedCloudChatRestore = async (
+    session: AgentChatSession,
+    restoreArgs: {
+      envelopes: AgentChatEventEnvelope[];
+      olderPartLeftOut?: boolean;
+    },
+    context: {
+      sessionId: string;
+      provider: ReturnType<typeof resolveProviderGroupForModel>;
+      descriptor: NonNullable<ReturnType<typeof getModelById>>;
+      capsule: AgentChatCrossMachineHandoffCapsule | null;
+      handoffId: string;
+      reused: boolean;
+    },
+  ): Promise<{ sessionId: string; restoredWith: "capsule" | "replay" | "earlier" }> => {
+    const { sessionId, provider, descriptor, capsule, handoffId, reused } = context;
     const managed = ensureManagedSession(session.id);
     const seeded: AgentChatEventEnvelope[] = restoreArgs.envelopes.map((envelope, index) => ({
       ...envelope,
@@ -56863,7 +56921,7 @@ export function createAgentChatService(args: {
     title: string | null;
     /** The CLI capsule saved at rest; null starts the CLI fresh. */
     capsule: AgentChatCrossMachineHandoffCapsule | null;
-    /** The person's message, typed into the CLI. */
+    /** The person's message, typed into the CLI. Empty (a kept lane moved to this machine): nothing is typed. */
     prompt: string;
     /** The person's send id, so a retry types the message once. */
     clientMessageId: string;
@@ -56873,7 +56931,9 @@ export function createAgentChatService(args: {
     if (!isTrackedAgentCliToolType(toolType)) throw new Error(`ADE here can't start the '${restoreArgs.toolType}' CLI. Update ADE on this computer.`);
     const provider = cliMoveProvider({ toolType, resumeMetadata: null });
     if (!provider) throw new Error("ADE can't tell which agent this CLI ran, so it can't continue it here.");
+    const hasPrompt = restoreArgs.prompt.trim().length > 0;
     const typeMessage = async () => {
+      if (!hasPrompt) return;
       const typed = await typeIntoAgentCliWhenFree({
         sessionId,
         text: restoreArgs.prompt,
@@ -56953,11 +57013,14 @@ export function createAgentChatService(args: {
       },
       resumeTargetId,
       // A fresh CLI gets the message as its first prompt; a resumed one gets it typed below.
-      brief: [
-        infoLine || `This ${cliProviderName(provider)} CLI session goes on in a new ADE Cloud computer, so it starts fresh in the same lane.`,
-        "",
-        restoreArgs.prompt,
-      ].join("\n"),
+      // With no message, a fresh CLI starts with no prompt: nothing runs until the person types.
+      brief: hasPrompt
+        ? [
+            infoLine || `This ${cliProviderName(provider)} CLI session goes on in a new ADE Cloud computer, so it starts fresh in the same lane.`,
+            "",
+            restoreArgs.prompt,
+          ].join("\n")
+        : "",
       goal: cli?.goal ?? null,
       parent: null,
     });
@@ -77864,7 +77927,7 @@ export function createAgentChatService(args: {
    */
   const deleteSession = async (
     { sessionId }: AgentChatDeleteArgs,
-    deleteOptions: { remember?: boolean } = {},
+    deleteOptions: { remember?: boolean; localOnly?: boolean } = {},
   ): Promise<AgentChatDeleteResult> => {
     const trimmedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
     if (!trimmedSessionId.length) {
@@ -78077,8 +78140,9 @@ export function createAgentChatService(args: {
 
     sessionService.deleteSession(trimmedSessionId);
     notifyChatSessionEnded(trimmedSessionId);
+    // `localOnly`: the row goes, but the account's saved copy of the chat stays.
     try {
-      onChatDeleted?.(trimmedSessionId);
+      if (!deleteOptions.localOnly) onChatDeleted?.(trimmedSessionId);
     } catch (error) {
       logger.warn("agent_chat.on_deleted_failed", { sessionId: trimmedSessionId, error: getErrorMessage(error) });
     }
@@ -84587,6 +84651,19 @@ ${schedule.prompt}`
       return cliRow
         ? await prepareCliCrossMachineMove(prepareArgs, cliRow)
         : await prepareCrossMachineHandoff(prepareArgs);
+    },
+    /**
+     * The fork capsule an ADE Cloud computer saves at rest
+     * (`cloudRestSave.ts`): only the chat's or agent CLI's own provider
+     * history. No Git check and no bundle: the lane backup carries the code.
+     * Refused while a turn runs; a CLI is not stopped.
+     */
+    prepareCloudRestCapsule: async (prepareArgs: { sourceSessionId: string; handoffId: string; targetModelId: string }) => {
+      const args: AgentChatPrepareCrossMachineHandoffArgs = { ...prepareArgs, mode: "fork" };
+      const cliRow = cliMoveRow(args.sourceSessionId);
+      return cliRow
+        ? await prepareCliCrossMachineMove(args, cliRow, { historyOnly: true })
+        : await prepareCrossMachineHandoff(args, { historyOnly: true });
     },
     prepareLaneShareMove,
     checkLaneShareMoveDestination,

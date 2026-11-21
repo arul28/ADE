@@ -456,7 +456,8 @@ export type LaneRestoreOutcome =
  */
 export async function restoreLaneBackupIfNeeded(args: {
   api: CloudApiClient;
-  instanceId: string;
+  /** The cloud computer that restores; null on the person's own machine, which marks nothing (the move's forget clears the backup). */
+  instanceId: string | null;
   machineKey: string;
   laneId: string;
   worktreePath: string;
@@ -471,6 +472,7 @@ export async function restoreLaneBackupIfNeeded(args: {
   const snapshot = backup.snapshotSha;
   const head = snapshot ?? tip;
   const markRestored = async () => {
+    if (!args.instanceId) return;
     await api.markLaneBackupRestored(backup.machineKey, laneId, args.instanceId, backup.fingerprint).catch((error: unknown) => {
       logger.warn("cloud.lane_restore_mark_failed", { laneId, error: errorText(error) });
     });

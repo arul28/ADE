@@ -293,7 +293,10 @@ extension LanesTabView {
        let subject = cloudLaneAtRestSubject(fleetKey: fleetKey, lane: snapshot.lane, sync: syncService) {
       // The focused computer is an ADE Cloud computer that is not up: what
       // the account keeps for the lane, with no wake.
-      CloudLaneAtRestScreen(subject: subject, onAwake: { await reload(refreshRemote: true) })
+      CloudLaneAtRestScreen(subject: subject, onAwake: { await reload(refreshRemote: true) }, onAwakeToMove: {
+        moveAfterWakeLaneId = route.laneId
+        await reload(refreshRemote: true)
+      })
         .showsCloudLaneState(fleetKey: fleetKey, context: .lane, onAwake: { await reload(refreshRemote: true) })
     } else if let snapshot = laneSnapshots.first(where: { $0.lane.id == route.laneId }) {
       LaneDetailScreen(
@@ -303,6 +306,7 @@ extension LanesTabView {
         transitionNamespace: transitionNamespace,
         showsBackButton: showsBackButton,
         machineName: focusedMachineName,
+        moveAfterWake: moveAfterWake(route.laneId),
         onRefreshRoot: { await reload(refreshRemote: true) }
       )
       // The focused computer can be an ADE Cloud computer that is asleep.
@@ -318,7 +322,10 @@ extension LanesTabView {
     {
       // A lane on an ADE Cloud computer that is not up: its saved Git state
       // and its branch on GitHub. Opening it never wakes the computer.
-      CloudLaneAtRestScreen(subject: subject, onAwake: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) })
+      CloudLaneAtRestScreen(subject: subject, onAwake: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }, onAwakeToMove: {
+        moveAfterWakeLaneId = route.laneId
+        await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+      })
         .showsCloudLaneState(
           fleetKey: machine.machineKey,
           context: .lane,
@@ -334,6 +341,7 @@ extension LanesTabView {
         transitionNamespace: transitionNamespace,
         showsBackButton: showsBackButton,
         machineName: machine.name,
+        moveAfterWake: moveAfterWake(route.laneId),
         onRefreshRoot: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
       )
       // A lane on an ADE Cloud computer: its state and the "deleting soon"
@@ -346,6 +354,17 @@ extension LanesTabView {
     } else {
       UnavailableLaneDestination(laneId: route.laneId)
     }
+  }
+
+  /// Whether a lane's live detail opens its move: set by "Wake and move" on
+  /// the lane at rest, cleared once the detail takes it.
+  func moveAfterWake(_ laneId: String) -> Binding<Bool> {
+    Binding(
+      get: { moveAfterWakeLaneId == laneId },
+      set: { open in
+        if !open, moveAfterWakeLaneId == laneId { moveAfterWakeLaneId = nil }
+      }
+    )
   }
 
   var laneRowInsets: EdgeInsets {

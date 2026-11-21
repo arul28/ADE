@@ -10,6 +10,7 @@ import {
 } from "./contract";
 import type { CloudEnv, ComputerRow } from "./store";
 import { backupProblemsOf } from "./laneBackups";
+import { ignoredFilesOf } from "./idleCleanup";
 
 /**
  * What uses each computer's disk, and when it last did work (README,
@@ -103,7 +104,7 @@ export async function recordDiskUsage(env: CloudEnv, computer: ComputerRow, repo
 }
 
 type UseRow = Pick<ComputerRow, "disk_usage_json" | "disk_measured_at" | "last_active_at" | "lane_work_json" | "last_awake_at" | "awake_since" | "idle_claimed_at"
-  | "backup_report_state" | "backup_rest_at" | "backup_problems_json" | "status" | "status_changed_at">;
+  | "backup_report_state" | "backup_rest_at" | "backup_problems_json" | "status" | "status_changed_at" | "ignored_files_json">;
 
 /** The saved measure, or null before the first one (or a row the code can't read). */
 export function diskUsageOf(computer: UseRow): CloudDiskUsage | null {
@@ -149,6 +150,8 @@ export function withUseFacts(instance: CloudInstance, computer: UseRow | null | 
     backups: computer.backup_report_state == null && computer.backup_rest_at == null && !computer.backup_problems_json
       ? null
       : { saved: computer.backup_rest_at != null, problems: backupProblemsOf(computer) },
+    ignoredFiles: ignoredFilesOf(computer),
+    deleteOnlyIfSaved: true,
   };
 }
 

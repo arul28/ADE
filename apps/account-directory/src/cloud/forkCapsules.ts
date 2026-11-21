@@ -13,14 +13,18 @@ import { logCloud, type CloudEnv } from "./store";
 /**
  * Fork capsules (README, "ADE without a computer"): what a provider needs to
  * resume a chat or CLI session on a new computer (its own transcript file or
- * export). The computer saves one before a delete, in parts of at most
- * `CLOUD_CAPSULE_MAX_PART_BYTES`, then commits it. A new computer reads it to
- * continue the chat. Each part is sealed with the user's key and names its
- * place in the additional data, so a part moved to another capsule or place
- * does not open.
+ * export). The computer saves one at each rest save when the chat changed,
+ * in parts of at most `CLOUD_CAPSULE_MAX_PART_BYTES`, then commits it. A new
+ * computer reads it to continue the chat. Each part is sealed with the user's
+ * key and names its place in the additional data, so a part moved to another
+ * capsule or place does not open.
  *
- * One capsule per (machine, chat): part 1 again starts a new upload. A
- * capsule reads only once committed.
+ * One capsule per (machine, chat): part 1 again starts a new upload, which
+ * replaces the older capsule only at its commit. Until then the new parts
+ * go under their own prefix (`pending_r2_key`) and the committed capsule
+ * reads as before, so an upload that fails or stops part way leaves it
+ * readable. The commit switches the row to the new parts in one write, then
+ * deletes the older ones. A capsule reads only once committed.
  */
 
 /** The seal's own bytes on each part: the IV and the tag. */
@@ -48,9 +52,29 @@ type CapsuleRow = {
   committed_at: number | null;
   created_at: number;
   updated_at: number;
+  /** The upload in progress: its parts' prefix, count and bytes; null when none runs. */
+  pending_r2_key: string | null;
+  pending_parts: number;
+  pending_bytes: number;
+  pending_instance_id: string | null;
 };
 
 const capsulePrefix = (userId: string, machineKey: string, chatId: string): string => `capsules/${userId}/${machineKey}/${chatId}/`;
+/** One upload's own prefix, under the capsule's: a new upload never writes over the committed parts. */
+const uploadPrefix = (userId: string, machineKey: string, chatId: string): string =>
+  `${capsulePrefix(userId, machineKey, chatId)}u/${crypto.randomUUID().replace(/-/g, "")}/`;
+
+/** Every object under `prefix`, page by page. */
+async function deleteUnder(bucket: R2Bucket, prefix: string): Promise<void> {
+  let cursor: string | undefined;
+  for (;;) {
+    const listed = await bucket.list({ prefix, cursor, limit: 1000 });
+    const keys = listed.objects.map((object) => object.key);
+    if (keys.length) await bucket.delete(keys);
+    if (!listed.truncated) return;
+    cursor = listed.cursor;
+  }
+}
 const partKey = (prefix: string, part: number): string => `${prefix}part/${String(part).padStart(5, "0")}`;
 const partAad = (userId: string, machineKey: string, chatId: string, part: number): string =>
   `ade.cloud.capsule.part.v1\0${userId}\0${machineKey}\0${chatId}\0${part}`;
@@ -89,20 +113,28 @@ async function handlePutPart(request: Request, env: CloudEnv, bucket: R2Bucket, 
   if (plain.byteLength > CLOUD_CAPSULE_MAX_PART_BYTES) return partTooLarge();
   if (plain.byteLength === 0) return fail("bad_request", "That part is empty.", 400);
   let row = await readRow(env, userId, machineKey, chatId);
-  // Part 1 starts a new upload; a later part needs the one before it.
+  // Part 1 starts a new upload under its own prefix; a later part needs the one before it.
+  // The committed capsule stays as it is until this upload commits.
   if (part === 1) {
+    const prefix = uploadPrefix(userId, machineKey, chatId);
+    const abandoned = row?.pending_r2_key ?? null;
     await env.DB.prepare(`
-      insert into cloud_fork_capsules (user_id, machine_key, chat_id, instance_id, parts, bytes, r2_key, committed_at, created_at, updated_at)
-      values (?, ?, ?, ?, 0, 0, ?, null, ?, ?)
-      on conflict (user_id, machine_key, chat_id) do update set instance_id = excluded.instance_id, parts = 0, bytes = 0, committed_at = null, updated_at = excluded.updated_at
-    `).bind(userId, machineKey, chatId, computer.instance_id, capsulePrefix(userId, machineKey, chatId), now, now).run();
+      insert into cloud_fork_capsules (user_id, machine_key, chat_id, instance_id, parts, bytes, r2_key, committed_at, created_at, updated_at,
+        pending_r2_key, pending_parts, pending_bytes, pending_instance_id)
+      values (?, ?, ?, ?, 0, 0, ?, null, ?, ?, ?, 0, 0, ?)
+      on conflict (user_id, machine_key, chat_id) do update set pending_r2_key = excluded.pending_r2_key, pending_parts = 0, pending_bytes = 0,
+        pending_instance_id = excluded.pending_instance_id, updated_at = excluded.updated_at
+    `).bind(userId, machineKey, chatId, computer.instance_id, prefix, now, now, prefix, computer.instance_id).run();
+    // An earlier upload that never committed: its parts belong to nothing now.
+    if (abandoned && (row?.committed_at == null || abandoned !== row.r2_key)) await deleteUnder(bucket, abandoned);
     row = await readRow(env, userId, machineKey, chatId);
-  } else if (!row || row.committed_at != null || part > row.parts + 1) {
+  } else if (!row || !row.pending_r2_key || part > row.pending_parts + 1) {
     return fail("capsule_out_of_order", "Upload the parts of a saved session copy in order, from part 1.", 409);
   }
-  if (!row) return unavailable();
-  const isNew = part > row.parts;
-  const bytesAfter = row.bytes + (isNew ? plain.byteLength : 0);
+  if (!row?.pending_r2_key) return unavailable();
+  const pending = row.pending_r2_key;
+  const isNew = part > row.pending_parts;
+  const bytesAfter = row.pending_bytes + (isNew ? plain.byteLength : 0);
   if (bytesAfter > CLOUD_CAPSULE_MAX_BYTES) return tooLarge();
   if ((await accountBytes(env, userId, { machineKey, chatId })) + bytesAfter > CLOUD_CAPSULE_MAX_ACCOUNT_BYTES) {
     logCloud("cloud.capsule_account_full", { userId, limitBytes: CLOUD_CAPSULE_MAX_ACCOUNT_BYTES });
@@ -110,10 +142,12 @@ async function handlePutPart(request: Request, env: CloudEnv, bucket: R2Bucket, 
   }
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
-  await bucket.put(partKey(row.r2_key, part), await sealBytes(keys.aes, partAad(userId, machineKey, chatId, part), plain));
+  await bucket.put(partKey(pending, part), await sealBytes(keys.aes, partAad(userId, machineKey, chatId, part), plain));
+  // Only this upload's count: a newer part 1 since then started another upload.
   await env.DB.prepare(`
-    update cloud_fork_capsules set parts = max(parts, ?), bytes = ?, updated_at = ? where user_id = ? and machine_key = ? and chat_id = ? and committed_at is null
-  `).bind(part, bytesAfter, now, userId, machineKey, chatId).run();
+    update cloud_fork_capsules set pending_parts = max(pending_parts, ?), pending_bytes = ?, updated_at = ?
+    where user_id = ? and machine_key = ? and chat_id = ? and pending_r2_key = ?
+  `).bind(part, bytesAfter, now, userId, machineKey, chatId, pending).run();
   return json({ ok: true, bytes: plain.byteLength });
 }
 
@@ -130,24 +164,30 @@ async function handleCommit(request: Request, env: CloudEnv, bucket: R2Bucket, u
   if (!parts || !provider || !transportKind || !sessionKind) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   const row = await readRow(env, userId, machineKey, chatId);
   if (!row) return notFound();
-  if (row.committed_at != null) return json(manifestOf(row));
-  if (parts !== row.parts) return fail("capsule_incomplete", "Some parts of this saved session copy are missing. Upload it again from part 1.", 409);
+  // The same commit again: nothing uploads, and the committed capsule is its answer.
+  if (!row.pending_r2_key) return row.committed_at != null ? json(manifestOf(row)) : notFound();
+  const pending = row.pending_r2_key;
+  if (parts !== row.pending_parts) return fail("capsule_incomplete", "Some parts of this saved session copy are missing. Upload it again from part 1.", 409);
   // The sizes in R2 are the truth, not the count the computer sent.
   let total = 0;
   for (let part = 1; part <= parts; part += 1) {
-    const head = await bucket.head(partKey(row.r2_key, part));
+    const head = await bucket.head(partKey(pending, part));
     if (!head) return fail("capsule_incomplete", "Some parts of this saved session copy are missing. Upload it again from part 1.", 409);
     total += Math.max(0, head.size - SEAL_OVERHEAD);
   }
   if (total > CLOUD_CAPSULE_MAX_BYTES) return tooLarge();
   if ((await accountBytes(env, userId, { machineKey, chatId })) + total > CLOUD_CAPSULE_MAX_ACCOUNT_BYTES) return accountFull();
+  // One write switches the capsule to the new parts; the older capsule read until here.
   const committed = await env.DB.prepare(`
-    update cloud_fork_capsules set provider = ?, transport_kind = ?, lane_id = ?, session_kind = ?, bytes = ?, committed_at = ?, updated_at = ?
-    where user_id = ? and machine_key = ? and chat_id = ? and committed_at is null and parts = ?
-  `).bind(provider, transportKind, laneId, sessionKind, total, now, now, userId, machineKey, chatId, parts).run();
+    update cloud_fork_capsules set provider = ?, transport_kind = ?, lane_id = ?, session_kind = ?, bytes = ?, committed_at = ?, updated_at = ?,
+      r2_key = pending_r2_key, parts = pending_parts, instance_id = coalesce(pending_instance_id, instance_id),
+      pending_r2_key = null, pending_parts = 0, pending_bytes = 0, pending_instance_id = null
+    where user_id = ? and machine_key = ? and chat_id = ? and pending_r2_key = ? and pending_parts = ?
+  `).bind(provider, transportKind, laneId, sessionKind, total, now, now, userId, machineKey, chatId, pending, parts).run();
   if ((committed.meta?.changes ?? 0) !== 1) return fail("capsule_incomplete", "This saved session copy changed while it was committed. Upload it again from part 1.", 409);
-  // Parts past the count are left from an older, longer upload.
-  const listed = await bucket.list({ prefix: `${row.r2_key}part/`, limit: 1000 });
+  // The capsule it replaced: its parts go only now. Parts past the count are from an older, longer upload.
+  if (row.r2_key !== pending) await deleteUnder(bucket, `${row.r2_key}part/`);
+  const listed = await bucket.list({ prefix: `${pending}part/`, limit: 1000 });
   const stale = listed.objects.map((object) => object.key).filter((key) => Number(key.slice(key.lastIndexOf("/") + 1)) > parts);
   if (stale.length) await bucket.delete(stale);
   logCloud("cloud.capsule_committed", { userId, instanceId: computer.instance_id, parts, bytes: total, transportKind });
@@ -168,14 +208,14 @@ async function handleReadPart(env: CloudEnv, bucket: R2Bucket, userId: string, m
   return new Response(opened as Uint8Array<ArrayBuffer>, { status: 200, headers: { "content-type": "application/octet-stream", "cache-control": "no-store" } });
 }
 
-/** Removes one capsule: its parts and its row. */
+/** Removes one capsule: its parts, any upload in progress, and its row. */
 export async function deleteCapsule(env: CloudEnv, userId: string, machineKey: string, chatId: string): Promise<void> {
   const row = await readRow(env, userId, machineKey, chatId);
   if (!row) return;
   const bucket = env.CLOUD_CHATS;
   if (bucket) {
-    const listed = await bucket.list({ prefix: row.r2_key, limit: 1000 });
-    if (listed.objects.length) await bucket.delete(listed.objects.map((object) => object.key));
+    // Every upload's prefix is under the capsule's own prefix.
+    await deleteUnder(bucket, capsulePrefix(userId, machineKey, chatId));
   }
   await env.DB.prepare("delete from cloud_fork_capsules where user_id = ? and machine_key = ? and chat_id = ?").bind(userId, machineKey, chatId).run();
 }
@@ -197,7 +237,7 @@ export function deleteAccountCapsulesStatement(env: Pick<CloudEnv, "DB">, userId
   return env.DB.prepare("delete from cloud_fork_capsules where user_id = ?").bind(userId);
 }
 
-/** `/cloud/capsules/:machine/:chat[/commit | /parts/:n]`. The caller passed the access gate. */
+/** `/cloud/capsules/:machine/:chat[/commit | /parts/:n]`, and `DELETE /cloud/capsules/:machine/:chat`. The caller passed the access gate. */
 export async function routeForkCapsules(request: Request, path: string, env: CloudEnv, userId: string, now: number): Promise<Response> {
   const bucket = env.CLOUD_CHATS;
   if (!bucket) {
@@ -208,6 +248,11 @@ export async function routeForkCapsules(request: Request, path: string, env: Clo
   const [machineKey, chatId, action, partText] = segments;
   if (!machineKey || !chatId || !ROW_ID.test(machineKey) || !ROW_ID.test(chatId)) return notFound();
   if (segments.length === 2) {
+    if (request.method === "DELETE") {
+      // The caller's restore used it (a move that kept it, `keepCapsule`): it goes now.
+      await deleteCapsule(env, userId, machineKey, chatId);
+      return json({ deleted: true });
+    }
     if (request.method !== "GET") return notFound();
     const row = await readRow(env, userId, machineKey, chatId);
     return row && row.committed_at != null ? json(manifestOf(row)) : notFound();

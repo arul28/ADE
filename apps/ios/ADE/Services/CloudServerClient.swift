@@ -72,6 +72,9 @@ struct CloudServerInstance: Decodable, Equatable {
   let templateVersion: String?
   let targetTemplate: String?
   let updateState: String?
+  /// The files git ignores on it, as it last read them: a delete loses them.
+  /// Nil before its first read and from older servers.
+  let ignoredFiles: CloudPhoneAccount.IdleCleanup.IgnoredFiles?
 
   struct Resources: Decodable, Equatable {
     let cpu: Int
@@ -81,7 +84,7 @@ struct CloudServerInstance: Decodable, Equatable {
 
   private enum CodingKeys: String, CodingKey {
     case id, name, status, pastDue, idleSaving, metadata, laneWork, type, resources, lastActiveAt, created, diskUsage
-    case templateVersion, targetTemplate, updateState
+    case templateVersion, targetTemplate, updateState, ignoredFiles
   }
 
   init(id: String, name: String?, status: String, pastDue: Bool, idleSaving: Bool = false, metadata: [String: String], laneWork: CloudPhoneMachine.LaneWork? = nil) {
@@ -100,6 +103,7 @@ struct CloudServerInstance: Decodable, Equatable {
     templateVersion = nil
     targetTemplate = nil
     updateState = nil
+    ignoredFiles = nil
   }
 
   init(from decoder: Decoder) throws {
@@ -119,6 +123,7 @@ struct CloudServerInstance: Decodable, Equatable {
     templateVersion = c.lenient(String.self, forKey: .templateVersion)
     targetTemplate = c.lenient(String.self, forKey: .targetTemplate)
     updateState = c.lenient(String.self, forKey: .updateState)
+    ignoredFiles = c.lenient(CloudPhoneAccount.IdleCleanup.IgnoredFiles.self, forKey: .ignoredFiles)
   }
 
   /// Its channel has a newer image and no update is under way: Update moves it there.
@@ -563,6 +568,16 @@ struct CloudServerClient {
   /// Deletes the saved chats of one lane of a computer (`DELETE /cloud/chats/:m/lanes/:lane`).
   func deleteSavedChats(machineKey: String, laneId: String) async throws {
     _ = try await send("DELETE", "cloud/chats/\(segment(machineKey))/lanes/\(segment(laneId))", timeout: 30)
+  }
+
+  /// Deletes one saved chat of a computer (`DELETE /cloud/chats/:m/:chat`).
+  /// A chat with no saved copy (404) is already gone.
+  func deleteSavedChat(machineKey: String, chatId: String) async throws {
+    do {
+      _ = try await send("DELETE", "cloud/chats/\(segment(machineKey))/\(segment(chatId))", timeout: 30)
+    } catch Failure.noAccess {
+      return
+    }
   }
 
   /// Wakes (or starts) a computer. Answers its status: `running` once up.

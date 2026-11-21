@@ -3635,6 +3635,7 @@ private struct WorkChatComposerDraftInput: View {
   @Environment(\.workChatAttachIssue) private var onAttachIssue
   @Environment(\.workChatAttachGitHubIssue) private var onAttachGitHubIssue
   @Environment(\.workChatComposerMachineName) private var machineName
+  @Environment(\.workChatComposerLaneMove) private var laneMove
   @Environment(\.verticalSizeClass) private var verticalSizeClass
   let chatSummary: WorkChatSummaryRenderContext
   let contextMeter: WorkComposerContextMeterModel?
@@ -4111,7 +4112,7 @@ private struct WorkChatComposerDraftInput: View {
           DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
 
           if !isDictating, let machineName {
-            WorkComposerMachineTag(name: machineName)
+            WorkComposerMachineTag(name: machineName, onMove: laneMove?.open)
           }
         },
         trailing: {
@@ -5075,17 +5076,50 @@ private struct WorkChatComposerSendButton: View {
   }
 }
 
+/// "Move this lane to" from the open chat's machine label. Two actions with
+/// the same key are the same, so a chat update that rebuilds the closure
+/// does not redraw the prompt box.
+struct WorkComposerLaneMoveAction: Equatable {
+  let key: String
+  let open: () -> Void
+
+  static func == (lhs: WorkComposerLaneMoveAction, rhs: WorkComposerLaneMoveAction) -> Bool {
+    lhs.key == rhs.key
+  }
+}
+
 extension EnvironmentValues {
   /// The computer the open chat runs on, for its prompt box. Nil elsewhere.
   @Entry var workChatComposerMachineName: String? = nil
+  /// Opens the move of the open chat's lane. Nil when its lane can't move.
+  @Entry var workChatComposerLaneMove: WorkComposerLaneMoveAction? = nil
 }
 
 /// The open chat's computer, quiet in the prompt box's control row: where a
-/// message sent here runs. Not a control; the chat header names it too.
+/// message sent here runs. When the chat's lane can move, a tap opens "Move
+/// this lane to"; otherwise it is only a label (the chat header names it too).
 struct WorkComposerMachineTag: View {
   let name: String
+  var onMove: (() -> Void)? = nil
 
   var body: some View {
+    if let onMove {
+      Button {
+        ADEHaptics.light()
+        onMove()
+      } label: {
+        label(movable: true)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityHint("Moves this lane to another computer")
+      .adeInspectable("Work.Chat.Composer.MachineTag")
+    } else {
+      label(movable: false)
+    }
+  }
+
+  private func label(movable: Bool) -> some View {
     // The model chip keeps its room first. A narrow composer shows only the
     // computer icon; its label still names the computer.
     ViewThatFits(in: .horizontal) {
@@ -5095,6 +5129,10 @@ struct WorkComposerMachineTag: View {
           .font(.system(size: 12, weight: .medium))
           .lineLimit(1)
           .fixedSize()
+        if movable {
+          Image(systemName: "chevron.up.chevron.down")
+            .font(.system(size: 9, weight: .semibold))
+        }
       }
       icon
     }

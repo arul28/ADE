@@ -115,6 +115,13 @@ import type {
 } from "../shared/types/cloudPhoneView";
 import type { CloudPhoneStatusView, CloudPhoneView } from "../shared/cloudPhone";
 import { IPC } from "../shared/ipc";
+import type {
+  CloudKeptLaneRestoreArgs,
+  CloudKeptLaneRestoreGetArgs,
+  CloudKeptLaneRestorePreview,
+  CloudKeptLaneRestorePreviewArgs,
+  CloudKeptLaneRestoreRecord,
+} from "../shared/cloudKeptLaneRestore";
 import type { CloudLaneLaunchCallRequest, CloudLaneLaunchCallResult, CloudLaneLaunchMethod } from "../shared/cloudLaneLaunch";
 import { normalizeGitRemoteIdentity } from "../shared/crossMachineHandoff";
 import { APP_CONTROL_FRAME_ALL_LANES } from "../shared/appControlFrameDemand";
@@ -14456,6 +14463,17 @@ const adeBridge = {
     /** On the lane's own computer, through its pin: the brain there refuses a call meant for another one. */
     clearCaches: (pin: OpenProjectBinding, instanceId: string): Promise<{ freedGb: number }> =>
       callPinnedRuntimeAction<{ freedGb: number }>(pin, "cloud", "clear_caches", { args: { machine: instanceId } }),
+    // A kept ADE Cloud lane moved to a machine: `pin` is the DESTINATION project's binding, and
+    // the start, its progress reads and the preview all go to that one brain.
+    previewKeptLaneRestore: (args: CloudKeptLaneRestorePreviewArgs, pin?: OpenProjectBinding | null): Promise<CloudKeptLaneRestorePreview> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cloud", "kept_lane_move_preview", { args }, () =>
+        ipcRenderer.invoke(IPC.cloudPreviewKeptLaneRestore, args)),
+    restoreKeptLane: (args: CloudKeptLaneRestoreArgs, pin?: OpenProjectBinding | null): Promise<CloudKeptLaneRestoreRecord> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cloud", "kept_lane_move", { args }, () =>
+        ipcRenderer.invoke(IPC.cloudRestoreKeptLane, args)),
+    getKeptLaneRestore: (args: CloudKeptLaneRestoreGetArgs, pin?: OpenProjectBinding | null): Promise<CloudKeptLaneRestoreRecord | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cloud", "kept_lane_move_status", { args }, () =>
+        ipcRenderer.invoke(IPC.cloudGetKeptLaneRestore, args)),
     onLaneJob: (cb: (job: CloudLaneJobSnapshot) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, job: CloudLaneJobSnapshot) => cb(job);
       ipcRenderer.on(IPC.cloudLaneJobEvent, listener);

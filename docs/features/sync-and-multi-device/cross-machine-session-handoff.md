@@ -513,9 +513,13 @@ never render.
 
 A chat or CLI whose ADE Cloud computer was deleted continues on a new computer
 in the same row (fork-continue). There is no source brain: the old computer
-saved a fork capsule to the account server before its delete
-(`ade cloud save-for-rest --capsules`), and the new computer reads it from
-there. The server side is in
+saved a fork capsule to the account server at each rest save (the idle step,
+`prepare-stop`, `ade cloud save-for-rest`), and the new computer reads it from
+there. This capsule holds only the provider's history
+(`prepareCloudRestCapsule`): no Git check, no `gitBundle`, and empty
+`source.headSha` and `source.originUrl`. The lane's code comes from the lane
+backup, and the restore reads no Git facts from the capsule. It is refused
+while a turn runs, and it leaves a CLI running. The server side is in
 [ADE Cloud](../ade-cloud/README.md#continue-a-chat-whose-computer-is-gone-fork-continue).
 
 The new brain (`apps/ade-cli/src/services/cloudChats/cloudChatRestore.ts`)

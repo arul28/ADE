@@ -556,3 +556,10 @@ export function decodeCrossMachineDestinationPreflightArgs(value: unknown): Agen
     ...(cliToolType ? { cliToolType } : {}),
   };
 }
+
+/**
+ * The CLI agents whose own conversation file a move carries and the CLI
+ * resumes on the other machine (`cliCrossMachineMove.ts`). Every other CLI
+ * starts again there from a summary.
+ */
+export const CLI_CARRIED_CONVERSATION_PROVIDERS: ReadonlySet<string> = new Set(["claude", "codex"]);

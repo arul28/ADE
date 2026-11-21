@@ -1181,11 +1181,12 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   - ADE Cloud shows as one disabled place: "ADE Cloud can't take a moved lane
     yet. Pick one of your computers." No action moves a lane onto a new cloud
     computer.
-  - A resting cloud lane offers "Wake and move" (`CloudLaneRestingMoveSheet`).
-    After the wake, the live lane detail opens the move sheet.
-  - A lane whose computer was deleted is not moved. The sheet says "This
-    lane's computer was deleted. Send a message in one of its chats to
-    continue it on ADE Cloud."
+  - A resting cloud lane moves from its saved copy with no wake, as on the
+    desktop (see [ADE Cloud › Move this lane to](../ade-cloud/README.md#the-life-of-a-lanes-computer)).
+    When the saved copy is not complete, or the server refuses the delete,
+    the sheet offers "Wake and move".
+  - A lane whose computer was deleted moves from the kept lane
+    (`cloud.restoreKeptLane` on the destination).
 
 ### CTO, Linear and Settings
 

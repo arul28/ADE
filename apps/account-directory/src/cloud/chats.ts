@@ -15,7 +15,7 @@ import {
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
 import { rewardAfterCloudChat } from "./referrals";
 import { captureCloudSafety, type CloudWaitUntil } from "./analytics";
-import { logCloud, ownedComputer, type CloudEnv } from "./store";
+import { logCloud, moveQueuedMessagesStatement, ownMachineMoveTarget, ownedComputer, type CloudEnv } from "./store";
 import { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type UserKeys } from "./seal";
 import { deleteCapsule, deleteCapsulesForLane } from "./forkCapsules";
 import { deleteGitSummaryForLaneStatement } from "./gitSummaries";
@@ -623,19 +623,43 @@ export function deleteChatMessagesStatement(env: Pick<CloudEnv, "DB">, userId: s
  * re-keys the saved chat to the new computer's machine key with its full
  * history. The parts stay where they are, sealed under the first key
  * (`aad_machine_key`), so nothing is uploaded again and the chat lists once.
- * Its queued messages follow it; its capsule, now used, goes. The same move
- * again answers the moved row.
+ * Its queued messages follow it (`moveQueuedMessagesStatement`); its
+ * capsule, now used, goes, unless the caller keeps it (`keepCapsule`) and
+ * deletes it after its restore. The same move again answers the moved row.
+ *
+ * With no `instanceId`, the person's own signed-in machine takes the chat
+ * (a kept lane moved to it): only from a deleted computer's key, only to one
+ * of the account's own machines (`ownMachineMoveTarget`). The row then has
+ * no computer, so it lists as that machine's chat, not a deleted computer's.
+ * The row takes the destination key as the account stores it.
  */
 async function handleMove(request: Request, env: CloudEnv, userId: string, machineKey: string, chatId: string, now: number): Promise<Response> {
   const body = await readJson(request);
-  const toMachineKey = typeof body?.toMachineKey === "string" ? body.toMachineKey.trim() : "";
-  const instanceId = typeof body?.instanceId === "string" ? body.instanceId.trim() : "";
-  if (!ROW_ID.test(toMachineKey) || !CLOUD_INSTANCE_ID.test(instanceId)) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
-  const computer = await ownedComputer(env, userId, instanceId);
-  // Only the caller's own computer, and only to its own machine key.
-  if (!computer || computer.deleted_at != null) return fail("not_found", "ADE Cloud has no such computer.", 404);
-  if (computer.machine_key && computer.machine_key.toLowerCase() !== toMachineKey.toLowerCase()) {
-    return fail("wrong_machine", "A chat moves only to the machine key of the computer that asks.", 409);
+  const requestedKey = typeof body?.toMachineKey === "string" ? body.toMachineKey.trim() : "";
+  const named = body?.instanceId;
+  const instanceId = typeof named === "string" ? named.trim() : "";
+  // No `instanceId`: the person's own machine takes a chat whose computer is deleted (a kept lane moved to it).
+  const ownMachine = named == null;
+  // `keepCapsule`: the caller deletes the capsule itself once its restore succeeded, so a failed restore can read it again.
+  const keepCapsule = body?.keepCapsule === true;
+  if (!ROW_ID.test(requestedKey) || (!ownMachine && !CLOUD_INSTANCE_ID.test(instanceId))) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
+  // The row's computer after the move: the cloud computer that asks, or none for the person's own machine.
+  let targetInstanceId: string | null = null;
+  // The destination key as the account stores it: reads match it exactly.
+  let toMachineKey = requestedKey;
+  if (ownMachine) {
+    const target = await ownMachineMoveTarget(env, userId, machineKey, requestedKey);
+    if (!target.ok) return fail(target.code, target.message, target.status);
+    toMachineKey = target.machineKey;
+  } else {
+    const computer = await ownedComputer(env, userId, instanceId);
+    // Only the caller's own computer, and only to its own machine key.
+    if (!computer || computer.deleted_at != null) return fail("not_found", "ADE Cloud has no such computer.", 404);
+    if (computer.machine_key && computer.machine_key.toLowerCase() !== requestedKey.toLowerCase()) {
+      return fail("wrong_machine", "A chat moves only to the machine key of the computer that asks.", 409);
+    }
+    targetInstanceId = computer.instance_id;
+    toMachineKey = computer.machine_key ?? requestedKey;
   }
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
@@ -653,15 +677,13 @@ async function handleMove(request: Request, env: CloudEnv, userId: string, machi
       update cloud_chat_copies set machine_key = ?, instance_id = ?, forked_from_machine_key = ?, forked_from_chat_id = ?,
         aad_machine_key = coalesce(aad_machine_key, machine_key), updated_at = ?
       where user_id = ? and machine_key = ? and chat_id = ?
-    `).bind(toMachineKey, computer.instance_id, machineKey, chatId, now, userId, machineKey, chatId),
-    env.DB.prepare(`
-      update cloud_chat_messages set machine_key = ?, instance_id = case when via_launch = 0 and state = 'queued' then ? else instance_id end
-      where user_id = ? and machine_key = ? and chat_id = ?
-    `).bind(toMachineKey, computer.instance_id, userId, machineKey, chatId),
+    `).bind(toMachineKey, targetInstanceId, machineKey, chatId, now, userId, machineKey, chatId),
+    moveQueuedMessagesStatement(env, { userId, fromMachineKey: machineKey, toMachineKey, chatId, instanceId: targetInstanceId, now }),
   ]);
   if ((moved[0]?.meta?.changes ?? 0) !== 1) return notFound();
-  await deleteCapsule(env, userId, machineKey, chatId);
-  logCloud("cloud.chat_moved", { userId, instanceId: computer.instance_id });
+  // Used now. A caller that keeps it reads it from the key the row moved from (`forkedFrom`) until its restore succeeds.
+  if (!keepCapsule) await deleteCapsule(env, userId, machineKey, chatId);
+  logCloud("cloud.chat_moved", { userId, instanceId: targetInstanceId, ownMachine, keptCapsule: keepCapsule });
   const row = await copyRow(env, userId, toMachineKey, chatId);
   return row ? answer(row, true) : notFound();
 }
@@ -686,7 +708,7 @@ export async function deleteSavedChatsForLane(env: CloudEnv, userId: string, mac
  * lane kept without a computer can have had several (a move, a new computer),
  * and a client sees only the keys of the chats it listed.
  */
-export async function deleteSavedChatsForLaneEverywhere(env: CloudEnv, userId: string, laneId: string): Promise<number> {
+export async function deleteSavedChatsForLaneEverywhere(env: CloudEnv, userId: string, laneId: string, keepMachineKey: string | null = null): Promise<number> {
   const keys = await env.DB.prepare(`
     select machine_key from cloud_chat_copies where user_id = ? and lane_id = ?
     union select machine_key from cloud_session_copies where user_id = ? and lane_id = ?
@@ -694,7 +716,11 @@ export async function deleteSavedChatsForLaneEverywhere(env: CloudEnv, userId: s
     union select machine_key from cloud_git_summaries where user_id = ? and lane_id = ?
   `).bind(userId, laneId, userId, laneId, userId, laneId, userId, laneId).all<{ machine_key: string }>();
   let removed = 0;
-  for (const row of keys.results ?? []) removed += await deleteSavedChatsForLane(env, userId, row.machine_key, laneId);
+  for (const row of keys.results ?? []) {
+    // A lane moved to the person's own machine keeps what moved there.
+    if (keepMachineKey && row.machine_key.toLowerCase() === keepMachineKey.toLowerCase()) continue;
+    removed += await deleteSavedChatsForLane(env, userId, row.machine_key, laneId);
+  }
   return removed;
 }
 

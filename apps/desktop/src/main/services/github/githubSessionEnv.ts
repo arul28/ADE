@@ -6,16 +6,22 @@ import { githubShellShimEnv, setGithubShellTokenAnswer } from "./githubShellShim
 
 /**
  * `GH_TOKEN` for the `gh` CLI in agent shells, CLI sessions and chats, from
- * the ADE account's GitHub App sign-in (`account_app`).
+ * the ADE account: its GitHub App sign-in (`account_app`), else the account's
+ * copy of a `gh` login from another machine (`account_gh`,
+ * githubGhAccountSync.ts).
  *
  * ADE adds it only when `gh` would otherwise have no GitHub sign-in at all:
  * - the session's environment has no GitHub token of its own, and
  * - `gh` has no login for github.com on this machine (its `hosts.yml` does
- *   not list the host; a keyring login is listed there too), and
- * - the account App token is current, and
- * - the owner of the project's repository has an installation of the App
- *   that the user can reach. Read rights are enough: on a write the
- *   installation refuses, `gh` prints GitHub's own message.
+ *   not list the host; a keyring login is listed there too).
+ *
+ * Then the token is the account App token when it is current and the owner
+ * of the project's repository has an installation of the App that the user
+ * can reach. Read rights are enough: on a write the installation refuses,
+ * `gh` prints GitHub's own message. With no such installation, the token is
+ * the account's copy of a `gh` login, when the account holds one: the same
+ * login `gh` would use on the machine that shared it. This is what makes `gh`
+ * work on an ADE Cloud computer for an organization without the App.
  *
  * How the token reaches `gh` and `git`:
  * - Normally through the per-call shim (githubShellShim.ts): a `gh` first on
@@ -29,8 +35,15 @@ import { githubShellShimEnv, setGithubShellTokenAnswer } from "./githubShellShim
  *
  * `ADE_GH_TOKEN_SOURCE=account_app` marks a `GH_TOKEN` ADE set (the fallback,
  * or the shim for its child), so an ADE process started from such a shell
- * does not take it as an "environment" token.
+ * does not take it as an "environment" token. It names who set the token
+ * (ADE), not which of the account's two it is: the App token and the `gh`
+ * login copy both come from the account, and the shim asks again on each run.
+ * The login copy reaches every session here, automations too, as the same
+ * login does through `gh` on the machine that shared it.
  */
+
+/** How long a shell waits on the App token when the account's `gh` login copy can answer instead. */
+const APP_LOOKUP_WITH_FALLBACK_MS = 20_000;
 
 export const GH_TOKEN_SOURCE_ENV = "ADE_GH_TOKEN_SOURCE";
 export const GH_TOKEN_SOURCE_ACCOUNT_APP = "account_app";
@@ -81,6 +94,8 @@ export function createGithubSessionEnv(deps: {
   readAccountAppToken: () => Promise<string | null>;
   /** The cached account App token, no request. */
   peekAccountAppToken: () => string | null;
+  /** The account's copy of a `gh` login adopted on this machine, no request. */
+  peekAccountGhToken?: () => string | null;
   readGrant: AppGrantReader;
   /** The owner of the project's GitHub repository, or null. */
   readRepoOwner: () => Promise<string | null>;
@@ -115,24 +130,44 @@ export function createGithubSessionEnv(deps: {
   };
   const envFor = (token: string, env: NodeJS.ProcessEnv, owner: string): GithubSessionEnv =>
     shimFor(env, owner) ?? { GH_TOKEN: token, [GH_TOKEN_SOURCE_ENV]: GH_TOKEN_SOURCE_ACCOUNT_APP };
-
-  /**
-   * The shim's question, on every `gh` or `git` run: the current account App
-   * token when the owner's installation is reachable, else null (the shim
-   * steps aside). Cached answers mostly: the token client and the grant
-   * reader keep theirs, so a run costs no request.
-   */
-  const tokenForOwner = async (requestedOwner: string | null): Promise<string | null> => {
+  const accountGhToken = (): string | null => {
     try {
-      const owner = requestedOwner ?? lastOwner;
-      if (!owner) return null;
-      const token = await deps.readAccountAppToken();
-      if (!token) return null;
-      const grant = await deps.readGrant(owner, token, { identity: "account_app" });
-      return grant?.installed ? token : null;
+      return deps.peekAccountGhToken?.()?.trim() || null;
     } catch {
       return null;
     }
+  };
+  /** The account App token when the owner's installation is reachable, else null. */
+  const appTokenFor = async (owner: string): Promise<string | null> => {
+    const token = await deps.readAccountAppToken();
+    if (!token) return null;
+    const grant = await deps.readGrant(owner, token, { identity: "account_app" });
+    return grant?.installed ? token : null;
+  };
+
+  /**
+   * The shim's question, on every `gh` or `git` run: the current account App
+   * token when the owner's installation is reachable, else the account's `gh`
+   * login copy, else null (the shim steps aside). Cached answers mostly: the
+   * token client and the grant reader keep theirs, so a run costs no request.
+   */
+  const tokenForOwner = async (requestedOwner: string | null): Promise<string | null> => {
+    const owner = requestedOwner ?? lastOwner;
+    const ghCopy = accountGhToken();
+    try {
+      const lookup = owner ? appTokenFor(owner) : Promise.resolve(null);
+      // With a `gh` login copy to fall back on, a slow App renewal does not
+      // run past the shim's own wait (48 s), so the shell still gets a token.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const appToken = ghCopy
+        ? await Promise.race([lookup, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), APP_LOOKUP_WITH_FALLBACK_MS); })])
+          .finally(() => clearTimeout(timer))
+        : await lookup;
+      if (appToken) return appToken;
+    } catch {
+      // The App could not answer; the account's `gh` login copy still can.
+    }
+    return ghCopy;
   };
   if (deps.answersShells !== false) setGithubShellTokenAnswer(tokenForOwner);
 
@@ -145,10 +180,8 @@ export function createGithubSessionEnv(deps: {
       const owner = await deps.readRepoOwner();
       lastOwner = owner;
       if (!owner) return null;
-      const token = await deps.readAccountAppToken();
-      if (!token) return null;
-      const grant = await deps.readGrant(owner, token, { identity: "account_app" });
-      return grant?.installed ? envFor(token, env, owner) : null;
+      const token = (await appTokenFor(owner).catch(() => null)) ?? accountGhToken();
+      return token ? envFor(token, env, owner) : null;
     } catch {
       return null;
     }
@@ -181,10 +214,12 @@ export function createGithubSessionEnv(deps: {
       const cached = token ? deps.readGrant.peek?.(owner, "account_app", token) ?? null : null;
       if (!token || !cached || now() - cached.checkedAt > GRANT_STALE_MAX_MS) {
         warm(env);
-        return shimFor(env, owner);
+        const ghCopy = accountGhToken();
+        return ghCopy ? envFor(ghCopy, env, owner) : shimFor(env, owner);
       }
       if (cached.stale) warm(env);
-      return cached.grant?.installed ? envFor(token, env, owner) : null;
+      const answer = cached.grant?.installed ? token : accountGhToken();
+      return answer ? envFor(answer, env, owner) : null;
     } catch {
       return null;
     }

@@ -598,6 +598,8 @@ struct WorkSessionDestinationView: View {
   @State var composerDraftRestore: WorkChatComposerDraftRestore?
   /// The side-chat panel (`/side`) over this chat, and what it shows.
   @State var sideChatPanelPresented = false
+  /// "Move this lane to", opened from the prompt box's machine label.
+  @State private var laneMoveSheetSource: LaneMoveSource?
   @State var sideChatPanelState: WorkSideChatPanelState = .closed
 
   var initialOpeningPromptNeedsManualRetry: Bool {
@@ -1842,6 +1844,9 @@ struct WorkSessionDestinationView: View {
           Task { await attachGitHubIssueToChat(issue, repo: repo) }
         }
       }
+      .sheet(item: $laneMoveSheetSource) { source in
+        LaneMoveSheet(source: source)
+      }
       .sheet(isPresented: $cloudIphonePresented) {
         CloudIphoneSheet(sessionId: sessionId, syncService: syncService)
           .presentationDetents([.large])
@@ -2270,9 +2275,43 @@ struct WorkSessionDestinationView: View {
       duoFixtureChatView(makeWorkChatSessionView(for: session, thread: threadModel))
         // The prompt box names the computer the chat runs on.
         .environment(\.workChatComposerMachineName, syncService.chatMachineName(sessionId: sessionId))
+        // The label opens "Move this lane to" when the chat's lane can move.
+        .environment(\.workChatComposerLaneMove, composerLaneMoveAction(for: session))
         .id("main-\(session.id)-\(threadModel.key.description)")
     } else {
       connectingFrame
+    }
+  }
+
+  /// The machine label's move: the chat's lane, from wherever it is. A side
+  /// chat follows its main chat and moves with it, so its label stays a label.
+  private func composerLaneMoveAction(for session: TerminalSessionSummary) -> WorkComposerLaneMoveAction? {
+    guard !isSideChatSurface, !personalChat,
+          nonEmptyTrimmed(chatSummary?.sideChatParentSessionId) == nil,
+          let source = laneMoveSourceForChat(
+            sessionId: session.id,
+            laneId: session.laneId,
+            laneName: session.laneName,
+            surface: chatSummary?.surface,
+            fleetKey: sessionCloudMachineKey,
+            sync: syncService
+          )
+    else { return nil }
+    let sync = syncService
+    let summary = chatSummary
+    // The chat's own machine, not the focused one: a bare lane id would
+    // name the focused computer.
+    let fleetKey = sessionCloudMachineKey
+    return WorkComposerLaneMoveAction(key: "\(session.id)|\(session.laneId)|\(source.kind.rawValue)") {
+      // Read again on the tap: the lane's computer may have woken or gone since.
+      laneMoveSheetSource = laneMoveSourceForChat(
+        sessionId: session.id,
+        laneId: session.laneId,
+        laneName: session.laneName,
+        surface: summary?.surface,
+        fleetKey: fleetKey,
+        sync: sync
+      )
     }
   }
 

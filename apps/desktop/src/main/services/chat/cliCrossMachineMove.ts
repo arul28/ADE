@@ -41,9 +41,8 @@ import {
   crossMachineForkOversizeError,
   gzipToBase64,
 } from "./crossMachineForkTransport";
+import { CLI_CARRIED_CONVERSATION_PROVIDERS } from "../../../shared/crossMachineHandoff";
 
-/** Agents whose own conversation is a file ADE can carry and the CLI resumes. */
-const CARRIED_CONVERSATION_PROVIDERS: ReadonlySet<string> = new Set(["claude", "codex"]);
 
 const PROVIDER_NAME: Record<string, string> = {
   claude: "Claude Code",
@@ -114,7 +113,7 @@ export function cliMoveLaunch(metadata: TerminalResumeMetadata | null | undefine
 
 /** Why a CLI of this agent moves as a fresh CLI with a brief, or null when its conversation can travel. */
 export function cliFreshReason(provider: string, conversationId: string | null): string | null {
-  if (!CARRIED_CONVERSATION_PROVIDERS.has(provider)) {
+  if (!CLI_CARRIED_CONVERSATION_PROVIDERS.has(provider)) {
     return provider === "opencode"
       ? "OpenCode keeps its sessions in its own store on this machine, so the CLI starts fresh there with a brief of the conversation."
       : `${cliProviderName(provider)} keeps its conversation on this machine, so the CLI starts fresh there with a brief of the conversation.`;

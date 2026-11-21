@@ -6,6 +6,7 @@ import { buildProviderLoginsDomainService } from "../../../../desktop/src/main/s
 import { PROVIDER_LOGIN_ACCOUNT_WRITES } from "../../../../desktop/src/shared/types/providerLogins";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
 import { parseLaneLinearIssueValue } from "../../../../desktop/src/shared/laneLinearIssue";
+import { pickKeptLaneRestoreArgs } from "../../../../desktop/src/shared/cloudKeptLaneRestore";
 import { cloudDomainEnabled } from "../../../../desktop/src/shared/adeCloud";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
 import { normalizeGitHubPrListFilters } from "../../../../desktop/src/shared/githubPrSearch";
@@ -1834,6 +1835,7 @@ function parseStartCrossMachineBatchMoveArgs(value: Record<string, unknown>): Ag
     ...(typeof value.includeChanges === "boolean" ? { includeChanges: value.includeChanges } : {}),
     ...(value.whenBusy === "wait" || value.whenBusy === "interrupt" ? { whenBusy: value.whenBusy } : {}),
     ...(typeof value.note === "string" ? { note: value.note } : {}),
+    ...(value.clone === true ? { clone: true } : {}),
   };
 }
 
@@ -8794,6 +8796,18 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     const { approval: _ignored, ...rest } = input;
     return await (handler as (input: unknown) => Promise<unknown>).call(domain, { ...rest, approval: { by: "person" } });
   };
+  // A kept ADE Cloud lane moved to THIS machine, in this project (shared/cloudKeptLaneRestore.ts):
+  // ADE Web and the phone pin the destination machine. The preview and the progress are reads;
+  // the move needs a controlling device, and the person asking is the person.
+  const keptLaneCall = async (action: "kept_lane_move_preview" | "kept_lane_move" | "kept_lane_move_status", payload: Record<string, unknown>) => {
+    const handler = args.cloudActions?.()?.[action];
+    if (typeof handler !== "function") throw new Error(`cloud has no "${action}" here. Update ADE on this computer.`);
+    // `fromComputer`: the lane's asleep ADE Cloud computer, released first (the store checks the id).
+    return await (handler as (input: unknown) => Promise<unknown>)(pickKeptLaneRestoreArgs(payload));
+  };
+  register("cloud.previewKeptLaneRestore", { viewerAllowed: true }, async (payload) => await keptLaneCall("kept_lane_move_preview", payload));
+  register("cloud.restoreKeptLane", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => await keptLaneCall("kept_lane_move", payload));
+  register("cloud.getKeptLaneRestore", { viewerAllowed: true }, async (payload) => await keptLaneCall("kept_lane_move_status", payload));
   register("cloud.read", { viewerAllowed: true }, async (payload) =>
     await cloudCall(payload, CLOUD_REMOTE_READS), "runtime");
   register("cloud.write", { viewerAllowed: false, controllerAllowed: true }, async (payload) =>

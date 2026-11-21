@@ -226,6 +226,8 @@ import {
 import { ComposerMachineChipPopover } from "./MachineChipCard";
 import { ADE_CLOUD_NAME, CloudMark } from "../remoteTargets/cloudBrand";
 import { AdeCloudMachineChip, useComposerAdeCloudLane, type ComposerAdeCloudLane } from "./AdeCloudComposerParts";
+import { LaneMoveControl } from "../laneMove/LaneMoveControl";
+import type { LaneMoveSource } from "../laneMove/laneMoveModel";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
@@ -1001,21 +1003,30 @@ export type ComposerMachineChipAction = {
 // Clips the label as the chip shrinks; the button draws an inset focus ring
 // so the clip cannot cut it off.
 const MACHINE_CHIP_WRAPPER = "min-w-[1.5rem] shrink-[8] overflow-hidden";
+/** A machine chip that does something when pressed: its action, or "Move this lane to". */
+const PRESSABLE_MACHINE_CHIP = cn(
+  "inline-flex h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md px-1 transition-colors",
+  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/60",
+  "font-sans text-[9px] font-medium text-muted-fg/60 hover:bg-fg/[0.05] hover:text-fg/85",
+);
 
 function ComposerMachineChip({
   machineName,
   cloud = false,
   adeCloudLane = null,
   action = null,
+  laneMove = null,
 }: {
   machineName: string;
   cloud?: boolean;
   /** Set for a chat on an ADE Cloud lane: the chip wears the cloud mark and names the lane. */
   adeCloudLane?: ComposerAdeCloudLane | null;
   action?: ComposerMachineChipAction | null;
+  /** The chat's lane: the chip opens "Move this lane to". */
+  laneMove?: LaneMoveSource | null;
 }) {
   if (adeCloudLane) {
-    return <AdeCloudMachineChip machineName={machineName} lane={adeCloudLane} wrapperClassName={MACHINE_CHIP_WRAPPER} />;
+    return <AdeCloudMachineChip machineName={machineName} lane={adeCloudLane} laneMove={laneMove} wrapperClassName={MACHINE_CHIP_WRAPPER} />;
   }
   // An ADE Cloud launch still being set up: no lane computer to name yet, but the cloud mark already.
   const onAdeCloud = !cloud && machineName === ADE_CLOUD_NAME;
@@ -1029,9 +1040,7 @@ function ComposerMachineChip({
             aria-label={action.tooltip}
             onClick={action.onClick}
             className={cn(
-              "inline-flex h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md px-1 transition-colors",
-              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/60",
-              "font-sans text-[9px] font-medium text-muted-fg/60 hover:bg-fg/[0.05] hover:text-fg/85",
+              PRESSABLE_MACHINE_CHIP,
               action.offline && "opacity-60",
             )}
             style={{ whiteSpace: "nowrap" }}
@@ -1053,6 +1062,37 @@ function ComposerMachineChip({
           </span>
         ) : null}
       </>
+    );
+  }
+  if (laneMove && !cloud && !onAdeCloud) {
+    return (
+      <LaneMoveControl source={laneMove}>
+        {(trigger) => (
+          <SmartTooltip
+            forceEnabled
+            wrapperClassName={MACHINE_CHIP_WRAPPER}
+            content={{ label: machineName, description: "This chat runs on the machine that owns its lane. Click to move the lane to another computer." }}
+          >
+            <button
+              ref={trigger.ref}
+              type="button"
+              data-chat-composer-machine-chip="lane-move"
+              aria-haspopup="menu"
+              aria-expanded={trigger.open}
+              aria-label={`Running on ${machineName}. Move this lane to another computer`}
+              onClick={trigger.onClick}
+              className={cn(
+                PRESSABLE_MACHINE_CHIP,
+                trigger.open && "bg-fg/[0.05] text-fg/85",
+              )}
+              style={{ whiteSpace: "nowrap" }}
+            >
+              <DesktopTower size={11} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
+              <span className="min-w-0 max-w-24 truncate">{machineName}</span>
+            </button>
+          </SmartTooltip>
+        )}
+      </LaneMoveControl>
     );
   }
   return (
@@ -2482,6 +2522,7 @@ function AgentChatComposerImpl({
   composerMachineLabel = null,
   scheduledSendContext = null,
   machineChipAction = null,
+  laneMove = null,
   cursorRuntime = null,
   modelRuntimePin = null,
   catalogScopeKey,
@@ -2748,6 +2789,8 @@ function AgentChatComposerImpl({
   composerMachineLabel?: string | null;
   /** Makes the machine chip a host-owned control (the CTO's home machine). */
   machineChipAction?: ComposerMachineChipAction | null;
+  /** The open chat's lane, which the machine chip can move to another computer. */
+  laneMove?: LaneMoveSource | null;
   /** Cloud chats run on Cursor Cloud, not on this computer or a paired machine. */
   cursorRuntime?: "local" | "cloud" | null;
   /**
@@ -8890,10 +8933,11 @@ function AgentChatComposerImpl({
           cloud={cursorRuntime === "cloud"}
           adeCloudLane={adeCloudLane}
           action={cursorRuntime === "cloud" || adeCloudLane ? null : machineChipAction}
+          laneMove={cursorRuntime === "cloud" ? null : laneMove}
         />
       ) : null}
     </div>
-  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, reasoningModelId, reasoningTiers, runtimeCatalogTick, sessionId, turnActive, ultrathinkControl]);
+  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, laneMove, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, reasoningModelId, reasoningTiers, runtimeCatalogTick, sessionId, turnActive, ultrathinkControl]);
   const contextUsageDial = useMemo(() => (!parallelChatMode && usageViewModel ? (
 
       <ContextUsageDial

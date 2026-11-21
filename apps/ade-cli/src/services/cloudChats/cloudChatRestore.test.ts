@@ -67,6 +67,85 @@ describe("restoreCloudChat for a CLI", () => {
 });
 
 /**
+ * A deleted computer's chat continues on a new computer with its fork
+ * capsule only when the capsule is as new as the saved transcript, and the
+ * capsule outlives a restore that fails: the move keeps it, and it goes
+ * only once a restore used it.
+ */
+describe("restoreCloudChat for a chat", () => {
+  const T1 = "2026-11-20T10:00:00.000Z";
+  const T2 = "2026-11-20T10:05:00.000Z";
+  const transcript = [
+    { sessionId: "c1", timestamp: T1, sequence: 1, event: { type: "user_message", text: "Fix the footer." } },
+    { sessionId: "c1", timestamp: T2, sequence: 2, event: { type: "done", status: "completed" } },
+  ].map((envelope) => JSON.stringify(envelope)).join("\n");
+
+  const setup = (transcriptEnd: { at: string | null; sequence: number | null } | undefined, failFirst: boolean) => {
+    const capsuleBytes = gzipSync(Buffer.from(JSON.stringify({
+      v: 1,
+      capsule: { version: 1, source: { provider: "claude", title: "Footer" }, target: { targetModelId: "claude-sonnet" }, forkTransport: { kind: "claude-jsonl" } },
+      ...(transcriptEnd === undefined ? {} : { transcriptEnd }),
+    })));
+    const state = { copyAt: "key-old", capsuleAt: "key-old" as string | null, failures: failFirst ? 1 : 0 };
+    const steps: string[] = [];
+    const api = {
+      savedChat: async ({ machineKey }: { machineKey: string }) => (machineKey === state.copyAt
+        ? {
+            chat: { chatId: "c1", machineKey, lastSeq: 2, model: "claude-sonnet", title: "Footer", forkedFrom: machineKey === "key-new" ? { machineKey: "key-old", chatId: "c1" } : null },
+            parts: [{ seq: 1, text: transcript }], hasMore: false, nextBefore: null,
+          }
+        : null),
+      capsuleManifest: async (machineKey: string) => (machineKey === state.capsuleAt ? { sessionKind: "chat", bytes: capsuleBytes.byteLength, parts: 1 } : null),
+      readCapsulePart: async () => capsuleBytes,
+      moveSavedChat: async (from: string, _chatId: string, move: { toMachineKey: string; keepCapsule?: boolean }) => {
+        steps.push(`move ${from} -> ${move.toMachineKey}${move.keepCapsule ? ", capsule kept" : ""}`);
+        state.copyAt = move.toMachineKey;
+        return { moved: true, chat: { lastSeq: 2 } };
+      },
+      deleteCapsule: async (machineKey: string) => {
+        steps.push(`delete capsule ${machineKey}`);
+        state.capsuleAt = null;
+        return { deleted: true };
+      },
+    };
+    const deps = {
+      api: api as never,
+      instanceId: "newbox1234",
+      machineKey: "key-new",
+      logger: { info: () => {}, warn: () => {} },
+      restore: async (args: { capsule: unknown }) => {
+        steps.push(`restore with ${args.capsule ? "capsule" : "replay"}`);
+        if (state.failures-- > 0) throw new Error("The chat could not be made.");
+        return { sessionId: "c1", restoredWith: args.capsule ? "capsule" as const : "replay" as const };
+      },
+      adopt: async () => true,
+      hold: () => {},
+      release: () => {},
+    } satisfies CloudChatRestoreDeps;
+    const args = { fromMachineKey: "key-old", chatId: "c1", laneId: "lane-1", modelId: null, prompt: "Go on.", clientMessageId: "m1", kind: "chat" as const };
+    return { steps, run: () => restoreCloudChat(deps, args) };
+  };
+
+  it.each<[string, { at: string | null; sequence: number | null } | undefined, boolean, string[]]>([
+    ["a capsule as new as the transcript resumes the agent, and goes once used", { at: T2, sequence: 2 }, false,
+      ["move key-old -> key-new, capsule kept", "restore with capsule", "delete capsule key-old"]],
+    ["a capsule made before the chat's last turn is not used: the transcript replays", { at: T1, sequence: 1 }, false,
+      ["move key-old -> key-new, capsule kept", "restore with replay", "delete capsule key-old"]],
+    ["a capsule made before the chat had a turn is not used", { at: null, sequence: null }, false,
+      ["move key-old -> key-new, capsule kept", "restore with replay", "delete capsule key-old"]],
+    ["an older ADE's capsule with no mark is used as before", undefined, false,
+      ["move key-old -> key-new, capsule kept", "restore with capsule", "delete capsule key-old"]],
+    ["a restore that fails keeps the capsule: the next try reads it where the copy moved from", { at: T2, sequence: 2 }, true,
+      ["move key-old -> key-new, capsule kept", "restore with capsule", "restore with capsule", "delete capsule key-old"]],
+  ])("%s", async (_label, transcriptEnd, failFirst, expected) => {
+    const chat = setup(transcriptEnd, failFirst);
+    if (failFirst) await expect(chat.run()).rejects.toThrow("could not be made");
+    expect(await chat.run()).toMatchObject({ sessionId: "c1", moved: true });
+    expect(chat.steps).toEqual(expected);
+  });
+});
+
+/**
  * Contract C3: a lane that comes back on a new computer brings its chats whose
  * computer is gone, each with its own id, and leaves every other chat where it is.
  */

@@ -891,6 +891,11 @@ Runtime support files outside `services/sync/`:
     and releases it at a `gh` logout. "Remove from my account" writes
     `removed`. An adopted copy lives only in `github.ghAccountToken.v1`, never
     in `gh`'s files, and is tried last (`shared/githubOperationCredential.ts`).
+    `gh` and `git` in agent shells, CLI sessions and chats get it too when
+    they have no sign-in of their own and the repository owner has no ADE
+    GitHub App installation (`github/githubSessionEnv.ts`): the App token
+    first, then this copy. So `gh` works on an ADE Cloud computer for an
+    organization without the App.
   - The ADE GitHub App sign-in is not a vault item. The account directory
     holds it (`apps/account-directory/src/githubApp/`, D1
     `github_app_grants`): it runs the web flow, seals the refresh token with

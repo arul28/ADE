@@ -806,12 +806,10 @@ export type SaveBeforeDeleteOutcome =
 export async function saveBeforeDelete(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, reason: string): Promise<SaveBeforeDeleteOutcome> {
   const instance = await provider.getInstance(computer.instance_id);
   if (!isMeteredStatus(instance.status)) {
-    const row = await backupRestRow(env, computer.instance_id);
-    if (row?.backup_rest_at != null) return { ok: true, metadata: instance.metadata, resting: true };
-    logCloud("cloud.save_before_delete_not_current", { instanceId: computer.instance_id, reason, reported: row?.backup_report_id != null });
-    // It never reported a save (it rested before its ADE saved lane work): nothing failed, it is kept until it next rests.
-    if (row?.backup_report_id == null) return { ok: false, reason: CLOUD_BACKUP_NEVER_SAVED_SENTENCE, code: BACKUP_NEVER_SAVED_CODE };
-    return { ok: false, reason: backupNotSavedReason(row), code: "backup_not_current" };
+    const saved = await restingBackupState(env, computer.instance_id);
+    if (saved.ok) return { ok: true, metadata: instance.metadata, resting: true };
+    logCloud("cloud.save_before_delete_not_current", { instanceId: computer.instance_id, reason, reported: saved.code !== BACKUP_NEVER_SAVED_CODE });
+    return saved;
   }
   // Agents stopped and chats saved first: anything still writing could land after the backup.
   // Every delete but the idle cleanup also freezes new work on the computer until the delete:
@@ -872,6 +870,19 @@ export async function unfreezeComputer(provider: CloudProvider, instanceId: stri
 async function backupRestRow(env: CloudEnv, instanceId: string): Promise<Pick<ComputerRow, "backup_rest_at" | "backup_report_id" | "backup_report_state" | "backup_problems_json"> | null> {
   return await env.DB.prepare("select backup_rest_at, backup_report_id, backup_report_state, backup_problems_json from cloud_computers where instance_id = ?")
     .bind(instanceId).first();
+}
+
+/**
+ * Whether a resting computer rested right after a save that holds every
+ * lane's work (`backup_rest_at`), read with no wake; else why not. A
+ * computer that never reported a save rested before its ADE saved lane work:
+ * nothing failed, and its next rest saves it.
+ */
+export async function restingBackupState(env: CloudEnv, instanceId: string): Promise<{ ok: true } | { ok: false; reason: string; code: string }> {
+  const row = await backupRestRow(env, instanceId);
+  if (row?.backup_rest_at != null) return { ok: true };
+  if (row?.backup_report_id == null) return { ok: false, reason: CLOUD_BACKUP_NEVER_SAVED_SENTENCE, code: BACKUP_NEVER_SAVED_CODE };
+  return { ok: false, reason: backupNotSavedReason(row), code: "backup_not_current" };
 }
 
 /**

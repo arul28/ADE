@@ -124,6 +124,8 @@ struct LanesTabView: View, Equatable {
   @State var primaryBranchLaneId: String?
   @State var primaryBranchError: String?
   @State var detailSheetTarget: LaneDetailSheetTarget?
+  /// "Wake and move" on a lane at rest: its live detail opens the move.
+  @State var moveAfterWakeLaneId: String?
   @State var batchManageLaneIds: [String] = []
   @State var batchManagePresented = false
   @State var refreshFeedbackToken = 0
@@ -334,6 +336,10 @@ struct LanesTabView: View, Equatable {
           CloudLaneAtRestScreen(subject: subject, onAwake: {
             detailSheetTarget = nil
             await reloadAfterLaneAction(target.laneId, refreshRemote: true)
+          }, onAwakeToMove: {
+            moveAfterWakeLaneId = target.laneId
+            detailSheetTarget = nil
+            await reloadAfterLaneAction(target.laneId, refreshRemote: true)
           })
           .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -346,6 +352,7 @@ struct LanesTabView: View, Equatable {
             initialSnapshot: target.snapshot,
             allLaneSnapshots: laneSnapshots,
             initialSection: target.initialSection,
+            moveAfterWake: moveAfterWake(target.laneId),
             onRefreshRoot: { await reload(refreshRemote: true, includeDecorations: false) }
           )
         }
