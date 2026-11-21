@@ -9445,6 +9445,14 @@ app.whenReady().then(async () => {
       clearTimeout(shutdownForceTimer);
       shutdownForceTimer = null;
     }
+    // Web storage reaches the disk on a delay of its own, and neither a
+    // destroyed window nor app.exit waits for it: a draft changed in the last
+    // seconds before Quit came back with its old text at the next launch.
+    try {
+      session.defaultSession.flushStorageData();
+    } catch {
+      // The exit below must happen whatever the flush does.
+    }
     destroyWindowsForExit();
     runImmediateProcessCleanup("process_exit_finalize");
     recordMainExit(shutdownReason ?? "finalize", exitCode);
