@@ -33,8 +33,20 @@ final class PointerFence {
         self.log = log
     }
 
+    /// Starts the fence. The driver calls it only while it owns a lane display:
+    /// with none, there is nothing to fence, and a tap would only see every
+    /// mouse move.
     func start() {
         guard eventTap == nil else { return }
+        // macOS 27 gates even a listen-only mouse tap behind Input Monitoring,
+        // and creating the tap with no grant shows the system prompt by
+        // itself, with nothing on screen to explain it. The tap could not run
+        // without the grant either, so skip it and say so. The next display
+        // change tries again, which picks up a grant given meanwhile.
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27, !CGPreflightListenEventAccess() {
+            logFailure("pointer fence off: ADE has no Input Monitoring grant, so the pointer can cross onto a lane display at a shared corner")
+            return
+        }
         let types: [CGEventType] = [
             .mouseMoved,
             .leftMouseDragged,

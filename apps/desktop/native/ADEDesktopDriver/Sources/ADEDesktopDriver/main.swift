@@ -158,7 +158,6 @@ final class DriverRuntime: NSObject {
         installSignalHandlers()
         startWatchdog()
         displayReconfiguration.start()
-        pointerFence.start()
         log("ade-desktop-driver \(driverVersion) ready (pid \(getpid()))")
         application.run()
     }
@@ -561,6 +560,17 @@ final class DriverRuntime: NSObject {
     /// one, so an idle helper stays idle. A watched pane probes every 3 seconds
     /// so the screen flips off "denied" promptly after the user toggles the
     /// grant; a display-only helper keeps the cheaper 10-second cadence.
+    /// A lane display was added or removed: the fence and the permission
+    /// probe each run only while this driver owns a display.
+    private func displaySetChanged() {
+        if displays.all().isEmpty {
+            pointerFence.stop()
+        } else {
+            pointerFence.start()
+        }
+        updatePermissionProbe()
+    }
+
     private func updatePermissionProbe() {
         let wanted = !displays.all().isEmpty || permissionWatching
         let interval = permissionWatching
@@ -675,7 +685,7 @@ final class DriverRuntime: NSObject {
             windowCount: ownership.windows(forLane: laneId).count,
             lastActivityAt: lastActivity[laneId] ?? Date()
         )
-        updatePermissionProbe()
+        displaySetChanged()
         emit(DriverEvent(event: "display-created", fields: ["display": .object(json)]))
         return json
     }
@@ -707,7 +717,7 @@ final class DriverRuntime: NSObject {
                 ].merging(quit.jsonFields) { current, _ in current }
             )
         )
-        updatePermissionProbe()
+        displaySetChanged()
         return ["destroyed": .bool(destroyed), "releasedWindows": .int(released)]
             .merging(quit.jsonFields) { current, _ in current }
     }
@@ -734,7 +744,7 @@ final class DriverRuntime: NSObject {
                     .merging(quit.jsonFields) { current, _ in current }
             )
         )
-        updatePermissionProbe()
+        displaySetChanged()
     }
 
     private func reconcileDisplays(_ request: DriverRequest) -> [String: JSONValue] {
@@ -753,7 +763,7 @@ final class DriverRuntime: NSObject {
             destroyed.append(laneId)
         }
         if !destroyed.isEmpty { relocateMovedDisplays() }
-        updatePermissionProbe()
+        displaySetChanged()
         return ["destroyed": .array(destroyed.map(JSONValue.string))]
     }
 
