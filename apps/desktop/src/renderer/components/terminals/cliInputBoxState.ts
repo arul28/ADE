@@ -113,8 +113,9 @@ export function readCliInputDraft(sessionId: string): string {
   return readStorage(`${DRAFT_KEY_PREFIX}${sessionId}`) ?? "";
 }
 
-export function writeCliInputDraft(sessionId: string, text: string): void {
-  writeStorage(`${DRAFT_KEY_PREFIX}${sessionId}`, text.trim() ? text : null);
+/** Whether the draft reached storage (a full storage refuses it). */
+export function writeCliInputDraft(sessionId: string, text: string): boolean {
+  return writeStorage(`${DRAFT_KEY_PREFIX}${sessionId}`, text.trim() ? text : null);
 }
 
 /** Sent texts, oldest first. */

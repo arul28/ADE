@@ -664,6 +664,7 @@ import {
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 import { registerTranscriptGauge } from "../../lib/rendererMemorySnapshot";
+import { useSaveBeforeQuit } from "../../lib/useSaveBeforeQuit";
 import { useActiveRepositoryTab, useActiveStartOn, useTabCopyPin } from "../../state/repositoryScope";
 import { repositoryReaderAddress, type StartOnChoice } from "../../../shared/repositoryTab";
 import { recordStartOnLastMachine } from "./startOnLastMachine";
@@ -4009,6 +4010,20 @@ function writeComposerDraftSnapshot(storageKey: string, snapshot: ComposerDraftS
     window.localStorage.setItem(storageKey, JSON.stringify(stripComposerDraftScreenshots(snapshot)));
   } catch {
     // ignore
+  }
+}
+
+/** Whether the saved draft at `storageKey` was edited after `snapshot`. */
+function storedComposerDraftIsNewer(storageKey: string, snapshot: ComposerDraftStorageSnapshot): boolean {
+  const pendingAt = Date.parse(snapshot.updatedAt);
+  if (!Number.isFinite(pendingAt)) return false;
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) return false;
+    const storedAt = Date.parse((JSON.parse(raw) as { updatedAt?: unknown }).updatedAt as string);
+    return Number.isFinite(storedAt) && storedAt > pendingAt;
+  } catch {
+    return false;
   }
 }
 
@@ -12833,7 +12848,9 @@ export function AgentChatPane({
     }
     const pending = pendingComposerDraftWriteRef.current;
     pendingComposerDraftWriteRef.current = null;
-    if (pending) {
+    // Two panes on one chat flush in mount order at Quit, not in edit order:
+    // the one that holds the older edit does not overwrite the newer one.
+    if (pending && !storedComposerDraftIsNewer(pending.storageKey, pending.snapshot)) {
       writeComposerDraftSnapshot(pending.storageKey, pending.snapshot);
     }
   }, []);
@@ -12843,6 +12860,10 @@ export function AgentChatPane({
       flushPendingComposerDraftWrite();
     };
   }, [composerDraftStorageKeyValue, flushPendingComposerDraftWrite]);
+  // A window that goes away (Quit, a closed window) never unmounts the pane,
+  // so the edit still inside the write debounce was lost: a composer cleared
+  // just before Quit came back with its old text at the next launch.
+  useSaveBeforeQuit(flushPendingComposerDraftWrite);
 
   // A pane that closes while a send is still in doubt (its machine dropped,
   // say) stops checking for it. A send that has not shown up goes back in its

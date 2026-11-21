@@ -102,6 +102,7 @@ import {
   releaseAllRetainedChatSessions,
 } from "./chatSessionRetention";
 import { findUserMessageForTurn, isParentUserMessage } from "./chatTurnState";
+import { APP_WILL_QUIT_EVENT } from "../../../shared/appWillQuit";
 
 vi.mock("../terminals/TerminalView", () => {
   const ReactMod = require("react") as typeof React;
@@ -4342,6 +4343,38 @@ describe("AgentChatPane submit recovery", () => {
       expect(stored.appControlContextItems[0]).not.toHaveProperty("screenshotDataUrl");
       expect(stored.builtInBrowserContextItems[0].screenshotDataUrl).toBeNull();
     });
+  });
+
+  it("saves an edit still inside the save delay when the app quits, unless a newer draft is already saved", async () => {
+    installAdeMocks({ sessions: [] });
+    const storageKey = composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:work-start",
+    });
+    const storedText = () => JSON.parse(window.localStorage.getItem(storageKey) ?? "null")?.text ?? null;
+    renderAutoCreateDraftPane();
+    const textbox = await screen.findByRole("textbox");
+
+    fireEvent.change(textbox, { target: { value: "edited just before Quit" } });
+    expect(storedText()).not.toBe("edited just before Quit");
+    act(() => {
+      window.dispatchEvent(new Event(APP_WILL_QUIT_EVENT));
+    });
+    expect(storedText()).toBe("edited just before Quit");
+
+    // Another pane on this chat saved a later edit: this pane's older pending
+    // edit must not overwrite it when both flush at Quit.
+    fireEvent.change(textbox, { target: { value: "older edit in this pane" } });
+    const saved = JSON.parse(window.localStorage.getItem(storageKey)!);
+    window.localStorage.setItem(storageKey, JSON.stringify({
+      ...saved,
+      text: "newer edit in another pane",
+      updatedAt: new Date(Date.now() + 60_000).toISOString(),
+    }));
+    act(() => {
+      window.dispatchEvent(new Event(APP_WILL_QUIT_EVENT));
+    });
+    expect(storedText()).toBe("newer edit in another pane");
   });
 
   it("ignores malformed persisted draft attachment/context entries instead of crashing", async () => {
