@@ -2,7 +2,8 @@
  * Starts the brain's Claude pass reconcile (claudePassSync.ts) on the sign-in
  * sync's hooks (providerLoginHooks.ts): the end of each sync pass, the gate
  * before a Claude turn, and a part of `provider_logins.status`; and the end
- * of a pass that a chat reports (claudePassEnd.ts). No timer of its own. `ade serve` calls it next to the sign-in sync's installer.
+ * of a pass that a chat reports (claudePassEnd.ts), checked with Claude
+ * first (claudePassTokenCheck.ts). No timer of its own. `ade serve` calls it next to the sign-in sync's installer.
  *
  * With `staticOff` (an embedded runtime, a development build, sync off) it
  * does nothing: a cloud computer then keeps today's boot token in its env.
@@ -65,9 +66,18 @@ export async function installClaudePassSync(args: {
       args.logger.warn("claude_pass.reconcile_failed", { at: label, reason: error instanceof Error ? error.name : "unknown" });
     }
   };
-  hooks.onProviderLoginPass((info) => run("pass", () => sync.reconcile({ accountUserId: info.accountUserId })));
-  // Claude refused a pass as no longer valid (a chat's auth failure): one end mark.
-  setClaudePassEndHandler((instanceId) => run("end", () => sync.endPass(instanceId)));
+  const runAsync = (label: string, work: () => Promise<unknown>): void => {
+    void work().catch((error: unknown) => {
+      args.logger.warn("claude_pass.reconcile_failed", { at: label, reason: error instanceof Error ? error.name : "unknown" });
+    });
+  };
+  hooks.onProviderLoginPass((info) => {
+    run("pass", () => sync.reconcile({ accountUserId: info.accountUserId }));
+    // An ended pass Claude still takes works again (once per ended token on this brain).
+    runAsync("review", () => sync.reviewEndedPasses({ accountUserId: info.accountUserId }));
+  });
+  // A chat's sign-in failed on a pass: it ends only when Claude refuses the token again.
+  setClaudePassEndHandler((instanceId) => runAsync("end", () => sync.endPass(instanceId)));
   // Local reads and at most one small file write: no time limit is needed.
   hooks.registerProviderLoginGate("claude", async () => run("gate", () => sync.reconcileForTurn()));
   hooks.registerProviderLoginStatusPart(({ provider }) => {

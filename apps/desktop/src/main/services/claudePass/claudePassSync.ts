@@ -46,6 +46,7 @@ import { cloudSignInVaultKey } from "../../../shared/cloudSignIns";
 import { claudeConfigHome } from "../shared/providerConfigHomes";
 import { setClaudePassLaunchState } from "./claudePassLaunch";
 import { claudePassUseOf, flushClaudePassUse, keepClaudePassUse } from "./claudePassUse";
+import { checkClaudePassToken, type ClaudePassTokenChecker } from "./claudePassTokenCheck";
 
 const TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 /** The whole value is one Claude Code long-lived token. */
@@ -95,6 +96,8 @@ export type ClaudePassSyncDeps = {
    * file is never read).
    */
   baseHomeHasLogin?: () => boolean;
+  /** Asks Claude whether it still takes a token (claudePassTokenCheck.ts). */
+  checkToken?: ClaudePassTokenChecker;
   logger?: Logger;
   now?: () => number;
 };
@@ -132,6 +135,7 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
   const env = deps.env ?? process.env;
   const now = deps.now ?? Date.now;
   const logger = deps.logger;
+  const checkToken = deps.checkToken ?? ((token: string) => checkClaudePassToken(token));
   /** Pass account id → its token, as last given to the launch helper. */
   let tokens = new Map<string, string>();
   let keyById = new Map<string, string>();
@@ -309,39 +313,90 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
     return result;
   }
 
-  /** Pass key → the token whose end this brain already handled (memory only). */
+  /** Pass key → the token whose end this brain is handling or handled (memory only). */
   const endedTokenByKey = new Map<string, string>();
 
   /**
-   * Claude refused pass account `instanceId` as no longer valid
+   * A Claude turn on pass account `instanceId` failed its sign-in
    * (claudePassEnd.ts). Writes `endedAt` into the pass item ONCE for this
-   * token, then reconciles so "New chats" moves on. The guard, in order:
-   *   1. this brain already handled this token's end → nothing;
+   * token, and only when Claude refuses the token again on a direct check;
+   * then reconciles so "New chats" moves on. The guard, in order:
+   *   1. this brain already handles this token's end → nothing;
    *   2. the vault item now holds another token (a Renew came first) → nothing;
    *   3. the item already carries `endedAt` (another computer wrote it) → nothing;
-   *   4. else one `set` of the same item with `endedAt`.
-   * Two chats that fail at the same moment run one after the other on this
-   * thread; the second stops at step 1. No retry and no loop: a refused write
-   * is logged and left for the person (Renew or Remove).
+   *   4. Claude still takes the token, or gives no answer → nothing ("kept"):
+   *      the next failed turn asks again;
+   *   5. else one `set` of the same item with `endedAt`.
+   * Two chats that fail at the same moment: the second stops at step 1.
    */
-  function endPass(instanceId: string): "ended" | "already" | "skipped" {
+  async function endPass(instanceId: string): Promise<"ended" | "already" | "skipped" | "kept"> {
     const key = keyById.get(instanceId);
     const token = tokens.get(instanceId);
     if (!key || !token) return "skipped";
     if (endedTokenByKey.get(key) === token) return "already";
     endedTokenByKey.set(key, token);
-    const vault = deps.vault();
-    const accountUserId = deps.accountUserId();
-    if (!vault || !accountUserId) return "skipped";
-    const passVault = claudePassVaultFromStore(vault);
-    const pass = parseClaudePass(passVault.get(key));
-    if (!pass || pass.token !== token) return "skipped";
-    if (pass.endedAt != null) return "already";
-    const wrote = passVault.set(key, JSON.stringify({ ...pass, endedAt: now() }), { expectedAccountUserId: accountUserId });
+    const current = () => {
+      const vault = deps.vault();
+      const accountUserId = deps.accountUserId();
+      if (!vault || !accountUserId) return null;
+      const passVault = claudePassVaultFromStore(vault);
+      const pass = parseClaudePass(passVault.get(key));
+      return pass && pass.token === token ? { passVault, pass, accountUserId } : null;
+    };
+    const before = current();
+    if (!before) return "skipped";
+    if (before.pass.endedAt != null) return "already";
+    const check = await checkToken(token);
+    if (check !== "refused") {
+      // Claude still takes it (or did not answer): the pass stays. A later refusal asks again.
+      if (endedTokenByKey.get(key) === token) endedTokenByKey.delete(key);
+      logger?.warn("claude_pass.end_not_confirmed", { key, check });
+      return "kept";
+    }
+    // Read again after the check: a Renew or another computer's mark may have come meanwhile.
+    const after = current();
+    if (!after) return "skipped";
+    if (after.pass.endedAt != null) return "already";
+    const wrote = after.passVault.set(key, JSON.stringify({ ...after.pass, endedAt: now() }), { expectedAccountUserId: after.accountUserId });
     logger?.warn("claude_pass.ended", { key, wrote });
     if (!wrote) return "skipped";
-    reconcile({ accountUserId });
+    reconcile({ accountUserId: after.accountUserId });
     return "ended";
+  }
+
+  /** Pass key → the ended token this brain asked Claude about (memory only): once each. */
+  const reviewedEndedToken = new Map<string, string>();
+
+  /**
+   * Ended passes whose token Claude still takes lose their `endedAt`. An
+   * older ADE ended a pass on one failed turn, with no direct check; this
+   * gives such a pass back. Asks Claude once for each ended token on this
+   * brain, never for a pass that works.
+   */
+  async function reviewEndedPasses(info: { accountUserId: string | null }): Promise<string[]> {
+    const accountUserId = info.accountUserId?.trim() || null;
+    const vault = deps.vault();
+    if (!accountUserId || !vault || vault.health().syncReady === false) return [];
+    const passVault = claudePassVaultFromStore(vault);
+    const ended = listClaudePasses(passVault).filter((entry) => entry.pass.endedAt != null && reviewedEndedToken.get(entry.key) !== entry.pass.token);
+    const revived: string[] = [];
+    for (const entry of ended) {
+      reviewedEndedToken.set(entry.key, entry.pass.token);
+      if (await checkToken(entry.pass.token) !== "accepted") continue;
+      // Read again: a Renew or a Remove may have come during the check.
+      const pass = parseClaudePass(passVault.get(entry.key));
+      if (!pass || pass.token !== entry.pass.token || pass.endedAt == null) continue;
+      const { endedAt: _ended, ...working } = pass;
+      if (!passVault.set(entry.key, JSON.stringify(working), { expectedAccountUserId: accountUserId })) continue;
+      if (endedTokenByKey.get(entry.key) === entry.pass.token) endedTokenByKey.delete(entry.key);
+      logger?.warn("claude_pass.end_reversed", { key: entry.key });
+      revived.push(entry.key);
+    }
+    if (revived.length) {
+      reconcile({ accountUserId });
+      deps.noteChanged("claude");
+    }
+    return revived;
   }
 
   /** `claudePasses` for `provider_logins.status` on this brain. */
@@ -407,6 +462,7 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
     },
     statusEntries,
     endPass,
+    reviewEndedPasses,
   };
 }
 

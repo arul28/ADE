@@ -224,7 +224,12 @@ export function buildCloudSignInActions(deps: {
       if (upload === "account") claude = { ...claude, state: "succeeded", message: null, upload };
       else if (upload) claude = { ...claude, upload };
     }
-    return { ...saved, claude, localAccounts: accounts, passes };
+    // Claude is saved only while a pass works: an older single item stays behind when every pass ended.
+    const readablePasses = passes?.filter((pass) => !pass.unreadable) ?? [];
+    const savedList = readablePasses.length
+      ? saved.saved.map((entry) => (entry.id === "claude" ? { ...entry, saved: readablePasses.some((pass) => pass.state !== "ended") } : entry))
+      : saved.saved;
+    return { ...saved, saved: savedList, claude, localAccounts: accounts, passes };
   };
 
   /**
