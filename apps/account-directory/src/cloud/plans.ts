@@ -3,9 +3,10 @@ import type { CloudCatalog, CloudPaidPlanId, CloudPlanFacts, CloudPlanId, CloudT
 export type { CloudPaidPlanId };
 
 /**
- * Sizes, plans and the arithmetic of hours, disk and cost
- * (`docs/plans/ade-cloud-plans-and-disk.md`). Hours are integer thousandths of
- * a Small-hour; money is integer millionths of a dollar ("micros").
+ * Sizes, plans and the arithmetic of hours, disk and cost (Pricing v2,
+ * `docs/plans/pricing-v2-and-gravity.md`). Hours are integer thousandths of
+ * a Medium-hour, and Small computers use none; money is integer millionths
+ * of a dollar ("micros").
  */
 
 export type CloudComputerType = "default" | "vm";
@@ -15,6 +16,7 @@ export type CloudSize = {
   type: CloudComputerType;
   cpu: number;
   memoryGb: number;
+  /** Thousandths of a Medium-hour each hour awake uses: 0 for Small, which never uses hours. */
   multiplierMilli: number;
   /** One of the four sizes the main list offers, or null for the other four. */
   tier: CloudTierId | null;
@@ -26,18 +28,26 @@ export type CloudSize = {
 /**
  * The main list is Small, Medium, Large and X-Large. The other four stay valid
  * for computers that exist and for an advanced choice; their disk limit is the
- * provider's own for that shape.
+ * provider's own for that shape. Rates are in Medium-hours (owner, 2026-11-21):
+ * Medium 1, Large 2.5, X-Large 4, the other four in proportion to their cost
+ * against Medium (half their old Small-hour rates); Small uses none.
  */
 const CLOUD_SIZES: readonly CloudSize[] = [
-  { id: "small", type: "default", cpu: 2, memoryGb: 4, multiplierMilli: 1000, tier: "small", label: "Small", diskMaxGb: 12 },
-  { id: "medium", type: "default", cpu: 4, memoryGb: 8, multiplierMilli: 2000, tier: "medium", label: "Medium", diskMaxGb: 20 },
-  { id: "large", type: "default", cpu: 4, memoryGb: 16, multiplierMilli: 3300, tier: null, label: "Standard 4 CPU, 16 GB", diskMaxGb: 40 },
-  { id: "xlarge", type: "default", cpu: 4, memoryGb: 32, multiplierMilli: 5800, tier: null, label: "Standard 4 CPU, 32 GB", diskMaxGb: 80 },
-  { id: "vm-small", type: "vm", cpu: 2, memoryGb: 4, multiplierMilli: 2500, tier: null, label: "Full 2 CPU, 4 GB", diskMaxGb: 100 },
-  { id: "vm-medium", type: "vm", cpu: 4, memoryGb: 8, multiplierMilli: 5000, tier: "large", label: "Large", diskMaxGb: 50 },
-  { id: "vm-large", type: "vm", cpu: 4, memoryGb: 16, multiplierMilli: 8000, tier: "xlarge", label: "X-Large", diskMaxGb: 100 },
-  { id: "vm-xlarge", type: "vm", cpu: 4, memoryGb: 32, multiplierMilli: 14500, tier: null, label: "Full 4 CPU, 32 GB", diskMaxGb: 100 },
+  { id: "small", type: "default", cpu: 2, memoryGb: 4, multiplierMilli: 0, tier: "small", label: "Small", diskMaxGb: 12 },
+  { id: "medium", type: "default", cpu: 4, memoryGb: 8, multiplierMilli: 1000, tier: "medium", label: "Medium", diskMaxGb: 20 },
+  { id: "large", type: "default", cpu: 4, memoryGb: 16, multiplierMilli: 1650, tier: null, label: "Standard 4 CPU, 16 GB", diskMaxGb: 40 },
+  { id: "xlarge", type: "default", cpu: 4, memoryGb: 32, multiplierMilli: 2900, tier: null, label: "Standard 4 CPU, 32 GB", diskMaxGb: 80 },
+  { id: "vm-small", type: "vm", cpu: 2, memoryGb: 4, multiplierMilli: 1250, tier: null, label: "Full 2 CPU, 4 GB", diskMaxGb: 100 },
+  { id: "vm-medium", type: "vm", cpu: 4, memoryGb: 8, multiplierMilli: 2500, tier: "large", label: "Large", diskMaxGb: 50 },
+  { id: "vm-large", type: "vm", cpu: 4, memoryGb: 16, multiplierMilli: 4000, tier: "xlarge", label: "X-Large", diskMaxGb: 100 },
+  { id: "vm-xlarge", type: "vm", cpu: 4, memoryGb: 32, multiplierMilli: 7250, tier: null, label: "Full 4 CPU, 32 GB", diskMaxGb: 100 },
 ];
+
+/** Whether a computer at this rate uses hours: every size but Small. */
+export const usesHours = (multiplierMilli: number): boolean => multiplierMilli > 0;
+
+/** The Small size's disk maximum: what older builds read as a plan's disk, for each of its computers. */
+const SMALL_DISK_MAX_GB = CLOUD_SIZES[0]!.diskMaxGb;
 
 export function cloudSizeFor(type: unknown, cpu: unknown, memoryGb: unknown): CloudSize | null {
   return CLOUD_SIZES.find((size) => size.type === type && size.cpu === cpu && size.memoryGb === memoryGb) ?? null;
@@ -86,24 +96,26 @@ export function setupStartDiskGb(
 export const EXTRA_PHONE_MINUTE_CENTS = 2.5;
 
 /**
- * The plans (the owner's table of 2026-11-13; iPhone minutes of 2026-11-17). Disk is what the account has
- * at one time, shared by all its computers; hours and phone minutes are a
- * month's. There is no limit on how many computers an account has: only a
- * hidden safety cap on how many are awake at once (`AWAKE_COMPUTER_CAP`),
- * never shown as a plan limit. Phone minutes are the ADE Cloud iPhone's
- * (`phones.ts` meters them). `extraHourCents` and `extraPhoneMinuteCents`
- * are what an hour or a minute past the plan costs; null on the free plan,
- * where work stops instead.
+ * The plans (Pricing v2, the owner's table of 2026-11-21; iPhone minutes of
+ * 2026-11-17). `computerLimit` is how many cloud computers the account may
+ * have, asleep or not; hours (Medium-hours) and phone minutes are a month's.
+ * Small computers never use hours. There is no account-wide disk: each size
+ * has its own maximum, and the idle cleanup deletes unused computers. A
+ * hidden safety cap still holds how many are awake at once
+ * (`AWAKE_COMPUTER_CAP`). `extraHourCents` and `extraPhoneMinuteCents` are
+ * what an hour or a minute past the plan costs; null on the free plan, where
+ * work on the bigger sizes stops instead. Outside agents (ADE MCP) may start
+ * ADE Cloud work on paid plans only.
  */
 export const CLOUD_PLANS: Readonly<Record<CloudPlanId, CloudPlanTerms>> = {
-  free: { label: "Free", includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 60, extraHourCents: null, extraPhoneMinuteCents: null },
-  plus: { label: "Plus", includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 80, extraHourCents: 2, extraPhoneMinuteCents: EXTRA_PHONE_MINUTE_CENTS },
-  pro: { label: "Pro", includedMilli: 1_600_000, diskGb: 80, priceUsd: 20, phoneMinutes: 300, extraHourCents: 1.5, extraPhoneMinuteCents: EXTRA_PHONE_MINUTE_CENTS },
-  max: { label: "Max", includedMilli: 5_000_000, diskGb: 175, priceUsd: 50, phoneMinutes: 800, extraHourCents: 1.2, extraPhoneMinuteCents: EXTRA_PHONE_MINUTE_CENTS },
+  free: { label: "Free", includedMilli: 50_000, computerLimit: 2, priceUsd: 0, phoneMinutes: 60, extraHourCents: null, extraPhoneMinuteCents: null, outsideAgents: false },
+  plus: { label: "Plus", includedMilli: 100_000, computerLimit: 3, priceUsd: 5, phoneMinutes: 80, extraHourCents: 2, extraPhoneMinuteCents: EXTRA_PHONE_MINUTE_CENTS, outsideAgents: true },
+  pro: { label: "Pro", includedMilli: 600_000, computerLimit: 10, priceUsd: 20, phoneMinutes: 300, extraHourCents: 2, extraPhoneMinuteCents: EXTRA_PHONE_MINUTE_CENTS, outsideAgents: true },
+  max: { label: "Max", includedMilli: 1_500_000, computerLimit: 20, priceUsd: 50, phoneMinutes: 800, extraHourCents: 2, extraPhoneMinuteCents: EXTRA_PHONE_MINUTE_CENTS, outsideAgents: true },
 };
 
-/** A plan as `CLOUD_PLANS` holds it, with its name on this server's own pages; the catalog adds what older builds read. */
-export type CloudPlanTerms = Required<Omit<CloudPlanFacts, "computerLimit">> & { label: string };
+/** A plan as `CLOUD_PLANS` holds it, with its name on this server's own pages; the catalog adds what older builds read (`diskGb`). */
+export type CloudPlanTerms = Required<Omit<CloudPlanFacts, "diskGb">> & { label: string };
 
 /** Paid plans, cheapest first: a move to a lower rank is a downgrade (it waits for the period end). */
 export const PAID_PLAN_RANK: Readonly<Record<CloudPaidPlanId, number>> = { plus: 1, pro: 2, max: 3 };
@@ -189,19 +201,19 @@ export const extraDiskMonthMaxGb = (limitCents: number, terms?: ExtraDiskTerms |
 /** The GB-days of extra disk a monthly limit of `limitCents` pays for. */
 export const extraDiskGbDaysIn = (limitCents: number, terms?: ExtraDiskTerms | null): number => Math.floor((limitCents * CENT_MICROS) / extraDiskMicrosPerGbDayOf(terms));
 
-/** One extra hour on each paid plan, in micros: a flat price per plan, each a bit above that plan's own rate. */
+/** One extra hour (a Medium-hour) on each paid plan, in micros: 2 cents on every paid plan (Pricing v2). */
 export const EXTRA_HOUR_MICROS: Readonly<Record<CloudPaidPlanId, number>> = {
-  plus: Math.round(2 * CENT_MICROS),
-  pro: Math.round(1.5 * CENT_MICROS),
-  max: Math.round(1.2 * CENT_MICROS),
+  plus: Math.round(CLOUD_PLANS.plus.extraHourCents! * CENT_MICROS),
+  pro: Math.round(CLOUD_PLANS.pro.extraHourCents! * CENT_MICROS),
+  max: Math.round(CLOUD_PLANS.max.extraHourCents! * CENT_MICROS),
 };
 
 /** What this Worker sells now: Pro, Max and extra disk only once their Stripe prices are set (`cloudOffers`). */
 export type CloudOffers = { pro: boolean; max: boolean; extraDisk: boolean };
 
-/** A plan as the catalog sends it: `computerLimit` is the awake cap, for builds that still show a computer count. */
+/** A plan as the catalog sends it, with `diskGb` for older builds (its computers at the Small disk; never a limit). */
 // The label stays on this server's pages: the catalog's plans keep their shape.
-const catalogPlan = ({ label: _label, ...terms }: CloudPlanTerms): CloudPlanFacts => ({ ...terms, computerLimit: AWAKE_COMPUTER_CAP });
+const catalogPlan = ({ label: _label, ...terms }: CloudPlanTerms): CloudPlanFacts => ({ ...terms, diskGb: terms.computerLimit * SMALL_DISK_MAX_GB });
 
 /**
  * What `GET /cloud/account` tells a client about sizes and plans. Pro, Max and
@@ -222,6 +234,7 @@ export function cloudCatalog(offers: CloudOffers, planId: CloudPlanId = "free", 
     diskStepGb: DISK_STEP_GB,
     paidPriceUsd: CLOUD_PLANS.plus.priceUsd,
     extraHourCents: CLOUD_PLANS[planId === "free" ? "plus" : planId].extraHourCents ?? 2,
+    hourUnit: "medium",
     ...(offers.extraDisk ? { extraDiskCentsPer10GbMonth: extraDiskCentsPer10GbMonthOf(terms) } : {}),
   };
 }
@@ -264,7 +277,7 @@ export function isRestingStatus(status: string): boolean {
   return RESTING_STATUSES.has(status);
 }
 
-/** Thousandths of a Small-hour for `ms` of awake time at this size. */
+/** Thousandths of a Medium-hour for `ms` of awake time at this size: 0 for Small. */
 export function hoursMilliFor(ms: number, multiplierMilli: number): number {
   if (ms <= 0) return 0;
   return Math.round((ms * multiplierMilli) / 3_600_000);
