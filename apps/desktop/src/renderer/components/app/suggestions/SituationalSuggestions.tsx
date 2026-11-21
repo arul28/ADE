@@ -7,7 +7,7 @@ import { countActivityBoardColumns } from "../../../../shared/attention/activity
 import { selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, workViewStoreForProject } from "../../../state/appStore";
 import { useActivityStore } from "../../../state/activityStore";
 import { useProjectMachines } from "../../../state/projectMachines";
-import { activityFeedItems } from "../../activity/activityPriority";
+import { activityAgentItemsWithDismissed } from "../../activity/activityPriority";
 import { useUsageSnapshot } from "../../usage/useUsageSnapshot";
 import { usageLeftLevel } from "../../usage/usageDesign";
 import { humanizeProvider } from "../../usage/usageProviderNames";
@@ -80,7 +80,7 @@ export function SituationalSuggestions(props: Props): null {
   useChatSecretSuggestion(props);
   useIssueTrackerSuggestion(props);
   // Chats and CLIs running in the open project: read once for the two hooks that use it.
-  const working = useOpenProjectWorkingCount();
+  const working = useOpenProjectWorkingCount(machines.find((machine) => machine.isActiveBinding)?.deviceId ?? null);
   useParallelChatsSuggestion(props, working);
   useRepeatPromptSuggestion(props);
   usePairPhoneSuggestion(props, machinesSettled && otherMachines.length === 0);
@@ -260,29 +260,35 @@ function registerTrackerStarter(tracker: IssueTracker, navigate: (path: string) 
 /**
  * Chats running in the open project. The Activity feed holds every machine's
  * and project's items, but the Work grid shows only the open project's chats.
- * A machine names a project by its own folder, so a match is the folder, the
- * id made from it, or the project's name.
+ * Another machine names a project by its own folder, so its items match by
+ * the project's name. An item from the project's own machine (the same
+ * device) matches only by folder: another project there can share the name.
  */
 function workingChatCount(
   itemsById: Readonly<Record<string, AttentionItem>>,
-  project: { rootPath: string | null; name: string | null },
+  project: { rootPath: string | null; name: string | null; deviceId: string | null },
 ): number {
   if (!project.rootPath && !project.name) return 0;
   const name = project.name?.trim().toLowerCase() || null;
-  const inProject = activityFeedItems(itemsById).filter((item) => (
-    (project.rootPath != null && item.project.rootPath === project.rootPath)
-    || (name != null && item.project.name.trim().toLowerCase() === name)
-  ));
+  // A dismissed row still counts: dismissing hides it, the agent keeps working.
+  const inProject = activityAgentItemsWithDismissed(itemsById).filter((item) => {
+    if (project.rootPath != null && item.project.rootPath === project.rootPath) return true;
+    if (project.deviceId != null && item.machine.deviceId === project.deviceId) return false;
+    return name != null && item.project.name.trim().toLowerCase() === name;
+  });
   return countActivityBoardColumns(inProject).working;
 }
 
-/** Chats and CLIs running now in the open project, on any machine. */
-function useOpenProjectWorkingCount(): number {
+/**
+ * Chats and CLIs running now in the open project, on any machine.
+ * `deviceId`: the device of the project's own machine, when known.
+ */
+function useOpenProjectWorkingCount(deviceId: string | null): number {
   const rootPath = useAppStore(selectActiveProjectRoot);
   const projectName = useAppStore((state) => (
     state.projectBinding?.kind === "remote" ? state.projectBinding.displayName : state.project?.displayName
   ) ?? null);
-  return useActivityStore((state) => workingChatCount(state.itemsById, { rootPath, name: projectName }));
+  return useActivityStore((state) => workingChatCount(state.itemsById, { rootPath, name: projectName, deviceId }));
 }
 
 /** Three or more chats are running at once in the open project and the Work grid is not in use. */
