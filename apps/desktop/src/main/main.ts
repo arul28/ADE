@@ -21,6 +21,7 @@ import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } f
 import { setSentryEventMirror, setSentryMachineIdResolver, setSentryUserResolver } from "../shared/sentry/eventFilter";
 import { loadMachineTelemetryId, machineTelemetryIdReader, peekMachineTelemetryId } from "./services/analytics/machineTelemetryId";
 import { staleLaneDays } from "../shared/laneCleanup";
+import { saveWindowDraftsBeforeQuit } from "./saveWindowDraftsBeforeQuit";
 import { createExceptionAnalyticsMirror } from "./services/analytics/exceptionProductAnalytics";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
@@ -9531,6 +9532,9 @@ app.whenReady().then(async () => {
         exitCode,
         fastKillFirst: args.fastKillFirst ?? false,
       });
+
+      enterShutdownStep("window_drafts_save");
+      await saveWindowDraftsBeforeQuit(adeWindows(), (event, meta) => logMachineEvent("warn", event, meta));
 
       // Deliver any staged board move before teardown starts. This is the only
       // awaited drain: `staged.dispatch()` sends a chat message, so it needs a

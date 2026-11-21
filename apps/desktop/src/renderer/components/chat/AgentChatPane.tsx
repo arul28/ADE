@@ -664,6 +664,7 @@ import {
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 import { registerTranscriptGauge } from "../../lib/rendererMemorySnapshot";
+import { useSaveBeforeQuit } from "../../lib/useSaveBeforeQuit";
 import { useActiveRepositoryTab, useActiveStartOn, useTabCopyPin } from "../../state/repositoryScope";
 import { repositoryReaderAddress, type StartOnChoice } from "../../../shared/repositoryTab";
 import { recordStartOnLastMachine } from "./startOnLastMachine";
@@ -12843,13 +12844,10 @@ export function AgentChatPane({
       flushPendingComposerDraftWrite();
     };
   }, [composerDraftStorageKeyValue, flushPendingComposerDraftWrite]);
-  // A window that closes (Quit, a closed tab) never unmounts the pane, so the
-  // edit still inside the write debounce was lost: a composer cleared just
-  // before Quit came back with its old text at the next launch.
-  useEffect(() => {
-    window.addEventListener("pagehide", flushPendingComposerDraftWrite);
-    return () => window.removeEventListener("pagehide", flushPendingComposerDraftWrite);
-  }, [flushPendingComposerDraftWrite]);
+  // A window that goes away (Quit, a closed window) never unmounts the pane,
+  // so the edit still inside the write debounce was lost: a composer cleared
+  // just before Quit came back with its old text at the next launch.
+  useSaveBeforeQuit(flushPendingComposerDraftWrite);
 
   // A pane that closes while a send is still in doubt (its machine dropped,
   // say) stops checking for it. A send that has not shown up goes back in its

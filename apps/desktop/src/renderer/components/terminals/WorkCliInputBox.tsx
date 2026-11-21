@@ -49,6 +49,7 @@ import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
 import { connectionOnline } from "../../state/laneMachineRouting";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { isImeComposing } from "../../lib/imeComposition";
+import { useSaveBeforeQuit } from "../../lib/useSaveBeforeQuit";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { showToast } from "../app/toast/toastStore";
@@ -295,6 +296,8 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
     return () => clearTimeout(timer);
   }, [draft, sessionId]);
   useEffect(() => () => writeCliInputDraft(sessionId, draftRef.current), [sessionId]);
+  // Quit destroys the window without unmounting the box: save what the delay still holds.
+  useSaveBeforeQuit(() => writeCliInputDraft(sessionId, draftRef.current));
 
   // The box takes focus when its surface becomes active. The terminal focuses
   // itself on activation too (a frame, then 100 ms later), so focus after it.
