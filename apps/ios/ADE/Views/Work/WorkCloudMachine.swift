@@ -505,9 +505,11 @@ private extension View {
   }
 }
 
-/// The messages ADE Cloud holds for this chat until its computer is up,
-/// read from the server so a send from another device shows too. Each one
-/// says where it is; one waiting on a provider sign-in shows that step.
+/// The messages ADE Cloud holds for a CLI copy whose computer was deleted,
+/// above its composer, read from the server so a send from another device
+/// shows too. Each one says where it is; one waiting on a provider sign-in
+/// shows that step. A chat draws its held messages in its thread instead
+/// (`CloudHeldMessageRow`).
 struct CloudQueuedMessagesView: View {
   /// The account machine key the chat is saved under, and the chat id.
   let accountMachineKey: String
@@ -619,21 +621,254 @@ struct CloudQueuedMessagesView: View {
   }
 }
 
+/// The messages ADE Cloud holds for a chat, as the chat's thread draws them:
+/// each one as the person's own message at the end of the thread, the way
+/// a send to an awake computer looks, with the thread's working line while
+/// the server moves it. Only a message that needs the person says so: a
+/// failed one (with Put back and Dismiss) and one waiting for a sign-in.
+/// Every action goes to the chat's own account machine key.
+struct WorkCloudHeldThread {
+  /// `AccountCloudStore.threadMessages` less the ones the transcript shows.
+  var messages: [CloudChatQueuedMessage]
+  /// Cancels a queued message; nil when it worked, else the server's sentence.
+  var onCancel: @MainActor (String) async -> String?
+  /// Puts a failed message's text back in the composer. Nil: no "Put back".
+  var onPutBack: (@MainActor (CloudChatQueuedMessage) -> Void)?
+  var onDismiss: @MainActor (String) -> Void
+
+  /// The agent is on it: a message the server still moves, or one it just
+  /// delivered that the transcript does not show yet.
+  var isWorking: Bool {
+    messages.contains { $0.isMoving || $0.state == "delivered" }
+  }
+
+  /// When the oldest of those was sent, for the working line's clock.
+  var workingSince: Date? {
+    messages.first { $0.isMoving || $0.state == "delivered" }?.createdAt
+      .map { Date(timeIntervalSince1970: $0 / 1000) }
+  }
+
+  /// One stand-in user message at the held send's time, so the working
+  /// line's clock starts at the send, not at the transcript's last row.
+  func workingAnchor(sessionId: String) -> [WorkChatEnvelope] {
+    [WorkChatEnvelope(
+      sessionId: sessionId,
+      timestamp: workDateFormatter.string(from: workingSince ?? Date()),
+      sequence: nil,
+      event: .userMessage(text: "", attachments: nil, turnId: nil, steerId: nil, deliveryState: nil, processed: nil)
+    )]
+  }
+
+  /// What a row draws, for its revision: a change reconfigures that row only.
+  static func revision(_ message: CloudChatQueuedMessage) -> Int {
+    var hasher = Hasher()
+    hasher.combine(message.state)
+    hasher.combine(message.text)
+    hasher.combine(message.error)
+    return hasher.finalize()
+  }
+}
+
+/// The held messages on their own, for a chat the phone cannot draw yet
+/// (no cached row, or its thread still loading): the same rows and working
+/// line the thread draws, so a queued send keeps its bubble and Cancel and a
+/// failed one its Put back and Dismiss. Only the destination's loading and
+/// unavailable states use it; once the chat view shows, its thread owns them.
+struct CloudHeldMessagesStandalone: View {
+  let thread: WorkCloudHeldThread
+  let sessionId: String
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 12) {
+        ForEach(thread.messages, id: \.messageId) { message in
+          CloudHeldMessageRow(message: message, maxUserBubbleWidth: nil, thread: thread)
+        }
+        if thread.isWorking {
+          WorkActivityIndicator(
+            transcript: thread.workingAnchor(sessionId: sessionId),
+            precomputedPresentation: WorkActivityIndicator.Presentation(label: "Working", detail: nil, tint: ADEColor.accent),
+            isStreaming: true
+          )
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 8)
+    }
+    .defaultScrollAnchor(.bottom)
+    .adeInspectable("Work.Chat.CloudHeldStandalone")
+  }
+}
+
+/// One held message in a chat's thread: the person's own bubble, as any
+/// sent message. Under it, only what the person can do: a quiet Cancel
+/// while it waits for the computer, the server's sentence with Put back and
+/// Dismiss when it failed, a short line while it waits for a sign-in (the
+/// sign-in step itself sits above the composer, `CloudQueueSignInSteps`).
+struct CloudHeldMessageRow: View {
+  let message: CloudChatQueuedMessage
+  var maxUserBubbleWidth: CGFloat?
+  let thread: WorkCloudHeldThread
+  @State private var cancelling = false
+  @State private var cancelError: String?
+
+  private var bubble: WorkChatMessage {
+    WorkChatMessage(
+      id: "cloud-held-\(message.messageId)",
+      role: "user",
+      markdown: message.text ?? "",
+      timestamp: message.createdAt.map { workDateFormatter.string(from: Date(timeIntervalSince1970: $0 / 1000)) } ?? "",
+      turnId: nil,
+      itemId: nil,
+      // A failed one wears the thread's own "Couldn't send" mark.
+      deliveryState: message.state == "failed" ? "failed" : nil
+    )
+  }
+
+  var body: some View {
+    VStack(alignment: .trailing, spacing: 2) {
+      WorkChatMessageBubble(message: bubble, maxUserBubbleWidth: maxUserBubbleWidth, onOpenFullOutput: {})
+      footer
+        .frame(maxWidth: maxUserBubbleWidth ?? 360, alignment: .trailing)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+    .adeInspectable("Work.Chat.CloudHeldMessage", metadata: ["state": message.state])
+  }
+
+  /// The state's line, then a failed Cancel's sentence whatever the state
+  /// is now (the message may have moved on while the Cancel was out).
+  private var footer: some View {
+    VStack(alignment: .trailing, spacing: 0) {
+      stateFooter
+      if let cancelError {
+        errorText(cancelError)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var stateFooter: some View {
+    switch message.state {
+    case "queued":
+      Button {
+        cancel()
+      } label: {
+        Text(cancelling ? "Cancelling…" : "Cancel")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.horizontal, 4)
+          .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(cancelling)
+      .accessibilityLabel("Cancel this message")
+      .accessibilityHint("ADE Cloud won't send it.")
+      .adeInspectable("CloudLane.Queued.Cancel")
+    case "failed":
+      VStack(alignment: .trailing, spacing: 0) {
+        errorText(message.error ?? "ADE Cloud didn't say why.")
+        HStack(spacing: 4) {
+          if let onPutBack = thread.onPutBack, nonEmptyTrimmed(message.text) != nil {
+            actionButton("Put back", hint: "Puts the text back in the message field.") { onPutBack(message) }
+              .adeInspectable("CloudLane.Queued.PutBack")
+          }
+          actionButton("Dismiss", hint: "Removes it from the chat.") { thread.onDismiss(message.messageId) }
+            .adeInspectable("CloudLane.Queued.Dismiss")
+        }
+      }
+    case "waiting_for_sign_in":
+      Text("Waiting for a sign-in")
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .padding(.horizontal, 2)
+        .padding(.top, 1)
+    default:
+      EmptyView()
+    }
+  }
+
+  private func errorText(_ text: String) -> some View {
+    Text(text)
+      .font(.caption2)
+      .foregroundStyle(ADEColor.danger)
+      .multilineTextAlignment(.trailing)
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.horizontal, 2)
+      .padding(.top, 2)
+  }
+
+  private func actionButton(_ title: String, hint: String, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      Text(title)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.accent)
+        .padding(.horizontal, 6)
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityHint(hint)
+  }
+
+  private func cancel() {
+    guard !cancelling else { return }
+    cancelling = true
+    cancelError = nil
+    Task { @MainActor in
+      cancelError = await thread.onCancel(message.messageId)
+      cancelling = false
+    }
+  }
+}
+
+/// The sign-in a held message waits for, above the chat's composer: the
+/// step to finish (`CloudSignInStepDetail`), nothing else. The message
+/// itself is in the thread.
+struct CloudQueueSignInSteps: View {
+  let accountMachineKey: String
+  let chatId: String
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  @ObservedObject private var store = AccountCloudStore.shared
+  private var syncService: SyncService { syncPublishes.service }
+
+  var body: some View {
+    let waiting = store.threadMessages(machineKey: accountMachineKey, chatId: chatId)
+      .filter { $0.state == "waiting_for_sign_in" && $0.signIn != nil }
+    if !waiting.isEmpty {
+      VStack(spacing: 8) {
+        ForEach(waiting, id: \.messageId) { message in
+          if let signIn = message.signIn {
+            CloudSignInStepDetail(signIn: signIn, instanceId: syncService.cloudServerInstances.first { $0.machineKey?.lowercased() == accountMachineKey.lowercased() }?.id) {
+              await store.reconcile(machineKey: accountMachineKey, chatId: chatId, using: syncService)
+            }
+            .padding(12)
+            .adeKitCard(padding: nil)
+          }
+        }
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 6)
+      .adeInspectable("CloudLane.Queued.SignIn")
+    }
+  }
+}
+
 extension View {
-  /// The messages ADE Cloud holds for a cloud chat, above its composer, and
-  /// the follow that reads them while the chat is open and the app is in
-  /// front. When one leaves the queue the chat reads again: from the
+  /// Follows the messages ADE Cloud holds for a cloud chat while the chat is
+  /// open and the app is in front (the thread draws them, see
+  /// `WorkCloudHeldThread`), and shows the sign-in step one waits for above
+  /// the composer. When one leaves the queue the chat reads again: from the
   /// computer once it is up, else from the saved copy.
-  /// `onPutBack` puts a failed message's text back in the chat's composer.
-  func followsCloudQueue(fleetKey: String?, sessionId: String, onPutBack: @escaping (String) -> Void) -> some View {
-    modifier(CloudQueueFollowModifier(fleetKey: fleetKey, sessionId: sessionId, onPutBack: onPutBack))
+  func followsCloudQueue(fleetKey: String?, sessionId: String) -> some View {
+    modifier(CloudQueueFollowModifier(fleetKey: fleetKey, sessionId: sessionId))
   }
 }
 
 private struct CloudQueueFollowModifier: ViewModifier {
   let fleetKey: String?
   let sessionId: String
-  let onPutBack: (String) -> Void
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @ObservedObject private var store = AccountCloudStore.shared
   @Environment(\.scenePhase) private var scenePhase
@@ -648,7 +883,7 @@ private struct CloudQueueFollowModifier: ViewModifier {
     content
       .safeAreaInset(edge: .bottom, spacing: 0) {
         if let accountKey {
-          CloudQueuedMessagesView(accountMachineKey: accountKey, chatId: sessionId, onPutBack: onPutBack)
+          CloudQueueSignInSteps(accountMachineKey: accountKey, chatId: sessionId)
         }
       }
       // Runs again when a send queues a message, when a sign-in lets one

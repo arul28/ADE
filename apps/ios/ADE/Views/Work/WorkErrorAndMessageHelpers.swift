@@ -1123,6 +1123,7 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
   envelope.userMessageGuestAuthorName = entry.userMessageGuestAuthorName
   envelope.userMessageIsRecoveryHandOff = entry.userMessageIsRecoveryHandOff
   envelope.userMessageIsRestartResume = entry.userMessageIsRestartResume
+  envelope.userMessageClientSendId = entry.userMessageClientSendId
   envelope.omittedRowOffset = entry.omittedRowOffset
   if case .systemNotice(_, _, let detail, _, _) = entry.event {
     envelope.continuityNotice = workContinuityNotice(from: detail)

@@ -3521,6 +3521,11 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// Never a bubble: the restart notice already says the agent continues.
   /// Same rule as desktop `isRestartResumeScheduleId`.
   var userMessageIsRestartResume: Bool = false
+  /// The send id (`clientSendId`) of the send that wrote this `user_message`;
+  /// nil from an older host, a send with no id, or a message ADE wrote. A
+  /// message ADE Cloud held for the chat carries its held message's id, so
+  /// the chat finds the real message by id, not by text.
+  var userMessageClientSendId: String?
   /// Byte offset of this row in the host's transcript, when it arrived on a
   /// `chat_history` page that reported one.
   ///
@@ -3606,6 +3611,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var metadataMarksRecoveryHandOff = false
     var metadataMarksRestartResume = false
     var metadataGuestAuthorName: String?
+    var clientSendId: String?
 
     private struct MessageAuthor: Decodable {
       var kind: String?
@@ -3642,6 +3648,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       case failDetail
       case accountLabel
       case summary
+      case clientSendId
     }
 
     /// Each field is decoded on its own tolerant path, never a shared throwing
@@ -3664,6 +3671,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       accountLabel = try? container.decodeIfPresent(String.self, forKey: .accountLabel)
       failDetail = try? container.decodeIfPresent(String.self, forKey: .failDetail)
       summary = try? container.decodeIfPresent(String.self, forKey: .summary)
+      clientSendId = (try? container.decodeIfPresent(String.self, forKey: .clientSendId)).flatMap { $0 }
       if let metadata = try? container.nestedContainer(keyedBy: MetadataKey.self, forKey: .metadata) {
         metadataMarksAdeAuthor = agentChatAdeAuthoredMetadataKeys.contains { name in
           let key = MetadataKey(name)
@@ -3757,6 +3765,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     userMessageGuestAuthorName = rawEvent?.type == "user_message" ? rawEvent?.metadataGuestAuthorName : nil
     userMessageIsRecoveryHandOff = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRecoveryHandOff == true
     userMessageIsRestartResume = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRestartResume == true
+    userMessageClientSendId = rawEvent?.type == "user_message" ? rawEvent?.clientSendId.flatMap { nonEmptyTrimmed($0) } : nil
     // Only a host that honoured `mobileChatSlimV1` sets this. A host that did
     // not sends the whole result and no flag, and the row behaves exactly as
     // it does today.

@@ -145,8 +145,9 @@ enum SyncChatMessageDelivery: Equatable {
   /// mirroring desktop's queue-full handling.
   case dropped(reason: String?)
   /// ADE Cloud's server holds the message for a chat whose computer is
-  /// asleep or deleted. The chat's queued row (`CloudQueuedMessagesView`) is
-  /// its one copy until it reaches the chat, so a caller keeps no echo.
+  /// asleep or deleted. The thread draws the held message
+  /// (`WorkCloudHeldThread`) as its one copy until the chat's transcript
+  /// shows it, so a caller keeps no echo.
   case heldByServer
 }
 
@@ -29481,7 +29482,7 @@ extension SyncService: ChatThreadTransport {
     request: ChatThreadOlderRequest
   ) async throws -> ChatThreadOlderPageInput {
     if let accountKey = savedCloudChatAccountKey(forThreadKey: key) {
-      return try await AccountCloudStore.shared.olderSavedPage(key: key, accountMachineKey: accountKey, using: self)
+      return try await AccountCloudStore.shared.olderSavedPage(key: key, accountMachineKey: accountKey, request: request, using: self)
     }
     if let connection = fleetConnection(forThreadKey: key) {
       return try await connection.fetchOlderPage(sessionId: key.sessionId, request: request)

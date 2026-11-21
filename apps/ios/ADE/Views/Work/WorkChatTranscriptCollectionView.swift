@@ -13,6 +13,8 @@ struct WorkChatTranscriptRow: Identifiable, Hashable {
     case emptyState
     /// Index into the presentation's `renderEntries`.
     case entry(index: Int)
+    /// A message ADE Cloud holds for the chat (`WorkCloudHeldThread`), by id.
+    case cloudHeld(messageId: String)
     case streamingStatus
     /// The bottom gutter that reserves room for the floating badge chips.
     case tail

@@ -3972,6 +3972,90 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(UserDefaults.standard.stringArray(forKey: defaultsKey) ?? [], [], "A relaunch must not bring the old account's cloud computers back.")
   }
 
+  /// No lost or doubled message: a message ADE Cloud holds for an asleep
+  /// chat is drawn from the send until the chat's own message (same send
+  /// id) shows, never missing between the server's "delivered" and the
+  /// transcript, never again after, and never from a first read that finds
+  /// it delivered already.
+  @MainActor
+  func testCloudHeldMessageStaysDrawnUntilTheTranscriptShowsItThenNeverAgain() throws {
+    func held(_ state: String, id: String = "send-1") throws -> CloudChatQueuedMessage {
+      try JSONDecoder().decode(CloudChatQueuedMessage.self, from: Data(#"""
+        {"messageId":"\#(id)","seq":1,"state":"\#(state)","text":"Run the tests again.","createdAt":1763424000000}
+        """#.utf8))
+    }
+    let store = AccountCloudStore()
+    func drawn(_ store: AccountCloudStore) -> [String] {
+      store.threadMessages(machineKey: "mk-cloud", chatId: "chat-1").map(\.messageId)
+    }
+    for state in ["queued", "sending", "delivered"] {
+      store.applyQueuedRead([try held(state)], machineKey: "mk-cloud", chatId: "chat-1")
+      XCTAssertEqual(drawn(store), ["send-1"], "Drawn while \(state), before the transcript shows it.")
+    }
+
+    // The same words sent before this message are not this message.
+    let earlier = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2025-11-17T23:50:00.000Z",
+      sequence: 3,
+      event: .userMessage(text: "Run the tests again.", attachments: nil, turnId: "t1", steerId: nil, deliveryState: nil, processed: nil)
+    )
+    XCTAssertTrue(cloudHeldMessagesShown(store.threadMessages(machineKey: "mk-cloud", chatId: "chat-1"), in: [earlier]).messageIds.isEmpty)
+
+    // The chat's own message, as the woken computer writes it.
+    let wire = #"{"sessionId":"chat-1","timestamp":"2025-11-18T00:00:40.000Z","sequence":9,"event":{"type":"user_message","text":"Run the tests again.","clientSendId":"send-1"}}"#
+    let delivered = makeWorkChatEnvelope(from: try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(wire.utf8)))
+    let shown = cloudHeldMessagesShown(store.threadMessages(machineKey: "mk-cloud", chatId: "chat-1"), in: [earlier, delivered])
+    XCTAssertEqual(shown.messageIds, ["send-1"])
+    store.retireFromThread(shown)
+    XCTAssertEqual(drawn(store), [])
+    store.applyQueuedRead([try held("delivered")], machineKey: "mk-cloud", chatId: "chat-1")
+    XCTAssertEqual(drawn(store), [], "A later read must not draw it a second time.")
+
+    let fresh = AccountCloudStore()
+    fresh.applyQueuedRead([try held("delivered")], machineKey: "mk-cloud", chatId: "chat-1")
+    XCTAssertEqual(drawn(fresh), [], "Delivered before the phone looked: the transcript already has it.")
+
+    // An older computer writes no send id: its message, written after the
+    // hold, matches by text, one transcript message per held message.
+    func unkeyed(_ sequence: Int) -> WorkChatEnvelope {
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2025-11-18T00:00:4\(sequence).000Z",
+        sequence: sequence,
+        event: .userMessage(text: "Run the tests again.", attachments: nil, turnId: "t2", steerId: nil, deliveryState: nil, processed: nil)
+      )
+    }
+    let twins = [try held("delivered", id: "send-2"), try held("sending", id: "send-3")]
+    XCTAssertEqual(cloudHeldMessagesShown([twins[0]], in: [earlier, unkeyed(1)]).messageIds, ["send-2"])
+    XCTAssertEqual(cloudHeldMessagesShown(twins, in: [earlier, unkeyed(1)]).messageIds.count, 1, "One transcript message retires one of two identical held messages.")
+    XCTAssertEqual(cloudHeldMessagesShown(twins, in: [earlier, unkeyed(1), unkeyed(2)]).messageIds, ["send-2", "send-3"])
+    // A minute before the hold is another message, even within clock slack of old.
+    let justBefore = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2025-11-17T23:59:00.000Z",
+      sequence: 4,
+      event: .userMessage(text: "Run the tests again.", attachments: nil, turnId: "t1", steerId: nil, deliveryState: nil, processed: nil)
+    )
+    XCTAssertTrue(cloudHeldMessagesShown(twins, in: [justBefore]).messageIds.isEmpty, "Words sent before the hold are not the held message.")
+    // Across reads too: the transcript message one held message took never
+    // retires its identical twin on a later read.
+    let rows = AccountCloudStore()
+    let firstRead = cloudHeldMessagesShown(twins, in: [unkeyed(1)], textMatchedRows: rows.textMatchedTranscriptRows)
+    XCTAssertEqual(firstRead.messageIds.count, 1)
+    rows.retireFromThread(firstRead)
+    let twin = twins.filter { !firstRead.messageIds.contains($0.messageId) }
+    XCTAssertTrue(
+      cloudHeldMessagesShown(twin, in: [unkeyed(1)], textMatchedRows: rows.textMatchedTranscriptRows).messageIds.isEmpty,
+      "One transcript message retires one held message, ever."
+    )
+    // A message still queued (or waiting for a sign-in) is not in the chat
+    // yet: the same words in the transcript are another message.
+    for state in ["queued", "waiting_for_sign_in"] {
+      XCTAssertTrue(cloudHeldMessagesShown([try held(state, id: "send-4")], in: [unkeyed(1)]).messageIds.isEmpty, "Never retired by text while \(state).")
+    }
+  }
+
   @MainActor
   func testMatchingAccountRelayMetadataPreservesDirectPairingOwnership() throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))

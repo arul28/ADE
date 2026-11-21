@@ -166,6 +166,13 @@ struct WorkChatOpeningSessionPlaceholder: View {
 /// composer, and read as a broken screen.
 struct WorkChatConnectingFrame: View {
   let machineName: String?
+  /// Messages ADE Cloud holds for the chat: drawn in the thread's place,
+  /// with the connecting line above them, until the chat loads.
+  var held: WorkCloudHeldThread? = nil
+  var sessionId: String = ""
+  /// Replaces the connecting line (no spinner): the chat is not on the
+  /// phone, so nothing is loading.
+  var unavailableNotice: String? = nil
 
   private var connectingText: String {
     guard let machineName = machineName?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -175,19 +182,14 @@ struct WorkChatConnectingFrame: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      Spacer(minLength: 0)
-      VStack(spacing: 10) {
-        ProgressView()
-          .controlSize(.regular)
-        Text(connectingText)
-          .font(.subheadline.weight(.medium))
-          .foregroundStyle(ADEColor.textSecondary)
-          .multilineTextAlignment(.center)
+      if let held {
+        heldStatusLine
+        // No composer here yet to take a failed message back: Put back waits
+        // for the chat to load (Dismiss and Cancel still work).
+        CloudHeldMessagesStandalone(thread: { var thread = held; thread.onPutBack = nil; return thread }(), sessionId: sessionId)
+      } else {
+        centredConnectingLine
       }
-      .padding(.horizontal, 32)
-      .accessibilityElement(children: .combine)
-      .accessibilityAddTraits(.updatesFrequently)
-      Spacer(minLength: 0)
       disabledComposer
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
@@ -195,6 +197,40 @@ struct WorkChatConnectingFrame: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .adeScreenBackground()
     .adeInspectable("Work.Chat.Connecting")
+  }
+
+  private var heldStatusLine: some View {
+    HStack(spacing: 8) {
+      if unavailableNotice == nil {
+        ProgressView()
+          .controlSize(.small)
+      }
+      Text(unavailableNotice ?? connectingText)
+        .font(.footnote.weight(.medium))
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.horizontal, 16)
+    .padding(.vertical, 8)
+    .accessibilityElement(children: .combine)
+  }
+
+  @ViewBuilder
+  private var centredConnectingLine: some View {
+    Spacer(minLength: 0)
+    VStack(spacing: 10) {
+      ProgressView()
+        .controlSize(.regular)
+      Text(connectingText)
+        .font(.subheadline.weight(.medium))
+        .foregroundStyle(ADEColor.textSecondary)
+        .multilineTextAlignment(.center)
+    }
+    .padding(.horizontal, 32)
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.updatesFrequently)
+    Spacer(minLength: 0)
   }
 
   /// The composer's shape with nothing live in it: you cannot send until the
@@ -1032,6 +1068,10 @@ struct WorkChatSessionView: View {
   /// changes instead of the turn-end line, one working line while it runs.
   /// Every other chat leaves it nil and renders exactly as before.
   var ctoLive: CtoLiveModel? = nil
+  /// Messages ADE Cloud holds for this chat while its computer is asleep:
+  /// drawn after the transcript as the person's own messages, with the
+  /// working line while the server moves them. Nil for any other chat.
+  var cloudHeld: WorkCloudHeldThread? = nil
   /// The CTO greeting's starters: fills the composer with the text.
 
   @State private var threadCommentsSheetPresented = false
@@ -1811,13 +1851,21 @@ struct WorkChatSessionView: View {
       )
     }
     if timelinePresentation.timelineCount == 0 {
-      var hasher = Hasher()
-      hasher.combine(transcriptLoadState)
+      // A held message drawn below is the chat's first message: no
+      // "No chat messages yet" above it (loading and a failed load still show).
+      let heldIsTheFirstMessage: Bool = {
+        guard case .idle = transcriptLoadState else { return false }
+        return !(cloudHeld?.messages.isEmpty ?? true)
+      }()
+      if !heldIsTheFirstMessage {
+        var hasher = Hasher()
+        hasher.combine(transcriptLoadState)
       hasher.combine(isLive)
-      hasher.combine(ctoLive != nil && ctoStartersEnabled)
-      rows.append(
-        WorkChatTranscriptRow(id: "chat-empty-state", kind: .emptyState, revision: hasher.finalize())
-      )
+        hasher.combine(ctoLive != nil && ctoStartersEnabled)
+        rows.append(
+          WorkChatTranscriptRow(id: "chat-empty-state", kind: .emptyState, revision: hasher.finalize())
+        )
+      }
     } else {
       let entries = visibleTimelineRenderEntries
       let rowRevisions = frame?.rowRevisions ?? [:]
@@ -1835,8 +1883,18 @@ struct WorkChatSessionView: View {
         )
       }
     }
-    if isStreamingTurn {
+    for message in cloudHeld?.messages ?? [] {
+      rows.append(
+        WorkChatTranscriptRow(
+          id: "cloud-held-\(message.messageId)",
+          kind: .cloudHeld(messageId: message.messageId),
+          revision: WorkCloudHeldThread.revision(message)
+        )
+      )
+    }
+    if showsStreamingStatus {
       var hasher = Hasher()
+      hasher.combine(isStreamingTurn)
       hasher.combine(turnToolActivity.active?.count ?? 0)
       // A step finishing changes the working line's step words without
       // changing the count.
@@ -1849,6 +1907,9 @@ struct WorkChatSessionView: View {
       }
       hasher.combine(frame?.activityPresentation?.label)
       hasher.combine(frame?.activityPresentation?.detail)
+      // The held working line's clock: cancelling the oldest held message
+      // moves it to the next one with no turn running.
+      hasher.combine(cloudHeld?.workingSince)
       rows.append(
         WorkChatTranscriptRow(
           id: "chat-streaming-status",
@@ -1950,6 +2011,10 @@ struct WorkChatSessionView: View {
           maxUserBubbleWidth: maxUserBubbleWidth
         )
       }
+    case .cloudHeld(let messageId):
+      if let cloudHeld, let message = cloudHeld.messages.first(where: { $0.messageId == messageId }) {
+        CloudHeldMessageRow(message: message, maxUserBubbleWidth: maxUserBubbleWidth, thread: cloudHeld)
+      }
     case .streamingStatus:
       streamingStatusSection
     case .tail:
@@ -2030,6 +2095,17 @@ struct WorkChatSessionView: View {
     )
   }
 
+  /// The working line shows: a turn runs, or a held message is on its way.
+  var showsStreamingStatus: Bool {
+    isStreamingTurn || cloudHeld?.isWorking == true
+  }
+
+  /// One stand-in user message at the held send's time, so the working
+  /// line's clock starts at the send, not at the transcript's last row.
+  var cloudHeldWorkingAnchor: [WorkChatEnvelope] {
+    cloudHeld?.workingAnchor(sessionId: session.id) ?? []
+  }
+
   @ViewBuilder
   var streamingStatusSection: some View {
     if isStreamingTurn, let ctoLive {
@@ -2041,6 +2117,16 @@ struct WorkChatSessionView: View {
         onOpenSteps: turnToolActivity.active.map { _ in
           { toolActivitySheet = .active }
         }
+      )
+      .id("chat-streaming-status")
+      .frame(maxWidth: .infinity, alignment: .leading)
+    } else if !isStreamingTurn, cloudHeld?.isWorking == true {
+      // A message ADE Cloud holds is on its way: the same working line a
+      // send to an awake computer shows, timed from the send.
+      WorkActivityIndicator(
+        transcript: cloudHeldWorkingAnchor,
+        precomputedPresentation: WorkActivityIndicator.Presentation(label: "Working", detail: nil, tint: ADEColor.accent),
+        isStreaming: true
       )
       .id("chat-streaming-status")
       .frame(maxWidth: .infinity, alignment: .leading)

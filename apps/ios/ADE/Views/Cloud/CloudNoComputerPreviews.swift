@@ -42,11 +42,34 @@ enum CloudNoComputerPreviews {
         blocked: "This account has no ADE Cloud hours left this period. Your lanes and chats stay readable."
       )))
     case "duo-cloud-chat-queued":
-      return AnyView(CloudChatFixture(state: .waking, queued: [
+      // Right after a send to an asleep chat: the person's own bubble and
+      // the working line, as a send to an awake computer looks.
+      return AnyView(CloudChatHeldFixture(queued: [
         CloudChatQueuedMessage(messageId: "m1", state: "queued", text: "Run the tests again and fix what fails."),
       ]))
+    case "duo-cloud-chat-queued-connecting":
+      // The same send while the chat has no cached row yet: the
+      // destination's connecting frame draws the held messages.
+      return AnyView(CloudChatHeldConnectingFixture(queued: [
+        CloudChatQueuedMessage(messageId: "m1", state: "queued", text: "Run the tests again and fix what fails."),
+        CloudChatQueuedMessage(
+          messageId: "m3",
+          state: "failed",
+          text: "Now update the changelog.",
+          error: "This lane's computer couldn't start. Your message wasn't sent."
+        ),
+      ]))
+    case "duo-cloud-chat-failed":
+      return AnyView(CloudChatHeldFixture(queued: [
+        CloudChatQueuedMessage(
+          messageId: "m3",
+          state: "failed",
+          text: "Run the tests again and fix what fails.",
+          error: "This lane's computer couldn't start. Your message wasn't sent."
+        ),
+      ]))
     case "duo-cloud-chat-sign-in":
-      return AnyView(CloudChatFixture(state: .waking, queued: [
+      return AnyView(CloudChatHeldFixture(queued: [
         CloudChatQueuedMessage(
           messageId: "m2",
           state: "waiting_for_sign_in",
@@ -130,13 +153,85 @@ enum CloudNoComputerFixtureData {
   }
 }
 
+/// A cloud chat's real thread and composer (Work's fixture transcript) with
+/// the messages ADE Cloud holds for it, as `WorkSessionDestinationView`
+/// passes them: from the store, with the sign-in step above the composer.
+private struct CloudChatHeldFixture: View {
+  let queued: [CloudChatQueuedMessage]
+  @ObservedObject private var store = AccountCloudStore.shared
+
+  var body: some View {
+    NavigationStack {
+      chat
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+          CloudQueueSignInSteps(accountMachineKey: "mk-cloud", chatId: "chat-1")
+        }
+        .adeScreenBackground()
+        .navigationTitle("Fix flaky upload test")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+    .task {
+      AccountCloudStore.shared.seedPreview(
+        access: nil,
+        account: nil,
+        queued: [AccountCloudStore.chatKey(machineKey: "mk-cloud", chatId: "chat-1"): queued]
+      )
+    }
+  }
+
+  private var chat: WorkChatSessionView {
+    var view = workPreviewChatSessionView()
+    let messages = store.threadMessages(machineKey: "mk-cloud", chatId: "chat-1")
+    if !messages.isEmpty {
+      view.cloudHeld = WorkCloudHeldThread(
+        messages: messages,
+        onCancel: { _ in nil },
+        onPutBack: { _ in },
+        onDismiss: { _ in }
+      )
+    }
+    return view
+  }
+}
+
+/// A cloud chat with no cached row yet: the destination's connecting frame
+/// with the messages ADE Cloud holds for it.
+private struct CloudChatHeldConnectingFixture: View {
+  let queued: [CloudChatQueuedMessage]
+  @ObservedObject private var store = AccountCloudStore.shared
+
+  var body: some View {
+    let messages = store.threadMessages(machineKey: "mk-cloud", chatId: "chat-1")
+    NavigationStack {
+      WorkChatConnectingFrame(
+        machineName: "ADE Cloud",
+        held: messages.isEmpty ? nil : WorkCloudHeldThread(
+          messages: messages,
+          onCancel: { _ in nil },
+          onPutBack: { _ in },
+          onDismiss: { _ in }
+        ),
+        sessionId: "chat-1"
+      )
+      .navigationTitle("Fix flaky upload test")
+      .navigationBarTitleDisplayMode(.inline)
+    }
+    .task {
+      AccountCloudStore.shared.seedPreview(
+        access: nil,
+        account: nil,
+        queued: [AccountCloudStore.chatKey(machineKey: "mk-cloud", chatId: "chat-1"): queued]
+      )
+    }
+  }
+}
+
 /// A cloud lane's chat: the state lines at the top, stand-in transcript rows,
-/// the messages ADE Cloud holds, and a stand-in composer.
+/// and a stand-in composer.
 private struct CloudChatFixture: View {
   let state: CloudLaneState
   var deletingDays: Int?
   var deleted: CloudDeletedComputerFacts = .unknown
-  var queued: [CloudChatQueuedMessage] = []
   /// The size picked in the line's menu when the fixture opens.
   var pickedSize: String?
   @ObservedObject private var store = AccountCloudStore.shared
@@ -182,21 +277,14 @@ private struct CloudChatFixture: View {
         CloudLaneStateLinesContent(state: state, deletingDays: deletingDays, deletingSizeLabel: cloudQueueSizeLabel(account: nil), deleted: shownDeleted, sizePick: sizePick)
       }
       .safeAreaInset(edge: .bottom, spacing: 0) {
-        VStack(spacing: 0) {
-          CloudQueuedMessagesView(accountMachineKey: "mk-cloud", chatId: "chat-1")
-          composer
-        }
+        composer
       }
       .navigationTitle("Fix flaky upload test")
       .navigationBarTitleDisplayMode(.inline)
       .background(ADEColor.pageBackground.ignoresSafeArea())
     }
     .task {
-      AccountCloudStore.shared.seedPreview(
-        access: nil,
-        account: nil,
-        queued: queued.isEmpty ? [:] : [AccountCloudStore.chatKey(machineKey: "mk-cloud", chatId: "chat-1"): queued]
-      )
+      AccountCloudStore.shared.seedPreview(access: nil, account: nil)
       AccountCloudStore.shared.pickNewComputerSize(machineKey: "mk-cloud", sizeId: pickedSize)
     }
   }

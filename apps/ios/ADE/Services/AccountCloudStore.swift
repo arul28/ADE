@@ -80,6 +80,20 @@ final class AccountCloudStore: ObservableObject {
   /// The account `hiddenMessageIds` belongs to.
   private var hiddenMessagesUserId: String?
   private static let hiddenMessagesLimit = 200
+  /// Held messages the phone saw leave the queue for the chat (open, then
+  /// `delivered`), with when. The chat keeps drawing each as the person's
+  /// own message until its transcript shows the real one, so the message
+  /// never blinks out between the server's word and the chat's. A chat that
+  /// never shows it (the message continued on a new computer's chat) stops
+  /// after `deliveredAwaitingThreadLimit`.
+  @Published private(set) var deliveredAwaitingThread: [String: Date] = [:]
+  /// Held messages the chat's transcript shows: the thread never draws them again.
+  @Published private(set) var retiredFromThread: Set<String> = []
+  /// Transcript user messages (by row id) a held message was matched to by
+  /// text, with that held message: one transcript message answers for one
+  /// held message, ever, not once per read.
+  private(set) var textMatchedTranscriptRows: [String: String] = [:]
+  private static let deliveredAwaitingThreadLimit: TimeInterval = 120
 
   /// Bumped on an account change: an answer to the last account's read lands nowhere.
   private var accountGeneration = 0
@@ -87,10 +101,26 @@ final class AccountCloudStore: ObservableObject {
   private var lanesReadAt: Date?
   /// Bumped by each kept-lane read as it starts (and by an account change).
   private var lanesReadSeq: UInt64 = 0
-  /// Where the next older page of a saved chat starts (`nextBefore`), by thread key.
-  private var transcriptCursors: [String: Int] = [:]
+  /// A saved chat's paging, by thread key. No entry: never read this run.
+  private var transcriptPaging: [String: TranscriptPaging] = [:]
+  /// The lowest durable `sequence` in each saved part read this run, by
+  /// part seq, by thread key: maps the engine's oldest row back to its part.
+  private var transcriptPartFirstSequence: [String: [Int: Int]] = [:]
   /// Saved chats read this run, by thread key: one read per open.
   private var transcriptReads: [String: Task<Void, Never>] = [:]
+
+  /// Where a saved chat's scroll-back stands.
+  private struct TranscriptPaging {
+    enum Cursor: Equatable {
+      /// The next older part starts before this sequence.
+      case before(Int)
+      /// Paged to the oldest part: nothing older to read.
+      case top
+    }
+    /// The newest read's `nextBefore` (nil: the newest part was all of it).
+    var newestNextBefore: Int?
+    var olderBefore: Cursor
+  }
 
   static func chatKey(machineKey: String, chatId: String) -> String {
     "\(machineKey.lowercased())|\(chatId)"
@@ -394,10 +424,77 @@ final class AccountCloudStore: ObservableObject {
       return
     }
     guard generation == accountGeneration else { return }
+    applyQueuedRead(messages, machineKey: machineKey, chatId: chatId)
+  }
+
+  /// One read of a chat's held messages. A message this phone saw open that
+  /// the server now calls delivered stays in the chat's thread until the
+  /// transcript shows it (`deliveredAwaitingThread`); one delivered before
+  /// the phone looked is never drawn.
+  func applyQueuedRead(_ messages: [CloudChatQueuedMessage], machineKey: String, chatId: String) {
     loadHiddenMessagesIfNeeded()
     let key = Self.chatKey(machineKey: machineKey, chatId: chatId)
     let next = messages.sorted { ($0.seq ?? 0) < ($1.seq ?? 0) }
+    let wasOpen = Set((queued[key] ?? []).filter(\.isOpen).map(\.messageId))
+    let now = Date()
+    let expired = deliveredAwaitingThread.filter { now.timeIntervalSince($0.value) >= Self.deliveredAwaitingThreadLimit }
+    for id in expired.keys { deliveredAwaitingThread[id] = nil }
+    for message in next where message.state == "delivered"
+      && wasOpen.contains(message.messageId)
+      && !retiredFromThread.contains(message.messageId)
+      && deliveredAwaitingThread[message.messageId] == nil {
+      deliveredAwaitingThread[message.messageId] = now
+      expireDeliveredAwaitingThread(message.messageId, at: now)
+    }
     if queued[key] != next { queued[key] = next }
+  }
+
+  /// One wake-up when a delivered message's wait for the transcript runs
+  /// out: the entry goes and the store republishes, so the thread stops
+  /// drawing it (and its working line) on time, not on the next redraw.
+  private func expireDeliveredAwaitingThread(_ messageId: String, at: Date) {
+    let generation = accountGeneration
+    Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: UInt64(Self.deliveredAwaitingThreadLimit * 1_000_000_000))
+      guard let self, generation == self.accountGeneration,
+            self.deliveredAwaitingThread[messageId] == at else { return }
+      self.deliveredAwaitingThread[messageId] = nil
+    }
+  }
+
+  /// The held messages a chat draws in its thread as the person's own
+  /// messages, oldest first: the ones on their way (queued, sending,
+  /// waiting for a sign-in), the failed ones the person did not put back
+  /// or dismiss, and the ones delivered while the chat was open that its
+  /// transcript does not show yet. Never one the transcript already showed.
+  func threadMessages(machineKey: String, chatId: String) -> [CloudChatQueuedMessage] {
+    let now = Date()
+    return (queued[Self.chatKey(machineKey: machineKey, chatId: chatId)] ?? []).filter { message in
+      guard !retiredFromThread.contains(message.messageId) else { return false }
+      if message.isOpen { return true }
+      switch message.state {
+      case "failed":
+        return !hiddenMessageIds.contains(message.messageId)
+      case "delivered":
+        guard let at = deliveredAwaitingThread[message.messageId] else { return false }
+        return now.timeIntervalSince(at) < Self.deliveredAwaitingThreadLimit
+      default:
+        return false
+      }
+    }
+  }
+
+  /// The chat's transcript shows these held messages now (see
+  /// `cloudHeldMessagesShown`): the thread stops drawing them, for good, and
+  /// a transcript message matched by text answers for no other.
+  func retireFromThread(_ shown: CloudHeldShown) {
+    textMatchedTranscriptRows.merge(shown.textMatchedRows) { kept, _ in kept }
+    let fresh = shown.messageIds.subtracting(retiredFromThread)
+    guard !fresh.isEmpty else { return }
+    retiredFromThread.formUnion(fresh)
+    for id in fresh where deliveredAwaitingThread[id] != nil {
+      deliveredAwaitingThread[id] = nil
+    }
   }
 
   /// The held messages a chat shows: the open ones, and the failed ones
@@ -463,18 +560,39 @@ final class AccountCloudStore: ObservableObject {
         return
       }
       let sessionId = key.sessionId
-      let events = await Task.detached(priority: .userInitiated) {
+      let decoded = await Task.detached(priority: .userInitiated) {
         accountCloudDecodeParts(page.parts)
       }.value
+      let events = decoded.events
       guard generation == self.accountGeneration, !Task.isCancelled else { return }
-      self.transcriptCursors[id] = page.hasMore ? page.nextBefore : nil
+      self.transcriptPartFirstSequence[id, default: [:]].merge(decoded.firstSequenceByPart) { $1 }
+      // A read again (the chat reopened, a delivered message) keeps the
+      // older place the reader already paged to only while the newest part
+      // still starts where it did: the engine keeps those older rows then.
+      // When it starts elsewhere the engine drops them, so paging restarts
+      // from this newest part (else the history between would be skipped).
+      // A first read has no entry; one paged to the top keeps `.top`.
+      // This cursor is only the fallback: `olderSavedPage` pages from the
+      // engine's own oldest row when it names one.
+      let newest = page.hasMore ? page.nextBefore : nil
+      if self.transcriptPaging[id].map({ $0.newestNextBefore != newest }) ?? true {
+        self.transcriptPaging[id] = TranscriptPaging(
+          newestNextBefore: newest,
+          olderBefore: newest.map(TranscriptPaging.Cursor.before) ?? .top
+        )
+      }
       sync.chatThreadRegistry.routeSnapshot(
         ChatThreadSnapshotInput(
           sessionId: sessionId,
           events: events,
           hasOlderHistory: page.hasMore,
           turnActive: false,
-          sessionFound: true
+          sessionFound: true,
+          // Saved lines carry their durable `sequence`: the engine asks for
+          // older history by sequence, and `olderSavedPage` answers with the
+          // next older part. Without this the engine had no cursor to ask
+          // with, so scrolling up stopped at the newest part.
+          hostSupportsChatLogV2: true
         ),
         key: key
       )
@@ -482,19 +600,62 @@ final class AccountCloudStore: ObservableObject {
   }
 
   /// The next older part of a saved chat, for the thread engine's scroll-back.
-  func olderSavedPage(key: ChatThreadKey, accountMachineKey: String, using sync: SyncService) async throws -> ChatThreadOlderPageInput {
-    guard let before = transcriptCursors[key.description] else {
+  /// It pages from the engine's own oldest row (`beforeSequence`): the part
+  /// that row came from, so rows the engine's cache trimmed are read again
+  /// and never skipped, and only rows older than it come back. The stored
+  /// cursor is the fallback when the engine names no row, or one from a
+  /// part this run never read. A chat paged to its first part reads nothing.
+  func olderSavedPage(
+    key: ChatThreadKey,
+    accountMachineKey: String,
+    request: ChatThreadOlderRequest,
+    using sync: SyncService
+  ) async throws -> ChatThreadOlderPageInput {
+    let id = key.description
+    let oldestHeld: Int? = if case .beforeSequence(let sequence) = request { sequence } else { nil }
+    guard var before = savedPartBefore(id: id, oldestHeld: oldestHeld) else {
       return ChatThreadOlderPageInput(sessionId: key.sessionId, events: [], hasMore: false)
     }
-    guard let client = await sync.cloudServerClient() else {
+    let generation = accountGeneration
+    guard let client = await sync.cloudServerClient(), generation == accountGeneration else {
       return .failed(sessionId: key.sessionId, message: "Sign in to ADE to read earlier messages.")
     }
-    let page = try await client.transcriptPage(machineKey: accountMachineKey, chatId: key.sessionId, before: before)
-    let events = await Task.detached(priority: .userInitiated) {
-      accountCloudDecodeParts(page.parts)
-    }.value
-    transcriptCursors[key.description] = page.hasMore ? page.nextBefore : nil
-    return ChatThreadOlderPageInput(sessionId: key.sessionId, events: events, hasMore: page.hasMore)
+    while true {
+      let page = try await client.transcriptPage(machineKey: accountMachineKey, chatId: key.sessionId, before: before)
+      let decoded = await Task.detached(priority: .userInitiated) {
+        accountCloudDecodeParts(page.parts)
+      }.value
+      // The account changed while the page was out: none of it is this account's.
+      guard generation == accountGeneration else {
+        return .failed(sessionId: key.sessionId, message: "The account changed. Open the chat again.")
+      }
+      transcriptPartFirstSequence[id, default: [:]].merge(decoded.firstSequenceByPart) { $1 }
+      let next: TranscriptPaging.Cursor = page.hasMore ? page.nextBefore.map(TranscriptPaging.Cursor.before) ?? .top : .top
+      transcriptPaging[id]?.olderBefore = next
+      let events = oldestHeld.map { oldest in
+        decoded.events.filter { $0.envelope.sequence.map { $0 < oldest } ?? true }
+      } ?? decoded.events
+      // A part the engine already holds all of (a stored cursor behind its
+      // oldest row): read on to the first part with something older.
+      guard events.isEmpty, case .before(let older) = next, older < before else {
+        return ChatThreadOlderPageInput(sessionId: key.sessionId, events: events, hasMore: next != .top)
+      }
+      before = older
+    }
+  }
+
+  /// The server `before` (a part seq, exclusive) for the next older page.
+  /// Nil: nothing older to read.
+  private func savedPartBefore(id: String, oldestHeld: Int?) -> Int? {
+    if let oldestHeld, let firsts = transcriptPartFirstSequence[id],
+       let part = firsts.filter({ $0.value <= oldestHeld }).max(by: { $0.key < $1.key }) {
+      // The engine's oldest row is in `part`: from the part before it when
+      // that row is the part's first, else `part` itself again.
+      let before = part.value == oldestHeld ? part.key : part.key + 1
+      return before > 1 ? before : nil
+    }
+    guard case .before(let before)? = transcriptPaging[id]?.olderBefore else { return nil }
+    return before
   }
 
   // MARK: Account change
@@ -513,7 +674,11 @@ final class AccountCloudStore: ObservableObject {
     hiddenMessageIds = []
     hiddenMessageOrder = []
     hiddenMessagesUserId = nil
-    transcriptCursors = [:]
+    deliveredAwaitingThread = [:]
+    retiredFromThread = []
+    textMatchedTranscriptRows = [:]
+    transcriptPaging = [:]
+    transcriptPartFirstSequence = [:]
     for task in transcriptReads.values { task.cancel() }
     transcriptReads = [:]
   }
@@ -529,18 +694,80 @@ final class AccountCloudStore: ObservableObject {
 }
 
 /// The chat events of saved parts (JSON lines, newest part first) in the
-/// order they happened. A line that does not decode is left out alone.
-func accountCloudDecodeParts(_ parts: [CloudChatTranscriptPage.Part]) -> [ChatThreadLiveEvent] {
+/// order they happened, and each part's lowest durable `sequence`. A line
+/// that does not decode is left out alone.
+func accountCloudDecodeParts(_ parts: [CloudChatTranscriptPage.Part]) -> (events: [ChatThreadLiveEvent], firstSequenceByPart: [Int: Int]) {
   var events: [ChatThreadLiveEvent] = []
+  var firstSequenceByPart: [Int: Int] = [:]
   for part in parts.sorted(by: { $0.seq < $1.seq }) {
     for line in part.text.split(whereSeparator: \.isNewline) {
       guard let data = line.data(using: .utf8),
             let object = try? JSONSerialization.jsonObject(with: data),
             let event = chatThreadDecodeLiveEvent(object) else { continue }
       events.append(event)
+      if let sequence = event.envelope.sequence {
+        firstSequenceByPart[part.seq] = min(firstSequenceByPart[part.seq] ?? sequence, sequence)
+      }
     }
   }
-  return events
+  return (events, firstSequenceByPart)
+}
+
+/// The held messages a chat's transcript shows (`cloudHeldMessagesShown`),
+/// and the transcript rows matched by text, row id to held message id.
+struct CloudHeldShown: Equatable {
+  var messageIds: Set<String> = []
+  var textMatchedRows: [String: String] = [:]
+}
+
+/// The held messages a chat's transcript already shows, by message id: a
+/// user message that carries the held message's send id, or, from a
+/// computer whose ADE writes no send id, a user message with its text
+/// written after the message was held. The text match is only for a
+/// message the server is sending or has delivered: a still-queued one (or
+/// one waiting for a sign-in) is not in the chat yet, whatever its text.
+/// Each transcript message answers for one held message, ever:
+/// `textMatchedRows` (the store's `textMatchedTranscriptRows`) are the rows
+/// earlier reads already gave to a held message. Only the newest rows are
+/// read: a delivered message lands at the end.
+func cloudHeldMessagesShown(
+  _ messages: [CloudChatQueuedMessage],
+  in transcript: [WorkChatEnvelope],
+  textMatchedRows: [String: String] = [:]
+) -> CloudHeldShown {
+  guard !messages.isEmpty else { return CloudHeldShown() }
+  var sendIds = Set<String>()
+  var unkeyed: [(rowId: String, text: String, at: Date?)] = []
+  for envelope in transcript.suffix(400) {
+    guard case .userMessage(let text, _, _, _, _, _) = envelope.event else { continue }
+    if let sendId = envelope.userMessageClientSendId {
+      sendIds.insert(sendId)
+    } else {
+      unkeyed.append((envelope.id, text.trimmingCharacters(in: .whitespacesAndNewlines), workParsedDate(envelope.timestamp)))
+    }
+  }
+  var shown = CloudHeldShown()
+  for message in messages {
+    if sendIds.contains(message.messageId) {
+      shown.messageIds.insert(message.messageId)
+      continue
+    }
+    guard message.state == "sending" || message.state == "delivered",
+          let text = nonEmptyTrimmed(message.text), let createdAt = message.createdAt else { continue }
+    // Ten seconds of slack for the clocks of the phone's server and the
+    // computer: the same words sent before the hold are another message.
+    let heldAt = Date(timeIntervalSince1970: createdAt / 1000).addingTimeInterval(-10)
+    if let index = unkeyed.firstIndex(where: { row in
+      row.text == text
+        && (row.at.map { $0 >= heldAt } ?? false)
+        && (textMatchedRows[row.rowId].map { $0 == message.messageId } ?? true)
+    }) {
+      shown.textMatchedRows[unkeyed[index].rowId] = message.messageId
+      unkeyed.remove(at: index)
+      shown.messageIds.insert(message.messageId)
+    }
+  }
+  return shown
 }
 
 /// A file sent with a message to a sleeping ADE Cloud chat.
