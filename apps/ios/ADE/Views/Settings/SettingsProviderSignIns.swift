@@ -156,6 +156,8 @@ func providerCloudClaudePassNeed(_ status: ProviderLoginsPhoneStatus) -> Provide
   // A pass with no state comes from an older brain: not known, never ended.
   let readable = passes.filter { $0.unreadable != true && $0.state != nil }
   guard !readable.isEmpty else { return nil }
+  // A pass this brain can't classify may still work: no definite answer.
+  if passes.contains(where: { ($0.unreadable == true || $0.state == nil) && $0.on != false }) { return nil }
   if readable.allSatisfy({ $0.state == "ended" }) {
     let newest = readable.compactMap(\.endedAt).max()
     return .ended(at: newest.map { Date(timeIntervalSince1970: $0 / 1000) })

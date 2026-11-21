@@ -184,4 +184,15 @@ describe("claude pass sync: end of a pass", () => {
     expect(pass.endedAt() != null).toBe(stillEnded);
     expect(pass.checkToken).toHaveBeenCalledTimes(1);
   });
+
+  it("clears an accepted pass on a later review when the first write was refused, with no second check", async () => {
+    const pass = setup(async () => "accepted", Date.now() - 1_000);
+    pass.refuseWrites(true);
+    await expect(pass.sync.reviewEndedPasses({ accountUserId: "user_a" })).resolves.toEqual([]);
+    expect(pass.endedAt()).not.toBeNull();
+    pass.refuseWrites(false);
+    await expect(pass.sync.reviewEndedPasses({ accountUserId: "user_a" })).resolves.toEqual([PASS_KEY]);
+    expect(pass.endedAt()).toBeNull();
+    expect(pass.checkToken).toHaveBeenCalledTimes(1);
+  });
 });

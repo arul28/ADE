@@ -389,6 +389,12 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
 
   /** Pass key → the ended token this brain asked Claude about (memory only): once each. */
   const reviewedEndedToken = new Map<string, string>();
+  /**
+   * Pass key → an ended token Claude accepted whose clearing write was
+   * refused, with the revision read before the check. The next review tries
+   * the write again with no second check; a change to the item drops it.
+   */
+  const acceptedEndedToken = new Map<string, { token: string; revision: string | undefined }>();
 
   /**
    * Ended passes whose token Claude still takes lose their `endedAt`. An
@@ -401,18 +407,44 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
     const vault = deps.vault();
     if (!accountUserId || !vault || vault.health().syncReady === false) return [];
     const passVault = claudePassVaultFromStore(vault);
-    const ended = listClaudePasses(passVault).filter((entry) => entry.pass.endedAt != null && reviewedEndedToken.get(entry.key) !== entry.pass.token);
+    const ended = listClaudePasses(passVault).filter((entry) => entry.pass.endedAt != null
+      && (reviewedEndedToken.get(entry.key) !== entry.pass.token || acceptedEndedToken.get(entry.key)?.token === entry.pass.token));
     const revived: string[] = [];
     for (const entry of ended) {
-      reviewedEndedToken.set(entry.key, entry.pass.token);
-      // The revision read with the ended pass: a Renew since, here or only in the account, refuses the write.
-      const read = revisionOf(passVault, entry.key);
-      if (await checkToken(entry.pass.token) !== "accepted") continue;
+      const pending = acceptedEndedToken.get(entry.key);
+      let revision: string | undefined;
+      if (pending?.token === entry.pass.token) {
+        // An earlier write was refused. A Renew, a Remove or another write
+        // since then changed the item: drop the old answer and ask again later.
+        if (revisionOf(passVault, entry.key).expectedRevision !== pending.revision) {
+          acceptedEndedToken.delete(entry.key);
+          reviewedEndedToken.delete(entry.key);
+          continue;
+        }
+        revision = pending.revision;
+      } else {
+        reviewedEndedToken.set(entry.key, entry.pass.token);
+        // The revision read with the ended pass: a Renew since, here or only in the account, refuses the write.
+        revision = revisionOf(passVault, entry.key).expectedRevision;
+        if (await checkToken(entry.pass.token) !== "accepted") continue;
+      }
       // Read again: a Renew or a Remove may have come during the check.
       const pass = parseClaudePass(passVault.get(entry.key));
-      if (!pass || pass.token !== entry.pass.token || pass.endedAt == null) continue;
+      if (!pass || pass.token !== entry.pass.token || pass.endedAt == null) {
+        acceptedEndedToken.delete(entry.key);
+        continue;
+      }
       const { endedAt: _ended, ...working } = pass;
-      if (!passVault.set(entry.key, JSON.stringify(working), { expectedAccountUserId: accountUserId, ...read })) continue;
+      const wrote = passVault.set(entry.key, JSON.stringify(working), {
+        expectedAccountUserId: accountUserId,
+        ...(revision !== undefined ? { expectedRevision: revision } : {}),
+      });
+      if (!wrote) {
+        acceptedEndedToken.set(entry.key, { token: entry.pass.token, revision });
+        logger?.warn("claude_pass.end_reverse_refused", { key: entry.key });
+        continue;
+      }
+      acceptedEndedToken.delete(entry.key);
       if (endedTokenByKey.get(entry.key) === entry.pass.token) endedTokenByKey.delete(entry.key);
       logger?.warn("claude_pass.end_reversed", { key: entry.key });
       revived.push(entry.key);

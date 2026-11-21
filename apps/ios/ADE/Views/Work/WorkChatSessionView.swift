@@ -858,6 +858,8 @@ struct WorkChatSessionView: View {
   @State var adeCloudClaudePassPageShown = false
   /// The machine that gave `adeCloudClaudeRead`: the pass page reads there too.
   @State var adeCloudClaudeReadHost: ProviderAccountsHost?
+  /// A "Send again" from the pass card is on its way.
+  @State var adeCloudClaudeResending = false
   /// The free model the sign-in card offers a brand-new person on the chat's
   /// machine, or nil (someone signed in there before, or no free models).
   @State var signInFreeModelId: String?
@@ -1347,14 +1349,19 @@ struct WorkChatSessionView: View {
 
   /// The turn that stopped on the sign-in sends again by itself, with the
   /// files it carried (the machine still holds them).
-  func resendAfterSignIn() {
+  /// `onFinished` gets whether the host took the message; a failed send keeps
+  /// the card that offered it, so the person can try again.
+  func resendAfterSignIn(onFinished: ((Bool) -> Void)? = nil) {
     let last = transcript.reversed().lazy.compactMap { envelope -> (String, [AgentChatFileRef])? in
       guard case .userMessage(let text, let attachments, _, _, _, _) = envelope.event,
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachments?.isEmpty == false
       else { return nil }
       return (text, attachments ?? [])
     }.first
-    guard let last else { return }
+    guard let last else {
+      onFinished?(false)
+      return
+    }
     let (text, refs) = last
     let attachments = refs.map { ref in
       WorkChatInputAttachment(
@@ -1365,7 +1372,10 @@ struct WorkChatSessionView: View {
         state: .ready
       )
     }
-    Task { @MainActor in _ = await onSend(text, attachments, .queue) }
+    Task { @MainActor in
+      let delivered = await onSend(text, attachments, .queue)
+      onFinished?(delivered)
+    }
   }
 
   var shouldShowInterruptControl: Bool {
@@ -2534,11 +2544,18 @@ struct WorkChatSessionView: View {
         WorkAdeCloudClaudePassCard(
           need: { if case .needsPass(let need)? = read { return need } else { return nil } }(),
           reason: signIn.reason,
+          ownPass: workClaudePassKey(ofAccountId: providerSignInInstanceId) != nil,
           passWorks: read == .passWorks,
           onOpenPass: { adeCloudClaudePassPageShown = true },
           onSendAgain: {
-            dismissedSignInFailureId = signIn.key
-            resendAfterSignIn()
+            // The card stays until the host takes the message: a failed
+            // send can go again from here. One send at a time.
+            guard !adeCloudClaudeResending else { return }
+            adeCloudClaudeResending = true
+            resendAfterSignIn { delivered in
+              adeCloudClaudeResending = false
+              if delivered { dismissedSignInFailureId = signIn.key }
+            }
           },
           onDismiss: { dismissedSignInFailureId = signIn.key }
         )

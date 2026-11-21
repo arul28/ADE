@@ -707,8 +707,14 @@ func workClaudePassKey(ofAccountId id: String?) -> String? {
 func workAdeCloudClaudeRead(_ status: ProviderLoginsPhoneStatus, accountId: String? = nil) -> WorkAdeCloudClaudeRead? {
   guard status.readsAccount else { return nil }
   if !status.cloud.enabled { return .signInsOff }
-  if let passKey = workClaudePassKey(ofAccountId: accountId),
-     let pass = status.claudePasses?.first(where: { $0.key == passKey && $0.unreadable != true }) {
+  if let passKey = workClaudePassKey(ofAccountId: accountId), let passes = status.claudePasses {
+    // The chat's own pass decides: another pass that works does not fix it.
+    guard let pass = passes.first(where: { $0.key == passKey }) else {
+      // The account no longer has it: a new pass is what fixes the chat.
+      return .needsPass(providerCloudClaudePassNeed(status) ?? .noPass)
+    }
+    // A pass this brain can't read is not known either way.
+    if pass.unreadable == true { return nil }
     if pass.state == "ended" { return .needsPass(.ended(at: pass.endedAt.map { Date(timeIntervalSince1970: $0 / 1000) })) }
     if pass.on == false { return .needsPass(.off) }
     return pass.state != nil ? .passWorks : nil
@@ -729,6 +735,8 @@ struct WorkAdeCloudClaudePassCard: View {
   /// What the account says is wrong; nil when the phone could not read it.
   let need: ProviderCloudClaudePassNeed?
   let reason: WorkProviderSignInReason
+  /// The chat runs on one named pass, so the card speaks of that pass.
+  var ownPass = false
   /// The account now has a pass that works: a stopped turn can go again.
   let passWorks: Bool
   let onOpenPass: () -> Void
@@ -742,7 +750,7 @@ struct WorkAdeCloudClaudePassCard: View {
     if ready { return "Your Claude pass works again" }
     switch need {
     case .ended: return "Claude ended your pass"
-    case .off: return "Claude is off"
+    case .off: return ownPass ? "This chat's Claude pass is off" : "Claude is off"
     case .noPass: return "Approve a Claude pass"
     case nil: return "No Claude pass works"
     }
@@ -754,6 +762,8 @@ struct WorkAdeCloudClaudePassCard: View {
     switch need {
     case .ended(let at):
       return providerCloudPassEndedDetail(at) + again
+    case .off where ownPass:
+      return "This chat runs on a Claude pass that is off for ADE Cloud. Turn that pass on in the ADE desktop app, in Settings › Providers › ADE Cloud › Claude." + again
     case .off:
       return "Every Claude pass is off for ADE Cloud. Turn one on in the ADE desktop app, in Settings › Providers › ADE Cloud › Claude." + again
     case .noPass:
