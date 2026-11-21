@@ -37,6 +37,16 @@ export function sweepStatement(env: Pick<CloudEnv, "DB">, userId: string, target
   `).bind(target.key, userId, target.exact ? 1 : 0, now, ...(onlyIf?.binds ?? []));
 }
 
+/**
+ * Clears the record of an upload this write publishes (a CLI copy's new
+ * object): only while `onlyIf` holds, so a publish that lost its race leaves
+ * the record and the tick sweeps the unpublished object. Pair it with a
+ * `sweepStatement` written before the upload.
+ */
+export function publishedStatement(env: Pick<CloudEnv, "DB">, key: string, onlyIf: { sql: string; binds: unknown[] }): D1PreparedStatement {
+  return env.DB.prepare(`delete from cloud_storage_sweeps where r2_key = ? and ${onlyIf.sql}`).bind(key, ...onlyIf.binds);
+}
+
 async function deleteTarget(bucket: R2Bucket, target: SweepTarget): Promise<void> {
   if (target.exact) {
     await bucket.delete(target.key);

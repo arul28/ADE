@@ -15,7 +15,7 @@ import {
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, pageCursorOf, pageCursorSql } from "./http";
 import { openBytes, openJson, sealBytes, sealJson, userKeys, type UserKeys } from "./seal";
 import { logCloud, moveQueuedMessagesStatement, ownMachineMoveTarget, ownedComputer, type CloudEnv, type ComputerRow } from "./store";
-import { storageGeneration, sweep, sweepStatement, type SweepTarget } from "./storageSweeps";
+import { publishedStatement, storageGeneration, sweep, sweepStatement, type SweepTarget } from "./storageSweeps";
 
 /**
  * CLI-session and shell copies (README, "ADE without a computer"). A cloud
@@ -226,11 +226,16 @@ async function handlePut(request: Request, env: CloudEnv, bucket: R2Bucket, user
       .bind(userId, machineKey, sessionId).first<{ bytes: number; r2_key: string }>();
     const total = await env.DB.prepare("select coalesce(sum(bytes), 0) as total from cloud_session_copies where user_id = ?").bind(userId).first<{ total: number }>();
     if ((total?.total ?? 0) - (existing?.bytes ?? 0) + sealed.byteLength > CLOUD_SESSION_MAX_ACCOUNT_BYTES) {
-      if (attempt > 0) await bucket.delete(key);
+      if (attempt > 0) await sweep(env, [objectOf(key)]);
       logCloud("cloud.session_account_full", { userId, limitBytes: CLOUD_SESSION_MAX_ACCOUNT_BYTES });
       return fail("account_full", "This account's saved sessions are full. Delete some to save new ones.", 413);
     }
-    if (attempt === 0) await bucket.put(key, sealed);
+    if (attempt === 0) {
+      // Recorded before the upload: a save that dies before it publishes leaves no object no sweep finds.
+      await sweepStatement(env, userId, objectOf(key), now).run();
+      await bucket.put(key, sealed);
+    }
+    const published = publishedStatement(env, key, rowWithObject(userId, machineKey, sessionId, key));
     if (existing) {
       // This save's object replaces the one read, and that one is recorded to sweep, in one write.
       const still = rowWithObject(userId, machineKey, sessionId, existing.r2_key);
@@ -245,24 +250,28 @@ async function handlePut(request: Request, env: CloudEnv, bucket: R2Bucket, user
           computer.instance_id, input.projectKey, input.laneId, input.kind, input.parentChatId, summary, key, sealed.byteLength, copy.lines, lastActivity, now,
           userId, machineKey, sessionId, existing.r2_key,
         ),
+        published,
       ]);
       written = (results[1]?.meta?.changes ?? 0) === 1;
       if (written) await sweep(env, [objectOf(existing.r2_key)]);
     } else {
-      const inserted = await env.DB.prepare(`
-        insert into cloud_session_copies (user_id, machine_key, session_id, instance_id, project_key, lane_id, kind, parent_chat_id, summary_sealed, r2_key, bytes, line_count, last_activity_at, updated_at)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        on conflict (user_id, machine_key, session_id) do nothing
-      `).bind(
-        userId, machineKey, sessionId, computer.instance_id, input.projectKey, input.laneId, input.kind, input.parentChatId, summary, key,
-        sealed.byteLength, copy.lines, lastActivity, now,
-      ).run();
-      written = (inserted.meta?.changes ?? 0) === 1;
+      const [inserted] = await env.DB.batch([
+        env.DB.prepare(`
+          insert into cloud_session_copies (user_id, machine_key, session_id, instance_id, project_key, lane_id, kind, parent_chat_id, summary_sealed, r2_key, bytes, line_count, last_activity_at, updated_at)
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          on conflict (user_id, machine_key, session_id) do nothing
+        `).bind(
+          userId, machineKey, sessionId, computer.instance_id, input.projectKey, input.laneId, input.kind, input.parentChatId, summary, key,
+          sealed.byteLength, copy.lines, lastActivity, now,
+        ),
+        published,
+      ]);
+      written = (inserted?.meta?.changes ?? 0) === 1;
     }
   }
   if (!written) {
     // Never published: no row reads it.
-    await bucket.delete(key);
+    await sweep(env, [objectOf(key)]);
     return fail("session_changed", "This session's saved copy changed while it was saved. Try again.", 409);
   }
   await pruneComputer(env, userId, computer.instance_id);
@@ -464,6 +473,7 @@ async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, use
     }
     // This move's own object: no other move, and no save of the new computer's own copy, writes it.
     const staged = newObjectKey(userId, toMachineKey, sessionId);
+    await sweepStatement(env, userId, objectOf(staged), now).run();
     await bucket.put(staged, await sealBytes(keys.aes, copyAad(userId, toMachineKey, sessionId), opened));
     const resealed = summary == null ? null : await sealJson(keys, summaryAad(userId, toMachineKey, sessionId), summary);
     const insertedHere = stillAt(toMachineKey, staged);
@@ -480,13 +490,14 @@ async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, use
       sweepStatement(env, userId, objectOf(source.r2_key), now, insertedHere),
       env.DB.prepare(`delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and r2_key = ? and ${insertedHere.sql}`)
         .bind(userId, machineKey, sessionId, source.r2_key, ...insertedHere.binds),
+      publishedStatement(env, staged, insertedHere),
     ]);
     if ((results[0]?.meta?.changes ?? 0) === 1) {
       await sweep(env, [objectOf(source.r2_key)]);
       return done(true);
     }
     // Another move, or the new computer's own upload, got there first: only this move's object goes.
-    await bucket.delete(staged);
+    await sweep(env, [objectOf(staged)]);
   }
   return fail("session_changed", "This CLI's saved copy changed while it moved. Try again.", 409);
 }
