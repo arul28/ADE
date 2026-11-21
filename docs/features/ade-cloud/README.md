@@ -1259,9 +1259,14 @@ account, never a pin.
     Before the delete, the source answers two checks: no chat or CLI started
     on the lane during the move, and the lane's HEAD and working tree match
     what the move carried (`chat.crossMachineBatchSourceChanged`, against the
-    lane item's `carriedHeadSha` and `carriedTreeSha`). Either one failing
-    keeps the computer and ends the run as "move again", which does not block
-    a new move. A check that can't read the source also keeps the computer.
+    lane item's `carriedHeadSha` and `carriedTreeSha`). A chat that started
+    there keeps the computer and ends the run as "move again", which does not
+    block a new move. Changed files, or a computer whose ADE is too old to
+    check, end it at "Push to GitHub and delete": ADE pushes the lane's files
+    to its branch, checks nothing is left off GitHub, then deletes the
+    computer, and the person pulls the branch on the destination. "Keep
+    computer" leaves it. A check that can't read the source keeps the
+    computer, and its retry runs the checks again.
   - **Asleep, with every lane saved at its rest** (`backups.saved`): no wake.
     The destination brain (`keptLaneRestore.ts`, step `release`) deletes the
     computer with `keepLane: { onlyIfSaved: true }`. The server refuses with
