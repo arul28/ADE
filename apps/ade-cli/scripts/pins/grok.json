@@ -1,14 +1,14 @@
 {
   "tool": "grok",
-  "version": "1.0.46",
-  "source": "npm @xai-official/grok@1.0.46 platform packages",
+  "version": "1.0.92",
+  "source": "npm @xai-official/grok@1.0.92 platform packages",
   "targets": {
     "darwin-arm64": {
       "format": "npm-tarball",
       "package": "@xai-official/grok-darwin-arm64",
-      "version": "1.0.46",
-      "tarball": "https://registry.npmjs.org/@xai-official/grok-darwin-arm64/-/grok-darwin-arm64-1.0.46.tgz",
-      "integrity": "sha512-u/JdKgd6Ef1PSmaMbdV32vFc3ISLI/NE7h9rbaYj+iic7oAn0q1uHo8Ijdm5Ztg8gYwTuhRBZsMnHJr5zcKEXA==",
+      "version": "1.0.92",
+      "tarball": "https://registry.npmjs.org/@xai-official/grok-darwin-arm64/-/grok-darwin-arm64-1.0.92.tgz",
+      "integrity": "sha512-sWqlpZz9xHMOfRa66iHBDkSG6BjRrEBSqALpVaCvuQZ/s3ZeME3+1YUXi1JLfq9DY5j0po6Yi34cf9791yqygg==",
       "decompress": [
         {
           "algorithm": "brotli",
@@ -20,9 +20,9 @@
     "darwin-x64": {
       "format": "npm-tarball",
       "package": "@xai-official/grok-darwin-x64",
-      "version": "1.0.46",
-      "tarball": "https://registry.npmjs.org/@xai-official/grok-darwin-x64/-/grok-darwin-x64-1.0.46.tgz",
-      "integrity": "sha512-jDXQq9sjZyS21llucXKhqkyKPhxZePsbPoa8rcblDMHD3kMmDgkHLX4uHNLlYVf2PqF4s3TLrGeM9VBmpZA96g==",
+      "version": "1.0.92",
+      "tarball": "https://registry.npmjs.org/@xai-official/grok-darwin-x64/-/grok-darwin-x64-1.0.92.tgz",
+      "integrity": "sha512-v6kY1zqEcIwI5my2IrrOi49eet2s0rVc7Wb2ygeBIUAUZAO45SZVFfRi8UD/wuk8YTF2EHcnczXp8KoEvmQH5Q==",
       "decompress": [
         {
           "algorithm": "brotli",
@@ -34,9 +34,9 @@
     "linux-arm64": {
       "format": "npm-tarball",
       "package": "@xai-official/grok-linux-arm64",
-      "version": "1.0.46",
-      "tarball": "https://registry.npmjs.org/@xai-official/grok-linux-arm64/-/grok-linux-arm64-1.0.46.tgz",
-      "integrity": "sha512-dFSb8PffyHfGHcwGc7xpVWE/GIzDJgg3RLh6aw3mWpvbhSzVDQh5LHRMQ9USdd9SAARuWkIBsg6P7UoeQVJBWw==",
+      "version": "1.0.92",
+      "tarball": "https://registry.npmjs.org/@xai-official/grok-linux-arm64/-/grok-linux-arm64-1.0.92.tgz",
+      "integrity": "sha512-46QIUxdE7OP98cVzxEcMOZ8+aFUudQaOi/Wt7btE83xjpnHt2NbOGCNRLteAn5cAvIOJ+xF2hBpYdw8kVzB+Ug==",
       "decompress": [
         {
           "algorithm": "brotli",
@@ -48,9 +48,9 @@
     "linux-x64": {
       "format": "npm-tarball",
       "package": "@xai-official/grok-linux-x64",
-      "version": "1.0.46",
-      "tarball": "https://registry.npmjs.org/@xai-official/grok-linux-x64/-/grok-linux-x64-1.0.46.tgz",
-      "integrity": "sha512-a9HSDEiXmCFW1sou2xYBZAM1jCDALWU2aNacmsFHztI6kukb8akdI0SlTI43q2uULHzNQlwhrI7GkPcraxM6bQ==",
+      "version": "1.0.92",
+      "tarball": "https://registry.npmjs.org/@xai-official/grok-linux-x64/-/grok-linux-x64-1.0.92.tgz",
+      "integrity": "sha512-qwls1sZya5yZorl7QcSvICMfANANRUSnCHMLJozAGZrmwwXeuBScJEHijNF5sjrDb3o+ivO0u65vtQNeLPesCA==",
       "decompress": [
         {
           "algorithm": "brotli",
@@ -62,9 +62,9 @@
     "win32-x64": {
       "format": "npm-tarball",
       "package": "@xai-official/grok-win32-x64",
-      "version": "1.0.46",
-      "tarball": "https://registry.npmjs.org/@xai-official/grok-win32-x64/-/grok-win32-x64-1.0.46.tgz",
-      "integrity": "sha512-4AK7HonVDiASLtvskbOQ65IIhTbnLNPT+oUBpqk9T6LegvMIJGy0YoGM3iP8FxlWQWoP2Vax7Fb2IaYM9DxT8w==",
+      "version": "1.0.92",
+      "tarball": "https://registry.npmjs.org/@xai-official/grok-win32-x64/-/grok-win32-x64-1.0.92.tgz",
+      "integrity": "sha512-BK+5YW14gMdiMYwJFhJgjgxmkp/R44KFJpzR021Vka1V8xiHx1OJekA+IOmY2GhDLaNg5mibpwmL0BClVILLpg==",
       "decompress": [
         {
           "algorithm": "brotli",
