@@ -224,6 +224,9 @@ final class WorkProviderSignInController: ObservableObject {
     }
   }
 
+  /// The account this controller made on the machine, for a retry.
+  private var createdAccountId: String?
+
   /// Starts the provider's sign-in on the machine. False when there is
   /// nothing to wait for (a newer attempt took over, or no flow here).
   private func begin(on host: ProviderAccountsHost, kimiRegion: String, attempt current: Int) async throws -> Bool {
@@ -231,13 +234,16 @@ final class WorkProviderSignInController: ObservableObject {
     case .account(let accountProvider):
       let client = ProviderAccountsClient(host: host)
       let accounts = try await client.list(accountProvider)
+      // A retry after a create that went through uses that account, never a second one.
       let account = accounts.first(where: { $0.id == instanceId })
+        ?? accounts.first(where: { $0.id == createdAccountId })
         ?? accounts.first(where: \.isDefault)
       let target: ProviderAccount
       if let account {
         target = account
       } else {
         target = try await client.create(accountProvider)
+        createdAccountId = target.id
       }
       let login = try await client.startLogin(id: target.id, provider: accountProvider)
       guard current == attempt else { return false }
