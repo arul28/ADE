@@ -9423,16 +9423,11 @@ app.whenReady().then(async () => {
    * Keychain call until the person answers. Chromium's own shutdown (app.exit,
    * and a plain process exit through it) waits for that thread, so the process
    * stayed alive with no window until the prompt was answered. The shutdown
-   * work is done by now (windows, children, logs), so this writes what the web
-   * storage holds and ends the process at once. Only in this state: every other
-   * quit exits as before.
+   * work is done by now (web storage written, windows, children, logs), so
+   * this ends the process at once. Only in this state: every other quit exits
+   * as before.
    */
   const exitWithoutKeychainWait = (exitCode: number): void => {
-    try {
-      session.defaultSession.flushStorageData();
-    } catch {
-      // The end below is the point; a failed flush must not stop it.
-    }
     logMachineEvent("info", "desktop.exit_skips_keychain_wait", { pid: process.pid, exitCode });
     flushMachineMainLog();
     process.kill(process.pid, "SIGKILL");
@@ -9450,8 +9445,11 @@ app.whenReady().then(async () => {
     // seconds before Quit came back with its old text at the next launch.
     try {
       session.defaultSession.flushStorageData();
-    } catch {
+    } catch (error) {
       // The exit below must happen whatever the flush does.
+      logMachineEvent("warn", "desktop.exit_storage_flush_failed", {
+        errorText: error instanceof Error ? error.message : String(error),
+      });
     }
     destroyWindowsForExit();
     runImmediateProcessCleanup("process_exit_finalize");
