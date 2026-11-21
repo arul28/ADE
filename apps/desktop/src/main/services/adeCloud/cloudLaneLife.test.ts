@@ -133,16 +133,18 @@ describe("cloud lane life: the work check", () => {
   });
 
   // A person's delete takes the lane's saved chats, after the computer is gone; "keep its chats" and a failed delete leave every one.
-  it.each<[string, { keepChats?: boolean; arrange?: () => void }, { deleted: string[]; chatsKept: boolean }]>([
+  it.each<[string, { keepChats?: boolean; onlyChats?: string[]; arrange?: () => void }, { deleted: string[]; chatsKept: boolean }]>([
     ["by default", {}, { deleted: ["chat_a", "chat_b", "chat_d"], chatsKept: false }],
+    // A lane move: only the chats that arrived, under the computer's key and a replaced one's; the chat it left stays.
+    ["after a lane move", { onlyChats: ["chat_b", "chat_d"] }, { deleted: ["chat_b", "chat_d"], chatsKept: false }],
     ["when the person keeps its chats", { keepChats: true }, { deleted: [], chatsKept: true }],
     ["when the computer's delete fails", { arrange: () => { run.mockResolvedValue({ ok: false, message: "no" }); } }, { deleted: [], chatsKept: true }],
     ["when ADE Cloud refuses a chat's delete", { arrange: () => { deleteSavedChat.mockRejectedValue(new Error("503")); } }, { deleted: [], chatsKept: true }],
-  ])("deleting a lane %s", async (_label, { keepChats, arrange }, expected) => {
+  ])("deleting a lane %s", async (_label, { keepChats, onlyChats, arrange }, expected) => {
     arrange?.();
     const { lane } = build();
 
-    const result = await lane.deleteLane({ instanceId: INSTANCE, skipCheck: true, keepChats });
+    const result = await lane.deleteLane({ instanceId: INSTANCE, skipCheck: true, keepChats, onlyChats });
 
     expect(deletedChats).toEqual(expected.deleted);
     expect(result.chatsKept).toBe(expected.chatsKept);

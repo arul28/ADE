@@ -1517,12 +1517,31 @@ One busy list, `decideCloudBusy` in
   chat turns and agent CLIs, writes the saved chat copy, and saves each lane's
   backup (`backups` in its `--json` result).
 - **The person's Sleep** of an awake computer first runs
-  `prepare-stop --timeout 20` (`prepareForPersonSleep` in `routes.ts`): the
-  running turns stop, the chats are saved, and each lane's backup is saved in
-  the time left. Then the computer sleeps whatever the prepare says. When the
-  prepare reports every lane saved, the server marks the rest
-  (`markRestedWithBackups`), so a later move or cleanup needs no wake. A save
-  that didn't finish in time marks nothing.
+  `prepare-stop --timeout 20 --for-sleep` (`prepareForPersonSleep` in
+  `routes.ts`): the running turns stop, the chats are saved, and each lane's
+  backup is saved in the time left. `--for-sleep` freezes new work from the
+  start of the prepare until 30 s after it answers; a wake lifts it. Then the
+  computer sleeps whatever the prepare says. The server marks the rest
+  (`markRestedWithBackups`), so a later move or cleanup needs no wake, only
+  when the prepare reports every lane saved, answers `frozen: true`, and the
+  sleep follows within 20 s. A save that didn't finish in time, or an older
+  ADE that doesn't freeze, marks nothing.
+- **The saved-only delete** (a move from an asleep computer) claims the
+  computer with one conditional write (`claimSavedDelete`, `idle_deleting_at`)
+  while it rests with current backups. While the claim holds, start, exec,
+  sign-in, message sends, `/use` and event wakes answer 409
+  `computer_deleting`. A path that deletes nothing gives the claim back. The
+  client sends `onlyIfSaved` only to a server whose computer reads
+  `deleteOnlyIfSaved: true`; an older server gets no delete, and the move
+  asks for a wake.
+- **Native-history capsules** are replaced atomically: a new upload writes
+  under its own prefix and its commit swaps it in (migration 0051), so a
+  failed upload leaves the old capsule readable. A chat capsule records the
+  newest turn it holds (`transcriptEnd`); a restore drops a capsule older
+  than the saved transcript and replays the transcript. A restore moves the
+  chat with `keepCapsule: true` and deletes the capsule
+  (`DELETE /cloud/capsules/:machineKey/:chatId`) only after the local
+  restore succeeds.
 - **A turn stopped for a rest reads Stopped.** Each chat whose turn a
   prepare-stop interrupts is marked (`noteCloudChatStoppedForRest`). Its saved
   row then has status `interrupted` (`SAVED_CHAT_STOPPED_STATUS`), and the

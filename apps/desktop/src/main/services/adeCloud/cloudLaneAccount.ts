@@ -215,13 +215,14 @@ export function createCloudLaneAccount(deps: CloudLaneAccountDeps) {
     const count = () => { deleted += 1; };
     try {
       const client = await deps.client();
+      // `onlyChats`: a lane move's chats, and nothing else, under any of the lane's keys.
       const only = lane.onlyChats;
-      let left = await clearSavedChats(client, lane.machineKey, only ? (chat) => only.has(chat.chatId) : () => true, count);
+      const listed = (chat: CloudSavedChatRow) => !only || only.has(chat.chatId);
+      let left = await clearSavedChats(client, lane.machineKey, listed, count);
       // The computers a move replaced, only while the server says they are deleted: a move whose old computer stayed left it its chats.
-      // A move's chats are all under the computer's own key.
-      for (const machineKey of only ? [] : lane.formerMachineKeys) {
+      for (const machineKey of lane.formerMachineKeys) {
         if (sameMachineKey(machineKey, lane.machineKey)) continue;
-        if (await clearSavedChats(client, machineKey, (chat) => chat.computer?.state === "deleted", count)) left = true;
+        if (await clearSavedChats(client, machineKey, (chat) => chat.computer?.state === "deleted" && listed(chat), count)) left = true;
       }
       if (left) {
         logger.warn?.("cloud.lane_saved_chats_left", { deleted });
