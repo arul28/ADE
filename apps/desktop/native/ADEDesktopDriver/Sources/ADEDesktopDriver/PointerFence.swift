@@ -35,7 +35,7 @@ final class PointerFence {
         self.log = log
     }
 
-    /// Starts the fence. The driver calls it only while it owns a lane display:
+    /// Starts the fence. The driver calls it only while it owns a virtual display:
     /// with none, there is nothing to fence, and a tap would only see every
     /// mouse move.
     func start() {

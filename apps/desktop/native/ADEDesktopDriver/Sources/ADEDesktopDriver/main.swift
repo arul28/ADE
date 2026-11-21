@@ -567,14 +567,15 @@ final class DriverRuntime: NSObject {
         updatePermissionProbe()
     }
 
-    /// The fence runs while this driver owns a lane display. Also called on
-    /// each permission probe, so an Input Monitoring grant given while a
+    /// The fence runs while this driver owns a real virtual display; an
+    /// offscreen-region fallback has no display for it to guard. Also called
+    /// on each permission probe, so an Input Monitoring grant given while a
     /// display is up starts it (`start` returns at once when it already runs).
     private func syncPointerFence() {
-        if displays.all().isEmpty {
-            pointerFence.stop()
-        } else {
+        if displays.all().contains(where: { $0.display != nil }) {
             pointerFence.start()
+        } else {
+            pointerFence.stop()
         }
     }
 
