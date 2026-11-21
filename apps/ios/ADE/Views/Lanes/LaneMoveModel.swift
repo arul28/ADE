@@ -143,6 +143,14 @@ func laneMoveItems(sessions: [TerminalSessionSummary], chats: [AgentChatSessionS
 
 // MARK: - The batch move record (`chat.getCrossMachineBatchMove`)
 
+/// `chat.crossMachineBatchSourceChanged`: the lane's Git work on its source
+/// changed after the batch carried it.
+struct LaneMoveSourceChange: Decodable, Equatable {
+  let changed: Bool
+  /// What changed, for logs.
+  let reason: String?
+}
+
 /// One lane or chat of a batch move. `id`, `kind` and `state` are required:
 /// an item the phone can't read fails the whole record, so it can never be
 /// left out of the check that allows a delete.

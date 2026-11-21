@@ -1022,6 +1022,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "resolveCrossMachineHandoffApproval",
     "startCrossMachineBatchMove",
     "getCrossMachineBatchMove",
+    "crossMachineBatchSourceChanged",
     "retryCrossMachineBatchMove",
     "resolveCrossMachineBatchMoveApproval",
     "acknowledgeCrossMachineHandoff",

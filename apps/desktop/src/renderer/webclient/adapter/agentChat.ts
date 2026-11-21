@@ -17,6 +17,7 @@ import type {
   AgentChatCrossMachineHandoffOptionsResult,
   AgentChatCrossMachineHandoffRecord,
   AgentChatCrossMachineBatchMoveRecord,
+  AgentChatCrossMachineBatchSourceChangedResult,
   AgentChatResolveCrossMachineBatchMoveApprovalArgs,
   AgentChatPreviewCrossMachineHandoffResult,
   AgentChatModelCatalog,
@@ -418,6 +419,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     getCrossMachineBatchMove: async (args, pin) => {
       guardPin("getCrossMachineBatchMove", pin);
       return await callRequiredRead<AgentChatCrossMachineBatchMoveRecord | null>("chat.getCrossMachineBatchMove", args);
+    },
+    crossMachineBatchSourceChanged: async (args, pin) => {
+      guardPin("crossMachineBatchSourceChanged", pin);
+      return await callRequiredRead<AgentChatCrossMachineBatchSourceChangedResult>("chat.crossMachineBatchSourceChanged", args);
     },
     retryCrossMachineBatchMove: async (args, pin) => {
       guardPin("retryCrossMachineBatchMove", pin);

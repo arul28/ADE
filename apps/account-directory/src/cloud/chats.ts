@@ -480,12 +480,15 @@ async function savedChatComputers(
   };
 }
 
-/** One page of saved chats, newest activity first; `cursor` is `updatedAt:chatId` of the last row of the previous page. */
+/**
+ * One page of saved chats, newest activity first; `cursor` is `updatedAt:chatId` of the last row of the previous page.
+ * `lane` keeps one lane's; `notMachine` leaves out one machine's (a kept lane's restore lists what is not on it yet).
+ */
 export async function listSavedChats(
   env: CloudEnv,
   keys: UserKeys,
   userId: string,
-  filter: { machine?: string | null; project?: string | null; cursor?: string | null; limit: number },
+  filter: { machine?: string | null; notMachine?: string | null; project?: string | null; lane?: string | null; cursor?: string | null; limit: number },
 ): Promise<{ chats: CloudChatRow[]; nextCursor: string | null }> {
   const cursor = filter.cursor?.match(/^(\d+):(.+)$/) ?? null;
   const where = ["user_id = ?"];
@@ -493,6 +496,14 @@ export async function listSavedChats(
   if (filter.machine) {
     where.push("machine_key = ?");
     binds.push(filter.machine);
+  }
+  if (filter.notMachine) {
+    where.push("lower(machine_key) <> lower(?)");
+    binds.push(filter.notMachine);
+  }
+  if (filter.lane) {
+    where.push("lane_id = ?");
+    binds.push(filter.lane);
   }
   if (filter.project) {
     where.push("project_key = ?");
@@ -515,14 +526,18 @@ export async function listSavedChats(
   return { chats, nextCursor: results.length > filter.limit && last ? `${last.updated_at}:${last.chat_id}` : null };
 }
 
-/** `GET /cloud/chats?machine&project&limit&cursor`: newest activity first. */
+/** `GET /cloud/chats?machine&notMachine&project&lane&limit&cursor`: newest activity first. */
 async function handleList(url: URL, env: CloudEnv, userId: string, now: number): Promise<Response> {
   const machine = url.searchParams.get("machine")?.trim() || null;
-  if (machine && !ROW_ID.test(machine)) return json({ chats: [], nextCursor: null });
+  const notMachine = url.searchParams.get("notMachine")?.trim() || null;
+  const lane = url.searchParams.get("lane")?.trim() || null;
+  if ([machine, notMachine, lane].some((value) => value && !ROW_ID.test(value))) return json({ chats: [], nextCursor: null });
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
   return json(await listSavedChats(env, keys, userId, {
     machine,
+    notMachine,
+    lane,
     project: url.searchParams.get("project")?.trim() || null,
     cursor: url.searchParams.get("cursor"),
     limit: clampedInt(url.searchParams.get("limit"), DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT),

@@ -1305,6 +1305,24 @@ describe("ADE Cloud account", () => {
     }
   });
 
+  it("a delete only if saved whose close fails after the provider's delete keeps the lane, and a retry closes it with no live computer", async () => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { status: "sleeping", awake_since: null, lane_id: "lane_pricing", lane_name: "pricing", backup_rest_at: NOW - HOUR, backup_report_id: SAVED_REPORT, backup_report_state: "current" });
+    provide(harness, INSTANCE, "sleeping");
+    const del = () => harness.send(OWNER, "DELETE", instancePath, { reason: "moved", keepLane: { branchRef: "ade/pricing", onlyIfSaved: true } });
+    harness.injectFault((sql) => /insert into cloud_delete_log/.test(sql));
+
+    await expect(del()).rejects.toThrow("D1_ERROR");
+    harness.injectFault(null);
+
+    expect(harness.net.instances.has(INSTANCE)).toBe(false);
+    expect(computer(harness)).toEqual(expect.objectContaining({ deleted_at: null, lane_keep_reason: "freed" }));
+    const retried = await del();
+    expect(retried.status).toBe(200);
+    expect(computer(harness).deleted_at).toBe(NOW);
+    expect(harness.rows("select lane_id from cloud_lanes_without_computer")).toEqual([{ lane_id: "lane_pricing" }]);
+  });
+
   it("a repeated create by the same account gets its first computer back, and makes no second one", async () => {
     seedAccount(harness, OWNER, plusAccount);
     harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
@@ -2886,6 +2904,18 @@ describe("ADE Cloud account data and event wakes", () => {
     await wake(SECRET);
     expect(starts()).toBe(2);
     expect(await (await wake(SECRET, "linear-org:org-unknown")).json()).toEqual({ subscribed: false, woken: 0 });
+
+    // A move from the saved copy claims the delete after this wake read the computer: the wake starts nothing.
+    data.exec("update cloud_computers set status = 'sleeping', awake_since = null where instance_id = ?", INSTANCE);
+    data.net.instances.get(INSTANCE)!.status = "sleeping";
+    clock = NOW + 12 * 60_000;
+    data.injectFault((sql) => {
+      if (/insert into cloud_event_wake_state/.test(sql)) data.exec("update cloud_computers set idle_deleting_at = ? where instance_id = ?", clock, INSTANCE);
+      return false;
+    });
+    expect(await (await wake(SECRET)).json()).toEqual({ subscribed: true, woken: 0 });
+    data.injectFault(null);
+    expect(starts()).toBe(2);
   });
 
   it("refuses an event topic of another account", async () => {
@@ -3239,6 +3269,54 @@ describe("ADE Cloud without a computer", () => {
     expect([await manifestParts(), await stored()]).toEqual([null, 0]);
   });
 
+  it("two uploads of one capsule never mix, and a new upload never deletes one that committed while it started", async () => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { machine_key: "key-old" });
+    const capsule = "/cloud/capsules/key-old/c1";
+    const putPart = async (part: number, text: string, uploadId?: string) => {
+      const response = await harness.send(OWNER, "PUT", `${capsule}/parts/${part}`, text, { "x-ade-instance": INSTANCE, ...(uploadId ? { "x-ade-capsule-upload": uploadId } : {}) });
+      const body = (await response.json()) as { uploadId?: string; error?: { code?: string } };
+      return { status: response.status, uploadId: body.uploadId ?? null, code: body.error?.code ?? null };
+    };
+    const commit = async (parts: number, uploadId?: string) => (await harness.send(OWNER, "POST", `${capsule}/commit`, { instanceId: INSTANCE, uploadId, parts, provider: "claude", transportKind: "claude-jsonl", sessionKind: "chat", laneId: LANE })).status;
+    const readParts = async () => {
+      const manifest = (await (await harness.send(OWNER, "GET", capsule)).json()) as { parts?: number };
+      const parts: unknown[] = [];
+      for (let part = 1; part <= (manifest.parts ?? 0); part += 1) {
+        const response = await harness.send(OWNER, "GET", `${capsule}/parts/${part}`);
+        parts.push(response.status === 200 ? JSON.parse(await response.text()) : response.status);
+      }
+      return parts;
+    };
+
+    // Two saves at once: B's part 1 replaces A's upload, so A's later part and commit are refused, never mixed into B's.
+    const a = await putPart(1, "a 1");
+    const b = await putPart(1, "b 1");
+    expect([a.status, b.status, a.uploadId !== b.uploadId]).toEqual([200, 200, true]);
+    expect((await putPart(2, "a 2", a.uploadId!)).code).toBe("capsule_replaced");
+    expect(await commit(2, a.uploadId!)).toBe(409);
+    expect((await putPart(2, "b 2", b.uploadId!)).status).toBe(200);
+    expect([await commit(2, b.uploadId!), await readParts()]).toEqual([200, ["b 1", "b 2"]]);
+    // The same commit again answers the capsule; nothing of A's upload is left.
+    expect(await commit(2, b.uploadId!)).toBe(200);
+    expect((await harness.env.CLOUD_CHATS!.list({ prefix: "capsules/" })).objects).toHaveLength(2);
+
+    // A new part 1 read C as pending, then C committed before the part 1 replaced it: C stays readable.
+    const c = await putPart(1, "c 1");
+    let landed = false;
+    harness.injectFault((sql) => {
+      if (!landed && /pending_parts = 0/.test(sql)) {
+        landed = true;
+        harness.exec(`update cloud_fork_capsules set r2_key = pending_r2_key, parts = pending_parts, committed_at = ?, pending_r2_key = null, pending_parts = 0, pending_bytes = 0
+          where pending_r2_key = ?`, NOW, `capsules/${OWNER}/key-old/c1/u/${c.uploadId}/`);
+      }
+      return false;
+    });
+    expect((await putPart(1, "d 1")).status).toBe(200);
+    harness.injectFault(null);
+    expect([landed, await readParts()]).toEqual([true, ["c 1"]]);
+  });
+
   it("a CLI copy that two computers move at once lands on one: only that move says moved, and the copy reads there", async () => {
     seedAccount(harness, OWNER);
     seedComputer(harness, { machine_key: "key-cli" });
@@ -3465,6 +3543,21 @@ describe("ADE Cloud without a computer", () => {
     const onNew = (await (await harness.send(OWNER, "GET", `/cloud/instances/${SECOND}/messages`)).json()) as { messages: Array<{ messageId: string; targetKind?: string }> };
     expect(onNew.messages.map((message) => [message.messageId, message.targetKind])).toEqual([["m1", "cli"], ["m4", "cli"]]);
     expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(1);
+
+    // Another computer's move takes the copy after a send read it at key-new: nothing is queued where no copy is.
+    let moved = false;
+    harness.injectFault((sql) => {
+      if (!moved && /insert into cloud_chat_messages/.test(sql)) {
+        moved = true;
+        harness.exec("update cloud_session_copies set machine_key = 'key-third' where session_id = 'cli-1'");
+        harness.exec("update cloud_chat_messages set machine_key = 'key-third' where chat_id = 'cli-1'");
+      }
+      return false;
+    });
+    const late = await harness.send(OWNER, "POST", "/cloud/chats/key-new/cli-1/messages", { messageId: "m5", text: "Run the tests." });
+    harness.injectFault(null);
+    expect([moved, late.status, ((await late.json()) as { error?: { code?: string } }).error?.code]).toEqual([true, 409, "chat_moved"]);
+    expect(harness.rows("select machine_key from cloud_chat_messages where message_id = 'm5'")).toEqual([]);
   });
 });
 

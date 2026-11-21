@@ -292,6 +292,21 @@ extension SyncService {
     return try decode(raw, as: LaneMoveBatchRecord.self)
   }
 
+  /// `chat.crossMachineBatchSourceChanged` on the lane's brain: whether the
+  /// lane's Git work there changed after the batch carried it (a new commit
+  /// or an edited file). Read-only. Nil when that brain's ADE is older and
+  /// has no such check; it throws when the brain can't be reached.
+  func laneMoveBatchSourceChanged(route: LaneMoveRoute, batchId: String) async throws -> LaneMoveSourceChange? {
+    let action = "chat.crossMachineBatchSourceChanged"
+    // The brain lists its batch reads but not this one: an older ADE.
+    if !laneMoveActionAvailable(action, route: route),
+       laneMoveActionAvailable("chat.getCrossMachineBatchMove", route: route) {
+      return nil
+    }
+    let raw = try await sendLaneMoveCommand(action, args: ["batchId": batchId], route: route)
+    return try decode(raw, as: LaneMoveSourceChange.self)
+  }
+
   /// `chat.retryCrossMachineBatchMove`: the same batch id goes on, so
   /// what already arrived is not sent again.
   func retryLaneMoveBatch(route: LaneMoveRoute, batchId: String) async throws -> LaneMoveBatchRecord {

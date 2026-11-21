@@ -411,6 +411,8 @@ import type {
   AgentChatCrossMachineBatchMoveArgs,
   AgentChatGetCrossMachineBatchMoveArgs,
   AgentChatRetryCrossMachineBatchMoveArgs,
+  AgentChatCrossMachineBatchSourceChangedArgs,
+  AgentChatCrossMachineBatchSourceChangedResult,
   AgentChatResolveCrossMachineBatchMoveApprovalArgs,
   AgentChatCrossMachineBatchMoveRecord,
   AgentChatValidateCrossMachineSourceArgs,
@@ -2863,6 +2865,11 @@ declare global {
           args: AgentChatRetryCrossMachineBatchMoveArgs,
           pin: OpenProjectBinding,
         ) => Promise<AgentChatCrossMachineBatchMoveRecord>;
+        /** Whether the batch's source lanes changed after the move carried them; on the source brain. */
+        crossMachineBatchSourceChanged: (
+          args: AgentChatCrossMachineBatchSourceChangedArgs,
+          pin: OpenProjectBinding,
+        ) => Promise<AgentChatCrossMachineBatchSourceChangedResult>;
         resolveCrossMachineBatchMoveApproval: (
           args: AgentChatResolveCrossMachineBatchMoveApprovalArgs,
           pin: OpenProjectBinding,

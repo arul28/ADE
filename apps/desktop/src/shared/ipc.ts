@@ -457,6 +457,7 @@ export const IPC = {
   agentChatStartCrossMachineBatchMove: "ade.agentChat.startCrossMachineBatchMove",
   agentChatGetCrossMachineBatchMove: "ade.agentChat.getCrossMachineBatchMove",
   agentChatRetryCrossMachineBatchMove: "ade.agentChat.retryCrossMachineBatchMove",
+  agentChatCrossMachineBatchSourceChanged: "ade.agentChat.crossMachineBatchSourceChanged",
   agentChatResolveCrossMachineBatchMoveApproval: "ade.agentChat.resolveCrossMachineBatchMoveApproval",
   agentChatSend: "ade.agentChat.send",
   agentChatSteer: "ade.agentChat.steer",

@@ -146,29 +146,29 @@ export function createGithubSessionEnv(deps: {
   };
 
   /**
+   * The App token for `owner`, else the account's `gh` login copy, else null.
+   * With a copy to fall back on, a slow App renewal does not hold the caller
+   * past `APP_LOOKUP_WITH_FALLBACK_MS` (under the shim's own 48 s wait).
+   */
+  const appTokenOrCopy = async (owner: string | null): Promise<string | null> => {
+    const ghCopy = accountGhToken();
+    const lookup = owner ? appTokenFor(owner).catch(() => null) : Promise.resolve(null);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const appToken = ghCopy
+      ? await Promise.race([lookup, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), APP_LOOKUP_WITH_FALLBACK_MS); })])
+        .finally(() => clearTimeout(timer))
+      : await lookup;
+    return appToken ?? ghCopy;
+  };
+
+  /**
    * The shim's question, on every `gh` or `git` run: the current account App
    * token when the owner's installation is reachable, else the account's `gh`
    * login copy, else null (the shim steps aside). Cached answers mostly: the
    * token client and the grant reader keep theirs, so a run costs no request.
    */
-  const tokenForOwner = async (requestedOwner: string | null): Promise<string | null> => {
-    const owner = requestedOwner ?? lastOwner;
-    const ghCopy = accountGhToken();
-    try {
-      const lookup = owner ? appTokenFor(owner) : Promise.resolve(null);
-      // With a `gh` login copy to fall back on, a slow App renewal does not
-      // run past the shim's own wait (48 s), so the shell still gets a token.
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const appToken = ghCopy
-        ? await Promise.race([lookup, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), APP_LOOKUP_WITH_FALLBACK_MS); })])
-          .finally(() => clearTimeout(timer))
-        : await lookup;
-      if (appToken) return appToken;
-    } catch {
-      // The App could not answer; the account's `gh` login copy still can.
-    }
-    return ghCopy;
-  };
+  const tokenForOwner = async (requestedOwner: string | null): Promise<string | null> =>
+    await appTokenOrCopy(requestedOwner ?? lastOwner);
   if (deps.answersShells !== false) setGithubShellTokenAnswer(tokenForOwner);
 
   const needsToken = (env: NodeJS.ProcessEnv): boolean => !envHasOwnGithubToken(env) && !hasOwnGhLogin(env);
@@ -180,7 +180,7 @@ export function createGithubSessionEnv(deps: {
       const owner = await deps.readRepoOwner();
       lastOwner = owner;
       if (!owner) return null;
-      const token = (await appTokenFor(owner).catch(() => null)) ?? accountGhToken();
+      const token = await appTokenOrCopy(owner);
       return token ? envFor(token, env, owner) : null;
     } catch {
       return null;

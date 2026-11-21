@@ -39,7 +39,7 @@ struct LaneMoveReviewView: View {
   private var deletesComputer: Bool { !restores && source.deletesComputer }
   /// Another move of this lane is under way or waits to be closed: this
   /// review can't start a second one.
-  private var otherRunOpen: Bool { run == nil && runs.openRun(source: source) != nil }
+  private var otherRunOpen: Bool { run == nil && runs.openRun(source: source)?.blocksNewMove == true }
 
   /// The asleep computer's saved copy doesn't hold all of the lane's work,
   /// so the move wakes it instead.
@@ -225,7 +225,7 @@ struct LaneMoveReviewView: View {
       ? laneMoveProgressRows(batch: run.batch, review: items)
       : laneMoveProgressRows(restore: run.restore, review: preview?.items ?? [])
     let arrived = parts.filter { $0.state == .arrived }.count
-    let ended = run.phase == .failed || run.phase == .deleteFailed
+    let ended = run.phase == .failed || run.phase == .deleteFailed || run.phase == .moveAgain
     let failure = parts.first(where: { $0.state == .failed && $0.error != nil })?.error ?? run.error
     Section {
       VStack(alignment: .leading, spacing: 6) {
@@ -281,6 +281,7 @@ struct LaneMoveReviewView: View {
     case .deleting: return "Everything arrived. Deleting the \(cloud) computer…"
     case .done: return run.deletesComputer ? "Moved. The \(cloud) computer is deleted." : "Moved. Everything arrived."
     case .deleteFailed: return "Everything arrived, but the \(cloud) computer is still there."
+    case .moveAgain: return "Everything the move carried arrived. The lane on \(cloud) has more since, so its computer is kept. Move the lane again to bring it."
     case .failed:
       if run.computer != nil { return "Not all of it arrived. The \(cloud) computer is kept, so nothing is lost." }
       if run.kind == .restore, run.fromComputer != nil { return "Not all of it arrived. The lane stays in your account, so nothing is lost." }
@@ -340,6 +341,14 @@ struct LaneMoveReviewView: View {
           .adeInspectable("Lanes.Move.RetryDelete")
           Button("Close") { close() }
             .buttonStyle(ADEKitButtonStyle(wide: true))
+        case .moveAgain:
+          // Nothing to retry: Close ends this run, and the lane's sheet starts a fresh move.
+          Button("Close") {
+            runs.dismiss(id: run.id)
+            close()
+          }
+          .buttonStyle(ADEKitButtonStyle(wide: true))
+          .adeInspectable("Lanes.Move.MoveAgainClose")
         case .moving, .deleting, .done:
           Button(run.phase == .done ? "Done" : "Close") { close() }
             .buttonStyle(ADEKitButtonStyle(wide: true))

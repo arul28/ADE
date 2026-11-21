@@ -82,6 +82,7 @@ describe("createCloudRestSave capsules", () => {
     const api = {
       putCapsulePart: vi.fn(async (_machine: string, _chat: string, part: number, _instance: string, bytes: Uint8Array) => {
         uploaded.push({ part, bytes });
+        return { ok: true, bytes: bytes.byteLength, uploadId: "0".repeat(32) };
       }),
       commitCapsule: vi.fn(async (_machine: string, _chat: string, body: Record<string, unknown>) => {
         commits.push(body);

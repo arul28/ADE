@@ -2,8 +2,10 @@ import {
   CLOUD_CAPSULE_MAX_ACCOUNT_BYTES,
   CLOUD_CAPSULE_MAX_BYTES,
   CLOUD_CAPSULE_MAX_PART_BYTES,
+  CLOUD_CAPSULE_UPLOAD_HEADER,
   CLOUD_PATHS,
   type CloudCapsuleManifest,
+  type CloudCapsulePartResult,
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
 import { openBytes, sealBytes, userKeys } from "./seal";
@@ -23,7 +25,10 @@ import { logCloud, type CloudEnv } from "./store";
  * replaces the older capsule only at its commit. Until then the new parts
  * go under their own prefix (`pending_r2_key`) and the committed capsule
  * reads as before, so an upload that fails or stops part way leaves it
- * readable. The commit switches the row to the new parts in one write, then
+ * readable. Part 1 answers its upload's id; later parts and the commit name
+ * it (`CLOUD_CAPSULE_UPLOAD_HEADER`), so a part or commit of an upload a
+ * newer part 1 replaced is refused (`capsule_replaced`), never mixed into
+ * it. The commit switches the row to the new parts in one write, then
  * deletes the older ones. A capsule reads only once committed.
  */
 
@@ -35,6 +40,7 @@ const notFound = () => fail("not_found", "ADE Cloud has no saved copy of that se
 const unavailable = () => fail("unavailable", "Saved session copies aren't available right now. Try again soon.", 503);
 const tooLarge = () => fail("capsule_too_large", `A saved session copy keeps at most ${CLOUD_CAPSULE_MAX_BYTES / (1024 * 1024)} MB.`, 413);
 const partTooLarge = () => fail("capsule_too_large", `One part of a saved session copy is at most ${CLOUD_CAPSULE_MAX_PART_BYTES / (1024 * 1024)} MB.`, 413);
+const replaced = () => fail("capsule_replaced", "A newer save of this session copy started. Upload it again from part 1.", 409);
 const accountFull = () => fail("account_full", "This account's saved session copies are full. Delete old cloud chats to save new ones.", 413);
 
 type CapsuleRow = {
@@ -60,9 +66,12 @@ type CapsuleRow = {
 };
 
 const capsulePrefix = (userId: string, machineKey: string, chatId: string): string => `capsules/${userId}/${machineKey}/${chatId}/`;
+/** One upload's id (`CloudCapsulePartResult.uploadId`): its own prefix's last segment. */
+const UPLOAD_ID = /^[0-9a-f]{32}$/;
 /** One upload's own prefix, under the capsule's: a new upload never writes over the committed parts. */
-const uploadPrefix = (userId: string, machineKey: string, chatId: string): string =>
-  `${capsulePrefix(userId, machineKey, chatId)}u/${crypto.randomUUID().replace(/-/g, "")}/`;
+const uploadPrefix = (userId: string, machineKey: string, chatId: string, uploadId: string): string =>
+  `${capsulePrefix(userId, machineKey, chatId)}u/${uploadId}/`;
+const uploadIdOf = (prefix: string): string | null => /\/u\/([0-9a-f]{32})\/$/.exec(prefix)?.[1] ?? null;
 
 /** Every object under `prefix`, page by page. */
 async function deleteUnder(bucket: R2Bucket, prefix: string): Promise<void> {
@@ -104,37 +113,70 @@ function manifestOf(row: CapsuleRow): CloudCapsuleManifest {
   };
 }
 
+/**
+ * Starts a new upload for one capsule (its part 1) and answers its id. The
+ * row's upload is replaced with one compare-and-swap on the upload this
+ * request read, so of two part 1s at once each gets its own upload and
+ * only the later one stays pending; neither adopts the other's prefix. The
+ * upload it replaced never committed (a commit clears `pending_r2_key` in
+ * the same write that adopts it), so its parts belong to nothing and go.
+ * Null when other part 1s kept replacing it.
+ */
+async function startUpload(env: CloudEnv, bucket: R2Bucket, userId: string, machineKey: string, chatId: string, instanceId: string, now: number): Promise<{ id: string; prefix: string } | null> {
+  const id = crypto.randomUUID().replace(/-/g, "");
+  const prefix = uploadPrefix(userId, machineKey, chatId, id);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const row = await readRow(env, userId, machineKey, chatId);
+    if (!row) {
+      const inserted = await env.DB.prepare(`
+        insert into cloud_fork_capsules (user_id, machine_key, chat_id, instance_id, parts, bytes, r2_key, committed_at, created_at, updated_at,
+          pending_r2_key, pending_parts, pending_bytes, pending_instance_id)
+        values (?, ?, ?, ?, 0, 0, ?, null, ?, ?, ?, 0, 0, ?)
+        on conflict (user_id, machine_key, chat_id) do nothing
+      `).bind(userId, machineKey, chatId, instanceId, prefix, now, now, prefix, instanceId).run();
+      if ((inserted.meta?.changes ?? 0) === 1) return { id, prefix };
+      continue;
+    }
+    const swapped = await env.DB.prepare(`
+      update cloud_fork_capsules set pending_r2_key = ?, pending_parts = 0, pending_bytes = 0, pending_instance_id = ?, updated_at = ?
+      where user_id = ? and machine_key = ? and chat_id = ? and pending_r2_key is ?
+    `).bind(prefix, instanceId, now, userId, machineKey, chatId, row.pending_r2_key).run();
+    if ((swapped.meta?.changes ?? 0) !== 1) continue;
+    const abandoned = row.pending_r2_key;
+    if (abandoned && (row.committed_at == null || abandoned !== row.r2_key)) await deleteUnder(bucket, abandoned);
+    return { id, prefix };
+  }
+  return null;
+}
+
 async function handlePutPart(request: Request, env: CloudEnv, bucket: R2Bucket, userId: string, machineKey: string, chatId: string, part: number, now: number): Promise<Response> {
   const declared = Number(request.headers.get("content-length") ?? "");
   if (Number.isFinite(declared) && declared > CLOUD_CAPSULE_MAX_PART_BYTES) return partTooLarge();
   const computer = await callingComputer(env, request, userId, null);
   if (!computer) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  // The upload this part belongs to; an older ADE names none and adds to the pending one.
+  const named = request.headers.get(CLOUD_CAPSULE_UPLOAD_HEADER)?.trim() || null;
+  if (named && !UPLOAD_ID.test(named)) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   const plain = new Uint8Array(await request.arrayBuffer());
   if (plain.byteLength > CLOUD_CAPSULE_MAX_PART_BYTES) return partTooLarge();
   if (plain.byteLength === 0) return fail("bad_request", "That part is empty.", 400);
-  let row = await readRow(env, userId, machineKey, chatId);
-  // Part 1 starts a new upload under its own prefix; a later part needs the one before it.
+  // Part 1 starts a new upload under its own prefix; a later part needs the one before it, in the same upload.
   // The committed capsule stays as it is until this upload commits.
+  let upload: { prefix: string; parts: number; bytes: number };
   if (part === 1) {
-    const prefix = uploadPrefix(userId, machineKey, chatId);
-    const abandoned = row?.pending_r2_key ?? null;
-    await env.DB.prepare(`
-      insert into cloud_fork_capsules (user_id, machine_key, chat_id, instance_id, parts, bytes, r2_key, committed_at, created_at, updated_at,
-        pending_r2_key, pending_parts, pending_bytes, pending_instance_id)
-      values (?, ?, ?, ?, 0, 0, ?, null, ?, ?, ?, 0, 0, ?)
-      on conflict (user_id, machine_key, chat_id) do update set pending_r2_key = excluded.pending_r2_key, pending_parts = 0, pending_bytes = 0,
-        pending_instance_id = excluded.pending_instance_id, updated_at = excluded.updated_at
-    `).bind(userId, machineKey, chatId, computer.instance_id, prefix, now, now, prefix, computer.instance_id).run();
-    // An earlier upload that never committed: its parts belong to nothing now.
-    if (abandoned && (row?.committed_at == null || abandoned !== row.r2_key)) await deleteUnder(bucket, abandoned);
-    row = await readRow(env, userId, machineKey, chatId);
-  } else if (!row || !row.pending_r2_key || part > row.pending_parts + 1) {
-    return fail("capsule_out_of_order", "Upload the parts of a saved session copy in order, from part 1.", 409);
+    const started = await startUpload(env, bucket, userId, machineKey, chatId, computer.instance_id, now);
+    if (!started) return unavailable();
+    upload = { prefix: started.prefix, parts: 0, bytes: 0 };
+  } else {
+    const row = await readRow(env, userId, machineKey, chatId);
+    if (named && row?.pending_r2_key !== uploadPrefix(userId, machineKey, chatId, named)) return replaced();
+    if (!row || !row.pending_r2_key || part > row.pending_parts + 1) {
+      return fail("capsule_out_of_order", "Upload the parts of a saved session copy in order, from part 1.", 409);
+    }
+    upload = { prefix: row.pending_r2_key, parts: row.pending_parts, bytes: row.pending_bytes };
   }
-  if (!row?.pending_r2_key) return unavailable();
-  const pending = row.pending_r2_key;
-  const isNew = part > row.pending_parts;
-  const bytesAfter = row.pending_bytes + (isNew ? plain.byteLength : 0);
+  const isNew = part > upload.parts;
+  const bytesAfter = upload.bytes + (isNew ? plain.byteLength : 0);
   if (bytesAfter > CLOUD_CAPSULE_MAX_BYTES) return tooLarge();
   if ((await accountBytes(env, userId, { machineKey, chatId })) + bytesAfter > CLOUD_CAPSULE_MAX_ACCOUNT_BYTES) {
     logCloud("cloud.capsule_account_full", { userId, limitBytes: CLOUD_CAPSULE_MAX_ACCOUNT_BYTES });
@@ -142,13 +184,19 @@ async function handlePutPart(request: Request, env: CloudEnv, bucket: R2Bucket, 
   }
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
-  await bucket.put(partKey(pending, part), await sealBytes(keys.aes, partAad(userId, machineKey, chatId, part), plain));
-  // Only this upload's count: a newer part 1 since then started another upload.
-  await env.DB.prepare(`
+  const key = partKey(upload.prefix, part);
+  await bucket.put(key, await sealBytes(keys.aes, partAad(userId, machineKey, chatId, part), plain));
+  // Only this upload's count. A newer part 1 since then replaced it: this part belongs to nothing.
+  const counted = await env.DB.prepare(`
     update cloud_fork_capsules set pending_parts = max(pending_parts, ?), pending_bytes = ?, updated_at = ?
     where user_id = ? and machine_key = ? and chat_id = ? and pending_r2_key = ?
-  `).bind(part, bytesAfter, now, userId, machineKey, chatId, pending).run();
-  return json({ ok: true, bytes: plain.byteLength });
+  `).bind(part, bytesAfter, now, userId, machineKey, chatId, upload.prefix).run();
+  if ((counted.meta?.changes ?? 0) !== 1) {
+    await bucket.delete(key);
+    return replaced();
+  }
+  const uploadId = uploadIdOf(upload.prefix);
+  return json({ ok: true, bytes: plain.byteLength, ...(uploadId ? { uploadId } : {}) } satisfies CloudCapsulePartResult);
 }
 
 async function handleCommit(request: Request, env: CloudEnv, bucket: R2Bucket, userId: string, machineKey: string, chatId: string, now: number): Promise<Response> {
@@ -161,12 +209,20 @@ async function handleCommit(request: Request, env: CloudEnv, bucket: R2Bucket, u
   const transportKind = typeof body.transportKind === "string" && TRANSPORT_KINDS.has(body.transportKind) ? body.transportKind : null;
   const laneId = typeof body.laneId === "string" && ROW_ID.test(body.laneId) ? body.laneId : null;
   const sessionKind = body.sessionKind === "cli" ? "cli" : body.sessionKind === "chat" ? "chat" : null;
-  if (!parts || !provider || !transportKind || !sessionKind) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
+  // The upload to commit; an older ADE names none and commits the pending one.
+  const named = body.uploadId == null ? null : typeof body.uploadId === "string" && UPLOAD_ID.test(body.uploadId) ? body.uploadId : undefined;
+  if (!parts || !provider || !transportKind || !sessionKind || named === undefined) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   const row = await readRow(env, userId, machineKey, chatId);
   if (!row) return notFound();
-  // The same commit again: nothing uploads, and the committed capsule is its answer.
-  if (!row.pending_r2_key) return row.committed_at != null ? json(manifestOf(row)) : notFound();
-  const pending = row.pending_r2_key;
+  if (named) {
+    const prefix = uploadPrefix(userId, machineKey, chatId, named);
+    // The same commit again: this upload is the committed capsule. Another upload replaced it: it never commits.
+    if (row.pending_r2_key !== prefix) return row.committed_at != null && row.r2_key === prefix ? json(manifestOf(row)) : replaced();
+  } else if (!row.pending_r2_key) {
+    // The same commit again: nothing uploads, and the committed capsule is its answer.
+    return row.committed_at != null ? json(manifestOf(row)) : notFound();
+  }
+  const pending = row.pending_r2_key!;
   if (parts !== row.pending_parts) return fail("capsule_incomplete", "Some parts of this saved session copy are missing. Upload it again from part 1.", 409);
   // The sizes in R2 are the truth, not the count the computer sent.
   let total = 0;

@@ -5246,6 +5246,13 @@ export type AgentChatCrossMachineBatchMoveLaneItem = AgentChatCrossMachineBatchM
   returnToLaneId?: string | null;
   carriedChanges?: boolean;
   snapshotSha?: string | null;
+  /**
+   * The source lane's Git work as the move carried it: its HEAD commit and the
+   * tree of its working tree (untracked files in, ignored files out). Set when
+   * the lane leaves the source; absent on records from older ADE.
+   */
+  carriedHeadSha?: string | null;
+  carriedTreeSha?: string | null;
   warning?: string | null;
   laneSetupStatus?: AgentChatCrossMachineLaneSetupStatus;
 };
@@ -5295,6 +5302,13 @@ export type AgentChatCrossMachineBatchMoveApproval = {
 
 export type AgentChatGetCrossMachineBatchMoveArgs = { batchId: string };
 export type AgentChatRetryCrossMachineBatchMoveArgs = { batchId: string };
+export type AgentChatCrossMachineBatchSourceChangedArgs = { batchId: string };
+/** Whether a batch's source lanes have Git work the move did not carry. */
+export type AgentChatCrossMachineBatchSourceChangedResult = {
+  changed: boolean;
+  /** What changed, for logs. */
+  reason?: string | null;
+};
 export type AgentChatResolveCrossMachineBatchMoveApprovalArgs = { batchId: string; approve: boolean };
 
 /** A branch-only lane import, used for lanes that have no selected chat. */

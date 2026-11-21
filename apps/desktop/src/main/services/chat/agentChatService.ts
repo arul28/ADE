@@ -656,6 +656,8 @@ import type {
   AgentChatCrossMachineBatchMoveArgs,
   AgentChatGetCrossMachineBatchMoveArgs,
   AgentChatRetryCrossMachineBatchMoveArgs,
+  AgentChatCrossMachineBatchSourceChangedArgs,
+  AgentChatCrossMachineBatchSourceChangedResult,
   AgentChatResolveCrossMachineBatchMoveApprovalArgs,
   AgentChatCrossMachineForkTransport,
   AgentChatCrossMachineHandoffCapsule,
@@ -84786,6 +84788,14 @@ ${schedule.prompt}`
       requireCrossMachineHandoff().getBatch(getArgs.batchId),
     retryCrossMachineBatchMove: (retryArgs: AgentChatRetryCrossMachineBatchMoveArgs) =>
       requireCrossMachineHandoff().retryBatch(retryArgs.batchId),
+    /** Read-only: whether a batch's source lanes changed after the batch carried them. */
+    crossMachineBatchSourceChanged: async (
+      changedArgs: AgentChatCrossMachineBatchSourceChangedArgs,
+    ): Promise<AgentChatCrossMachineBatchSourceChangedResult> => {
+      const batchId = typeof changedArgs?.batchId === "string" ? changedArgs.batchId.trim() : "";
+      if (!batchId) throw new Error("A batch id is required.");
+      return await crossMachineBatchSource.batchSourceChanged(batchId);
+    },
     resolveCrossMachineBatchMoveApproval: (approvalArgs: AgentChatResolveCrossMachineBatchMoveApprovalArgs) =>
       requireCrossMachineHandoff().resolveBatchApproval(approvalArgs.batchId, approvalArgs.approve === true),
     cancelCrossMachineHandoff: async (cancelArgs: AgentChatCrossMachineHandoffSessionArgs) =>

@@ -4,6 +4,8 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import type { CloudKeptLaneRestoreRecord } from "../../../shared/cloudKeptLaneRestore";
+import { isUnsupportedAdeActionError } from "../../../shared/codedError";
+import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
 import { deleteCloudLane } from "../cloudLane/cloudLaneActions";
 import { deleteCloudLaneWithCheck } from "../cloudLane/deleteCloudLane";
@@ -32,8 +34,13 @@ export type LaneMovePhase =
   /** Moved and checked; the ADE Cloud computer is being deleted. */
   | "deleting"
   | "done"
-  /** Moved, but the ADE Cloud computer could not be deleted. */
+  /** Moved, but the ADE Cloud computer could not be deleted, or ADE couldn't check it first. */
   | "deleteFailed"
+  /**
+   * Moved, but the lane on the ADE Cloud computer has chats or files the move
+   * didn't carry, so the computer is kept. Moving the lane again brings them.
+   */
+  | "moveAgain"
   /** Part of it, or none of it, arrived. Nothing was deleted. */
   | "failed";
 
@@ -180,13 +187,15 @@ function forgetLater(id: string): void {
   }, KEEP_ENDED_MS));
 }
 
+/** The source still holds work the move didn't carry: the computer stays, and a new move brings it. */
+class LeftOnSourceError extends Error {}
+
 /**
  * The lane's chats and CLIs on the source that the move did not carry: one
- * started there during the move. Read just before the delete, which then
- * keeps the computer. Null when the source can't be read (it then deletes:
- * the move's own check passed, and the saved copies of chats it left stay).
+ * started there during the move. Read just before the delete. Throws when
+ * the source can't be read, which keeps the computer.
  */
-async function chatsLeftOnSource(run: Extract<LaneMoveRun, { kind: "live" }>): Promise<number | null> {
+async function chatsLeftOnSource(run: Extract<LaneMoveRun, { kind: "live" }>): Promise<number> {
   try {
     const [rows, chats] = await Promise.all([
       window.ade.sessions.list({ laneId: run.laneId, includeArchived: false, limit: null }, run.pin),
@@ -196,7 +205,38 @@ async function chatsLeftOnSource(run: Extract<LaneMoveRun, { kind: "live" }>): P
     return laneMoveItems(rows, chats).filter((item) => !moved.has(item.sessionId)).length;
   } catch (error) {
     console.warn("[laneMove] reading the source before its delete failed", error);
-    return null;
+    throw new Error(`ADE couldn't check the lane's chats on ${ADE_CLOUD_NAME}, so it kept the computer. ${errorText(error)}`.trim());
+  }
+}
+
+const SOURCE_CHANGED_ACTION = "crossMachineBatchSourceChanged";
+
+/** The source's ADE is older and has no source check. */
+function isMissingSourceCheck(error: unknown): boolean {
+  if (isUnsupportedAdeActionError(error)) return true;
+  const message = errorText(error);
+  return message.includes(SOURCE_CHANGED_ACTION)
+    && /unknown ade action|unsupported remote command|no handler registered|not callable|not exposed/i.test(message);
+}
+
+/**
+ * Whether the lane's Git work on the source changed after the batch carried
+ * it (a new commit or an edited file). Throws when the source can't tell,
+ * which keeps the computer. An older source with no such check deletes as
+ * before.
+ */
+async function filesChangedOnSource(run: Extract<LaneMoveRun, { kind: "live" }>): Promise<boolean> {
+  try {
+    const result = await window.ade.agentChat.crossMachineBatchSourceChanged({ batchId: run.id }, run.pin);
+    if (result.changed) console.warn("[laneMove] the source lane changed after the move", { batchId: run.id, reason: result.reason ?? null });
+    return result.changed === true;
+  } catch (error) {
+    if (isMissingSourceCheck(error)) {
+      console.warn("[laneMove] the source ADE can't check its lane files; deleting without that check", { batchId: run.id, error: errorText(error) });
+      return false;
+    }
+    console.warn("[laneMove] checking the source lane files before its delete failed", error);
+    throw new Error(`ADE couldn't check the lane's files on ${ADE_CLOUD_NAME}, so it kept the computer. ${errorText(error)}`.trim());
   }
 }
 
@@ -205,13 +245,20 @@ async function deleteComputer(id: string): Promise<void> {
   if (!run?.cloudInstanceId) return;
   update(id, (entry) => ({ ...entry, phase: "deleting", error: null }));
   try {
-    const left = run.kind === "live" ? await chatsLeftOnSource(run) : null;
-    if (left) {
-      throw new Error(left === 1
-        ? "A chat started on the lane during the move, so ADE kept the computer. Move the lane again to bring it."
-        : `${left} chats started on the lane during the move, so ADE kept the computer. Move the lane again to bring them.`);
+    if (run.kind === "live") {
+      const left = await chatsLeftOnSource(run);
+      if (left > 0) {
+        throw new LeftOnSourceError(left === 1
+          ? "A chat started on the lane during the move, so ADE kept the computer. Move the lane again to bring it."
+          : `${left} chats started on the lane during the move, so ADE kept the computer. Move the lane again to bring them.`);
+      }
+      if (await filesChangedOnSource(run)) {
+        throw new LeftOnSourceError(
+          `Files on the lane changed on ${ADE_CLOUD_NAME} after the move, so ADE kept the computer. Move the lane again to bring them.`,
+        );
+      }
     }
-    // The move carried the work and its chats, and the check above passed:
+    // The move carried the work and its chats, and the checks above passed:
     // the work check would only find what already arrived, so it is skipped.
     // Only the saved copies of the chats that arrived go; a chat the move
     // left (Done, archived, another surface) stays readable from ADE Cloud.
@@ -222,14 +269,31 @@ async function deleteComputer(id: string): Promise<void> {
     );
     if (!done.ok) throw new Error(done.message || "ADE Cloud did not delete the computer.");
     update(id, (entry) => ({ ...entry, phase: "done" }));
+    // Asked to keep every chat, `chatsKept` is always true; only a failed chat delete warns.
+    const chatsLeft = done.chatsKept && Boolean(movedChatIds);
     showToast({
-      tone: "success",
+      tone: chatsLeft ? "warning" : "success",
       title: `Moved ${run.laneName} to ${run.targetName}`,
-      message: "Its ADE Cloud computer is deleted.",
+      message: chatsLeft
+        ? "Its ADE Cloud computer is deleted. ADE couldn't delete all the saved copies of the chats that moved; remove the rest in Work."
+        : "Its ADE Cloud computer is deleted.",
+      ...(chatsLeft ? { durationMs: READABLE_TOAST_DURATION_MS } : {}),
     });
     forgetLater(id);
   } catch (error) {
     const message = errorText(error);
+    if (error instanceof LeftOnSourceError) {
+      // Not a failed delete: the person moves the lane again, from a fresh review.
+      update(id, (entry) => ({ ...entry, phase: "moveAgain", error: message }));
+      showToast({
+        tone: "warning",
+        title: `Moved ${run.laneName}, but kept its ADE Cloud computer`,
+        message,
+        durationMs: READABLE_TOAST_DURATION_MS,
+      });
+      forgetLater(id);
+      return;
+    }
     update(id, (entry) => ({ ...entry, phase: "deleteFailed", error: message }));
     showToast({
       tone: "warning",
@@ -383,7 +447,7 @@ export function laneMoveWakesInstead(run: LaneMoveRun): boolean {
  */
 export function retryLaneMoveDelete(id: string): void {
   const run = runs.find((entry) => entry.id === id);
-  if (!run?.cloudInstanceId || run.phase === "deleting" || run.phase === "done") return;
+  if (!run?.cloudInstanceId || run.phase !== "deleteFailed") return;
   const movedChatIds = run.kind === "live" ? run.movedChatIds ?? null : null;
   update(id, (entry) => ({ ...entry, phase: "deleting", error: null }));
   void deleteCloudLaneWithCheck({

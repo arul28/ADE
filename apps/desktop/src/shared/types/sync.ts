@@ -3154,6 +3154,7 @@ export type SyncRemoteCommandAction =
   | "chat.startCrossMachineBatchMove"
   | "chat.getCrossMachineBatchMove"
   | "chat.retryCrossMachineBatchMove"
+  | "chat.crossMachineBatchSourceChanged"
   | "chat.resolveCrossMachineBatchMoveApproval"
   | "chat.getContextUsage"
   | "chat.getClaudeUsage"

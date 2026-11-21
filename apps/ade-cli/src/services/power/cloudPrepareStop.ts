@@ -18,7 +18,7 @@
 import type { CloudBackupSaveSummary } from "../../../../account-directory/src/cloud/contract";
 import type { AdeRuntime } from "../../bootstrap";
 import { noteCloudChatStoppedForRest, uploadPendingCloudChats } from "../cloudChats/cloudChatUploader";
-import { CLOUD_SLEEP_FREEZE_AFTER_PREPARE_MS, freezeCloudComputerForDelete, freezeCloudComputerForSleep, liftCloudDeleteFreeze, liftCloudSleepFreeze } from "./cloudDeleteFreeze";
+import { CLOUD_SLEEP_FREEZE_AFTER_PREPARE_MS, cloudFreezeHolds, freezeCloudComputerForDelete, freezeCloudComputerForSleep, liftCloudDeleteFreeze, liftCloudSleepFreeze } from "./cloudDeleteFreeze";
 
 const POLL_MS = 400;
 /** Held back from the timeout for writing the chat copy. */
@@ -73,7 +73,9 @@ export async function prepareCloudComputerToStop(args: {
     if (forSleep) liftCloudSleepFreeze();
   };
   try {
-    const result = await prepare({ ...args, forSleep });
+    const prepared = await prepare({ ...args, forSleep });
+    // Frozen means no work could start after the save: not when the freeze ran out (or was lifted) before the save ended.
+    const result = prepared.frozen && !cloudFreezeHolds(args.forDelete ? "delete" : "sleep") ? { ...prepared, frozen: false } : prepared;
     if ((args.forDelete || forSleep) && !result.frozen) lift();
     // Counted from the answer, so a prepare that ran long still covers the sleep that follows.
     else if (forSleep) freezeCloudComputerForSleep();

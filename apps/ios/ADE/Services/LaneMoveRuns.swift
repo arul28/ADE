@@ -62,8 +62,12 @@ struct LaneMoveRun: Identifiable, Codable, Equatable {
     /// Moved and checked; the ADE Cloud computer is being deleted.
     case deleting
     case done
-    /// Moved and checked, but the ADE Cloud computer could not be deleted.
+    /// Moved, but the ADE Cloud computer could not be deleted, or ADE
+    /// couldn't check the lane on it first.
     case deleteFailed
+    /// Moved, but the lane on the ADE Cloud computer has chats or files the
+    /// move didn't carry, so the computer is kept. A fresh move brings them.
+    case moveAgain
     /// Part of it, or none of it, arrived. Nothing was deleted.
     case failed
   }
@@ -101,7 +105,11 @@ struct LaneMoveRun: Identifiable, Codable, Equatable {
     case id, kind, laneId, laneName, targetName, route, computer, phase, error, startedAt, arrived, fromComputer, movedChatIds
   }
 
-  var isOpen: Bool { phase == .moving || phase == .deleting || phase == .deleteFailed || phase == .failed }
+  var isOpen: Bool { phase == .moving || phase == .deleting || phase == .deleteFailed || phase == .failed || phase == .moveAgain }
+
+  /// A run that keeps the lane from a second move until it is closed. A run
+  /// that asks for a fresh move doesn't.
+  var blocksNewMove: Bool { isOpen && phase != .moveAgain }
 
   /// A move from an asleep computer's saved copy that deleted nothing,
   /// because the copy isn't complete or the computer woke: the person wakes
@@ -267,6 +275,7 @@ final class LaneMoveRuns: ObservableObject {
   }
 
   /// Tries the ADE Cloud computer's delete again, after a move that arrived.
+  /// It checks the lane on the computer again first: time has passed.
   func retryDelete(id: String) {
     Task { await deleteComputer(id: id) }
   }
@@ -282,7 +291,12 @@ final class LaneMoveRuns: ObservableObject {
 
   private func add(_ run: LaneMoveRun) {
     timers.removeValue(forKey: run.id)?.cancel()
-    runs.removeAll { $0.id == run.id }
+    // A fresh move of the lane replaces the run that asked for it.
+    let plain = laneMovePlainLaneId(run.laneId)
+    for ended in runs where ended.phase == .moveAgain && laneMovePlainLaneId(ended.laneId) == plain {
+      timers.removeValue(forKey: ended.id)?.cancel()
+    }
+    runs.removeAll { $0.id == run.id || ($0.phase == .moveAgain && laneMovePlainLaneId($0.laneId) == plain) }
     runs.append(run)
     save()
     Task { await read(run.id) }
@@ -403,7 +417,7 @@ final class LaneMoveRuns: ObservableObject {
     }
     update(id) { $0.arrived = true }
     if run.kind == .live, run.computer != nil {
-      Task { await deleteComputer(id: id, checkSource: true) }
+      Task { await deleteComputer(id: id) }
       return
     }
     update(id) { $0.phase = .done }
@@ -437,41 +451,86 @@ final class LaneMoveRuns: ObservableObject {
     }
   }
 
+  /// What the read of the lane on the computer found before its delete.
+  private enum SourceCheck {
+    case clear
+    /// The lane has more since the move: the computer stays and a new move brings it.
+    case moveAgain(String)
+    /// ADE couldn't read the lane: the computer stays and the delete can be tried again.
+    case unreadable(String)
+  }
+
+  private func checkSource(_ run: LaneMoveRun, sync: SyncService) async -> SourceCheck {
+    let cloud = ADECloudMachine.name
+    guard let left = await chatsLeftOnSource(run, sync: sync) else {
+      return .unreadable("ADE couldn't check the lane's chats on \(cloud), so it kept the computer.")
+    }
+    if left > 0 {
+      return .moveAgain(left == 1
+        ? "A chat started on the lane during the move, so ADE kept the computer. Move the lane again to bring it."
+        : "\(left) chats started on the lane during the move, so ADE kept the computer. Move the lane again to bring them.")
+    }
+    do {
+      guard let change = try await sync.laneMoveBatchSourceChanged(route: run.route, batchId: run.id) else {
+        // An older ADE on the computer can't check its files: the delete goes on, as before.
+        laneMoveLog.notice("lane_move source_files_check=unsupported")
+        return .clear
+      }
+      if change.changed {
+        laneMoveLog.notice("lane_move source_files_check=changed")
+        return .moveAgain("Files on the lane changed on \(cloud) after the move, so ADE kept the computer. Move the lane again to bring them.")
+      }
+      return .clear
+    } catch {
+      laneMoveLog.notice("lane_move source_files_check=failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      return .unreadable("ADE couldn't check the lane's files on \(cloud), so it kept the computer. \(SyncUserFacingError.message(for: error))")
+    }
+  }
+
   /// Deletes the lane's ADE Cloud computer and the saved copies of the chats
-  /// that moved, only for a run the check marked arrived. `checkSource`: the
-  /// first, automatic delete reads the lane first and keeps the computer when
-  /// a chat the move didn't carry is on it. The person's own retry doesn't.
-  private func deleteComputer(id: String, checkSource: Bool = false) async {
+  /// that moved, only for a run the check marked arrived, and only once the
+  /// lane on the computer was read and holds nothing the move didn't carry.
+  private func deleteComputer(id: String) async {
     #if DEBUG
     if fixture { return }
     #endif
     guard let run = self.run(id: id), run.kind == .live, run.arrived, let computer = run.computer, let sync,
-          run.phase != .deleting, run.phase != .done else { return }
+          run.phase != .deleting, run.phase != .done, run.phase != .moveAgain else { return }
     update(id) { $0.phase = .deleting; $0.error = nil }
     let toasts = CloudLaneActions.shared
     let failure: String?
     var chatsLeft = false
-    let left = checkSource ? await chatsLeftOnSource(run, sync: sync) ?? 0 : 0
-    if left > 0 {
-      failure = left == 1
-        ? "A chat started on the lane during the move, so ADE kept the computer. Move the lane again to bring it."
-        : "\(left) chats started on the lane during the move, so ADE kept the computer. Move the lane again to bring them."
-    } else if let client = await sync.cloudServerClient() {
-      // The move carried the work and every chat, and the check passed: the
-      // work check would only find what already arrived, so it is skipped.
-      let outcome = await CloudLaneComputerDelete.run(
-        client: client,
-        instanceId: computer.instanceId,
-        accountMachineKey: computer.accountMachineKey,
-        laneId: computer.laneId,
-        // Unknown (an older run): no saved chat is deleted.
-        onlyChats: Set(run.movedChatIds ?? []),
-        sync: sync
+    switch await checkSource(run, sync: sync) {
+    case .moveAgain(let reason):
+      // Not a failed delete: Close ends this run, and the lane's sheet starts a fresh move.
+      update(id) { $0.phase = .moveAgain; $0.error = reason }
+      toasts.toast = ADEToastMessage(
+        text: "Moved \(run.laneName), but kept its \(ADECloudMachine.name) computer",
+        kind: .info,
+        detail: reason
       )
-      failure = outcome.failure
-      chatsLeft = outcome.chatsLeft
-    } else {
-      failure = "Sign in to ADE, then try again."
+      forgetLater(id)
+      return
+    case .unreadable(let reason):
+      failure = reason
+    case .clear:
+      if let client = await sync.cloudServerClient() {
+        // The move carried the work and every chat, and the check passed: the
+        // work check would only find what already arrived, so it is skipped.
+        let outcome = await CloudLaneComputerDelete.run(
+          client: client,
+          instanceId: computer.instanceId,
+          accountMachineKey: computer.accountMachineKey,
+          laneId: computer.laneId,
+          // Unknown (an older run): no saved chat is deleted.
+          onlyChats: Set(run.movedChatIds ?? []),
+          sync: sync
+        )
+        failure = outcome.failure
+        chatsLeft = outcome.chatsLeft
+      } else {
+        failure = "Sign in to ADE, then try again."
+      }
     }
     if let failure {
       update(id) { $0.phase = .deleteFailed; $0.error = failure }

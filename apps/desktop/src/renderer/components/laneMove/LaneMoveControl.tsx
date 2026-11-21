@@ -49,7 +49,7 @@ export function LaneMoveControl({
   const [progressOf, setProgressOf] = useState<string | null>(null);
   const targets = useLaneMoveTargets(source, open);
   const run = useLaneMoveRunForLane(source.laneId);
-  const runOpen = run && (run.phase === "moving" || run.phase === "deleting" || run.phase === "deleteFailed" || run.phase === "failed") ? run : null;
+  const runOpen = run && run.phase !== "done" ? run : null;
 
   const close = () => setOpen(false);
   const pick = (target: LaneMoveTarget) => {
@@ -103,6 +103,7 @@ function runLabel(phase: LaneMovePhase, targetName: string): string {
   switch (phase) {
     case "deleting": return `Moved to ${targetName}. Deleting the ${ADE_CLOUD_NAME} computer…`;
     case "deleteFailed": return `Moved to ${targetName}. The ${ADE_CLOUD_NAME} computer is still there.`;
+    case "moveAgain": return `Moved to ${targetName}. Some work stayed on ${ADE_CLOUD_NAME}; move the lane again.`;
     case "failed": return `The move to ${targetName} did not finish.`;
     default: return `Moving to ${targetName}…`;
   }

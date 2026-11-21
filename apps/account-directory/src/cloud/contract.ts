@@ -51,7 +51,7 @@
  *   POST   /cloud/billing/extra-hours          CloudAccountState   403 `needs_paid_plan`
  *   POST   /cloud/billing/extra-disk           CloudAccountState   403 `needs_paid_plan`, 409 `disk_over_plan` (404 while extra disk isn't set up)
  *   POST   /cloud/billing/free-unlock          CloudFreeUnlockResult   409 `nothing_to_unlock`
- *   GET    /cloud/chats?machine&project&limit&cursor   { chats: CloudChatRow[], nextCursor }
+ *   GET    /cloud/chats?machine&notMachine&project&lane&limit&cursor   { chats: CloudChatRow[], nextCursor }
  *   GET    /cloud/chats/:machine/:chat?before&limit     CloudChatTranscriptPage
  *   PUT    /cloud/chats/:machine/:chat/parts/:seq       CloudChatPartResponse   (from the computer)
  *   DELETE /cloud/chats/:machine/:chat                  { deleted }
@@ -1225,7 +1225,7 @@ export type CloudChatTranscriptPage = {
  *   POST   /cloud/instances/:id/messages/:msg/claim  CloudComputerQueuedMessage   ({ claimId }; 409 `message_taken`)
  *   PUT    /cloud/instances/:id/messages/:msg        CloudComputerQueuedMessage   (CloudChatMessageReport)
  *   POST   /cloud/instances/:id/use                  { ok: true }   (from the computer; 409 `computer_deleting`)
- *   GET    /cloud/sessions?machine&project&cursor    { sessions: CloudSessionRow[], nextCursor }
+ *   GET    /cloud/sessions?machine&notMachine&project&lane&cursor   { sessions: CloudSessionRow[], nextCursor }
  *   GET    /cloud/sessions/:m/:s                     CloudSessionCopy
  *   PUT    /cloud/sessions/:m/:s                     { ok: true, updatedAt }   (from the computer: CloudSessionUpload)
  *   DELETE /cloud/sessions/:m/:s                     { deleted }
@@ -1233,7 +1233,7 @@ export type CloudChatTranscriptPage = {
  *   GET    /cloud/git?project=                       { summaries: CloudGitSummary[] }
  *   GET    /cloud/git/:m/:lane                       CloudGitSummary
  *   PUT    /cloud/git/:m/:lane                       { ok: true, kept: boolean }   (from the computer: CloudGitSummaryUpload)
- *   PUT    /cloud/capsules/:m/:c/parts/:n            { ok: true, bytes }   (raw body, from the computer)
+ *   PUT    /cloud/capsules/:m/:c/parts/:n            CloudCapsulePartResult   (raw body, from the computer; parts after 1 name `x-ade-capsule-upload`)
  *   POST   /cloud/capsules/:m/:c/commit              CloudCapsuleManifest   (CloudCapsuleCommit)
  *   GET    /cloud/capsules/:m/:c                     CloudCapsuleManifest
  *   GET    /cloud/capsules/:m/:c/parts/:n            the part's bytes
@@ -1744,9 +1744,22 @@ export const CLOUD_CAPSULE_MAX_PART_BYTES = 6 * 1024 * 1024;
 export const CLOUD_CAPSULE_MAX_BYTES = 20 * 1024 * 1024;
 export const CLOUD_CAPSULE_MAX_ACCOUNT_BYTES = 1024 * 1024 * 1024;
 
+/**
+ * The upload a part belongs to (`CloudCapsulePartResult.uploadId`): part 1
+ * starts one and answers its id; later parts send it in this header, and the
+ * commit in its body. An upload a newer part 1 replaced answers 409
+ * `capsule_replaced`. An older server answers no id: the parts go without it.
+ */
+export const CLOUD_CAPSULE_UPLOAD_HEADER = "x-ade-capsule-upload";
+
+/** `PUT /cloud/capsules/:m/:c/parts/:n`. `uploadId`: the upload part 1 started (absent from an older server). */
+export type CloudCapsulePartResult = { ok: true; bytes: number; uploadId?: string };
+
 /** `POST /cloud/capsules/:m/:c/commit`, after parts 1..`parts` were put. */
 export type CloudCapsuleCommit = {
   instanceId: string;
+  /** The upload its part 1 started (`CloudCapsulePartResult.uploadId`); left out by an older ADE or against an older server. */
+  uploadId?: string;
   parts: number;
   bytes: number;
   provider: string;
@@ -1756,7 +1769,7 @@ export type CloudCapsuleCommit = {
   sessionKind: "chat" | "cli";
 };
 
-export type CloudCapsuleManifest = Omit<CloudCapsuleCommit, "instanceId"> & { machineKey: string; chatId: string; createdAt: number };
+export type CloudCapsuleManifest = Omit<CloudCapsuleCommit, "instanceId" | "uploadId"> & { machineKey: string; chatId: string; createdAt: number };
 
 /* ---- One project's ADE Cloud view, with no computer awake ---- */
 

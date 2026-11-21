@@ -200,7 +200,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getClaudePluginUi", "getMcpApp", "listMcpAppGrants",
       "modelCatalog", "codexFuzzyFileSearch", "fileSearch", "listMentionSuggestions",
       "preflightCrossMachineDestination", "getCrossMachineHandoffOptions",
-      "getCrossMachineBatchMove",
+      "getCrossMachineBatchMove", "crossMachineBatchSourceChanged",
       "previewCrossMachineHandoff", "resolveSmartLinkPreview", "resolveSmartLinkImage", "resolveSourceFavicons",
       "readTranscript", "readTranscriptPage", "suggestLaneNameFromPrompt",
       "generateAutoLaneIdentity", "listDeletedChats", "getDeletedChatDetail", "getDeviceSources",

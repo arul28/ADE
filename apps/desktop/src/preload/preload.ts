@@ -788,6 +788,8 @@ import type {
   AgentChatCrossMachineBatchMoveArgs,
   AgentChatGetCrossMachineBatchMoveArgs,
   AgentChatRetryCrossMachineBatchMoveArgs,
+  AgentChatCrossMachineBatchSourceChangedArgs,
+  AgentChatCrossMachineBatchSourceChangedResult,
   AgentChatResolveCrossMachineBatchMoveApprovalArgs,
   AgentChatCrossMachineBatchMoveRecord,
   AgentChatInterruptArgs,
@@ -9376,6 +9378,14 @@ const adeBridge = {
     ): Promise<AgentChatCrossMachineBatchMoveRecord> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "retryCrossMachineBatchMove", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatRetryCrossMachineBatchMove, args),
+      ),
+    // Read-only, on the batch's source brain: did its lanes change after the move carried them.
+    crossMachineBatchSourceChanged: async (
+      args: AgentChatCrossMachineBatchSourceChangedArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineBatchSourceChangedResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "crossMachineBatchSourceChanged", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatCrossMachineBatchSourceChanged, args),
       ),
     resolveCrossMachineBatchMoveApproval: async (
       args: AgentChatResolveCrossMachineBatchMoveApprovalArgs,

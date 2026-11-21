@@ -24,6 +24,7 @@ import type {
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatStartCrossMachineHandoffArgs,
+  LaneSummary,
 } from "../../../shared/types";
 import { deterministicChatSessionId } from "../../../shared/deterministicChatSessionId";
 import {
@@ -35,7 +36,7 @@ import {
   type CrossMachinePreparedCapsule,
   type CrossMachineMoveOutcome,
 } from "./crossMachineHandoffOrchestrator";
-import { createCrossMachineHandoffSource, isPersonAuthoredUserMessage } from "./crossMachineHandoffSource";
+import { createCrossMachineBatchSource, createCrossMachineHandoffSource, isPersonAuthoredUserMessage } from "./crossMachineHandoffSource";
 import { applyHandoffGitBundle, landHandoffGitBundle, packHandoffGitBundle } from "./handoffGitBundle";
 import { runGit } from "../git/git";
 
@@ -456,7 +457,7 @@ function createBatchHarness() {
         headSha: "a".repeat(40),
         originUrl: ORIGIN,
       }),
-      validateBatchLane: async () => {},
+      validateBatchLane: async () => ({ headSha: "a".repeat(40), treeSha: "b".repeat(40) }),
       interruptBatchChat: async () => {},
       showBatchApprovalCard: () => {},
     },
@@ -1108,6 +1109,86 @@ async function packIsolated(args: Parameters<typeof packHandoffGitBundle>[0]) {
 }
 
 describe("handoff git bundle", () => {
+  // The check that decides whether a moved lane's ADE Cloud computer may be
+  // deleted: the source reads its lane again against what the batch carried.
+  it.each([
+    { label: "an unchanged lane", change: (_source: string) => {}, changed: false },
+    { label: "an ignored file written after the carry", change: (source: string) => fs.writeFileSync(path.join(source, ".env"), "LOCAL=1\n"), changed: false },
+    { label: "a tracked file edited after the carry", change: (source: string) => fs.writeFileSync(path.join(source, "edit.txt"), "edited later\n"), changed: true },
+    { label: "an untracked file added after the carry", change: (source: string) => fs.writeFileSync(path.join(source, "later.txt"), "later\n"), changed: true },
+    {
+      // Same files as carried, but a commit the destination doesn't have.
+      label: "a new commit after the carry",
+      change: (source: string) => {
+        git(source, "add", "-A");
+        git(source, "commit", "--quiet", "-m", "later");
+      },
+      changed: true,
+    },
+  ])("a batch's source check reports $label as changed: $changed", async ({ change, changed }) => {
+    const { source } = makeRepos();
+    // The work the move carries: an edit and an untracked file.
+    fs.writeFileSync(path.join(source, "edit.txt"), "carried\n");
+    fs.writeFileSync(path.join(source, "new.txt"), "new\n");
+    const summary = { id: "lane-1", name: "feature", laneType: "worktree", branchRef: "feature", worktreePath: source } as LaneSummary;
+    const laneService = { getSummary: async () => summary, list: async () => [summary] };
+    const kv = new Map<string, unknown>();
+    const store = createCrossMachineHandoffSource({
+      runGit,
+      laneService,
+      db: {
+        getJson: <T>(key: string) => (kv.has(key) ? structuredClone(kv.get(key)) as T : null),
+        setJson: (key: string, value: unknown) => {
+          kv.set(key, structuredClone(value));
+        },
+      } as never,
+      outboxDir: makeTempDir("ade-cm-outbox-"),
+    });
+    const batchSource = createCrossMachineBatchSource({
+      store,
+      runGit,
+      laneService,
+      listChatSessions: () => [],
+      readLaneOrigin: () => null,
+      localMachineKey: () => "source-machine",
+      localMachineName: async () => "Source",
+    });
+    const importId = "batch-1:lane:lane-1";
+    const payload = await batchSource.prepareBatchLane({
+      importId,
+      lane: { laneId: "lane-1", name: "feature", branchRef: "feature" },
+      includeChanges: true,
+    });
+    expect(payload.gitBundle?.snapshotSha).toBeTruthy();
+    const carried = await batchSource.validateBatchLane(payload);
+    store.writeBatch("batch-1", {
+      batchId: "batch-1",
+      state: "completed",
+      machineKey: "destination",
+      machineName: "Destination",
+      requestedBy: "user",
+      requestedAt: "2026-11-21T10:00:00.000Z",
+      updatedAt: "2026-11-21T10:00:00.000Z",
+      includeChanges: true,
+      whenBusy: "wait",
+      note: null,
+      items: [{
+        id: "lane:lane-1",
+        kind: "lane",
+        state: "continued",
+        dependsOn: [],
+        sourceLaneId: "lane-1",
+        importId,
+        carriedHeadSha: carried.headSha,
+        carriedTreeSha: carried.treeSha,
+        updatedAt: "2026-11-21T10:00:00.000Z",
+      }],
+    });
+
+    change(source);
+    expect((await batchSource.batchSourceChanged("batch-1")).changed).toBe(changed);
+  });
+
   it("offers bringing changes along for an unpublished branch only when something can travel", async () => {
     const { source } = makeRepos();
     git(source, "checkout", "--quiet", "--no-track", "-b", "fresh", "origin/main");

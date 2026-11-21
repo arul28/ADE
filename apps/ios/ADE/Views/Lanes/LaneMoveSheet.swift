@@ -276,7 +276,7 @@ struct LaneMoveSheet: View {
   private var placesSection: some View {
     // A lane with a move under way (or one to close first) takes no second
     // destination: each would bring the lane back on its own.
-    let blocked = !blockers.isEmpty || waitingChat != nil || openRun != nil
+    let blocked = !blockers.isEmpty || waitingChat != nil || openRun?.blocksNewMove == true
     Section {
       if targets.isEmpty {
         Text(restores
@@ -356,6 +356,7 @@ func laneMoveRunLabel(_ run: LaneMoveRun) -> String {
   switch run.phase {
   case .deleting: return "Moved to \(run.targetName). Deleting the \(ADECloudMachine.name) computer…"
   case .deleteFailed: return "Moved to \(run.targetName). The \(ADECloudMachine.name) computer is still there."
+  case .moveAgain: return "Moved to \(run.targetName). Some work stayed on \(ADECloudMachine.name); move the lane again."
   case .failed: return "The move to \(run.targetName) did not finish."
   case .done: return "Moved to \(run.targetName)."
   case .moving: return "Moving to \(run.targetName)…"

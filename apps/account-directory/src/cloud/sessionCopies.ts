@@ -227,12 +227,26 @@ function clampedInt(raw: string | null, fallback: number, max: number): number {
 }
 
 /** The copies of one project (or machine), newest first, paged by `updatedAt:sessionId`. */
-export async function listSessionRows(env: CloudEnv, keys: UserKeys, userId: string, filter: { machine?: string | null; project?: string | null; cursor?: string | null; limit?: number }): Promise<{ sessions: CloudSessionRow[]; nextCursor: string | null }> {
+/** One page of copies, newest first. `lane` keeps one lane's; `notMachine` leaves out one machine's (as `listSavedChats`). */
+export async function listSessionRows(
+  env: CloudEnv,
+  keys: UserKeys,
+  userId: string,
+  filter: { machine?: string | null; notMachine?: string | null; project?: string | null; lane?: string | null; cursor?: string | null; limit?: number },
+): Promise<{ sessions: CloudSessionRow[]; nextCursor: string | null }> {
   const where = ["user_id = ?"];
   const binds: Array<string | number> = [userId];
   if (filter.machine) {
     where.push("machine_key = ?");
     binds.push(filter.machine);
+  }
+  if (filter.notMachine) {
+    where.push("lower(machine_key) <> lower(?)");
+    binds.push(filter.notMachine);
+  }
+  if (filter.lane) {
+    where.push("lane_id = ?");
+    binds.push(filter.lane);
   }
   if (filter.project) {
     where.push("project_key = ?");
@@ -354,19 +368,25 @@ async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, use
   const sessionMoved = () => fail("session_moved", "This CLI's saved copy moved to another machine.", 409);
   const rowAt = (key: string) => env.DB.prepare("select * from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and kind = 'cli'")
     .bind(userId, key, sessionId).first<SessionRow>();
-  const moveMessages = moveQueuedMessagesStatement(env, { userId, fromMachineKey: machineKey, toMachineKey, chatId: sessionId, instanceId: computer.instance_id, now });
   if (machineKey === toMachineKey) return json({ moved: false } satisfies CloudSessionMoveResult);
   const source = await rowAt(machineKey);
   const target = await rowAt(toMachineKey);
   if (!source) return target ? json({ moved: false } satisfies CloudSessionMoveResult) : notFound();
   /** The source is still the row this move read: the condition that makes this move the one that moves it. */
-  const sourceStillHere = "exists (select 1 from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and r2_key = ?)";
+  const sourceStillHere = {
+    sql: "exists (select 1 from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and r2_key = ?)",
+    binds: [userId, machineKey, sessionId, source.r2_key],
+  };
   const claimSource = env.DB.prepare("delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and r2_key = ?")
     .bind(userId, machineKey, sessionId, source.r2_key);
+  // Only the move that still finds the source re-keys its queued messages: it runs before the claim, in the same transaction.
+  const moveMessages = moveQueuedMessagesStatement(env, {
+    userId, fromMachineKey: machineKey, toMachineKey, chatId: sessionId, instanceId: computer.instance_id, now, onlyIf: sourceStillHere,
+  });
   if (target) {
     // The new computer saved its own copy already: the old one only goes. The delete is the claim.
-    const results = await env.DB.batch([claimSource, moveMessages]);
-    if ((results[0]?.meta?.changes ?? 0) !== 1) return await rowAt(toMachineKey) ? json({ moved: false } satisfies CloudSessionMoveResult) : sessionMoved();
+    const results = await env.DB.batch([moveMessages, claimSource]);
+    if ((results[1]?.meta?.changes ?? 0) !== 1) return await rowAt(toMachineKey) ? json({ moved: false } satisfies CloudSessionMoveResult) : sessionMoved();
     await bucket.delete(source.r2_key);
     logCloud("cloud.session_moved", { userId, instanceId: computer.instance_id });
     return json({ moved: true } satisfies CloudSessionMoveResult);
@@ -388,10 +408,9 @@ async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, use
   const results = await env.DB.batch([
     env.DB.prepare(`
       insert into cloud_session_copies (user_id, machine_key, session_id, instance_id, project_key, lane_id, kind, parent_chat_id, summary_sealed, r2_key, bytes, line_count, last_activity_at, updated_at)
-      select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? where ${sourceStillHere}
+      select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? where ${sourceStillHere.sql}
     `).bind(userId, toMachineKey, sessionId, computer.instance_id, source.project_key, source.lane_id, source.kind, source.parent_chat_id, resealed, key,
-      source.bytes, source.line_count, source.last_activity_at, now, userId, machineKey, sessionId, source.r2_key),
-    // Moved by the move that won: none are left under the old key, so this changes nothing for the other.
+      source.bytes, source.line_count, source.last_activity_at, now, ...sourceStillHere.binds),
     moveMessages,
     claimSource,
   ]);
@@ -417,11 +436,15 @@ export async function routeSessionCopies(request: Request, url: URL, path: strin
   if (segments.length === 0) {
     if (request.method !== "GET") return notFound();
     const machine = url.searchParams.get("machine")?.trim() || null;
-    if (machine && !ROW_ID.test(machine)) return json({ sessions: [], nextCursor: null });
+    const notMachine = url.searchParams.get("notMachine")?.trim() || null;
+    const lane = url.searchParams.get("lane")?.trim() || null;
+    if ([machine, notMachine, lane].some((value) => value && !ROW_ID.test(value))) return json({ sessions: [], nextCursor: null });
     const keys = await userKeys(env, userId, now);
     if (!keys) return unavailable();
     return json(await listSessionRows(env, keys, userId, {
       machine,
+      notMachine,
+      lane,
       project: url.searchParams.get("project")?.trim() || null,
       cursor: url.searchParams.get("cursor"),
       limit: clampedInt(url.searchParams.get("limit"), DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT),

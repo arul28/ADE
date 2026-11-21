@@ -90,9 +90,12 @@ const BRANCH = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]{1,250}$/;
  * `origin/x`, so only one namespace comes off: `refs/heads/`, else the remote
  * `refs/remotes/origin/` or a bare `origin/`.
  */
-const branchNameOf = (ref: string): string => ref.startsWith("refs/heads/")
-  ? ref.slice("refs/heads/".length)
-  : ref.replace(/^refs\/remotes\/origin\//, "").replace(/^origin\//, "");
+const branchNameOf = (ref: string): string => {
+  for (const prefix of ["refs/heads/", "refs/remotes/origin/", "origin/"]) {
+    if (ref.startsWith(prefix)) return ref.slice(prefix.length);
+  }
+  return ref;
+};
 const LIST_PAGES = 10;
 /** The most chats and CLIs one restore brings back. */
 const LANE_ROWS_MAX = 100;
@@ -167,36 +170,45 @@ async function laneRows(
   const chats = new Map<string, CloudChatRow>();
   // False when a list ran past its page limit or the restore's cap: the rest come back on the next run.
   let complete = true;
-  let cursor: string | null = null;
-  for (let page = 0; page < LIST_PAGES; page += 1) {
-    const listed = await api.savedChats({ limit: 500, cursor });
-    for (const row of listed.chats) {
-      if (row.laneId !== kept.laneId) continue;
-      const current = chats.get(row.chatId);
-      if (!current || row.updatedAt > current.updatedAt) chats.set(row.chatId, row);
+  // Two lists of this lane: what is not on this machine yet, and what moved here already (here once its
+  // session is). Each run moves rows from the first to the second, so a later run pages on to older rows.
+  // Only the first holds the forget back: the forget keeps what moved here. An older server ignores the
+  // lane and `notMachine` filters and lists every chat: the rows are filtered and kept once here either way.
+  const scopes = [{ notMachineKey: machineKey, holdsForget: true }, { machineKey, holdsForget: false }];
+  for (const { holdsForget, ...scope } of scopes) {
+    let cursor: string | null = null;
+    for (let page = 0; page < LIST_PAGES; page += 1) {
+      const listed = await api.savedChats({ ...scope, laneId: kept.laneId, limit: 500, cursor });
+      for (const row of listed.chats) {
+        if (row.laneId !== kept.laneId) continue;
+        const current = chats.get(row.chatId);
+        if (!current || row.updatedAt > current.updatedAt) chats.set(row.chatId, row);
+      }
+      cursor = listed.nextCursor;
+      if (!cursor) break;
     }
-    cursor = listed.nextCursor;
-    if (!cursor) break;
+    if (cursor && holdsForget) complete = false;
   }
-  if (cursor) complete = false;
   // The keys of the lane's deleted computers: a CLI copy has no computer state of its own.
   const goneKeys = new Set<string>();
   if (kept.formerMachineKey) goneKeys.add(kept.formerMachineKey.toLowerCase());
   for (const row of chats.values()) if (row.computer?.state === "deleted") goneKeys.add(row.machineKey.toLowerCase());
   const clis = new Map<string, CloudSessionRow>();
-  cursor = null;
-  for (let page = 0; page < LIST_PAGES; page += 1) {
-    const listed = await api.savedSessions({ cursor });
-    if (!listed) break;
-    for (const row of listed.sessions) {
-      if (row.laneId !== kept.laneId || row.kind !== "cli" || chats.has(row.sessionId)) continue;
-      const current = clis.get(row.sessionId);
-      if (!current || row.updatedAt > current.updatedAt) clis.set(row.sessionId, row);
+  for (const { holdsForget, ...scope } of scopes) {
+    let cursor: string | null = null;
+    for (let page = 0; page < LIST_PAGES; page += 1) {
+      const listed = await api.savedSessions({ ...scope, laneId: kept.laneId, cursor });
+      if (!listed) break;
+      for (const row of listed.sessions) {
+        if (row.laneId !== kept.laneId || row.kind !== "cli" || chats.has(row.sessionId)) continue;
+        const current = clis.get(row.sessionId);
+        if (!current || row.updatedAt > current.updatedAt) clis.set(row.sessionId, row);
+      }
+      cursor = listed.nextCursor;
+      if (!cursor) break;
     }
-    cursor = listed.nextCursor;
-    if (!cursor) break;
+    if (cursor && holdsForget) complete = false;
   }
-  if (cursor) complete = false;
   const rows: Array<LaneRow & { updatedAt: number }> = [];
   // Under this machine's key: moved here by an earlier run; it is here once its session is.
   // On a deleted computer: it comes back. Anywhere else: it stays there and keeps the lane.

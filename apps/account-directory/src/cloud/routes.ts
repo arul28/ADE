@@ -109,6 +109,7 @@ import {
   PENDING_TIMEOUT_MS,
   AWAKE_CAP_COUNT_SQL,
   adoptionStatements,
+  ComputerCloseError,
   deleteComputer,
   goneFromProviderStatements,
   isOutOfHours,
@@ -271,8 +272,11 @@ const COMPUTER_MOVING_MESSAGE = "ADE Cloud is moving this lane to another machin
  */
 async function idleUseRefusal(env: CloudEnv, computer: ComputerRow, now: number): Promise<Response | null> {
   const use = await recordIdleUse(env, computer, now);
-  if (use === "deleting") return fail("computer_deleting", computer.idle_claimed_at == null ? COMPUTER_MOVING_MESSAGE : COMPUTER_DELETING_MESSAGE, 409);
+  const deleting = () => fail("computer_deleting", computer.idle_claimed_at == null ? COMPUTER_MOVING_MESSAGE : COMPUTER_DELETING_MESSAGE, 409);
+  if (use === "deleting") return deleting();
   if (use === "unrecorded") return fail("unavailable", "ADE Cloud couldn't record that you're using this computer, so it didn't run that. Try again in a moment.", 503);
+  // A resting computer this request wakes: taken from any delete in the same write that checks for one.
+  if (!isMeteredStatus(computer.status) && !await takeFromDeletes(env, computer.instance_id, now)) return deleting();
   return null;
 }
 
@@ -445,10 +449,27 @@ async function eventWakeComputer(env: CloudEnv, computer: ComputerRow, now: numb
   if (blocked) return `refused:${blocked.refusal}`;
   if (await awakeRoom(env, computer, now)) return "refused:too_many_awake";
   // A delete holds it (an idle cleanup's, or a move from its saved copy): a wake now would put work after the save.
-  if (computer.idle_deleting_at != null && computer.idle_deleting_at >= now - SAVED_DELETE_CLAIM_STALE_MS) return "refused:computer_deleting";
+  if (!await takeFromDeletes(env, computer.instance_id, now)) return "refused:computer_deleting";
   const status = await provider.startInstance(computer.instance_id);
   await recordStatus(env, computer, status, now, "event_wake");
   return "woken";
+}
+
+/**
+ * A wake's side of the delete claim (`claimSavedDelete`, the idle cleanup's
+ * `claimDelete`): one conditional write, read fresh in D1, that holds only
+ * while no delete claims the row, and that clears the backups it rested with,
+ * which every delete claim needs. Of a wake and a delete claim at once,
+ * exactly one write passes: a claim first refuses the wake here, and a wake
+ * first makes the claim fail. False when a delete holds the computer. A start
+ * that then fails leaves the computer resting not saved; its next sleep saves it.
+ */
+async function takeFromDeletes(env: CloudEnv, instanceId: string, now: number): Promise<boolean> {
+  const taken = await env.DB.prepare(`
+    update cloud_computers set backup_rest_at = null
+    where instance_id = ? and deleted_at is null and (idle_deleting_at is null or idle_deleting_at < ?)
+  `).bind(instanceId, now - SAVED_DELETE_CLAIM_STALE_MS).run();
+  return (taken.meta?.changes ?? 0) === 1;
 }
 
 async function markGone(env: CloudEnv, computer: ComputerRow, now: number): Promise<void> {
@@ -1260,12 +1281,21 @@ async function markKeepLane(env: CloudEnv, provider: CloudProvider, computer: Co
 
 const COMPUTER_AWAKE_MESSAGE = "The ADE Cloud computer is awake, so its saved copy may be older than its work.";
 
-/** Null while the computer rests with every lane's work saved; else the refusal. A live read, with no wake. */
-async function refuseUnlessRestsSaved(env: CloudEnv, provider: CloudProvider, computer: ComputerRow): Promise<Response | null> {
-  const instance = await provider.getInstance(computer.instance_id);
-  if (isMeteredStatus(instance.status)) return fail("computer_awake", COMPUTER_AWAKE_MESSAGE, 409);
+/**
+ * Null while the computer rests with every lane's work saved; else the
+ * refusal. A live read, with no wake. `gone`: the provider has no such
+ * computer any more (an earlier delete whose close failed) and the row still
+ * reads saved, so nothing can wake it and only the close is left.
+ */
+async function refuseUnlessRestsSaved(env: CloudEnv, provider: CloudProvider, computer: ComputerRow): Promise<Response | "gone" | null> {
+  const instance = await provider.getInstance(computer.instance_id).catch((error: unknown) => {
+    if (error instanceof CloudProviderError && error.status === 404) return null;
+    throw error;
+  });
+  if (instance && isMeteredStatus(instance.status)) return fail("computer_awake", COMPUTER_AWAKE_MESSAGE, 409);
   const saved = await restingBackupState(env, computer.instance_id);
-  return saved.ok ? null : fail(saved.code, saved.reason, 409);
+  if (!saved.ok) return fail(saved.code, saved.reason, 409);
+  return instance ? null : "gone";
 }
 
 const COMPUTER_ALREADY_DELETING_MESSAGE = "ADE Cloud is deleting this computer already. Nothing else was deleted.";
@@ -1278,9 +1308,10 @@ const SAVED_DELETE_CLAIM_STALE_MS = 20 * 60_000;
  * it holds only while the row still rests with current backups and no
  * other delete holds the computer. While it holds, every wake path (a
  * start, a command, a sign-in, a sent message, the computer's own use
- * report) is refused (`recordIdleUse` answers `deleting`). A start that
- * passed before the claim clears the backups with its status write, so the
- * claim fails, or the live read after the claim sees the computer awake.
+ * report) is refused (`recordIdleUse` answers `deleting`, and
+ * `takeFromDeletes` refuses a wake of a resting computer in the same write
+ * that would let it go). A wake that passed before the claim cleared the
+ * backups in that write, so the claim fails.
  * Null when it holds; else the refusal, with nothing deleted.
  */
 async function claimSavedDelete(env: CloudEnv, computer: ComputerRow, now: number): Promise<Response | null> {
@@ -1310,9 +1341,11 @@ async function handleDelete(request: Request, env: CloudEnv, computer: ComputerR
   // A move from the saved copy: the computer goes only while it rests with every lane saved.
   const onlyIfSaved = keepLane?.onlyIfSaved === true;
   if (onlyIfSaved) {
-    const refused = await refuseUnlessRestsSaved(env, provider, computer)
-      // From here no wake goes through until the delete ends or the claim is given back.
-      ?? await claimSavedDelete(env, computer, now);
+    const rests = await refuseUnlessRestsSaved(env, provider, computer);
+    if (rests instanceof Response) return rests;
+    // From here no wake goes through until the delete ends or the claim is given back.
+    // Gone already: nothing can wake it, so no claim; the close below finishes the delete.
+    const refused = rests === "gone" ? null : await claimSavedDelete(env, computer, now);
     if (refused) return refused;
   }
   /** Nothing was deleted: the claim goes, so the computer takes work again. */
@@ -1337,7 +1370,7 @@ async function handleDelete(request: Request, env: CloudEnv, computer: ComputerR
     // A wake that passed before the claim would put work after the save: read again right before the delete.
     if (onlyIfSaved) {
       const refused = await refuseUnlessRestsSaved(env, provider, computer);
-      if (refused) {
+      if (refused instanceof Response) {
         await unmarkKeepLaneStatement(env, computer.instance_id).run();
         await giveBack();
         return refused;
@@ -1345,6 +1378,9 @@ async function handleDelete(request: Request, env: CloudEnv, computer: ComputerR
     }
     await deleteComputer(env, provider, computer, { who, reason }, now);
   } catch (error) {
+    // The provider deleted it but the row stayed open: the mark and the claim stay, so a
+    // retry (with no live computer) or the tick finding it gone closes it with the lane kept.
+    if (error instanceof ComputerCloseError) throw error;
     // Nothing was deleted: the mark goes, so a later close can't keep a lane nobody freed.
     if (keepLane) await unmarkKeepLaneStatement(env, computer.instance_id).run();
     await giveBack();

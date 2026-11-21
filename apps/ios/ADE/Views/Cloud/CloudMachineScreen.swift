@@ -1026,8 +1026,9 @@ enum CloudLaneComputerDelete {
         }
       }
     }
-    // The lists drop the lane and its chats now; an older read can't bring them back.
-    sync.noteCloudLaneDeleted(laneId)
+    // The lists drop the lane and its chats now (after a move, only the chats
+    // it carried); an older read can't bring them back.
+    sync.noteCloudLaneDeleted(laneId, onlyChats: onlyChats, machineKey: accountMachineKey)
     return Outcome(failure: nil, chatsLeft: chatsLeft)
   }
 }

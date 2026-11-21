@@ -72,6 +72,11 @@ export function liftCloudSleepFreeze(now: number = Date.now()): boolean {
   return wasFrozen;
 }
 
+/** Whether the delete's or the Sleep's own freeze is still in force at `now` (it ran out, or the server lifted it). */
+export function cloudFreezeHolds(kind: "delete" | "sleep", now: number = Date.now()): boolean {
+  return (kind === "delete" ? frozenUntil : sleepFrozenUntil) > now;
+}
+
 /** The refusal sentence while a freeze is in force, else null. */
 export function cloudDeleteFreezeRefusal(now: number = Date.now()): string | null {
   if (frozenUntil > now) return CLOUD_COMPUTER_REMOVING_SENTENCE;

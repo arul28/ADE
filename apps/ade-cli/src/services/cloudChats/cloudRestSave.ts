@@ -728,20 +728,28 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
               return;
             }
             // The capsule saved before stays readable until this one commits (`forkCapsules.ts`), and a
-            // restore reads it only when it is not older than the saved transcript.
+            // restore reads it only when it is not older than the saved transcript. Every request ends by
+            // the save's own end: an upload stopped there never commits, and the next save starts it again.
             if (!idle() || Date.now() >= deadline) return;
+            const timeLeft = () => deadline - Date.now();
+            // The upload part 1 started; an older server answers none and the parts go without it.
+            let uploadId: string | null = null;
             for (let index = 0; index < parts.length; index += 1) {
-              await api.putCapsulePart(machineKey, row.id, index + 1, instanceId, parts[index]!);
+              if (timeLeft() <= 0) throw new Error("The save ran out of time before this capsule was uploaded.");
+              const put = await api.putCapsulePart(machineKey, row.id, index + 1, instanceId, parts[index]!, { uploadId, timeoutMs: timeLeft() });
+              if (index === 0) uploadId = put.uploadId ?? null;
             }
+            if (timeLeft() <= 0) throw new Error("The save ran out of time before this capsule was committed.");
             await api.commitCapsule(machineKey, row.id, {
               instanceId,
+              ...(uploadId ? { uploadId } : {}),
               parts: parts.length,
               bytes: bytes.byteLength,
               provider,
               transportKind,
               laneId: row.laneId ?? null,
               sessionKind: isChat ? "chat" : "cli",
-            });
+            }, { timeoutMs: timeLeft() });
             state.capsules[row.id] = mark;
             report.capsules += 1;
           } catch (error) {

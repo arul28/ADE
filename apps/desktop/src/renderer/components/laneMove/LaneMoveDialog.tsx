@@ -512,6 +512,8 @@ function progressStatus(run: LaneMoveRun, arrived: number, total: number): strin
       return deletesComputer ? `Moved. The ${ADE_CLOUD_NAME} computer is deleted.` : "Moved. Everything arrived.";
     case "deleteFailed":
       return `Everything arrived, but the ${ADE_CLOUD_NAME} computer is still there.`;
+    case "moveAgain":
+      return `Everything the move carried arrived. The lane on ${ADE_CLOUD_NAME} has more since, so its computer is kept. Move the lane again to bring it.`;
     default:
       if (run.cloudInstanceId) return `Not all of it arrived. The ${ADE_CLOUD_NAME} computer is kept, so nothing is lost.`;
       if (run.kind === "restore" && run.fromComputer) return "Not all of it arrived. The lane stays in your account, so nothing is lost.";
@@ -602,7 +604,10 @@ function LaneMoveProgress({ title, run, rows, onRunId, onWake, onClose }: {
         { label: `Delete ${ADE_CLOUD_NAME} computer`, variant: "solid" as const, onClick: () => retryLaneMoveDelete(run.id) },
         { label: "Close", variant: "secondary" as const, onClick: onClose },
       ]
-      : [{ label: run.phase === "done" ? "Done" : "Close", variant: "secondary" as const, autoFocus: true, onClick: onClose }];
+      : run.phase === "moveAgain"
+        // Nothing to retry here: Close ends this run, and the lane's menu starts a fresh move.
+        ? [{ label: "Close", variant: "secondary" as const, autoFocus: true, onClick: () => { dismissLaneMove(run.id); onClose(); } }]
+        : [{ label: run.phase === "done" ? "Done" : "Close", variant: "secondary" as const, autoFocus: true, onClick: onClose }];
   return (
     <Dialog
       open
@@ -618,7 +623,7 @@ function LaneMoveProgress({ title, run, rows, onRunId, onWake, onClose }: {
       <div className="flex flex-col gap-3">
         <p className={cn(
           "text-[12px] leading-relaxed",
-          run.phase === "failed" || run.phase === "deleteFailed" ? "text-amber-200/90" : "text-fg/80",
+          run.phase === "failed" || run.phase === "deleteFailed" || run.phase === "moveAgain" ? "text-amber-200/90" : "text-fg/80",
         )} role="status">
           {status}
         </p>
@@ -627,7 +632,7 @@ function LaneMoveProgress({ title, run, rows, onRunId, onWake, onClose }: {
             {parts.map((part) => <ItemRow key={part.row.id} row={part.row} state={part.state} />)}
           </ul>
         ) : null}
-        {failure && (run.phase === "failed" || run.phase === "deleteFailed") ? (
+        {failure && (run.phase === "failed" || run.phase === "deleteFailed" || run.phase === "moveAgain") ? (
           <p className="text-[11.5px] leading-relaxed text-muted-fg/80">{failure}</p>
         ) : null}
       </div>

@@ -81,6 +81,9 @@ export type CrossMachineBatchLane = {
   originLaneId?: string | null;
 };
 
+/** A lane's Git work as a batch carried it. */
+export type CrossMachineCarriedLaneWork = { headSha: string; treeSha: string };
+
 /** Who started a batch: the person, or an agent from its own chat. */
 export type CrossMachineBatchMoveCaller = {
   requestedBy: "user" | "agent";
@@ -116,7 +119,11 @@ export type CrossMachineBatchMoveDeps = {
     returnToLaneId?: string;
     includeChanges: boolean;
   }) => Promise<AgentChatCrossMachineLaneImportArgs>;
-  validateBatchLane: (payload: AgentChatCrossMachineLaneImportArgs) => Promise<void>;
+  /**
+   * Checks a fresh payload against the lane as it is now. Returns the work it
+   * carries: the HEAD commit and the tree of the working tree.
+   */
+  validateBatchLane: (payload: AgentChatCrossMachineLaneImportArgs) => Promise<CrossMachineCarriedLaneWork>;
   interruptBatchChat: (sessionId: string) => Promise<void>;
   /** The record of an agent batch's request on its requesting chat, live or settled. */
   showBatchApprovalCard: (sessionId: string, card: CrossMachineBatchMoveApprovalCard) => void;
@@ -199,6 +206,8 @@ type BatchItemPatch = {
   destinationSessionId?: string | null;
   carriedChanges?: boolean;
   snapshotSha?: string | null;
+  carriedHeadSha?: string | null;
+  carriedTreeSha?: string | null;
   laneSetupStatus?: AgentChatCrossMachineLaneSetupStatus;
   warning?: string | null;
 };
@@ -704,9 +713,11 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
       stored = null;
     }
     let payload: AgentChatCrossMachineLaneImportArgs;
+    let carried: CrossMachineCarriedLaneWork | null = null;
     if (stored) {
       // It may already be there: resend exactly what was sent. The
-      // destination answers from its record for this import id.
+      // destination answers from its record for this import id. The item
+      // kept what that payload carried when it was first sent.
       payload = stored.payload;
     } else {
       payload = await deps.prepareBatchLane({
@@ -715,9 +726,15 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
         ...(item.returnToLaneId ? { returnToLaneId: item.returnToLaneId } : {}),
         includeChanges: batch.includeChanges,
       });
-      await deps.validateBatchLane(payload);
+      carried = await deps.validateBatchLane(payload);
     }
-    updateBatchItem(batchId, item.id, { state: "sending", error: null });
+    // What the lane carries is saved before it leaves, so the source can tell
+    // later whether its work changed after the move.
+    updateBatchItem(batchId, item.id, {
+      state: "sending",
+      error: null,
+      ...(carried ? { carriedHeadSha: carried.headSha, carriedTreeSha: carried.treeSha } : {}),
+    });
     // Durable before the request leaves: from here on a retry resends it.
     moves.outbox.writeLane(importId, { payload, sent: true });
     let answer: unknown;

@@ -5323,6 +5323,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").getCrossMachineBatchMove({
       batchId: requireString(payload.batchId, "chat.getCrossMachineBatchMove requires batchId."),
     }));
+  // Read-only: whether the batch's source lanes changed after the move carried them.
+  register("chat.crossMachineBatchSourceChanged", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").crossMachineBatchSourceChanged({
+      batchId: requireString(payload.batchId, "chat.crossMachineBatchSourceChanged requires batchId."),
+    }));
   register("chat.retryCrossMachineBatchMove", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").retryCrossMachineBatchMove({
       batchId: requireString(payload.batchId, "chat.retryCrossMachineBatchMove requires batchId."),

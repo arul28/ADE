@@ -8639,6 +8639,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         return { ...entry.record, items, state: done ? "completed" as const : "running" as const, updatedAt: new Date().toISOString() };
       },
       retryCrossMachineBatchMove: async (args: { batchId: string }) => browserMockBatchMoves.get(args.batchId)!.record,
+      crossMachineBatchSourceChanged: async () => ({ changed: false }),
       startCrossMachineHandoff: async (args: AgentChatStartCrossMachineHandoffArgs) => {
         const now = new Date().toISOString();
         const record: AgentChatCrossMachineHandoffRecord = {

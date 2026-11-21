@@ -488,26 +488,29 @@ export const MOVED_TO_OWN_MACHINE_MESSAGE_ERROR = "This chat moved to your compu
  * person's own machine drains no queue, so a message still queued there
  * ends as failed with `MOVED_TO_OWN_MACHINE_MESSAGE_ERROR` (its text stays,
  * so the person can send it again). A message that rides a launch keeps
- * its launch.
+ * its launch. `onlyIf`: a condition the move's own batch holds (its claim
+ * of the source), so a move that lost re-keys nothing.
  */
 export function moveQueuedMessagesStatement(
   env: CloudDb,
-  args: { userId: string; fromMachineKey: string; toMachineKey: string; chatId: string; instanceId: string | null; now: number },
+  args: { userId: string; fromMachineKey: string; toMachineKey: string; chatId: string; instanceId: string | null; now: number; onlyIf?: { sql: string; binds: Array<string | number> } },
 ): D1PreparedStatement {
   const { userId, fromMachineKey, toMachineKey, chatId, instanceId, now } = args;
+  const onlyIf = args.onlyIf ? ` and ${args.onlyIf.sql}` : "";
+  const onlyIfBinds = args.onlyIf?.binds ?? [];
   if (instanceId) {
     return env.DB.prepare(`
       update cloud_chat_messages set machine_key = ?, instance_id = case when via_launch = 0 and state = 'queued' then ? else instance_id end
-      where user_id = ? and machine_key = ? and chat_id = ?
-    `).bind(toMachineKey, instanceId, userId, fromMachineKey, chatId);
+      where user_id = ? and machine_key = ? and chat_id = ?${onlyIf}
+    `).bind(toMachineKey, instanceId, userId, fromMachineKey, chatId, ...onlyIfBinds);
   }
   return env.DB.prepare(`
     update cloud_chat_messages set machine_key = ?,
       state = case when via_launch = 0 and state = 'queued' then 'failed' else state end,
       error = case when via_launch = 0 and state = 'queued' then ? else error end,
       updated_at = case when via_launch = 0 and state = 'queued' then ? else updated_at end
-    where user_id = ? and machine_key = ? and chat_id = ?
-  `).bind(toMachineKey, MOVED_TO_OWN_MACHINE_MESSAGE_ERROR, now, userId, fromMachineKey, chatId);
+    where user_id = ? and machine_key = ? and chat_id = ?${onlyIf}
+  `).bind(toMachineKey, MOVED_TO_OWN_MACHINE_MESSAGE_ERROR, now, userId, fromMachineKey, chatId, ...onlyIfBinds);
 }
 
 export async function listComputers(env: CloudDb, userId: string): Promise<ComputerRow[]> {
@@ -783,9 +786,22 @@ export function goneFromProviderStatements(env: CloudEnv, computer: ComputerRow,
 }
 
 /**
+ * The provider deleted the computer, but its row couldn't be closed: the row
+ * stays open with what it was marked with (a lane to keep), so a retry of the
+ * delete, or the tick finding the computer gone, closes it.
+ */
+export class ComputerCloseError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "ADE Cloud deleted the computer but couldn't record it. Try again.", { cause });
+    this.name = "ComputerCloseError";
+  }
+}
+
+/**
  * Deletes a computer on the provider, then logs it and closes its row. Its events
  * go with it, so they're read first. Already gone counts as deleted; any other
- * provider failure throws, with the row left open.
+ * provider failure throws, with the row left open. A close that fails after
+ * the provider's delete throws `ComputerCloseError`.
  */
 export async function deleteComputer(
   env: CloudDb,
@@ -803,7 +819,11 @@ export async function deleteComputer(
   } catch (error) {
     if (!(error instanceof CloudProviderError && error.status === 404)) throw error;
   }
-  await env.DB.batch(closedComputerStatements(env, computer, { ...args, events }, now));
+  try {
+    await env.DB.batch(closedComputerStatements(env, computer, { ...args, events }, now));
+  } catch (error) {
+    throw new ComputerCloseError(error);
+  }
 }
 
 /**
