@@ -295,19 +295,17 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
   const savedDraftRef = useRef(draft);
   useEffect(() => {
     const timer = setTimeout(() => {
-      savedDraftRef.current = draft;
-      writeCliInputDraft(sessionId, draft);
+      if (writeCliInputDraft(sessionId, draft)) savedDraftRef.current = draft;
     }, DRAFT_SAVE_DELAY_MS);
     return () => clearTimeout(timer);
   }, [draft, sessionId]);
-  useEffect(() => () => writeCliInputDraft(sessionId, draftRef.current), [sessionId]);
+  useEffect(() => () => { writeCliInputDraft(sessionId, draftRef.current); }, [sessionId]);
   // Quit destroys the window without unmounting the box: save what the delay still
   // holds. A box with no new edit writes nothing, so it cannot overwrite a newer
   // draft that the same CLI's box in another window saved.
   useSaveBeforeQuit(() => {
     if (draftRef.current === savedDraftRef.current) return;
-    savedDraftRef.current = draftRef.current;
-    writeCliInputDraft(sessionId, draftRef.current);
+    if (writeCliInputDraft(sessionId, draftRef.current)) savedDraftRef.current = draftRef.current;
   });
 
   // The box takes focus when its surface becomes active. The terminal focuses
