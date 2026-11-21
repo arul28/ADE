@@ -243,10 +243,12 @@ async function handlePut(request: Request, env: CloudEnv, bucket: R2Bucket, user
     }
     const published = publishedStatement(env, key, rowWithObject(userId, machineKey, sessionId, key));
     if (existing) {
-      // This save's object replaces the one read, and that one is recorded to sweep, in one write.
-      const still = rowWithObject(userId, machineKey, sessionId, existing.r2_key);
+      // This save's object replaces the one read, and that one is recorded to sweep, in one write:
+      // both hold to the same conditions, so a refused update records nothing.
+      const row = rowWithObject(userId, machineKey, sessionId, existing.r2_key);
+      const replaces = { sql: `${row.sql} and ${unclaimed.sql}`, binds: [...row.binds, ...unclaimed.binds] };
       const results = await env.DB.batch([
-        sweepStatement(env, userId, objectOf(existing.r2_key), now, still),
+        sweepStatement(env, userId, objectOf(existing.r2_key), now, replaces),
         env.DB.prepare(`
           update cloud_session_copies set
             instance_id = ?, project_key = coalesce(?, project_key), lane_id = coalesce(?, lane_id), kind = ?, parent_chat_id = coalesce(?, parent_chat_id),
