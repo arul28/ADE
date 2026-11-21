@@ -62,9 +62,10 @@ export type ClaudePassMachineStamp = { machineKey12: string; label: string };
  */
 export type ClaudePassVault = {
   /** Every pass key the vault knows, with tombstones (a removed pass). */
-  list(): Array<{ key: string; deleted: boolean; readable?: boolean }>;
+  list(): Array<{ key: string; deleted: boolean; readable?: boolean; revision?: string }>;
   get(key: string): string | null;
-  set(key: string, value: string, options?: { expectedAccountUserId?: string }): boolean;
+  /** With `expectedRevision`: only while the item is still that revision, here and in the account. */
+  set(key: string, value: string, options?: { expectedAccountUserId?: string; expectedRevision?: string }): boolean;
   remove(key: string, options?: { expectedAccountUserId?: string }): boolean;
   /** Sends what waits, and pulls; false when the account could not be reached. */
   upload?(): Promise<boolean>;
@@ -74,9 +75,15 @@ export type ClaudePassVault = {
 
 /** The parts of the brain's account vault store that passes use. */
 export type ClaudePassVaultStoreLike = {
-  list(scope?: string): Array<{ kind: string; key: string; deleted?: boolean; readable?: boolean }>;
+  list(scope?: string): Array<{ kind: string; key: string; deleted?: boolean; readable?: boolean; revision?: string }>;
   get(scope: string, kind: typeof CLAUDE_PASS_VAULT_KIND, key: string): string | null;
-  set(scope: string, kind: typeof CLAUDE_PASS_VAULT_KIND, key: string, value: string, options?: { expectedAccountUserId?: string }): boolean;
+  set(
+    scope: string,
+    kind: typeof CLAUDE_PASS_VAULT_KIND,
+    key: string,
+    value: string,
+    options?: { expectedAccountUserId?: string; expectedRevision?: string },
+  ): boolean;
   remove(scope: string, kind: typeof CLAUDE_PASS_VAULT_KIND, key: string, options?: { expectedAccountUserId?: string }): boolean;
   sync?(): Promise<string>;
   pendingKeys?(scope: string, kind: typeof CLAUDE_PASS_VAULT_KIND): string[];
@@ -88,7 +95,12 @@ export function claudePassVaultFromStore(store: ClaudePassVaultStoreLike): Claud
   return {
     list: () => store.list(ACCOUNT_SCOPE_ALL)
       .filter((row) => row.kind === CLAUDE_PASS_VAULT_KIND && isClaudePassKey(row.key))
-      .map((row) => ({ key: row.key, deleted: row.deleted === true, readable: row.readable !== false })),
+      .map((row) => ({
+        key: row.key,
+        deleted: row.deleted === true,
+        readable: row.readable !== false,
+        ...(row.revision !== undefined ? { revision: row.revision } : {}),
+      })),
     get: (key) => store.get(ACCOUNT_SCOPE_ALL, CLAUDE_PASS_VAULT_KIND, key),
     set: (key, value, options) => store.set(ACCOUNT_SCOPE_ALL, CLAUDE_PASS_VAULT_KIND, key, value, options),
     remove: (key, options) => store.remove(ACCOUNT_SCOPE_ALL, CLAUDE_PASS_VAULT_KIND, key, options),

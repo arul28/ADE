@@ -497,14 +497,42 @@ final class ProviderLoginsModel: ObservableObject {
   @Published private(set) var pendingAll: Bool?
   @Published var error: String?
 
-  private let host: SyncService?
+  private let host: ProviderAccountsHost?
+  private let answersStatus: () -> Bool
+  private let writable: () -> Bool
   private var changeWatch: AnyCancellable?
   /// Bumped by each read and write: only the newest one's answer lands.
   private var request = 0
 
   init(host: SyncService) {
     self.host = host
-    changeWatch = host.$providerLoginsRevision
+    answersStatus = { [weak host] in host?.supportsRemoteAction("providerLogins.status") ?? false }
+    writable = { [weak host] in host?.canInvokeRemoteAction("providerLogins.use") ?? false }
+    watchChanges(host)
+  }
+
+  /// Reads and writes on `readHost` (a chat's own cloud computer that
+  /// already answered `status`), starting from that answer. `changes` says
+  /// when the account's sign-ins changed on any connected machine.
+  init(readHost: ProviderAccountsHost, status: ProviderLoginsPhoneStatus?, changes: SyncService?) {
+    self.host = readHost
+    self.status = status
+    answersStatus = { [weak readHost] in readHost?.supportsProviderAccountsAction("providerLogins.status") ?? false }
+    writable = { [weak readHost] in readHost?.canChangeProviderAccounts ?? false }
+    if let changes { watchChanges(changes) }
+  }
+
+  #if DEBUG
+  init(fixture: ProviderLoginsPhoneStatus) {
+    self.host = nil
+    self.status = fixture
+    answersStatus = { true }
+    writable = { true }
+  }
+  #endif
+
+  private func watchChanges(_ service: SyncService) {
+    changeWatch = service.$providerLoginsRevision
       .dropFirst()
       .removeDuplicates()
       .sink { [weak self] _ in
@@ -512,18 +540,11 @@ final class ProviderLoginsModel: ObservableObject {
       }
   }
 
-  #if DEBUG
-  init(fixture: ProviderLoginsPhoneStatus) {
-    self.host = nil
-    self.status = fixture
-  }
-  #endif
-
   /// The connected machine answers `providerLogins.*` (a newer brain).
-  var supported: Bool { host?.supportsRemoteAction("providerLogins.status") ?? true }
+  var supported: Bool { host == nil || answersStatus() }
 
   /// The phone may change sign-ins there (a controlling device).
-  var canWrite: Bool { host?.canInvokeRemoteAction("providerLogins.use") ?? true }
+  var canWrite: Bool { host == nil || writable() }
 
   func load() async {
     guard let host, supported else { return }

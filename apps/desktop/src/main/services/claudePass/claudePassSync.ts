@@ -335,6 +335,10 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
     if (!key || !token) return "skipped";
     if (endedTokenByKey.get(key) === token) return "already";
     endedTokenByKey.set(key, token);
+    /** A later failed turn may ask again (nothing was written for this token). */
+    const release = () => {
+      if (endedTokenByKey.get(key) === token) endedTokenByKey.delete(key);
+    };
     const current = () => {
       const vault = deps.vault();
       const accountUserId = deps.accountUserId();
@@ -344,24 +348,43 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
       return pass && pass.token === token ? { passVault, pass, accountUserId } : null;
     };
     const before = current();
-    if (!before) return "skipped";
+    if (!before) {
+      release();
+      return "skipped";
+    }
     if (before.pass.endedAt != null) return "already";
     const check = await checkToken(token);
     if (check !== "refused") {
-      // Claude still takes it (or did not answer): the pass stays. A later refusal asks again.
-      if (endedTokenByKey.get(key) === token) endedTokenByKey.delete(key);
+      // Claude still takes it (or did not answer): the pass stays.
+      release();
       logger?.warn("claude_pass.end_not_confirmed", { key, check });
       return "kept";
     }
     // Read again after the check: a Renew or another computer's mark may have come meanwhile.
     const after = current();
-    if (!after) return "skipped";
+    if (!after) {
+      release();
+      return "skipped";
+    }
     if (after.pass.endedAt != null) return "already";
-    const wrote = after.passVault.set(key, JSON.stringify({ ...after.pass, endedAt: now() }), { expectedAccountUserId: after.accountUserId });
+    const wrote = after.passVault.set(key, JSON.stringify({ ...after.pass, endedAt: now() }), {
+      expectedAccountUserId: after.accountUserId,
+      // A Renew that reached the account but not this cache yet wins: the write is refused.
+      ...revisionOf(after.passVault, key),
+    });
     logger?.warn("claude_pass.ended", { key, wrote });
-    if (!wrote) return "skipped";
+    if (!wrote) {
+      release();
+      return "skipped";
+    }
     reconcile({ accountUserId: after.accountUserId });
     return "ended";
+  }
+
+  /** The pass item's revision here, so a write replaces only what was read. */
+  function revisionOf(passVault: ReturnType<typeof claudePassVaultFromStore>, key: string): { expectedRevision?: string } {
+    const revision = passVault.list().find((row) => row.key === key)?.revision;
+    return revision !== undefined ? { expectedRevision: revision } : {};
   }
 
   /** Pass key → the ended token this brain asked Claude about (memory only): once each. */
@@ -382,12 +405,14 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
     const revived: string[] = [];
     for (const entry of ended) {
       reviewedEndedToken.set(entry.key, entry.pass.token);
+      // The revision read with the ended pass: a Renew since, here or only in the account, refuses the write.
+      const read = revisionOf(passVault, entry.key);
       if (await checkToken(entry.pass.token) !== "accepted") continue;
       // Read again: a Renew or a Remove may have come during the check.
       const pass = parseClaudePass(passVault.get(entry.key));
       if (!pass || pass.token !== entry.pass.token || pass.endedAt == null) continue;
       const { endedAt: _ended, ...working } = pass;
-      if (!passVault.set(entry.key, JSON.stringify(working), { expectedAccountUserId: accountUserId })) continue;
+      if (!passVault.set(entry.key, JSON.stringify(working), { expectedAccountUserId: accountUserId, ...read })) continue;
       if (endedTokenByKey.get(entry.key) === entry.pass.token) endedTokenByKey.delete(entry.key);
       logger?.warn("claude_pass.end_reversed", { key: entry.key });
       revived.push(entry.key);

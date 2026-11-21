@@ -96,10 +96,12 @@ describe("claude pass sync: end of a pass", () => {
   }
   function setup(check: () => Promise<Check>, endedAt?: number) {
     let value = passValue(TOKEN, endedAt);
+    let writes = true;
     const vault: ClaudePassSyncVault = {
       list: () => [{ kind: "provider_login", key: PASS_KEY }],
       get: (_scope, kind, key) => (kind === "provider_login" && key === PASS_KEY ? value : null),
       set: (_scope, _kind, _key, next) => {
+        if (!writes) return false;
         value = next;
         return true;
       },
@@ -128,6 +130,9 @@ describe("claude pass sync: end of a pass", () => {
       renew: (token: string) => {
         value = passValue(token);
       },
+      refuseWrites: (refuse: boolean) => {
+        writes = !refuse;
+      },
     };
   }
 
@@ -147,6 +152,15 @@ describe("claude pass sync: end of a pass", () => {
     expect([first, second]).toEqual(["kept", "already"]);
     await pass.sync.endPass(PASS_ID);
     expect(pass.checkToken).toHaveBeenCalledTimes(2);
+  });
+
+  it("ends the pass on a later failed turn when the end mark's write was refused", async () => {
+    const pass = setup(async () => "refused");
+    pass.refuseWrites(true);
+    await expect(pass.sync.endPass(PASS_ID)).resolves.toBe("skipped");
+    pass.refuseWrites(false);
+    await expect(pass.sync.endPass(PASS_ID)).resolves.toBe("ended");
+    expect(pass.endedAt()).not.toBeNull();
   });
 
   it("writes no end mark when a Renew came during the check", async () => {

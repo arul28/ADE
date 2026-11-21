@@ -691,11 +691,28 @@ struct WorkAdeCloudClaudeReadState: Equatable {
   let status: ProviderLoginsPhoneStatus
 }
 
+/// `pass-<id>` → `claude-pass/<id>`: the pass a chat's account is; nil for
+/// any other account (desktop `claudePassKeyOfAccountId`).
+func workClaudePassKey(ofAccountId id: String?) -> String? {
+  guard let id = id?.trimmingCharacters(in: .whitespacesAndNewlines), id.hasPrefix("pass-") else { return nil }
+  let rest = id.dropFirst("pass-".count)
+  guard !rest.isEmpty, rest.allSatisfy({ $0.isLetter || $0.isNumber }) else { return nil }
+  return "claude-pass/\(rest)"
+}
+
 /// The account's status as a Claude answer for ADE Cloud, or nil when the
-/// machine could not read the account.
-func workAdeCloudClaudeRead(_ status: ProviderLoginsPhoneStatus) -> WorkAdeCloudClaudeRead? {
+/// machine could not read the account. `accountId` is the chat's own
+/// account: a chat on one pass stays on it, so another pass that works does
+/// not fix it.
+func workAdeCloudClaudeRead(_ status: ProviderLoginsPhoneStatus, accountId: String? = nil) -> WorkAdeCloudClaudeRead? {
   guard status.readsAccount else { return nil }
   if !status.cloud.enabled { return .signInsOff }
+  if let passKey = workClaudePassKey(ofAccountId: accountId),
+     let pass = status.claudePasses?.first(where: { $0.key == passKey && $0.unreadable != true }) {
+    if pass.state == "ended" { return .needsPass(.ended(at: pass.endedAt.map { Date(timeIntervalSince1970: $0 / 1000) })) }
+    if pass.on == false { return .needsPass(.off) }
+    return pass.state != nil ? .passWorks : nil
+  }
   if let need = providerCloudClaudePassNeed(status) { return .needsPass(need) }
   // Passes this brain can't read, or none it knows the state of: not known.
   guard let passes = status.claudePasses,
@@ -801,6 +818,12 @@ struct WorkAdeCloudClaudePassSheet: View {
 
   init(syncService: SyncService) {
     _model = StateObject(wrappedValue: ProviderLoginsModel(host: syncService))
+    loads = true
+  }
+
+  /// On the machine that answered the chat's read, starting from its answer.
+  init(readHost: ProviderAccountsHost, status: ProviderLoginsPhoneStatus?, changes: SyncService?) {
+    _model = StateObject(wrappedValue: ProviderLoginsModel(readHost: readHost, status: status, changes: changes))
     loads = true
   }
 

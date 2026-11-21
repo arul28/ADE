@@ -4534,6 +4534,12 @@ final class SyncService: ObservableObject {
   /// sign-in applied), or the connection came back. An open sign-ins card
   /// reads `providerLogins.status` again.
   @Published private(set) var providerLoginsRevision = 0
+
+  /// Another connected machine said the account's sign-ins changed
+  /// (`provider_logins_changed` on a roster connection).
+  func noteProviderLoginsChanged() {
+    providerLoginsRevision += 1
+  }
   @Published private(set) var proofArtifactsProjectionRevision = 0
 
   private let iso8601WithFractionalSecondsFormatter: ISO8601DateFormatter = {

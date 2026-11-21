@@ -856,6 +856,8 @@ struct WorkChatSessionView: View {
   /// Bumped when the Claude pass page closes, so the account is read again.
   @State var adeCloudClaudeRecheck = 0
   @State var adeCloudClaudePassPageShown = false
+  /// The machine that gave `adeCloudClaudeRead`: the pass page reads there too.
+  @State var adeCloudClaudeReadHost: ProviderAccountsHost?
   /// The free model the sign-in card offers a brand-new person on the chat's
   /// machine, or nil (someone signed in there before, or no free models).
   @State var signInFreeModelId: String?
@@ -1223,6 +1225,12 @@ struct WorkChatSessionView: View {
     guard providerSignInAllowed, !isPersonalChat, providerSignInIsAdeCloud,
           chatSummaryContext.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "claude"
     else { return nil }
+    // A chat on a named account that is not a pass (a login made on that
+    // computer) runs on that login: the computer's own sign-in card applies.
+    if let account = providerSignInInstanceId?.trimmingCharacters(in: .whitespacesAndNewlines), !account.isEmpty,
+       workClaudePassKey(ofAccountId: account) == nil {
+      return nil
+    }
     return "ade-cloud-claude:\(session.id)"
   }
 
@@ -1272,8 +1280,9 @@ struct WorkChatSessionView: View {
     where host.providerAccountsConnected && host.supportsProviderAccountsAction("providerLogins.status") {
       guard let status = try? await ProviderLoginsPhoneStatus.read(on: host) else { continue }
       guard !Task.isCancelled, key == adeCloudClaudeKey else { return }
-      guard let read = workAdeCloudClaudeRead(status) else { continue }
+      guard let read = workAdeCloudClaudeRead(status, accountId: providerSignInInstanceId) else { continue }
       adeCloudClaudeRead = WorkAdeCloudClaudeReadState(key: key, read: read, status: status)
+      adeCloudClaudeReadHost = host
       return
     }
   }
@@ -1281,18 +1290,19 @@ struct WorkChatSessionView: View {
   /// Settings › Providers › ADE Cloud › Claude, where the pass card points.
   @ViewBuilder
   var adeCloudClaudePassPage: some View {
-    #if DEBUG
-    if let service = syncServiceReference.service {
+    if let host = adeCloudClaudeReadHost {
+      // The machine that answered the card's read: it can show the same passes.
+      WorkAdeCloudClaudePassSheet(readHost: host, status: adeCloudClaudeRead?.status, changes: syncServiceReference.service)
+    } else if let service = syncServiceReference.service {
       WorkAdeCloudClaudePassSheet(syncService: service)
-    } else if let status = adeCloudClaudeRead?.status {
-      // Fixture screens have no machine: the page shows the status the card read.
-      WorkAdeCloudClaudePassSheet(fixture: status)
+    } else {
+      #if DEBUG
+      if let status = adeCloudClaudeRead?.status {
+        // Fixture screens have no machine: the page shows the status the card read.
+        WorkAdeCloudClaudePassSheet(fixture: status)
+      }
+      #endif
     }
-    #else
-    if let service = syncServiceReference.service {
-      WorkAdeCloudClaudePassSheet(syncService: service)
-    }
-    #endif
   }
 
   /// A brand-new person's sign-in card also offers the chat machine's free

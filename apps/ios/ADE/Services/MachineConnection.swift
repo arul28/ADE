@@ -606,6 +606,9 @@ final class MachineConnection {
       }
     case "macDesktop.streamEnded":
       syncService?.receiveRemoteMacDesktopEnded(payload, machineKey: machineKey)
+    case "provider_logins_changed":
+      // The account's sign-ins are account-wide: a change seen on any machine reads them again.
+      syncService?.noteProviderLoginsChanged()
     default:
       // Changesets, catalogs and anything else are not for a roster peer.
       // Hosts that know `syncRole: "roster"` never send them.
