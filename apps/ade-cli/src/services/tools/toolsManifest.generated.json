@@ -548,52 +548,52 @@
         "darwin-arm64": {
           "format": "archive",
           "package": "antigravity-cli-darwin-arm64",
-          "version": "1.5.6",
-          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.6/agy_cli_mac_arm64.tar.gz",
+          "version": "1.5.14",
+          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.14/agy_cli_mac_arm64.tar.gz",
           "archive": "tar.gz",
           "stripComponents": 0,
-          "sha256": "87b8adbcb33d81d3629f049586ab2e6abaeb8c69d2e7d40425dc98e6d7aeee7a",
-          "size": 88093165
+          "sha256": "b01bdd4591e13ddfcb0e049bea74ae9f83e80829adcf64aaa58f5bfb1a425a54",
+          "size": 85943943
         },
         "darwin-x64": {
           "format": "archive",
           "package": "antigravity-cli-darwin-x64",
-          "version": "1.5.6",
-          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.6/agy_cli_mac_x64.tar.gz",
+          "version": "1.5.14",
+          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.14/agy_cli_mac_x64.tar.gz",
           "archive": "tar.gz",
           "stripComponents": 0,
-          "sha256": "a5ca02484a13fa252c3afeb2dbb6a4e4f432def6915faefec7d849fa112039a2",
-          "size": 93724261
+          "sha256": "c142141141cbaa93f4e46904b76341e349f3f2b78445f877f39468dfe60dda1e",
+          "size": 91613810
         },
         "linux-arm64": {
           "format": "archive",
           "package": "antigravity-cli-linux-arm64",
-          "version": "1.5.6",
-          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.6/agy_cli_linux_arm64.tar.gz",
+          "version": "1.5.14",
+          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.14/agy_cli_linux_arm64.tar.gz",
           "archive": "tar.gz",
           "stripComponents": 0,
-          "sha256": "42bfcf996e27f6e63330ff74150bbb1d69c81632586b37ff440e92eb81955520",
-          "size": 94863807
+          "sha256": "e5f69a3123fac66974b303d9a201f381a0fb32b3ef869d9139da85d5caf67a2a",
+          "size": 92116379
         },
         "linux-x64": {
           "format": "archive",
           "package": "antigravity-cli-linux-x64",
-          "version": "1.5.6",
-          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.6/agy_cli_linux_x64.tar.gz",
+          "version": "1.5.14",
+          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.14/agy_cli_linux_x64.tar.gz",
           "archive": "tar.gz",
           "stripComponents": 0,
-          "sha256": "408f902da6fce5a45ef777c246c182f6ef263eb155cc26548b910cdbc792dfd9",
-          "size": 104223118
+          "sha256": "d58386322d2073e96b33f7cc32b4e9ae2db6228f58440369725967b2de48c7b5",
+          "size": 101195950
         },
         "win32-x64": {
           "format": "archive",
           "package": "antigravity-cli-win32-x64",
-          "version": "1.5.6",
-          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.6/agy_cli_windows_x64.zip",
+          "version": "1.5.14",
+          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.14/agy_cli_windows_x64.zip",
           "archive": "zip",
           "stripComponents": 0,
-          "sha256": "6726139bc6659fc8dbfcd50ab3e5725ef94b7a7e16ad1aaa131895ead5f845c0",
-          "size": 85206701
+          "sha256": "144b37d27595ca1ab6b19b9f365e9ee66fb8cc95c020b541858d8947e02daf3f",
+          "size": 83143817
         }
       }
     },
