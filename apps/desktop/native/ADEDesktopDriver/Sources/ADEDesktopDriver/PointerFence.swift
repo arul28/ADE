@@ -18,6 +18,8 @@ final class PointerFence {
     private var runLoopSource: CFRunLoopSource?
     private var lastRealDisplayId: CGDirectDisplayID?
     private var lastFailureLogAt = Date.distantPast
+    /// The "no grant" line is logged once per off period, not on every retry.
+    private var reportedNoGrant = false
     /// Lane displays the pointer may cross because a real display is cut off
     /// behind them. Read on every fenced event, so it is computed on display
     /// changes (`refreshRoutes`), never per event.
@@ -33,8 +35,23 @@ final class PointerFence {
         self.log = log
     }
 
+    /// Starts the fence. The driver calls it only while it owns a virtual display:
+    /// with none, there is nothing to fence, and a tap would only see every
+    /// mouse move.
     func start() {
         guard eventTap == nil else { return }
+        // macOS 27 gates even a listen-only mouse tap behind Input Monitoring,
+        // and creating the tap with no grant shows the system prompt by
+        // itself, with nothing on screen to explain it. The tap could not run
+        // without the grant either, so skip it and say so. The driver calls
+        // this again on each permission probe, which picks up a later grant.
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27, !CGPreflightListenEventAccess() {
+            if !reportedNoGrant {
+                reportedNoGrant = true
+                log("pointer fence off: ADE has no Input Monitoring grant, so the pointer can cross onto a lane display at a shared corner")
+            }
+            return
+        }
         let types: [CGEventType] = [
             .mouseMoved,
             .leftMouseDragged,
@@ -69,6 +86,10 @@ final class PointerFence {
         refreshRoutes()
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        if reportedNoGrant {
+            reportedNoGrant = false
+            log("pointer fence on: Input Monitoring was granted")
+        }
     }
 
     func stop() {

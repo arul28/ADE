@@ -49,6 +49,17 @@ display; a lane's own lease or gesture is never interrupted. On a single
 the lane display without the fence and stop just inside the corner with it.
 The offscreen-region fallback has no virtual display to fence.
 
+The tap runs only while the driver owns a virtual display: a driver started
+for a status read, with no lane screen, creates none. macOS 27 gates even this
+listen-only mouse tap behind Input Monitoring, and creating it without the
+grant shows the "receive keystrokes" prompt with nothing on screen to explain
+it. So on macOS 27 the fence creates no tap without the grant
+(`CGPreflightListenEventAccess`), logs `pointer fence off` once, and tries
+again on each permission probe while a display is up. A later grant starts it
+(`pointer fence on`). Without the grant the pointer can cross onto a lane
+display at a shared corner. The capture gesture's helper follows the same
+rule for its keyboard tap (`docs/features/capture-gesture/README.md`).
+
 **A real display must never sit behind a lane display.** When a monitor or
 an AirPlay screen (extended) connects while a lane display is up, macOS can
 put it beside the lane display, or restore an arrangement it remembered with
