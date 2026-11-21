@@ -1256,6 +1256,12 @@ account, never a pin.
     then ADE deletes the computer. Only the saved copies of the chats that
     arrived go with it (`deleteLane` with `onlyChats`); a Done, archived or
     other-surface chat the move left stays readable from ADE Cloud.
+    Before the delete, the source answers two checks: no chat or CLI started
+    on the lane during the move, and the lane's HEAD and working tree match
+    what the move carried (`chat.crossMachineBatchSourceChanged`, against the
+    lane item's `carriedHeadSha` and `carriedTreeSha`). Either one failing
+    keeps the computer and ends the run as "move again", which does not block
+    a new move. A check that can't read the source also keeps the computer.
   - **Asleep, with every lane saved at its rest** (`backups.saved`): no wake.
     The destination brain (`keptLaneRestore.ts`, step `release`) deletes the
     computer with `keepLane: { onlyIfSaved: true }`. The server refuses with
