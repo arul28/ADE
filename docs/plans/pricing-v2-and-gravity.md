@@ -137,7 +137,7 @@ The Cloud iPhone waits for a more reliable provider and real prices.
 | # | Piece | Depends on |
 |---|---|---|
 | 1 | Free page in the model picker (lane `ade/free-model-access-feedback`), rows that can carry a badge | in progress |
-| 2 | **Pricing v2:** server plan rules (Small free, computers per plan, new hour unit, outside-agent refusal on Free, iPhone hidden and email testers), live Stripe prices, then every surface: website pricing and home, desktop ADE Cloud pages and settings, phone, `ade cloud status`, emails, feature docs. Every surface reads the server catalog. Billing touches live Stripe, so the Cloud 6 lane owns or reviews it. | this plan |
+| 2 | **Pricing v2:** server plan rules (Small free, computers per plan, new hour unit, outside-agent refusal on Free, iPhone hidden and email testers), live Stripe prices, then every surface: website pricing and home, desktop ADE Cloud pages and settings, phone, `ade cloud status`, emails, feature docs. Every surface reads the server catalog. Live Stripe changes need the owner's OK. | this plan |
 | 3 | **Gravity foundation** on the account server: one module, Worker secrets, consent record, plan and country checks, ad, Index and model endpoints, kill switch, owner report of cost against ad and Index income | none; test ads work today |
 | 4 | Sponsored cards on desktop, web and phone | 2, 3 |
 | 5 | Index for agents | 3 |
