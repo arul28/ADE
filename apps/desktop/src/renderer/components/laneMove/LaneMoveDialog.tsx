@@ -7,24 +7,30 @@ import {
   GitBranch,
   Terminal,
   Trash,
-  WarningCircle,
   XCircle,
 } from "@phosphor-icons/react";
 import type { AgentChatCrossMachineHandoffOptionsResult } from "../../../shared/types";
 import type { CloudKeptLaneRestorePreview } from "../../../shared/cloudKeptLaneRestore";
 import { ignoredFilesList, type CloudIgnoredFiles } from "../../../shared/adeCloud";
 import { useCloudMachines } from "../remoteTargets/useCloudMachines";
-import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice";
 import { showToast } from "../app/toast/toastStore";
 import { cn } from "../ui/cn";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { describeTravellingChanges } from "../chat/CrossMachineHandoffBanner";
 import { requireChatPin } from "../chat/chatMachinePin";
-import { laneMoveItems, laneMoveRestores, type LaneMoveChatHistory, type LaneMoveItem } from "./laneMoveModel";
-import type { LaneMoveSource, LaneMoveTarget } from "./useLaneMoveTargets";
+import {
+  laneMoveErrorText as errorText,
+  laneMoveItems,
+  laneMoveRestores,
+  type LaneMoveChatHistory,
+  type LaneMoveItem,
+  type LaneMoveSource,
+} from "./laneMoveModel";
+import type { LaneMoveTarget } from "./useLaneMoveTargets";
 import {
   dismissLaneMove,
   followLiveLaneMove,
@@ -65,11 +71,9 @@ type Review =
       saved: { ok: boolean; reason: string | null } | null;
       /** The asleep computer's ignored files, read with no wake. */
       ignored: CloudIgnoredFiles | null;
+      /** A move from saved copies: the titles of chats on another computer of the person's, which keep the lane on ADE Cloud. */
+      blocked: string[];
     };
-
-function errorText(error: unknown): string {
-  return stripElectronErrorWrapper(error instanceof Error ? error.message : String(error));
-}
 
 const HISTORY_LABEL: Record<RowHistory, string> = {
   full: "Full history",
@@ -96,7 +100,8 @@ function ignoredFilesNote(ignored: CloudIgnoredFiles | null | undefined, asleep:
   const after = asleep ? " To copy them first, wake the computer and move the lane from there." : " Copy them yourself first if you need them.";
   if (!ignored) return `Files git ignores (such as .env) don't move, and they go with the computer.${after}`;
   const list = ignoredFilesList(ignored);
-  if (!list) return null;
+  // A scan that stopped early and named nothing still can't promise there are none.
+  if (!list) return ignored.incomplete ? `Files git ignores (such as .env) may not move, and they go with the computer.${after}` : null;
   return `Files git ignores don't move, and they go with the computer: ${list}.${ignored.incomplete ? " There may be more." : ""}${after}`;
 }
 
@@ -108,7 +113,6 @@ export function LaneMoveDialog({
   source,
   target,
   changes,
-  initialRunId = null,
   onWake,
   onClose,
 }: {
@@ -116,8 +120,6 @@ export function LaneMoveDialog({
   target: LaneMoveTarget;
   /** A live move: the work that travels, from the options the menu read. */
   changes: AgentChatCrossMachineHandoffOptionsResult["changes"] | null;
-  /** Opened on a move already under way. */
-  initialRunId?: string | null;
   /** Wakes the asleep ADE Cloud computer, for a live move instead. */
   onWake?: () => void;
   onClose: () => void;
@@ -131,7 +133,7 @@ export function LaneMoveDialog({
     ? cloudMachines.result?.machines.find((machine) => machine.instanceId === source.cloudInstanceId)?.ignoredFiles ?? null
     : null;
   const [review, setReview] = useState<Review>({ status: "loading" });
-  const [runId, setRunId] = useState<string | null>(initialRunId);
+  const [runId, setRunId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [cloneFolder, setCloneFolder] = useState<string | null>(null);
@@ -163,6 +165,7 @@ export function LaneMoveDialog({
           hasRepository: preview.hasRepository,
           saved: preview.fromComputer ? { ok: preview.fromComputer.saved, reason: preview.fromComputer.reason } : null,
           ignored: preview.fromComputer?.ignored ?? null,
+          blocked: (preview.blocked ?? []).map((chat) => chat.title?.trim() || (chat.kind === "cli" ? "CLI session" : "Untitled chat")),
         };
       }
       const pin = requireChatPin(source.pin);
@@ -177,6 +180,7 @@ export function LaneMoveDialog({
         hasRepository: target.hasRepository,
         saved: null,
         ignored: null,
+        blocked: [],
       };
     };
     load()
@@ -245,17 +249,23 @@ export function LaneMoveDialog({
 
   const title = `Move ${source.laneName} to ${target.name}`;
   if (run) {
-    return <LaneMoveProgress title={title} run={run} rows={rows} onWake={onWake} onClose={onClose} />;
+    return <LaneMoveProgress title={title} run={run} rows={rows} onRunId={setRunId} onWake={onWake} onClose={onClose} />;
   }
 
   const savedCopyIncomplete = review.status === "ready" && review.saved?.ok === false;
-  const canMove = review.status === "ready" && rows.length > 0 && !starting && !savedCopyIncomplete;
+  // A move from saved copies runs in the project there: one that isn't the lane's repository can't take it.
+  const wrongRepository = restores && review.status === "ready" && review.hasRepository === false;
+  // An asleep computer whose saved copy couldn't be read at all: waking it still moves the lane.
+  const wakes = Boolean(onWake) && (savedCopyIncomplete || (Boolean(asleepInstanceId) && review.status === "error"));
+  // A move from saved copies brings the branch and its work even with no chat to bring.
+  const canMove = review.status === "ready" && (rows.length > 0 || restores) && !starting && !savedCopyIncomplete && !wrongRepository;
+  const blocked = review.status === "ready" ? review.blocked : [];
   const ignoredNote = review.status !== "ready" || savedCopyIncomplete
     ? null
     : asleepInstanceId ? ignoredFilesNote(review.ignored, true)
       : source.kind === "cloud" ? ignoredFilesNote(liveIgnored, false)
         : null;
-  const primary = savedCopyIncomplete && onWake
+  const primary = wakes && onWake
     ? { label: "Wake and move", variant: "solid" as const, autoFocus: true, onClick: () => { onClose(); onWake(); } }
     : { label: "Move lane", variant: "solid" as const, autoFocus: true, busy: starting, disabled: !canMove, onClick: () => void start() };
   return (
@@ -273,14 +283,22 @@ export function LaneMoveDialog({
           <CircleNotch size={14} className="animate-spin" aria-hidden /> Reading the lane…
         </div>
       ) : review.status === "error" ? (
-        <Fact icon={<WarningCircle size={15} weight="fill" className="text-amber-300/90" />}>
-          {review.message}
-        </Fact>
+        <Banner
+          layout="inline"
+          model={{
+            id: "lane-move-review-error",
+            tone: "error",
+            title: "ADE couldn't read what this lane holds.",
+            detail: wakes ? `${review.message} Wake the ${ADE_CLOUD_NAME} computer to move the lane from there.` : review.message,
+          }}
+        />
       ) : (
         <div className="flex flex-col gap-4">
           <section aria-label="What moves">
             {rows.length === 0 ? (
-              <p className="text-[12px] text-muted-fg/75">This lane has no chats or CLI sessions to move.</p>
+              <p className="text-[12px] text-muted-fg/75">
+                {restores ? "No chats or CLI sessions come back with it. The branch and its work do." : "This lane has no chats or CLI sessions to move."}
+              </p>
             ) : (
               <ul className="overflow-hidden rounded-lg border border-border/60" data-testid="lane-move-items">
                 {rows.map((row) => <ItemRow key={row.id} row={row} />)}
@@ -298,7 +316,18 @@ export function LaneMoveDialog({
                 ? <>The branch comes with {review.work}. Nothing is pushed.</>
                 : <>The branch comes with it. Nothing is pushed.</>}
             </Fact>
-            {review.hasRepository === false ? (
+            {wrongRepository ? (
+              <Banner
+                layout="inline"
+                model={{
+                  id: "lane-move-wrong-repository",
+                  tone: "warning",
+                  report: false,
+                  title: `This project on ${target.name} isn't the lane's repository.`,
+                  detail: "Open a clone of it there, then move the lane there.",
+                }}
+              />
+            ) : review.hasRepository === false ? (
               <Fact icon={<DownloadSimple size={15} className="text-muted-fg/70" />}>
                 {target.name} doesn't have this project yet. ADE clones it from GitHub first
                 {cloneFolder ? <>, into <span className="font-mono text-[11px] text-fg/85">{cloneFolder}</span></> : <>, into the folder beside its newest project</>}
@@ -306,13 +335,16 @@ export function LaneMoveDialog({
               </Fact>
             ) : null}
             {savedCopyIncomplete ? (
-              <div role="alert">
-                <Fact icon={<WarningCircle size={15} weight="fill" className="text-amber-300/90" />}>
-                  <span className="text-amber-100/90">
-                    {review.saved?.reason} So ADE wakes the computer and moves the lane from there. Waking it uses {ADE_CLOUD_NAME} hours.
-                  </span>
-                </Fact>
-              </div>
+              <Banner
+                layout="inline"
+                model={{
+                  id: "lane-move-saved-copy-incomplete",
+                  tone: "warning",
+                  report: false,
+                  title: review.saved?.reason ?? "The computer's saved copy isn't complete.",
+                  detail: `So ADE wakes the computer and moves the lane from there. Waking it uses ${ADE_CLOUD_NAME} hours.`,
+                }}
+              />
             ) : asleepInstanceId ? (
               <Fact icon={<Trash size={15} className="text-muted-fg/70" />}>
                 The {ADE_CLOUD_NAME} computer stays asleep. It saved all of this lane's work when it went to sleep, so ADE
@@ -322,18 +354,28 @@ export function LaneMoveDialog({
             ) : deletesComputer ? (
               <Fact icon={<Trash size={15} className="text-muted-fg/70" />}>
                 When everything has arrived and ADE has checked it, ADE deletes this lane's {ADE_CLOUD_NAME} computer
-                and its saved chats. If anything fails, the computer stays.
+                and the saved copies of the chats that moved. If anything fails, the computer stays.
               </Fact>
             ) : null}
             {ignoredNote ? (
               <Fact icon={<EyeSlash size={15} className="text-muted-fg/70" />}>{ignoredNote}</Fact>
             ) : null}
+            {blocked.length > 0 ? (
+              <Banner
+                layout="inline"
+                model={{
+                  id: "lane-move-blocked-chats",
+                  tone: "warning",
+                  report: false,
+                  title: blocked.length === 1
+                    ? `“${blocked[0]}” is on another computer of yours now.`
+                    : `${blocked.length} chats are on other computers of yours now.`,
+                  detail: `They don't come here, so the lane stays on ${ADE_CLOUD_NAME} too. Finish their move there, then move the lane again.`,
+                }}
+              />
+            ) : null}
             {startError ? (
-              <div role="alert">
-                <Fact icon={<WarningCircle size={15} weight="fill" className="text-rose-400/90" />}>
-                  <span className="text-rose-200/90">Couldn't start the move. {startError}</span>
-                </Fact>
-              </div>
+              <Banner layout="inline" model={{ id: "lane-move-start-error", tone: "error", title: "Couldn't start the move.", detail: startError }} />
             ) : null}
           </div>
         </div>
@@ -344,10 +386,12 @@ export function LaneMoveDialog({
 
 function summaryNote(rows: Row[], source: LaneMoveSource, deletesComputer: boolean, restores: boolean): string {
   const names = rows.map((row) => `“${row.title}”`).join(", ");
-  const verb = rows.length === 1 ? "arrives" : "arrive";
+  const one = rows.length === 1;
   const start = restores
-    ? `${names} ${rows.length === 1 ? "starts" : "start"} fresh there, with a summary.`
-    : `${names} ${verb} as a summary. Its agent can't carry its full history to another machine.`;
+    ? `${names} ${one ? "starts" : "start"} fresh there. ${one ? "Its earlier session doesn't" : "Their earlier sessions don't"} come back.`
+    : one
+      ? `${names} arrives as a summary. Its agent can't carry its full history to another machine.`
+      : `${names} arrive as summaries. Their agents can't carry their full history to another machine.`;
   if (deletesComputer) return `${start} The full history is deleted with the ${ADE_CLOUD_NAME} computer.`;
   return `${start} The full history stays on ${machinePhrase(source.machineName)}.`;
 }
@@ -475,10 +519,41 @@ function progressStatus(run: LaneMoveRun, arrived: number, total: number): strin
   }
 }
 
-function LaneMoveProgress({ title, run, rows, onWake, onClose }: {
+/**
+ * A move already under way, opened from the lane's machine menu: the same
+ * progress view, with the parts its record names.
+ */
+export function LaneMoveProgressDialog({ runId: firstRunId, onWake, onClose }: {
+  runId: string;
+  onWake?: () => void;
+  onClose: () => void;
+}) {
+  const [runId, setRunId] = useState(firstRunId);
+  const run = useLaneMoveRun(runId);
+  useEffect(() => {
+    if (!run) onClose();
+  }, [run, onClose]);
+  if (!run) return null;
+  return (
+    <LaneMoveProgress
+      title={`Move ${run.laneName} to ${run.targetName}`}
+      run={run}
+      rows={NO_ROWS}
+      onRunId={setRunId}
+      onWake={onWake}
+      onClose={onClose}
+    />
+  );
+}
+
+const NO_ROWS: Row[] = [];
+
+function LaneMoveProgress({ title, run, rows, onRunId, onWake, onClose }: {
   title: string;
   run: LaneMoveRun;
   rows: Row[];
+  /** A try again that started a new run: the view follows that one. */
+  onRunId: (id: string) => void;
   onWake?: () => void;
   onClose: () => void;
 }) {
@@ -490,16 +565,22 @@ function LaneMoveProgress({ title, run, rows, onWake, onClose }: {
     if (retrying) return;
     setRetrying(true);
     try {
+      let next: string;
       if (run.kind === "live") {
         const record = await window.ade.agentChat.retryCrossMachineBatchMove({ batchId: run.id }, run.pin);
-        followLiveLaneMove({ record, pin: run.pin, laneId: run.laneId, laneName: run.laneName, cloudInstanceId: run.cloudInstanceId });
+        next = followLiveLaneMove({ record, pin: run.pin, laneId: run.laneId, laneName: run.laneName, cloudInstanceId: run.cloudInstanceId });
       } else {
         const fromComputer = run.fromComputer ? { instanceId: run.fromComputer } : null;
         const record = await keptLaneRestoreApi().restore({ laneId: run.laneId, ...(fromComputer ? { fromComputer } : {}) }, run.pin);
-        followRestoreLaneMove({ record, pin: run.pin, targetName: run.targetName, cloudInstanceId: run.cloudInstanceId, fromComputer: run.fromComputer ?? null });
+        next = followRestoreLaneMove({ record, pin: run.pin, targetName: run.targetName, cloudInstanceId: run.cloudInstanceId, fromComputer: run.fromComputer });
+      }
+      // A restore's new start has its own id; the ended run goes from the list.
+      if (next !== run.id) {
+        onRunId(next);
+        dismissLaneMove(run.id);
       }
     } catch (error) {
-      showToast({ tone: "warning", title: `Couldn't try the move again`, message: errorText(error) });
+      showToast({ tone: "error", title: `Couldn't try the move again`, message: errorText(error) });
     } finally {
       setRetrying(false);
     }

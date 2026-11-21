@@ -410,6 +410,19 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("resolveCrossMachineHandoffApproval", pin);
       return await callRequiredMutation<AgentChatCrossMachineHandoffRecord | null>("chat.resolveCrossMachineHandoffApproval", args);
     },
+    // "Move this lane to": the batch runs on the source brain the pin names.
+    startCrossMachineBatchMove: async (args, pin) => {
+      guardPin("startCrossMachineBatchMove", pin);
+      return await callRequiredMutation<AgentChatCrossMachineBatchMoveRecord>("chat.startCrossMachineBatchMove", args);
+    },
+    getCrossMachineBatchMove: async (args, pin) => {
+      guardPin("getCrossMachineBatchMove", pin);
+      return await callRequiredRead<AgentChatCrossMachineBatchMoveRecord | null>("chat.getCrossMachineBatchMove", args);
+    },
+    retryCrossMachineBatchMove: async (args, pin) => {
+      guardPin("retryCrossMachineBatchMove", pin);
+      return await callRequiredMutation<AgentChatCrossMachineBatchMoveRecord>("chat.retryCrossMachineBatchMove", args);
+    },
     resolveCrossMachineBatchMoveApproval: async (args: AgentChatResolveCrossMachineBatchMoveApprovalArgs, pin) => {
       guardPin("resolveCrossMachineBatchMoveApproval", pin);
       return await callRequiredMutation<AgentChatCrossMachineBatchMoveRecord>("chat.resolveCrossMachineBatchMoveApproval", args);

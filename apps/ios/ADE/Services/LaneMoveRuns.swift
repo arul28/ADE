@@ -1,5 +1,8 @@
 import Combine
 import Foundation
+import os
+
+private let laneMoveLog = Logger(subsystem: "com.ade.ios", category: "lane-move")
 
 // The lane moves this phone started, and what each one is doing now (the
 // desktop's `laneMoveRuns.ts`). A live move is the lane brain's batch move;
@@ -86,12 +89,16 @@ struct LaneMoveRun: Identifiable, Codable, Equatable {
   /// A restore off the lane's asleep ADE Cloud computer: the destination
   /// deletes it first, with no wake. A retry names it again.
   var fromComputer: String? = nil
+  /// A live move: the chats that arrived, set with `arrived`. Only their
+  /// saved copies are deleted with the computer. Nil (a run saved by an
+  /// older app): the computer goes and every saved chat stays.
+  var movedChatIds: [String]? = nil
   /// The latest record read; not saved.
   var batch: LaneMoveBatchRecord? = nil
   var restore: CloudKeptLaneRestoreRecord? = nil
 
   private enum CodingKeys: String, CodingKey {
-    case id, kind, laneId, laneName, targetName, route, computer, phase, error, startedAt, arrived, fromComputer
+    case id, kind, laneId, laneName, targetName, route, computer, phase, error, startedAt, arrived, fromComputer, movedChatIds
   }
 
   var isOpen: Bool { phase == .moving || phase == .deleting || phase == .deleteFailed || phase == .failed }
@@ -148,7 +155,12 @@ final class LaneMoveRuns: ObservableObject {
       // A delete cut off by the relaunch is offered again: the move had arrived.
       if run.phase == .deleting { run.phase = .deleteFailed }
       runs.append(run)
-      if run.phase == .moving { schedule(run.id) }
+      // Asks the machine first: a move that ended while the app was closed
+      // gets its result, however old the run is.
+      if run.phase == .moving {
+        let id = run.id
+        Task { await read(id) }
+      }
     }
   }
 
@@ -158,10 +170,14 @@ final class LaneMoveRuns: ObservableObject {
   }
 
   /// The newest run of a lane that is under way or ended badly, for the
-  /// lane's move sheet. Matches a `fleet|…` id and its plain id.
-  func openRun(laneId: String) -> LaneMoveRun? {
-    let plain = laneMovePlainLaneId(laneId)
-    return runs.last { $0.isOpen && laneMovePlainLaneId($0.laneId) == plain }
+  /// lane's move sheet. Matches a `fleet|…` id and its plain id, and only a
+  /// run from the same kind of source: a lane that came back from saved
+  /// copies can keep its id, and the restore isn't that lane's move.
+  func openRun(source: LaneMoveSource) -> LaneMoveRun? {
+    let plain = laneMovePlainLaneId(source.laneId)
+    return runs.last {
+      $0.isOpen && laneMovePlainLaneId($0.laneId) == plain && ($0.kind == .restore) == source.restores
+    }
   }
 
   /// Starts following a batch move this phone started.
@@ -287,11 +303,14 @@ final class LaneMoveRuns: ObservableObject {
     save()
   }
 
-  private func schedule(_ id: String) {
+  /// `unreached`: the last read didn't reach the machine. A run that old
+  /// then stops reading but stays saved, so the next launch asks again.
+  private func schedule(_ id: String, unreached: Bool = false) {
     timers.removeValue(forKey: id)?.cancel()
     guard let run = self.run(id: id) else { return }
     let age = Date().timeIntervalSince(run.startedAt)
     guard age < Self.readFor else {
+      if unreached { return }
       // Too long to keep reading. Nothing is deleted; Try again asks the
       // same machine again, and it goes on from what already arrived.
       update(id) {
@@ -317,19 +336,23 @@ final class LaneMoveRuns: ObservableObject {
       switch run.kind {
       case .live:
         guard let record = try await sync.readLaneMoveBatch(route: run.route, batchId: run.id) else {
-          throw NSError(domain: "ADE", code: 44, userInfo: [NSLocalizedDescriptionKey: "The lane's machine no longer knows this move."])
+          // The machine answered and has no such move: it ends now, nothing deleted.
+          finish(id, arrived: false, failure: "The lane's machine no longer knows this move. Open the lane there to see what arrived.")
+          return
         }
         update(id) { $0.batch = record; $0.error = nil }
         if laneMoveBatchEnded(record) {
           // The one place a move is judged arrived; nothing else sets it.
           let arrived = laneMoveBatchAllowsComputerDelete(record)
+          update(id) { $0.movedChatIds = laneMoveBatchMovedChatIds(record) }
           finish(id, arrived: arrived, failure: arrived ? nil : laneMoveBatchFailure(record))
         } else {
           schedule(id)
         }
       case .restore:
         guard let record = try await sync.readKeptLaneRestore(route: run.route, restoreId: run.id) else {
-          throw NSError(domain: "ADE", code: 44, userInfo: [NSLocalizedDescriptionKey: "That machine no longer knows this move."])
+          finish(id, arrived: false, failure: "\(run.targetName) no longer knows this move. Try again to go on from what came back.")
+          return
         }
         update(id) { $0.restore = record; $0.error = nil }
         // The restore forgets the kept lane itself, and only once every chat came back.
@@ -345,7 +368,7 @@ final class LaneMoveRuns: ObservableObject {
       // A machine that is briefly unreachable is read again; the move goes
       // on there. A read that failed never counts as arrived.
       update(id) { $0.error = SyncUserFacingError.message(for: error) }
-      schedule(id)
+      schedule(id, unreached: true)
     }
   }
 
@@ -375,7 +398,7 @@ final class LaneMoveRuns: ObservableObject {
     }
     update(id) { $0.arrived = true }
     if run.kind == .live, run.computer != nil {
-      Task { await deleteComputer(id: id) }
+      Task { await deleteComputer(id: id, checkSource: true) }
       return
     }
     update(id) { $0.phase = .done }
@@ -395,9 +418,25 @@ final class LaneMoveRuns: ObservableObject {
     forgetLater(id)
   }
 
-  /// Deletes the lane's ADE Cloud computer and its saved chats, only for a
-  /// run the check marked arrived.
-  private func deleteComputer(id: String) async {
+  /// The chats and CLIs on the source lane now that the move didn't carry
+  /// (one started there during the move), counted as the review lists them.
+  /// Nil when the lane couldn't be read.
+  private func chatsLeftOnSource(_ run: LaneMoveRun, sync: SyncService) async -> Int? {
+    do {
+      let detail = try await sync.readLaneMoveDetail(route: run.route, laneId: run.laneId)
+      let moved = Set(run.movedChatIds ?? [])
+      return laneMoveItems(sessions: detail.sessions, chats: detail.chatSessions).filter { !moved.contains($0.id) }.count
+    } catch {
+      laneMoveLog.notice("lane_move source_read_before_delete=failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      return nil
+    }
+  }
+
+  /// Deletes the lane's ADE Cloud computer and the saved copies of the chats
+  /// that moved, only for a run the check marked arrived. `checkSource`: the
+  /// first, automatic delete reads the lane first and keeps the computer when
+  /// a chat the move didn't carry is on it. The person's own retry doesn't.
+  private func deleteComputer(id: String, checkSource: Bool = false) async {
     #if DEBUG
     if fixture { return }
     #endif
@@ -406,16 +445,26 @@ final class LaneMoveRuns: ObservableObject {
     update(id) { $0.phase = .deleting; $0.error = nil }
     let toasts = CloudLaneActions.shared
     let failure: String?
-    if let client = await sync.cloudServerClient() {
+    var chatsLeft = false
+    let left = checkSource ? await chatsLeftOnSource(run, sync: sync) ?? 0 : 0
+    if left > 0 {
+      failure = left == 1
+        ? "A chat started on the lane during the move, so ADE kept the computer. Move the lane again to bring it."
+        : "\(left) chats started on the lane during the move, so ADE kept the computer. Move the lane again to bring them."
+    } else if let client = await sync.cloudServerClient() {
       // The move carried the work and every chat, and the check passed: the
       // work check would only find what already arrived, so it is skipped.
-      failure = await CloudLaneComputerDelete.run(
+      let outcome = await CloudLaneComputerDelete.run(
         client: client,
         instanceId: computer.instanceId,
         accountMachineKey: computer.accountMachineKey,
         laneId: computer.laneId,
+        // Unknown (an older run): no saved chat is deleted.
+        onlyChats: Set(run.movedChatIds ?? []),
         sync: sync
-      ).failure
+      )
+      failure = outcome.failure
+      chatsLeft = outcome.chatsLeft
     } else {
       failure = "Sign in to ADE, then try again."
     }
@@ -430,11 +479,18 @@ final class LaneMoveRuns: ObservableObject {
     }
     update(id) { $0.phase = .done }
     toasts.deleted(instanceId: computer.instanceId)
-    toasts.toast = ADEToastMessage(
-      text: "Moved \(run.laneName) to \(run.targetName)",
-      kind: .success,
-      detail: "Its \(ADECloudMachine.name) computer is deleted."
-    )
+    toasts.toast = chatsLeft
+      // The computer is gone; only some saved copies are left, which Work deletes.
+      ? ADEToastMessage(
+        text: "Moved \(run.laneName) to \(run.targetName)",
+        kind: .info,
+        detail: "Its \(ADECloudMachine.name) computer is deleted, but some saved copies of the chats that moved are still there. Delete them in Work."
+      )
+      : ADEToastMessage(
+        text: "Moved \(run.laneName) to \(run.targetName)",
+        kind: .success,
+        detail: "Its \(ADECloudMachine.name) computer is deleted."
+      )
     await sync.refreshCloudServerInstances()
     forgetLater(id)
   }

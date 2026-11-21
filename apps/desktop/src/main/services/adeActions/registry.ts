@@ -334,7 +334,7 @@ import { buildCloudAgentActions } from "../adeCloud/cloudAgentActions";
 import { createCloudLaneAccount } from "../adeCloud/cloudLaneAccount";
 import { cloudDiskGrowHost } from "../adeCloud/cloudDiskGrowHost";
 import type { KeptLaneRestoreProject } from "../../../../../ade-cli/src/services/cloudChats/keptLaneRestore";
-import type { CloudKeptLaneRestorePreview, CloudKeptLaneRestoreRecord } from "../../../shared/cloudKeptLaneRestore";
+import { pickKeptLaneRestoreArgs, type CloudKeptLaneRestorePreview, type CloudKeptLaneRestoreRecord } from "../../../shared/cloudKeptLaneRestore";
 import { createCloudBrainMaker, type CloudBrainMaker, type CloudBrainMakerBase } from "../adeCloud/cloudBrainMaker";
 import {
   cloudLaneLaunchRecordsDir,
@@ -4917,13 +4917,13 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
  * from the account's server copies. The job runs in the brain's one store
  * (`keptLaneRestores`, ade-cli keptLaneRestore.ts), installed only on a
  * machine that is not an ADE Cloud computer; this project gives it the lane
- * and chat services. `restoreKeptLane` is the person's only
+ * and chat services. `kept_lane_move` is the person's only
  * (`ADE_ACTION_USER_ONLY`).
  */
 function keptLaneRestoreActions(runtime: AccountDomainRuntime): {
-  previewKeptLaneRestore: (args?: unknown) => Promise<CloudKeptLaneRestorePreview>;
-  restoreKeptLane: (args?: unknown) => Promise<CloudKeptLaneRestoreRecord>;
-  getKeptLaneRestore: (args?: unknown) => Promise<CloudKeptLaneRestoreRecord | null>;
+  kept_lane_move_preview: (args?: unknown) => Promise<CloudKeptLaneRestorePreview>;
+  kept_lane_move: (args?: unknown) => Promise<CloudKeptLaneRestoreRecord>;
+  kept_lane_move_status: (args?: unknown) => Promise<CloudKeptLaneRestoreRecord | null>;
 } {
   const store = async () => {
     const { keptLaneRestores } = await import("../../../../../ade-cli/src/services/cloudChats/keptLaneRestore");
@@ -4968,22 +4968,18 @@ function keptLaneRestoreActions(runtime: AccountDomainRuntime): {
       release: uploader.releaseRestoringCloudChat,
     };
   };
-  const input = (value: unknown): Record<string, unknown> => (value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {});
   // `fromComputer`: the lane's asleep ADE Cloud computer, released first (the store checks the id).
   const restoreArgs = (args: unknown) => {
-    const from = input(input(args).fromComputer);
-    return {
-      laneId: String(input(args).laneId ?? ""),
-      ...(typeof from.instanceId === "string" ? { fromComputer: { instanceId: from.instanceId } } : {}),
-    };
+    const { laneId, fromComputer } = pickKeptLaneRestoreArgs(args);
+    return { laneId: laneId ?? "", ...(fromComputer ? { fromComputer } : {}) };
   };
   return {
-    previewKeptLaneRestore: async (args) => await (await store()).preview(await project(), restoreArgs(args)),
-    restoreKeptLane: async (args) => await (await store()).start(await project(), restoreArgs(args)),
+    kept_lane_move_preview: async (args) => await (await store()).preview(await project(), restoreArgs(args)),
+    kept_lane_move: async (args) => await (await store()).start(await project(), restoreArgs(args)),
     // Null where no restore ran (or no store is installed): nothing to show.
-    getKeptLaneRestore: async (args) => {
+    kept_lane_move_status: async (args) => {
       const { keptLaneRestores } = await import("../../../../../ade-cli/src/services/cloudChats/keptLaneRestore");
-      return keptLaneRestores()?.get({ restoreId: String(input(args).restoreId ?? "") }) ?? null;
+      return keptLaneRestores()?.get({ restoreId: pickKeptLaneRestoreArgs(args).restoreId ?? "" }) ?? null;
     },
   };
 }

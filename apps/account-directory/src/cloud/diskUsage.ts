@@ -151,6 +151,7 @@ export function withUseFacts(instance: CloudInstance, computer: UseRow | null | 
       ? null
       : { saved: computer.backup_rest_at != null, problems: backupProblemsOf(computer) },
     ignoredFiles: ignoredFilesOf(computer),
+    deleteOnlyIfSaved: true,
   };
 }
 

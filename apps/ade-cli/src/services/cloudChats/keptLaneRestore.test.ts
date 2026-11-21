@@ -16,11 +16,14 @@ describe("kept lane restore", () => {
   const MINE = "key-mac";
   const kept = {
     laneId: LANE, laneName: "Fix the login page", projectOrigin: "https://github.com/acme/widgets.git", branchRef: "ade/fix-login",
-    reason: "idle_cleanup", type: "default", cpu: 2, memory_gb: 4, formerInstanceId: "abcde12345", formerMachineKey: "key-old", since: 1,
+    reason: "idle_cleanup", type: "default", cpu: 2, memoryGb: 4, formerInstanceId: "abcde12345", formerMachineKey: "key-old", since: 1,
   };
 
-  /** The lane's computer is still there, asleep: `saved` is its last rest save; `refuse` is the server's 409 code at the delete. */
-  type Asleep = { saved: boolean; refuse?: string };
+  /**
+   * The lane's computer is still there, asleep: `saved` is its last rest save; `refuse` is the server's 409 code at the delete.
+   * `olderServer`: a server that doesn't say it honors `onlyIfSaved`, so it would delete the computer anyway.
+   */
+  type Asleep = { saved: boolean; refuse?: string; olderServer?: boolean };
   const setup = (options: { laneFails?: boolean; chatFailsOnce?: string; alsoOnAnotherMachine?: boolean; asleep?: Asleep } = {}) => {
     const steps: string[] = [];
     const here = new Set<string>();
@@ -42,6 +45,7 @@ describe("kept lane restore", () => {
       computer: async (instanceId: string) => ({
         id: instanceId, status: "sleeping", type: "default", resources: { cpu: 2, memory: 4 },
         backups: { saved: asleep?.saved === true, problems: [] },
+        ...(asleep?.olderServer ? {} : { deleteOnlyIfSaved: true }),
         metadata: {
           ade_lane_id: LANE, ade_lane_name: kept.laneName, ade_project_origin: "github.com/acme/widgets",
           ade_lane_branch: kept.branchRef, ade_machine_key: kept.formerMachineKey,
@@ -166,11 +170,15 @@ describe("kept lane restore", () => {
     expect([computerDeleted(), keptOnServer()]).toEqual([true, false]);
   });
 
-  it.each(["computer_awake", "backup_not_current"])("deletes nothing and asks for a wake when the server refuses the delete: %s", async (refuse) => {
-    const { steps, store, project, finished, computerDeleted } = setup({ asleep: { saved: true, refuse } });
+  it.each<[string, Asleep, string[]]>([
+    ["the server refuses the delete: computer_awake", { saved: true, refuse: "computer_awake" }, [`release ${kept.formerInstanceId} only if saved`]],
+    ["the server refuses the delete: backup_not_current", { saved: true, refuse: "backup_not_current" }, [`release ${kept.formerInstanceId} only if saved`]],
+    ["an older server would ignore only-if-saved, so no delete is sent", { saved: true, olderServer: true }, []],
+  ])("deletes nothing and asks for a wake when %s", async (_label, asleep, expectedSteps) => {
+    const { steps, store, project, finished, computerDeleted } = setup({ asleep });
     const record = await finished((await store.start(project, { laneId: LANE, fromComputer: { instanceId: kept.formerInstanceId } })).restoreId);
     expect(record).toMatchObject({ state: "failed", step: "release", wakeInstead: true, localLaneId: null, chats: [] });
-    expect([steps, computerDeleted()]).toEqual([[`release ${kept.formerInstanceId} only if saved`], false]);
+    expect([steps, computerDeleted()]).toEqual([expectedSteps, false]);
   });
 
   it("refuses to start from an asleep computer whose last save isn't complete, and deletes nothing", async () => {

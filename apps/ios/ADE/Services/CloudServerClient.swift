@@ -570,6 +570,16 @@ struct CloudServerClient {
     _ = try await send("DELETE", "cloud/chats/\(segment(machineKey))/lanes/\(segment(laneId))", timeout: 30)
   }
 
+  /// Deletes one saved chat of a computer (`DELETE /cloud/chats/:m/:chat`).
+  /// A chat with no saved copy (404) is already gone.
+  func deleteSavedChat(machineKey: String, chatId: String) async throws {
+    do {
+      _ = try await send("DELETE", "cloud/chats/\(segment(machineKey))/\(segment(chatId))", timeout: 30)
+    } catch Failure.noAccess {
+      return
+    }
+  }
+
   /// Wakes (or starts) a computer. Answers its status: `running` once up.
   @discardableResult
   func start(instanceId: String) async throws -> String {

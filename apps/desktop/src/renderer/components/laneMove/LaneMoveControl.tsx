@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { useCallback, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { ArrowsClockwise, Desktop, type Icon } from "@phosphor-icons/react";
 import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
@@ -9,14 +9,10 @@ import { cn } from "../ui/cn";
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import { ADE_CLOUD_MOVE_UNAVAILABLE_SENTENCE } from "../chat/crossMachineMoveTargets";
 import { wakeAdeCloudLane } from "../../state/adeCloudLaneWake";
-import { LaneMoveDialog } from "./LaneMoveDialog";
-import { useLaneMoveRunForLane } from "./laneMoveRuns";
-import {
-  useLaneMoveTargets,
-  type LaneMoveSource,
-  type LaneMoveTarget,
-  type LaneMoveTargetsState,
-} from "./useLaneMoveTargets";
+import { LaneMoveDialog, LaneMoveProgressDialog } from "./LaneMoveDialog";
+import type { LaneMoveSource } from "./laneMoveModel";
+import { useLaneMoveRunForLane, type LaneMovePhase } from "./laneMoveRuns";
+import { useLaneMoveTargets, type LaneMoveTarget, type LaneMoveTargetsState } from "./useLaneMoveTargets";
 
 /** A row the host adds under the machines (the cloud chip's "Change size…"). */
 export type LaneMoveExtraRow = { key: string; label: string; icon: Icon; onSelect: () => void };
@@ -62,6 +58,7 @@ export function LaneMoveControl({
   };
   // The asleep computer's saved copy can't be used: the person's own pick wakes it, and the menu opens again once it is on.
   const wake = () => wakeAdeCloudLane(source.pin, () => setOpen(true));
+  const closeProgress = useCallback(() => setProgressOf(null), []);
 
   return (
     <>
@@ -97,21 +94,12 @@ export function LaneMoveControl({
           onClose={() => setPicked(null)}
         />
       ) : null}
-      {progressOf && run && run.id === progressOf ? (
-        <LaneMoveDialog
-          source={source}
-          target={{ key: run.id, name: run.targetName, thisComputer: false, ready: true, reason: null, hasRepository: true, pin: run.pin }}
-          changes={null}
-          initialRunId={run.id}
-          onWake={wake}
-          onClose={() => setProgressOf(null)}
-        />
-      ) : null}
+      {progressOf ? <LaneMoveProgressDialog runId={progressOf} onWake={wake} onClose={closeProgress} /> : null}
     </>
   );
 }
 
-function runLabel(phase: string, targetName: string): string {
+function runLabel(phase: LaneMovePhase, targetName: string): string {
   switch (phase) {
     case "deleting": return `Moved to ${targetName}. Deleting the ${ADE_CLOUD_NAME} computer…`;
     case "deleteFailed": return `Moved to ${targetName}. The ${ADE_CLOUD_NAME} computer is still there.`;

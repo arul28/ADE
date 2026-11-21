@@ -104,6 +104,10 @@ struct CloudLaneAtRestScreen: View {
   let subject: CloudLaneAtRestSubject
   /// The computer is up: the caller reads the lane again (its live detail shows).
   let onAwake: @MainActor () async -> Void
+  /// The computer woke for a move: the caller shows the live detail and
+  /// opens its move. Nil where the live detail isn't shown here; the wake
+  /// then does what `onAwake` does.
+  var onAwakeToMove: (@MainActor () async -> Void)? = nil
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @ObservedObject private var store = CloudAtRestStore.shared
   @ObservedObject private var cloudStore = AccountCloudStore.shared
@@ -230,10 +234,10 @@ struct CloudLaneAtRestScreen: View {
         }
       }
       // The system puts a secondary action in the bar's ⋯ menu. An asleep
-      // lane moves with its chats (from its saved copy, with no wake), so one
-      // with no saved chat has no item; a kept lane comes back from its
-      // saved copies, branch and work too.
-      if hasSavedChats || keptLane != nil {
+      // lane moves from its computer's saved copy, with no wake (the review
+      // says when that copy won't do and offers the wake); a kept lane comes
+      // back from its saved copies, branch and work too.
+      if hasSavedChats || keptLane != nil || manageInstanceId != nil {
         ToolbarItem(placement: .secondaryAction) {
           Button("Move to…", systemImage: "arrow.right.circle") { movePresented = true }
             .adeInspectable("CloudLane.AtRest.Move")
@@ -245,8 +249,7 @@ struct CloudLaneAtRestScreen: View {
         laneId: subject.laneId,
         laneName: subject.laneName,
         fleetKey: subject.fleetKey,
-        deleted: subject.fleetKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix),
-        onAwake: onAwake
+        onAwake: onAwakeToMove ?? onAwake
       )
     }
     .task(id: subject.laneId) { await load(force: false) }

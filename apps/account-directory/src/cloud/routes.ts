@@ -64,7 +64,7 @@ import {
   type CloudPlanId,
   CLOUD_INSTANCE_ID,
 } from "./contract";
-import { commandWith, overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick, restingBackupState } from "./planCleanup";
+import { commandWith, overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick, readResult, restingBackupState, unfreezeComputer } from "./planCleanup";
 import { deleteBackupsForLane, deleteBackupsWithComputer, markRestedWithBackups, routeLaneBackups } from "./laneBackups";
 import { prepareStopBackupReportId } from "./cron";
 import { freeCapRefuses } from "./costReport";
@@ -260,6 +260,8 @@ async function awakeRoom(env: CloudEnv, computer: ComputerRow, now: number, wait
 }
 
 const COMPUTER_DELETING_MESSAGE = "ADE Cloud is deleting this computer because it went unused. Its work was saved to its branch on GitHub, and its lane stays: your next message to the lane makes a new computer.";
+/** The delete of a lane's move from its saved copy (`claimSavedDelete`): no idle cleanup holds the computer. */
+const COMPUTER_MOVING_MESSAGE = "ADE Cloud is moving this lane to another machine from its saved copy, and deletes this computer. Open the lane on its new machine.";
 
 /**
  * Marks real use for the idle cleanup before the person's request runs
@@ -269,7 +271,7 @@ const COMPUTER_DELETING_MESSAGE = "ADE Cloud is deleting this computer because i
  */
 async function idleUseRefusal(env: CloudEnv, computer: ComputerRow, now: number): Promise<Response | null> {
   const use = await recordIdleUse(env, computer, now);
-  if (use === "deleting") return fail("computer_deleting", COMPUTER_DELETING_MESSAGE, 409);
+  if (use === "deleting") return fail("computer_deleting", computer.idle_claimed_at == null ? COMPUTER_MOVING_MESSAGE : COMPUTER_DELETING_MESSAGE, 409);
   if (use === "unrecorded") return fail("unavailable", "ADE Cloud couldn't record that you're using this computer, so it didn't run that. Try again in a moment.", 503);
   return null;
 }
@@ -442,6 +444,8 @@ async function eventWakeComputer(env: CloudEnv, computer: ComputerRow, now: numb
   const { blocked } = await wakeBlocker(env, computer.user_id, now);
   if (blocked) return `refused:${blocked.refusal}`;
   if (await awakeRoom(env, computer, now)) return "refused:too_many_awake";
+  // A delete holds it (an idle cleanup's, or a move from its saved copy): a wake now would put work after the save.
+  if (computer.idle_deleting_at != null && computer.idle_deleting_at >= now - SAVED_DELETE_CLAIM_STALE_MS) return "refused:computer_deleting";
   const status = await provider.startInstance(computer.instance_id);
   await recordStatus(env, computer, status, now, "event_wake");
   return "woken";
@@ -1050,40 +1054,63 @@ const PREPARE_FOR_SLEEP_COMMAND = commandWith(CLOUD_COMPUTER_COMMANDS.prepareFor
 const PREPARE_FOR_SLEEP_TIMEOUT_MS = 60_000;
 
 /**
+ * The computer's freeze holds 30 s after its prepare answered
+ * (`CLOUD_SLEEP_FREEZE_AFTER_PREPARE_MS`). A sleep that lands later than this
+ * may come after the freeze ended, so the save does not count.
+ */
+const SLEEP_MARK_WITHIN_MS = 20_000;
+
+/** What the person's Sleep prepare did: the backup report the computer may rest with, whether new work is frozen on it, and when it answered. */
+type SleepPrepare = { reportId: string | null; frozen: boolean; answeredAt: number };
+
+/**
  * The person's Sleep of an awake computer: its ADE first stops the running
  * turns and saves the chats, then saves the lanes' backups in the time left
- * (`prepare-stop`). A sleep freezes the computer, so a turn it cuts would
- * else read Done in its saved copy while it sleeps; now it reads Stopped.
- * Best effort: the sleep goes ahead whatever the prepare says. A computer
- * that is not awake is not woken. Returns the backup report when every
- * lane is saved, so the computer rests saved.
+ * (`prepare-stop --for-sleep`). A sleep freezes the computer, so a turn it
+ * cuts would else read Done in its saved copy while it sleeps; now it reads
+ * Stopped. Best effort: the sleep goes ahead whatever the prepare says. A
+ * computer that is not awake is not woken.
+ *
+ * The report counts only when the computer also froze new work from the
+ * start of the prepare until the sleep (`frozen`). Without the freeze, a
+ * turn that starts after the lanes' backups could write files the backup
+ * does not have, and a move from the saved copy would then delete them. An
+ * older ADE ignores `--for-sleep` and does not freeze: its computer sleeps,
+ * but not saved.
  */
-async function prepareForPersonSleep(provider: CloudProvider, computer: ComputerRow): Promise<string | null> {
+async function prepareForPersonSleep(provider: CloudProvider, computer: ComputerRow): Promise<SleepPrepare> {
   try {
     const instance = await provider.getInstance(computer.instance_id);
-    if (!isMeteredStatus(instance.status)) return null;
+    if (!isMeteredStatus(instance.status)) return { reportId: null, frozen: false, answeredAt: Date.now() };
     const result = await provider.exec(computer.instance_id, PREPARE_FOR_SLEEP_COMMAND, PREPARE_FOR_SLEEP_TIMEOUT_MS);
-    const reportId = result.exitCode === 0 ? prepareStopBackupReportId(result.stdout) : null;
-    logCloud("cloud.sleep_prepared", { instanceId: computer.instance_id, exitCode: result.exitCode, backups: reportId != null });
-    return reportId;
+    const read = result.exitCode === 0 ? readResult(result.stdout) : null;
+    const frozen = read?.frozen === true;
+    const reportId = frozen ? prepareStopBackupReportId(result.stdout) : null;
+    logCloud("cloud.sleep_prepared", { instanceId: computer.instance_id, exitCode: result.exitCode, backups: reportId != null, frozen });
+    return { reportId, frozen, answeredAt: Date.now() };
   } catch (error) {
     logCloud("cloud.sleep_prepare_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
-    return null;
+    return { reportId: null, frozen: false, answeredAt: Date.now() };
   }
 }
 
 async function handleSleepLike(env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number, reason: string, backupReportId: string | null = null): Promise<Response> {
   const { blocked } = await wakeBlocker(env, computer.user_id, now);
   // Only the person's Sleep: the computer's own idle sleep comes when nothing runs, with its own save.
-  const reportId = reason === "user" ? await prepareForPersonSleep(provider, computer) : backupReportId;
+  const person = reason === "user";
+  const prepare: SleepPrepare = person ? await prepareForPersonSleep(provider, computer) : { reportId: backupReportId, frozen: false, answeredAt: Date.now() };
   try {
     // While wakes are refused a sleeping computer would still wake on any request, so it stops instead.
     const status = blocked ? await provider.stopInstance(computer.instance_id) : await provider.sleepInstance(computer.instance_id);
+    // The person's Sleep: only while the computer's freeze still held when it slept.
+    const inFreeze = !person || Date.now() - prepare.answeredAt <= SLEEP_MARK_WITHIN_MS;
     await recordStatus(env, computer, status, now, reason);
     // After the status write: a cleanup may delete it with no wake only once it rests with current backups.
-    if (reportId) await markRestedWithBackups(env, computer.instance_id, reportId, now);
+    if (prepare.reportId && inFreeze) await markRestedWithBackups(env, computer.instance_id, prepare.reportId, now);
     return json({ status });
   } catch (error) {
+    // The computer stays awake: it takes new work again now, not when its freeze runs out.
+    if (prepare.frozen) await unfreezeComputer(provider, computer.instance_id);
     if (error instanceof CloudProviderError && error.status === 400) return json({ status: computer.status });
     throw error;
   }
@@ -1241,6 +1268,37 @@ async function refuseUnlessRestsSaved(env: CloudEnv, provider: CloudProvider, co
   return saved.ok ? null : fail(saved.code, saved.reason, 409);
 }
 
+const COMPUTER_ALREADY_DELETING_MESSAGE = "ADE Cloud is deleting this computer already. Nothing else was deleted.";
+/** As long as the idle cleanup's claim holds (`CLAIM_STALE_MS` in idleCleanup.ts): a claim older than this died with its request. */
+const SAVED_DELETE_CLAIM_STALE_MS = 20 * 60_000;
+
+/**
+ * The delete claim of a move from the saved copy (`idle_deleting_at`, the
+ * claim the idle cleanup holds for its own delete). One conditional write:
+ * it holds only while the row still rests with current backups and no
+ * other delete holds the computer. While it holds, every wake path (a
+ * start, a command, a sign-in, a sent message, the computer's own use
+ * report) is refused (`recordIdleUse` answers `deleting`). A start that
+ * passed before the claim clears the backups with its status write, so the
+ * claim fails, or the live read after the claim sees the computer awake.
+ * Null when it holds; else the refusal, with nothing deleted.
+ */
+async function claimSavedDelete(env: CloudEnv, computer: ComputerRow, now: number): Promise<Response | null> {
+  const claimed = await env.DB.prepare(`
+    update cloud_computers set idle_deleting_at = ?
+    where instance_id = ? and deleted_at is null and (idle_deleting_at is null or idle_deleting_at < ?)
+      and backup_rest_at is not null and backup_report_state = 'current' and status in ('sleeping', 'stopped')
+  `).bind(now, computer.instance_id, now - SAVED_DELETE_CLAIM_STALE_MS).run();
+  if ((claimed.meta?.changes ?? 0) === 1) return null;
+  const saved = await restingBackupState(env, computer.instance_id);
+  return saved.ok ? fail("computer_deleting", COMPUTER_ALREADY_DELETING_MESSAGE, 409) : fail(saved.code, saved.reason, 409);
+}
+
+/** A delete that didn't happen gives its claim back, so the computer takes work again. */
+const unclaimSavedDelete = (env: CloudEnv, instanceId: string, now: number): Promise<unknown> =>
+  env.DB.prepare("update cloud_computers set idle_deleting_at = null where instance_id = ? and idle_deleting_at = ?").bind(instanceId, now).run()
+    .catch((error: unknown) => reportCloudFailure("cloud.saved_delete_unclaim_failed", { instanceId, message: error instanceof Error ? error.message : "unknown" }));
+
 async function handleDelete(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, { now, waitUntil }: CloudRequestContext): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
@@ -1252,23 +1310,36 @@ async function handleDelete(request: Request, env: CloudEnv, computer: ComputerR
   // A move from the saved copy: the computer goes only while it rests with every lane saved.
   const onlyIfSaved = keepLane?.onlyIfSaved === true;
   if (onlyIfSaved) {
-    const refused = await refuseUnlessRestsSaved(env, provider, computer);
+    const refused = await refuseUnlessRestsSaved(env, provider, computer)
+      // From here no wake goes through until the delete ends or the claim is given back.
+      ?? await claimSavedDelete(env, computer, now);
     if (refused) return refused;
   }
+  /** Nothing was deleted: the claim goes, so the computer takes work again. */
+  const giveBack = async () => {
+    if (onlyIfSaved) await unclaimSavedDelete(env, computer.instance_id, now);
+  };
   if (keepLane) {
-    const refused = await markKeepLane(env, provider, computer, shortText(keepLane.branchRef, 300));
-    if (refused) return refused;
+    const refused = await markKeepLane(env, provider, computer, shortText(keepLane.branchRef, 300)).catch(async (error: unknown) => {
+      await giveBack();
+      throw error;
+    });
+    if (refused) {
+      await giveBack();
+      return refused;
+    }
   } else if (computer.lane_keep_reason) {
     // A plain delete keeps no lane, even after an earlier freeing that didn't finish.
     await unmarkKeepLaneStatement(env, computer.instance_id).run();
   }
   const reason = shortText(body.reason, 200) ?? (keepLane ? "freed" : "user");
   try {
-    // A wake since the check would put work after the save: read again right before the delete.
+    // A wake that passed before the claim would put work after the save: read again right before the delete.
     if (onlyIfSaved) {
       const refused = await refuseUnlessRestsSaved(env, provider, computer);
       if (refused) {
         await unmarkKeepLaneStatement(env, computer.instance_id).run();
+        await giveBack();
         return refused;
       }
     }
@@ -1276,6 +1347,7 @@ async function handleDelete(request: Request, env: CloudEnv, computer: ComputerR
   } catch (error) {
     // Nothing was deleted: the mark goes, so a later close can't keep a lane nobody freed.
     if (keepLane) await unmarkKeepLaneStatement(env, computer.instance_id).run();
+    await giveBack();
     throw error;
   }
   // Only the person's delete takes the lane's backups. A failed create, a cancelled

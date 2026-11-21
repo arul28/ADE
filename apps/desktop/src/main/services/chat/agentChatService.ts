@@ -55954,8 +55954,10 @@ export function createAgentChatService(args: {
 
     // Stopped before anything is read: the conversation file must be whole,
     // and two copies of one CLI must never run on two machines.
-    // A history-only capsule leaves the CLI running: nothing moves, it is only saved.
-    const stopped = historyOnly ? { row, stopped: false } : await cliLifecycle.stopForMove(row);
+    // A history-only capsule leaves the CLI running: nothing moves, it is only saved. Its
+    // conversation id is read first when the CLI has not named it yet, or the capsule
+    // would carry no history and the save would not try again until the CLI changes.
+    const stopped = historyOnly ? { row: await cliLifecycle.withResumeTarget(row), stopped: false } : await cliLifecycle.stopForMove(row);
     if (stopped.stopped) cliStoppedByMove.set(row.id, handoffId);
     const current = stopped.row;
     const metadata = current.resumeMetadata ?? null;
@@ -56811,6 +56813,35 @@ export function createAgentChatService(args: {
       surface: "work",
       idempotencyKey: handoffId,
     });
+    // A restore that fails after it made the row takes the row away again: a
+    // kept-lane move counts a chat whose row is here as restored.
+    try {
+      return await finishSavedCloudChatRestore(session, restoreArgs, { sessionId, provider, descriptor, capsule, handoffId, reused });
+    } catch (error) {
+      if (!reused) {
+        await deleteSession({ sessionId: session.id }).catch((cleanupError: unknown) => {
+          logger.warn("agent_chat.cloud_restore_cleanup_failed", { sessionId, error: getErrorMessage(cleanupError) });
+        });
+      }
+      throw error;
+    }
+  };
+  const finishSavedCloudChatRestore = async (
+    session: AgentChatSession,
+    restoreArgs: {
+      envelopes: AgentChatEventEnvelope[];
+      olderPartLeftOut?: boolean;
+    },
+    context: {
+      sessionId: string;
+      provider: ReturnType<typeof resolveProviderGroupForModel>;
+      descriptor: NonNullable<ReturnType<typeof getModelById>>;
+      capsule: AgentChatCrossMachineHandoffCapsule | null;
+      handoffId: string;
+      reused: boolean;
+    },
+  ): Promise<{ sessionId: string; restoredWith: "capsule" | "replay" | "earlier" }> => {
+    const { sessionId, provider, descriptor, capsule, handoffId, reused } = context;
     const managed = ensureManagedSession(session.id);
     const seeded: AgentChatEventEnvelope[] = restoreArgs.envelopes.map((envelope, index) => ({
       ...envelope,

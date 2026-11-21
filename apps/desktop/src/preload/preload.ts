@@ -14466,13 +14466,13 @@ const adeBridge = {
     // A kept ADE Cloud lane moved to a machine: `pin` is the DESTINATION project's binding, and
     // the start, its progress reads and the preview all go to that one brain.
     previewKeptLaneRestore: (args: CloudKeptLaneRestorePreviewArgs, pin?: OpenProjectBinding | null): Promise<CloudKeptLaneRestorePreview> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "cloud", "previewKeptLaneRestore", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cloud", "kept_lane_move_preview", { args }, () =>
         ipcRenderer.invoke(IPC.cloudPreviewKeptLaneRestore, args)),
     restoreKeptLane: (args: CloudKeptLaneRestoreArgs, pin?: OpenProjectBinding | null): Promise<CloudKeptLaneRestoreRecord> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "cloud", "restoreKeptLane", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cloud", "kept_lane_move", { args }, () =>
         ipcRenderer.invoke(IPC.cloudRestoreKeptLane, args)),
     getKeptLaneRestore: (args: CloudKeptLaneRestoreGetArgs, pin?: OpenProjectBinding | null): Promise<CloudKeptLaneRestoreRecord | null> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "cloud", "getKeptLaneRestore", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cloud", "kept_lane_move_status", { args }, () =>
         ipcRenderer.invoke(IPC.cloudGetKeptLaneRestore, args)),
     onLaneJob: (cb: (job: CloudLaneJobSnapshot) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, job: CloudLaneJobSnapshot) => cb(job);

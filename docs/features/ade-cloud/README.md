@@ -1252,8 +1252,10 @@ account, never a pin.
   keeps, the unpushed work, and the files git ignores
   (`instance.ignoredFiles`, from the disk report): those do not move. ADE
   Cloud is never a destination. The way depends on the lane's computer:
-  - **Awake:** the batch move carries the lane and its chats, then ADE
-    deletes the computer.
+  - **Awake:** the batch move carries the lane and its Work chats and CLIs,
+    then ADE deletes the computer. Only the saved copies of the chats that
+    arrived go with it (`deleteLane` with `onlyChats`); a Done, archived or
+    other-surface chat the move left stays readable from ADE Cloud.
   - **Asleep, with every lane saved at its rest** (`backups.saved`): no wake.
     The destination brain (`keptLaneRestore.ts`, step `release`) deletes the
     computer with `keepLane: { onlyIfSaved: true }`. The server refuses with
@@ -1272,8 +1274,12 @@ account, never a pin.
     their native history from the capsule saved at each rest; the other
     providers replay the saved transcript.
   - The preview, the start and the status reads go to the destination's pin
-    (`cloud.previewKeptLaneRestore`, `cloud.restoreKeptLane`,
-    `cloud.getKeptLaneRestore`, with `fromComputer: { instanceId }`).
+    (runtime actions `cloud.kept_lane_move_preview`, `cloud.kept_lane_move`
+    and `cloud.kept_lane_move_status`; the phone's sync commands
+    `cloud.previewKeptLaneRestore`, `cloud.restoreKeptLane` and
+    `cloud.getKeptLaneRestore`; all with `fromComputer: { instanceId }`).
+  - A restore lists at most 100 chats and CLIs to bring. When more are left,
+    it ends as failed and keeps the lane; a new start brings the next ones.
 - **Keep the lane on a fresh computer.** ADE pushes the work first; a push that
   can't save everything keeps the computer, and freeing is refused while the
   agent works ("Stop it or wait, then free the computer"). Then the server

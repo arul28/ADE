@@ -3,13 +3,19 @@ import type {
   AgentChatCrossMachineHandoffOptionsResult,
   OpenProjectBinding,
 } from "../../../shared/types";
-import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME, machineNameForBinding } from "../../../shared/machineIdentity";
 import { useAppStore } from "../../state/appStore";
 import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { readLocalMachineKey } from "../chat/useMachineFacts";
 import { ownMoveMachines } from "../chat/crossMachineMoveTargets";
-import { laneMoveRestores, orderLaneMoveMachines, type LaneMoveSourceKind } from "./laneMoveModel";
+import {
+  laneMoveErrorText as errorText,
+  laneMoveMachineReady,
+  laneMoveRestores,
+  orderLaneMoveMachines,
+  sameMachineKey,
+  type LaneMoveSource,
+} from "./laneMoveModel";
 
 /** One place a lane can move to, from either kind of move. */
 export type LaneMoveTarget = {
@@ -27,21 +33,6 @@ export type LaneMoveTarget = {
   pin: OpenProjectBinding | null;
 };
 
-/** Where the lane is, as the move needs it. */
-export type LaneMoveSource = {
-  kind: LaneMoveSourceKind;
-  laneId: string;
-  laneName: string;
-  /** The lane's own machine: a live move runs there. */
-  pin: OpenProjectBinding | null;
-  /** A chat on the lane: a live move reads its options through it. */
-  sessionId: string | null;
-  machineKey: string | null;
-  machineName: string;
-  /** The lane's ADE Cloud computer, deleted once the move is done. */
-  cloudInstanceId: string | null;
-};
-
 type LiveOptions = Pick<AgentChatCrossMachineHandoffOptionsResult, "machines" | "blockers" | "changes">;
 
 export type LaneMoveTargetsState =
@@ -56,14 +47,6 @@ export type LaneMoveTargetsState =
     };
 
 type LiveRead = { status: "loading" } | { status: "error"; message: string } | { status: "ready"; options: LiveOptions };
-
-function errorText(error: unknown): string {
-  return stripElectronErrorWrapper(error instanceof Error ? error.message : String(error));
-}
-
-function sameKey(a: string | null | undefined, b: string | null | undefined): boolean {
-  return Boolean(a && b && a.toLowerCase() === b.toLowerCase());
-}
 
 function remoteHostname(binding: OpenProjectBinding): string | null {
   return binding.kind === "remote" ? binding.hostname ?? null : null;
@@ -140,7 +123,17 @@ export function useLaneMoveTargets(source: LaneMoveSource, enabled: boolean): La
       }
       if (projectBinding?.kind === "remote" && !isAdeCloudComputer({ hostname: remoteHostname(projectBinding) }, cloudIndex)) {
         const name = machineNameForBinding(projectBinding);
-        add({ key: projectBinding.targetId, name, thisComputer: false, ready: true, reason: null, hasRepository: true, pin: projectBinding });
+        // The tab's machine is on unless its lane slice says it is not.
+        const online = Object.values(slices).find((slice) => slice.binding?.key === projectBinding.key)?.online ?? true;
+        add({
+          key: projectBinding.targetId,
+          name,
+          thisComputer: false,
+          ready: online,
+          reason: online ? null : `${name} is not on.`,
+          hasRepository: true,
+          pin: projectBinding,
+        });
       }
       for (const slice of Object.values(slices)) {
         const binding = slice.binding;
@@ -170,8 +163,8 @@ export function useLaneMoveTargets(source: LaneMoveSource, enabled: boolean): La
       targets: ordered.map((machine) => ({
         key: machine.machineKey,
         name: machine.name,
-        thisComputer: sameKey(machine.machineKey, thisMachineKey),
-        ready: machine.online && !machine.unavailableReason,
+        thisComputer: sameMachineKey(machine.machineKey, thisMachineKey),
+        ready: laneMoveMachineReady(machine),
         reason: machine.unavailableReason ?? (machine.online ? null : `${machine.name} is not on.`),
         hasRepository: machine.hasRepository,
         pin: null,

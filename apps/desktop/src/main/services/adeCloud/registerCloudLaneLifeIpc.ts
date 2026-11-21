@@ -73,7 +73,10 @@ export function registerCloudLaneLifeIpc(args: {
         return await life.workState({ instanceId: textArg(callArgs, "instanceId") });
       case "deleteLane": {
         const keepChats = callArgs.keepChats === true;
-        const deleted = await life.deleteLane({ instanceId: textArg(callArgs, "instanceId"), skipCheck: callArgs.skipCheck === true, keepChats }).catch((error: unknown) => {
+        const onlyChats = Array.isArray(callArgs.onlyChats)
+          ? callArgs.onlyChats.filter((id): id is string => typeof id === "string" && id.trim().length > 0).map((id) => id.trim())
+          : undefined;
+        const deleted = await life.deleteLane({ instanceId: textArg(callArgs, "instanceId"), skipCheck: callArgs.skipCheck === true, keepChats, onlyChats }).catch((error: unknown) => {
           captureCloudLaneAnalytics(args.analytics, "desktop", "cloud_lane_deleted", "failed");
           throw error;
         });

@@ -37,7 +37,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import type {
   CloudGitChangedFile,
   CloudGitSummaryInput,
@@ -60,6 +60,7 @@ import { readGitOriginUrl } from "../../../../desktop/src/main/services/projects
 import { redactSecrets } from "../../../../desktop/src/main/services/shared/utils";
 import type { AdeRuntime } from "../../bootstrap";
 import type { CloudChatUploadPendingResult } from "./cloudChatUploader";
+import { parseSavedTranscript, transcriptEndOf, type CapsuleTranscriptEnd } from "./cloudChatRestore";
 import { runLaneBackups, type BackupLane } from "./cloudLaneBackup";
 
 type Logger = {
@@ -76,6 +77,8 @@ const CAPSULE_CHAT_PROVIDERS: ReadonlySet<string> = new Set(["claude", "codex", 
 /** CLI tool types whose conversation travels in a capsule. */
 const CAPSULE_CLI_TOOLS: ReadonlySet<string> = new Set(["claude", "codex"]);
 const GIT_TIMEOUT_MS = 15_000;
+/** A capsule's preparation starts only with this much of the save's time left; it never runs past the save's end. */
+const CAPSULE_PREPARE_MIN_MS = 2_000;
 const STATE_FILE = "rest-save.json";
 
 export type CloudRestSaveOptions = {
@@ -149,6 +152,37 @@ export function splitCapsule(bytes: Uint8Array, partBytes: number = CLOUD_CAPSUL
     parts.push(bytes.subarray(start, Math.min(bytes.byteLength, start + partBytes)));
   }
   return parts;
+}
+
+/**
+ * Where the chat stood when its capsule was made (`transcriptEnd`), from the
+ * capsule's own copy of ADE's transcript: its newest turn event. The restore
+ * replays the saved transcript instead of a capsule older than it. A copy
+ * that is missing or can't be read reads as "no turn yet": the restore then
+ * replays whenever the saved transcript has a turn.
+ */
+export function capsuleTranscriptEnd(transcript: { contentBase64Gzip: string } | undefined): CapsuleTranscriptEnd {
+  if (!transcript) return { at: null, sequence: null };
+  try {
+    return transcriptEndOf(parseSavedTranscript([gunzipSync(Buffer.from(transcript.contentBase64Gzip, "base64")).toString("utf8")]));
+  } catch {
+    return { at: null, sequence: null };
+  }
+}
+
+/** `work`'s answer, or null when it does not settle within `ms` (it goes on unawaited; its failure is dropped). */
+async function withinMs<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), Math.max(0, ms));
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([work, late]);
+  } finally {
+    clearTimeout(timer);
+    void work.catch(() => undefined);
+  }
 }
 
 /** The last `maxLines` lines of `text`, then cut from the front to `maxBytes`. */
@@ -656,12 +690,21 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
               mark = `${row.lastActivityAt ?? row.startedAt}|${row.status}`;
             }
             if (state.capsules[row.id] === mark) return;
+            // The preparation can't be stopped once it runs, so it starts only with time left, and the
+            // save waits for it no longer than its own end: a late one is tried again at the next save.
+            const left = deadline - Date.now();
+            if (left < CAPSULE_PREPARE_MIN_MS) return;
             // History only: the lane's code is in its backup, so unpushed or uncommitted work is fine here.
-            const prepared = await chat.prepareCloudRestCapsule({
+            const prepared = await withinMs(chat.prepareCloudRestCapsule({
               sourceSessionId: row.id,
               handoffId: `cloud-rest-${randomUUID()}`,
               targetModelId: modelId,
-            });
+            }), left);
+            if (!prepared) {
+              report.skipped += 1;
+              logger.warn("cloud.rest_capsule_prepare_late", { sessionId: row.id });
+              return;
+            }
             const capsule = prepared.capsule;
             const transportKind = isChat
               ? capsule.forkTransport?.kind ?? null
@@ -673,8 +716,10 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
               return;
             }
             // The restore reads the FULL saved transcript, so the capsule leaves out its own newest-3-MiB copy.
-            const { transcriptEnvelopes: _envelopes, ...kept } = capsule;
-            const bytes = gzipSync(Buffer.from(JSON.stringify({ v: 1, capsule: kept }), "utf8"));
+            // It keeps where that copy ends: a restore never resumes from a capsule older than the transcript.
+            const { transcriptEnvelopes, ...kept } = capsule;
+            const transcriptEnd = isChat ? capsuleTranscriptEnd(transcriptEnvelopes) : null;
+            const bytes = gzipSync(Buffer.from(JSON.stringify({ v: 1, capsule: kept, ...(transcriptEnd ? { transcriptEnd } : {}) }), "utf8"));
             const parts = splitCapsule(bytes);
             if (!parts) {
               logger.warn("cloud.rest_capsule_over_cap", { sessionId: row.id, bytes: bytes.byteLength });
@@ -682,8 +727,8 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
               state.capsules[row.id] = mark;
               return;
             }
-            // Part 1 replaces the capsule saved before, so the check comes first and never between
-            // parts: an upload cut short would leave the chat with no capsule at all.
+            // The capsule saved before stays readable until this one commits (`forkCapsules.ts`), and a
+            // restore reads it only when it is not older than the saved transcript.
             if (!idle() || Date.now() >= deadline) return;
             for (let index = 0; index < parts.length; index += 1) {
               await api.putCapsulePart(machineKey, row.id, index + 1, instanceId, parts[index]!);

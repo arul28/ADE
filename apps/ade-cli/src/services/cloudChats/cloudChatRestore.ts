@@ -114,6 +114,45 @@ export function parseSavedTranscript(texts: readonly string[]): AgentChatEventEn
   return out;
 }
 
+/**
+ * Where a chat stood when its capsule was made: its newest turn event (a
+ * message sent, or a turn that ended) in ADE's own transcript. The rest save
+ * writes it beside the capsule (`transcriptEnd`). Null fields: the chat had
+ * no turn yet.
+ */
+export type CapsuleTranscriptEnd = { at: string | null; sequence: number | null };
+
+const TURN_EVENTS: ReadonlySet<string> = new Set(["user_message", "done"]);
+
+/** The newest turn event of `envelopes` (oldest first). */
+export function transcriptEndOf(envelopes: readonly AgentChatEventEnvelope[]): CapsuleTranscriptEnd {
+  for (let index = envelopes.length - 1; index >= 0; index -= 1) {
+    const envelope = envelopes[index]!;
+    if (!TURN_EVENTS.has(envelope.event.type)) continue;
+    return { at: typeof envelope.timestamp === "string" ? envelope.timestamp : null, sequence: typeof envelope.sequence === "number" ? envelope.sequence : null };
+  }
+  return { at: null, sequence: null };
+}
+
+/**
+ * True when the saved transcript has a turn the capsule does not: the
+ * capsule was made before it (a later rest save could not replace it in
+ * time, or its provider history could not be packed). Such a capsule would
+ * resume the agent without the newer turns the chat shows, so the restore
+ * replays the transcript instead. A capsule newer than the transcript (its
+ * last parts did not upload) is kept: it has more, not less.
+ */
+export function capsuleOlderThanTranscript(end: CapsuleTranscriptEnd, envelopes: readonly AgentChatEventEnvelope[]): boolean {
+  const saved = transcriptEndOf(envelopes);
+  if (saved.at == null) return false;
+  if (end.at == null) return true;
+  const savedAt = Date.parse(saved.at);
+  const endAt = Date.parse(end.at);
+  if (!Number.isFinite(savedAt) || !Number.isFinite(endAt)) return saved.at !== end.at || (saved.sequence ?? 0) > (end.sequence ?? 0);
+  if (savedAt !== endAt) return savedAt > endAt;
+  return (saved.sequence ?? 0) > (end.sequence ?? 0);
+}
+
 /** Every part of the saved transcript, oldest first; null when the server has no such chat. */
 async function readSavedTranscript(
   api: CloudApiClient,
@@ -141,6 +180,9 @@ async function readSavedTranscript(
   return { chat: chat!, texts: newestFirst.reverse(), olderPartLeftOut: false };
 }
 
+/** A capsule as saved at rest, with where its chat stood then (left out by an older ADE). */
+type SavedCapsule = { capsule: AgentChatCrossMachineHandoffCapsule; transcriptEnd: CapsuleTranscriptEnd | null };
+
 /** The capsule saved at rest; null when there is none or it cannot be read (the restore replays). */
 async function readCapsule(
   api: CloudApiClient,
@@ -148,7 +190,7 @@ async function readCapsule(
   chatId: string,
   logger: Logger,
   kind: "chat" | "cli" = "chat",
-): Promise<AgentChatCrossMachineHandoffCapsule | null> {
+): Promise<SavedCapsule | null> {
   let manifest: CloudCapsuleManifest | null;
   try {
     manifest = await api.capsuleManifest(machineKey, chatId);
@@ -169,11 +211,15 @@ async function readCapsule(
     }
     if (total !== manifest.bytes) throw new Error("The capsule is shorter than its manifest says.");
     const json = gunzipSync(Buffer.concat(parts), { maxOutputLength: MAX_CAPSULE_JSON_BYTES }).toString("utf8");
-    const parsed = JSON.parse(json) as { v?: unknown; capsule?: AgentChatCrossMachineHandoffCapsule };
+    const parsed = JSON.parse(json) as { v?: unknown; capsule?: AgentChatCrossMachineHandoffCapsule; transcriptEnd?: unknown };
     const capsule = parsed?.v === 1 ? parsed.capsule : null;
     if (!capsule || capsule.version !== 1 || typeof capsule.source?.provider !== "string") return null;
     if (kind === "chat" ? !capsule.forkTransport : !capsule.cli) return null;
-    return capsule;
+    const end = parsed.transcriptEnd as Partial<CapsuleTranscriptEnd> | null | undefined;
+    const transcriptEnd = end && typeof end === "object"
+      ? { at: typeof end.at === "string" ? end.at : null, sequence: typeof end.sequence === "number" ? end.sequence : null }
+      : null;
+    return { capsule, transcriptEnd };
   } catch (error) {
     logger.warn("cloud.restore_capsule_unreadable", { chatId, error: errorText(error) });
     return null;
@@ -202,7 +248,7 @@ async function restoreCloudCli(deps: CloudChatRestoreDeps, args: CloudChatRestor
   const keys = args.fromMachineKey === machineKey ? [machineKey] : [args.fromMachineKey, machineKey];
   for (const key of keys) {
     const copy = await api.savedSession(key, args.chatId).catch(() => null);
-    const capsule = await readCapsule(api, key, args.chatId, logger, "cli");
+    const capsule = (await readCapsule(api, key, args.chatId, logger, "cli"))?.capsule ?? null;
     const toolType = (copy?.session.kind === "cli" ? copy.session.toolType : null) ?? capsule?.cli?.toolType ?? null;
     if (!toolType) continue;
     const restored = await deps.restoreCli({
@@ -254,18 +300,33 @@ export async function restoreCloudChat(
     if (cli) return cli;
     throw new Error("ADE couldn't find this chat's saved copy, so it can't continue it here.");
   }
-  const capsule = await readCapsule(api, from, args.chatId, logger);
+  // The capsule is under the key the copy is under, or (a restore that failed after the move) under the
+  // key the copy moved from: the move kept it there (`keepCapsule`) until a restore succeeds.
+  const forkedFrom = saved.chat.forkedFrom?.chatId === args.chatId ? saved.chat.forkedFrom.machineKey : null;
+  let capsuleKey: string | null = from;
+  let found = await readCapsule(api, from, args.chatId, logger);
+  if (!found && forkedFrom && forkedFrom !== from) {
+    found = await readCapsule(api, forkedFrom, args.chatId, logger);
+    capsuleKey = forkedFrom;
+  }
+  if (!found) capsuleKey = null;
+  const envelopes = parseSavedTranscript(saved.texts);
+  // A capsule made before the chat's newest turns would resume the agent without them: replay instead.
+  const stale = found?.transcriptEnd != null && capsuleOlderThanTranscript(found.transcriptEnd, envelopes);
+  if (stale) logger.info("cloud.restore_capsule_stale", { chatId: args.chatId });
+  const capsule = found && !stale ? found.capsule : null;
   const modelId = capsule?.target.targetModelId || args.modelId || saved.chat.model;
   if (!modelId) throw new Error("ADE can't tell which model this chat used, so it can't continue it here.");
-  const envelopes = parseSavedTranscript(saved.texts);
   // The copy moves to this computer's key BEFORE any part of this chat uploads
   // here (CONTRACTS: moveSavedChat). A failed move stops the continue: a
   // restored chat would otherwise upload as a second copy of the same chat.
+  // The capsule stays where it is through the move, so a restore that fails
+  // after it still has the provider's history on the next try.
   let lastSeq = saved.chat.lastSeq;
   let moved = from === machineKey;
   if (!moved) {
     try {
-      const answer = await api.moveSavedChat(from, args.chatId, moveRequest(deps));
+      const answer = await api.moveSavedChat(from, args.chatId, { ...moveRequest(deps), keepCapsule: true });
       lastSeq = answer.chat.lastSeq;
       moved = answer.moved;
     } catch (error) {
@@ -291,6 +352,13 @@ export async function restoreCloudChat(
     throw error;
   }
   if (!(await deps.adopt(restored.sessionId, lastSeq, args.laneId))) deps.release(args.chatId);
+  // Used now (or older than the chat): a capsule left under another key goes. This machine's own stays,
+  // as its rest save replaces it. Best effort: a capsule left behind goes with its lane or its chat.
+  if (capsuleKey && capsuleKey !== machineKey) {
+    await api.deleteCapsule(capsuleKey, args.chatId).catch((error: unknown) => {
+      logger.warn("cloud.restore_capsule_delete_failed", { chatId: args.chatId, error: errorText(error) });
+    });
+  }
   logger.info("cloud.chat_restored", {
     chatId: args.chatId,
     restoredWith: restored.restoredWith,

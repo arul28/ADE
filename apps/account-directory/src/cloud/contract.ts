@@ -101,7 +101,12 @@
  * `{ keepLane: { branchRef, onlyIfSaved: true } }` (a move of the lane from
  * its saved copy) deletes only a computer that rests with every lane's work
  * saved, read with no wake; else 409 `computer_awake`, `backup_not_current`
- * or `backup_never_saved`, and nothing is deleted.
+ * or `backup_never_saved`, and nothing is deleted. While that delete runs
+ * it holds the computer's delete claim: a wake, command, sign-in or sent
+ * message is refused with 409 `computer_deleting`, and a second delete of
+ * the same kind answers 409 `computer_deleting` too. A server that honors
+ * `onlyIfSaved` says so on the instance (`deleteOnlyIfSaved`); a client
+ * sends it only then, because an older server ignores it.
  * `POST /cloud/instances` with `{ moveFromInstanceId }` gives the new computer
  * that computer's disk (a move), under the same plan limits.
  * `POST /cloud/instances/:id/resize` needs `{ computerIdle: true }` to grow the
@@ -403,6 +408,13 @@ export type CloudInstance = {
   backups?: { saved: boolean; problems: CloudBackupProblem[] } | null;
   /** The files git ignores on it, as it last read them: no saved copy holds them. Null before its first read. */
   ignoredFiles?: CloudIgnoredFiles | null;
+  /**
+   * True: this server honors `keepLane.onlyIfSaved` on the delete (it
+   * deletes only a computer that rests with every lane saved). An older
+   * server leaves it out and would delete the computer anyway, so a client
+   * moves a lane from the saved copy only when this is true.
+   */
+  deleteOnlyIfSaved?: boolean;
 };
 
 /**
@@ -1225,6 +1237,7 @@ export type CloudChatTranscriptPage = {
  *   POST   /cloud/capsules/:m/:c/commit              CloudCapsuleManifest   (CloudCapsuleCommit)
  *   GET    /cloud/capsules/:m/:c                     CloudCapsuleManifest
  *   GET    /cloud/capsules/:m/:c/parts/:n            the part's bytes
+ *   DELETE /cloud/capsules/:m/:c                     { deleted: true }      (a restore used it)
  *   PUT    /account/lanes                            AccountLaneIndexPutResult   (from every brain: AccountLaneIndexPut)
  *   GET    /account/lanes?project=&pr=               { lanes: AccountLaneIndexRow[] }
  */
@@ -1453,9 +1466,12 @@ export const CLOUD_COMPUTER_COMMANDS = {
    * Before the person's Sleep of an awake computer: stop the turns and save
    * the chats, so a cut turn reads Stopped while it sleeps. Then, in the
    * time left, save every lane's backup: a computer that rests saved can
-   * move its lanes later with no wake.
+   * move its lanes later with no wake. `--for-sleep` freezes new work from
+   * the start of the prepare until the sleep (a short freeze that also ends
+   * at the next wake), and the answer says `frozen`. Only a frozen prepare
+   * rests saved. An older ADE ignores the flag and does not freeze.
    */
-  prepareForSleep: "ade cloud prepare-stop --timeout 20 --json",
+  prepareForSleep: "ade cloud prepare-stop --timeout 20 --for-sleep --json",
 } as const;
 /**
  * What a computer's ADE can do, in its boot report
@@ -1620,7 +1636,14 @@ export type CloudBackupProblem = { laneId: string; laneName: string | null; reas
  * chat whose computer is deleted onto its own machine key (a kept lane moved to it): the
  * key must be one of the account's machines and no ADE Cloud computer's.
  */
-export type CloudChatMoveRequest = { toMachineKey: string; instanceId?: string };
+/**
+ * `keepCapsule` (a chat move only): the chat's capsule stays under the key it
+ * moved from (the moved row's `forkedFrom`), so a restore that fails after
+ * the move can read it again. The caller deletes it once its restore
+ * succeeded (`DELETE /cloud/capsules/:machine/:chat`). Left out, the move
+ * deletes it, as an older server always does.
+ */
+export type CloudChatMoveRequest = { toMachineKey: string; instanceId?: string; keepCapsule?: boolean };
 /**
  * The chat's row under its new machine key, with its full history (the
  * saved parts stay where they are; nothing is uploaded again). `lastSeq` is

@@ -1,8 +1,11 @@
 import type {
   AgentChatCrossMachineHandoffMachineOption,
   AgentChatSessionSummary,
+  OpenProjectBinding,
   TerminalSessionSummary,
 } from "../../../shared/types";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
+import { CLI_CARRIED_CONVERSATION_PROVIDERS } from "../../../shared/crossMachineHandoff";
 import { providerSupportsCrossMachineHandoffFork } from "../../../shared/types/chat";
 import { isTrackedAgentCliToolType } from "../../../shared/types/sessions";
 import { chatToolProvider, isChatToolType } from "../../../shared/sessionSpawnNesting";
@@ -22,6 +25,31 @@ import { crossMachineMoveLock } from "../../../shared/crossMachineMoveLock";
  */
 export type LaneMoveSourceKind = "own" | "cloud" | "cloudAsleep" | "cloudGone";
 
+/** Where the lane is, as the move needs it. */
+export type LaneMoveSource = {
+  kind: LaneMoveSourceKind;
+  laneId: string;
+  laneName: string;
+  /** The lane's own machine: a live move runs there. */
+  pin: OpenProjectBinding | null;
+  /** A chat on the lane: a live move reads its options through it. */
+  sessionId: string | null;
+  machineKey: string | null;
+  machineName: string;
+  /** The lane's ADE Cloud computer, deleted once the move is done. */
+  cloudInstanceId: string | null;
+};
+
+/** One line for a failed call, with Electron's wrapper taken off. */
+export function laneMoveErrorText(error: unknown): string {
+  return stripElectronErrorWrapper(error instanceof Error ? error.message : String(error));
+}
+
+/** Two machine keys name the same machine (keys compare with no case). */
+export function sameMachineKey(a: string | null | undefined, b: string | null | undefined): boolean {
+  return Boolean(a && b && a.toLowerCase() === b.toLowerCase());
+}
+
 /** A move from saved copies runs on the destination; a live move runs on the lane's own brain. */
 export function laneMoveRestores(kind: LaneMoveSourceKind): boolean {
   return kind === "cloudAsleep" || kind === "cloudGone";
@@ -39,9 +67,6 @@ export type LaneMoveItem = {
   provider: string;
   history: LaneMoveChatHistory;
 };
-
-/** The CLIs whose own conversation file a move carries (`cliCrossMachineMove.ts`); the rest start again from a summary. */
-const CLI_TOOLS_WITH_FULL_HISTORY = new Set(["claude", "codex", "claude-orchestrated", "codex-orchestrated"]);
 
 /**
  * What a live move carries for a lane: its Work chats and tracked agent CLIs,
@@ -70,13 +95,13 @@ export function laneMoveItems(
         history: providerSupportsCrossMachineHandoffFork(provider) ? "full" : "summary",
       });
     } else if (row.tracked && isTrackedAgentCliToolType(row.toolType)) {
-      const tool = row.toolType ?? "";
+      const provider = (row.toolType ?? "").replace(/-orchestrated$/, "").replace(/-cli$/, "");
       items.push({
         sessionId: row.id,
         title: row.title?.trim() || "CLI session",
         kind: "cli",
-        provider: tool.replace(/-orchestrated$/, "").replace(/-cli$/, ""),
-        history: CLI_TOOLS_WITH_FULL_HISTORY.has(tool) ? "full" : "summary",
+        provider,
+        history: CLI_CARRIED_CONVERSATION_PROVIDERS.has(provider) ? "full" : "summary",
       });
     }
   }
@@ -92,11 +117,10 @@ export function orderLaneMoveMachines(
   machines: readonly AgentChatCrossMachineHandoffMachineOption[],
   options: { thisMachineKey: string | null; sourceMachineKey: string | null },
 ): AgentChatCrossMachineHandoffMachineOption[] {
-  const same = (a: string | null, b: string | null) => Boolean(a && b && a.toLowerCase() === b.toLowerCase());
   const rank = (machine: AgentChatCrossMachineHandoffMachineOption) =>
-    same(machine.machineKey, options.thisMachineKey) ? 0 : laneMoveMachineReady(machine) ? 1 : 2;
+    sameMachineKey(machine.machineKey, options.thisMachineKey) ? 0 : laneMoveMachineReady(machine) ? 1 : 2;
   return machines
-    .filter((machine) => !same(machine.machineKey, options.sourceMachineKey))
+    .filter((machine) => !sameMachineKey(machine.machineKey, options.sourceMachineKey))
     .slice()
     .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }

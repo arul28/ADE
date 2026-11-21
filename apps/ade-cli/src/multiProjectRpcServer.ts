@@ -435,7 +435,9 @@ export type MultiProjectRpcHandlerOptions = {
     growId?: string | null;
     /** The server deletes the computer next: new work is frozen (`cloudDeleteFreeze.ts`). */
     forDelete?: boolean;
-    /** The person's Sleep: stop the turns and save the chats, with no lane backups. */
+    /** The person's Sleep comes next: new work is frozen until it (`cloudDeleteFreeze.ts`). */
+    forSleep?: boolean;
+    /** An older server's Sleep: stop the turns and save the chats, with no lane backups. */
     chatsOnly?: boolean;
   }) => Promise<unknown>) | null;
   /** On a cloud computer: the server keeps a computer it prepared for a delete, so the freeze ends (`ade cloud unfreeze`). */
@@ -3712,6 +3714,7 @@ export function createMultiProjectRpcRequestHandler(
         diskGrowToGb: typeof params.diskGrowToGb === "number" && Number.isFinite(params.diskGrowToGb) && params.diskGrowToGb > 0 ? params.diskGrowToGb : null,
         growId: typeof params.growId === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(params.growId) ? params.growId : null,
         forDelete: params.forDelete === true,
+        forSleep: params.forSleep === true,
         chatsOnly: params.chatsOnly === true,
       });
     }

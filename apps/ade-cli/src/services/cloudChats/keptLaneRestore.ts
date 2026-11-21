@@ -85,6 +85,14 @@ const RELEASE_LIST_POLL_MS = 2_000;
 const RELEASE_REFUSED_CODES: ReadonlySet<string> = new Set(["computer_awake", "backup_not_current", "backup_never_saved"]);
 /** A branch name git accepts and no git command reads as an option. */
 const BRANCH = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]{1,250}$/;
+/**
+ * The local branch's name. `refs/heads/origin/x` is the local branch
+ * `origin/x`, so only one namespace comes off: `refs/heads/`, else the remote
+ * `refs/remotes/origin/` or a bare `origin/`.
+ */
+const branchNameOf = (ref: string): string => ref.startsWith("refs/heads/")
+  ? ref.slice("refs/heads/".length)
+  : ref.replace(/^refs\/remotes\/origin\//, "").replace(/^origin\//, "");
 const LIST_PAGES = 10;
 /** The most chats and CLIs one restore brings back. */
 const LANE_ROWS_MAX = 100;
@@ -152,11 +160,13 @@ async function laneRows(
   machineKey: string,
   kept: CloudLaneWithoutComputer,
   hasSession: (sessionId: string) => Promise<boolean>,
-): Promise<LaneRow[]> {
+): Promise<{ rows: LaneRow[]; complete: boolean }> {
   // The kept lane's own computer: gone, or (a preview of a release) asleep and about to go.
   const formerKey = kept.formerMachineKey?.toLowerCase() ?? null;
   const fromSource = (key: string, deleted: boolean) => deleted || key.toLowerCase() === formerKey;
   const chats = new Map<string, CloudChatRow>();
+  // False when a list ran past its page limit or the restore's cap: the rest come back on the next run.
+  let complete = true;
   let cursor: string | null = null;
   for (let page = 0; page < LIST_PAGES; page += 1) {
     const listed = await api.savedChats({ limit: 500, cursor });
@@ -168,6 +178,7 @@ async function laneRows(
     cursor = listed.nextCursor;
     if (!cursor) break;
   }
+  if (cursor) complete = false;
   // The keys of the lane's deleted computers: a CLI copy has no computer state of its own.
   const goneKeys = new Set<string>();
   if (kept.formerMachineKey) goneKeys.add(kept.formerMachineKey.toLowerCase());
@@ -185,6 +196,7 @@ async function laneRows(
     cursor = listed.nextCursor;
     if (!cursor) break;
   }
+  if (cursor) complete = false;
   const rows: Array<LaneRow & { updatedAt: number }> = [];
   // Under this machine's key: moved here by an earlier run; it is here once its session is.
   // On a deleted computer: it comes back. Anywhere else: it stays there and keeps the lane.
@@ -196,15 +208,35 @@ async function laneRows(
       elsewhere: !own && !fromSource(row.machineKey, row.computer?.state === "deleted"), updatedAt: row.updatedAt,
     });
   }
+  // Only a computer uploads a CLI's copy (a move re-files it with no computer id). A copy whose
+  // computer is not in the account's list now comes from one deleted earlier (a size change).
+  let liveComputers: Set<string> | null = null;
+  const computerGone = async (instanceId: string | null): Promise<boolean> => {
+    if (!instanceId) return false;
+    liveComputers ??= new Set((await api.listComputers()).map((computer) => computer.id));
+    return !liveComputers.has(instanceId);
+  };
   for (const row of clis.values()) {
     const own = sameKey(row.machineKey, machineKey);
+    const gone = !own && (goneKeys.has(row.machineKey.toLowerCase()) || await computerGone(row.instanceId));
     rows.push({
       chatId: row.sessionId, title: row.title ?? null, provider: row.toolType ?? null, kind: "cli",
       fromMachineKey: row.machineKey, here: own && await hasSession(row.sessionId),
-      elsewhere: !own && !goneKeys.has(row.machineKey.toLowerCase()), updatedAt: row.updatedAt,
+      elsewhere: !own && !gone, updatedAt: row.updatedAt,
     });
   }
-  return rows.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, LANE_ROWS_MAX).map(({ updatedAt: _updatedAt, ...row }) => row);
+  // Rows here already cost nothing and stay in; the cap counts the rest, so a next run brings the next ones.
+  rows.sort((a, b) => b.updatedAt - a.updatedAt);
+  const out: LaneRow[] = [];
+  let toBring = 0;
+  for (const { updatedAt: _updatedAt, ...row } of rows) {
+    if (!row.here && (toBring += 1) > LANE_ROWS_MAX) {
+      complete = false;
+      continue;
+    }
+    out.push(row);
+  }
+  return { rows: out, complete };
 }
 
 const historyOf = (restoredWith: CloudChatRestoreResult["restoredWith"]): CloudKeptLaneRestoreHistory | null =>
@@ -287,6 +319,8 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
   const records = new Map<string, CloudKeptLaneRestoreRecord>();
   const runningByLane = new Map<string, string>();
   const starting = new Map<string, Promise<CloudKeptLaneRestoreRecord>>();
+  /** The project each starting or running restore brings its lane into. */
+  const projectByLane = new Map<string, string>();
   const copy = (record: CloudKeptLaneRestoreRecord): CloudKeptLaneRestoreRecord => ({ ...record, chats: record.chats.map((chat) => ({ ...chat })) });
 
   const ready = async (): Promise<{ api: CloudApiClient; machineKey: string }> => {
@@ -313,11 +347,21 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
   /**
    * Step 0: deletes the asleep computer and keeps its lane, only while it
    * rests with every lane's work saved. Returns the kept lane.
+   *
+   * Only a server that says it honors `onlyIfSaved` (`deleteOnlyIfSaved` on
+   * the instance) gets the delete: an older server ignores the condition and
+   * would delete a computer whose work is not saved. Any other server: the
+   * release is refused with nothing deleted, and the person wakes it.
    */
   const release = async (api: CloudApiClient, instanceId: string, source: CloudLaneWithoutComputer): Promise<CloudLaneWithoutComputer> => {
     try {
+      const instance = await api.computer(instanceId);
+      if (instance.deleteOnlyIfSaved !== true) {
+        throw new ReleaseRefusedError("ADE Cloud can't move this asleep lane from its saved copy yet. Wake the computer to move the lane.");
+      }
       await api.deleteComputer(instanceId, { reason: "moved", keepLane: { branchRef: source.branchRef, onlyIfSaved: true } });
     } catch (error) {
+      if (error instanceof ReleaseRefusedError) throw error;
       if (error instanceof CloudApiError && error.status === 409 && RELEASE_REFUSED_CODES.has(error.code)) {
         throw new ReleaseRefusedError(error.message);
       }
@@ -361,7 +405,7 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
       record.step = "chats";
       touch();
       // 2. Each chat. One that fails doesn't stop the others; any failure keeps the kept lane.
-      const rows = await laneRows(api, machineKey, kept, project.hasSession);
+      const { rows, complete } = await laneRows(api, machineKey, kept, project.hasSession);
       record.chats = rows.map((row) => ({ chatId: row.chatId, title: row.title, state: row.here ? "restored" : "pending", history: null, error: null }));
       touch();
       for (const [index, row] of rows.entries()) {
@@ -414,6 +458,13 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
           : `${failed} chats didn't come back. The lane stays on ADE Cloud too: try again to go on.`;
         return;
       }
+      // The forget deletes every saved copy left on ADE Cloud: not while some were never listed.
+      if (!complete) {
+        record.state = "failed";
+        record.error = "This lane has more chats than one move brings back. The lane stays on ADE Cloud too: try again to bring the rest.";
+        logger.warn("cloud.kept_lane_rows_left", { restoreId: record.restoreId, chats: record.chats.length });
+        return;
+      }
       // 3. Everything is here: the kept lane goes, and what moved to this key stays.
       record.step = "cleanup";
       touch();
@@ -453,10 +504,16 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
         .filter((entry) => entry.laneId === laneId && !sameKey(entry.machineKey, machineKey))
         .sort((a, b) => b.savedAt - a.savedAt)[0];
       // What comes back: a chat on another computer of the person's stays there (the start then keeps the lane).
-      const rows = (await laneRows(api, machineKey, kept, project.hasSession)).filter((row) => !row.here && !row.elsewhere);
+      const listed = (await laneRows(api, machineKey, kept, project.hasSession)).rows;
+      const rows = listed.filter((row) => !row.here && !row.elsewhere);
+      const blocked = listed.filter((row) => row.elsewhere).map((row) => ({ chatId: row.chatId, title: row.title, kind: row.kind }));
       const chats: CloudKeptLaneRestorePreview["chats"] = [];
       for (const row of rows) {
-        const manifest = await api.capsuleManifest(row.fromMachineKey, row.chatId).catch(() => null);
+        // No manifest read: the preview says "transcript", and the restore finds out for itself.
+        const manifest = await api.capsuleManifest(row.fromMachineKey, row.chatId).catch((error: unknown) => {
+          logger.warn("cloud.kept_lane_manifest_unread", { kind: row.kind, error: errorText(error) });
+          return null;
+        });
         const full = manifest?.sessionKind === row.kind;
         chats.push({
           chatId: row.chatId,
@@ -473,6 +530,7 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
         hasRepository: sameRepository(kept, project.originUrl),
         work: backup ? { unpushedCommits: backup.commits, changedFiles: backup.files, bytes: backup.bundleBytes } : null,
         chats,
+        blocked,
         ...(asleep ? { fromComputer: { saved: asleep.saved, reason: asleep.reason, ignored: asleep.ignored } } : {}),
       };
     },
@@ -481,10 +539,14 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
       const laneId = laneIdOf(args);
       const running = runningByLane.get(laneId);
       const current = running ? records.get(running) : undefined;
-      if (current?.state === "running") return copy(current);
-      // Two starts at once for one lane are one restore.
       const pending = starting.get(laneId);
+      // Two starts at once for one lane, into one project, are one restore; another project waits for it.
+      if ((current?.state === "running" || pending) && projectByLane.get(laneId) !== project.projectRoot) {
+        throw new AdeExpectedError("This lane is moving into another project on this computer. Wait for that move to end, then try again.", "user");
+      }
+      if (current?.state === "running") return copy(current);
       if (pending) return copy(await pending);
+      projectByLane.set(laneId, project.projectRoot);
       const from = fromComputerOf(args);
       const begin = (async (): Promise<CloudKeptLaneRestoreRecord> => {
         const { api, machineKey } = await ready();
@@ -496,7 +558,7 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
         if (!sameRepository(kept, project.originUrl)) {
           throw new AdeExpectedError("This project isn't the lane's repository. Open a clone of it on this computer, then move the lane there.", "user");
         }
-        if (!kept.branchRef || !BRANCH.test(kept.branchRef.replace(/^refs\/heads\//, "").replace(/^origin\//, ""))) {
+        if (!kept.branchRef || !BRANCH.test(branchNameOf(kept.branchRef))) {
           throw new AdeExpectedError("ADE Cloud doesn't know this lane's branch, so ADE can't bring it here.", "user");
         }
         const at = now();
@@ -516,13 +578,20 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
         forget();
         runningByLane.set(laneId, record.restoreId);
         void run(record, project, api, machineKey, kept, asleep ? from!.instanceId : null).finally(() => {
-          if (runningByLane.get(laneId) === record.restoreId) runningByLane.delete(laneId);
+          if (runningByLane.get(laneId) === record.restoreId) {
+            runningByLane.delete(laneId);
+            projectByLane.delete(laneId);
+          }
         });
         return record;
       })();
       starting.set(laneId, begin);
       try {
         return copy(await begin);
+      } catch (error) {
+        // Refused before it ran: no restore holds the lane.
+        if (!runningByLane.has(laneId)) projectByLane.delete(laneId);
+        throw error;
       } finally {
         starting.delete(laneId);
       }
@@ -560,7 +629,7 @@ export async function restoreKeptLaneBranch(args: {
   logger: Logger;
 }): Promise<{ localLaneId: string; keepBackups: boolean }> {
   const { api, kept, projectRoot, logger } = args;
-  const branch = args.branchRef.replace(/^refs\/heads\//, "").replace(/^origin\//, "");
+  const branch = branchNameOf(args.branchRef);
   if (!BRANCH.test(branch)) throw new AdeExpectedError("ADE Cloud doesn't know this lane's branch, so ADE can't bring it here.", "user");
   const lanes = await args.lanes.list();
   const live = lanes.filter((lane) => !lane.archived && !lane.primary);

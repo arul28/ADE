@@ -227,7 +227,7 @@ import { ComposerMachineChipPopover } from "./MachineChipCard";
 import { ADE_CLOUD_NAME, CloudMark } from "../remoteTargets/cloudBrand";
 import { AdeCloudMachineChip, useComposerAdeCloudLane, type ComposerAdeCloudLane } from "./AdeCloudComposerParts";
 import { LaneMoveControl } from "../laneMove/LaneMoveControl";
-import type { LaneMoveSource } from "../laneMove/useLaneMoveTargets";
+import type { LaneMoveSource } from "../laneMove/laneMoveModel";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
@@ -1003,6 +1003,12 @@ export type ComposerMachineChipAction = {
 // Clips the label as the chip shrinks; the button draws an inset focus ring
 // so the clip cannot cut it off.
 const MACHINE_CHIP_WRAPPER = "min-w-[1.5rem] shrink-[8] overflow-hidden";
+/** A machine chip that does something when pressed: its action, or "Move this lane to". */
+const PRESSABLE_MACHINE_CHIP = cn(
+  "inline-flex h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md px-1 transition-colors",
+  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/60",
+  "font-sans text-[9px] font-medium text-muted-fg/60 hover:bg-fg/[0.05] hover:text-fg/85",
+);
 
 function ComposerMachineChip({
   machineName,
@@ -1034,9 +1040,7 @@ function ComposerMachineChip({
             aria-label={action.tooltip}
             onClick={action.onClick}
             className={cn(
-              "inline-flex h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md px-1 transition-colors",
-              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/60",
-              "font-sans text-[9px] font-medium text-muted-fg/60 hover:bg-fg/[0.05] hover:text-fg/85",
+              PRESSABLE_MACHINE_CHIP,
               action.offline && "opacity-60",
             )}
             style={{ whiteSpace: "nowrap" }}
@@ -1078,9 +1082,7 @@ function ComposerMachineChip({
               aria-label={`Running on ${machineName}. Move this lane to another computer`}
               onClick={trigger.onClick}
               className={cn(
-                "inline-flex h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md px-1 transition-colors",
-                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/60",
-                "font-sans text-[9px] font-medium text-muted-fg/60 hover:bg-fg/[0.05] hover:text-fg/85",
+                PRESSABLE_MACHINE_CHIP,
                 trigger.open && "bg-fg/[0.05] text-fg/85",
               )}
               style={{ whiteSpace: "nowrap" }}
@@ -8931,7 +8933,7 @@ function AgentChatComposerImpl({
           cloud={cursorRuntime === "cloud"}
           adeCloudLane={adeCloudLane}
           action={cursorRuntime === "cloud" || adeCloudLane ? null : machineChipAction}
-          laneMove={cursorRuntime === "cloud" || machineChipAction ? null : laneMove}
+          laneMove={cursorRuntime === "cloud" ? null : laneMove}
         />
       ) : null}
     </div>

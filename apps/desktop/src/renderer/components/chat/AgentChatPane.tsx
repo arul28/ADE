@@ -20353,6 +20353,17 @@ export function AgentChatPane({
     ],
   );
 
+  // Above the early return below: a hook must run on every render.
+  // The machine chip moves the open chat's whole lane ("Move this lane to").
+  // Not for a host surface (CTO, personal chats) or a subagent's view.
+  const laneMoveSource = useChatLaneMoveSource({
+    sessionId: selectedSessionId,
+    laneId: selectedSession?.laneId ?? null,
+    pin: selectedSessionId ? activeComposerRuntimeBinding : null,
+    enabled: Boolean(selectedSessionId) && !chatScope && !subagentView && !machineChipAction
+      && (selectedSession?.surface ?? "work") === "work",
+  });
+
   // A personal pane has no lane by design; everything below handles that.
   // A draft on an ADE Cloud tab needs none either: it starts or picks an ADE
   // Cloud lane (`adeCloudLaneId`).
@@ -21588,15 +21599,6 @@ export function AgentChatPane({
     : null;
 
   const composerMachineBinding = activeComposerRuntimeBinding;
-  // The machine chip moves the open chat's whole lane ("Move this lane to").
-  // Not for a host surface (CTO, personal chats) or a subagent's view.
-  const laneMoveSource = useChatLaneMoveSource({
-    sessionId: selectedSessionId,
-    laneId: selectedSession?.laneId ?? null,
-    pin: selectedSessionId ? activeComposerRuntimeBinding : null,
-    enabled: Boolean(selectedSessionId) && !chatScope && !subagentView && !machineChipAction
-      && (selectedSession?.surface ?? "work") === "work",
-  });
   // A resting ADE Cloud computer cannot say which models it can run: its
   // sign-ins are unknown, not missing. The picker then lists every model as
   // one to pick (the send wakes the computer, which names a real sign-in

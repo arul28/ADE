@@ -35,8 +35,15 @@ import { githubShellShimEnv, setGithubShellTokenAnswer } from "./githubShellShim
  *
  * `ADE_GH_TOKEN_SOURCE=account_app` marks a `GH_TOKEN` ADE set (the fallback,
  * or the shim for its child), so an ADE process started from such a shell
- * does not take it as an "environment" token.
+ * does not take it as an "environment" token. It names who set the token
+ * (ADE), not which of the account's two it is: the App token and the `gh`
+ * login copy both come from the account, and the shim asks again on each run.
+ * The login copy reaches every session here, automations too, as the same
+ * login does through `gh` on the machine that shared it.
  */
+
+/** How long a shell waits on the App token when the account's `gh` login copy can answer instead. */
+const APP_LOOKUP_WITH_FALLBACK_MS = 20_000;
 
 export const GH_TOKEN_SOURCE_ENV = "ADE_GH_TOKEN_SOURCE";
 export const GH_TOKEN_SOURCE_ACCOUNT_APP = "account_app";
@@ -146,13 +153,21 @@ export function createGithubSessionEnv(deps: {
    */
   const tokenForOwner = async (requestedOwner: string | null): Promise<string | null> => {
     const owner = requestedOwner ?? lastOwner;
+    const ghCopy = accountGhToken();
     try {
-      const appToken = owner ? await appTokenFor(owner) : null;
+      const lookup = owner ? appTokenFor(owner) : Promise.resolve(null);
+      // With a `gh` login copy to fall back on, a slow App renewal does not
+      // run past the shim's own wait (48 s), so the shell still gets a token.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const appToken = ghCopy
+        ? await Promise.race([lookup, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), APP_LOOKUP_WITH_FALLBACK_MS); })])
+          .finally(() => clearTimeout(timer))
+        : await lookup;
       if (appToken) return appToken;
     } catch {
       // The App could not answer; the account's `gh` login copy still can.
     }
-    return accountGhToken();
+    return ghCopy;
   };
   if (deps.answersShells !== false) setGithubShellTokenAnswer(tokenForOwner);
 

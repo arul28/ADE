@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import { CLOUD_CAPSULE_MAX_BYTES, CLOUD_CAPSULE_MAX_PART_BYTES } from "../../../../account-directory/src/cloud/contract";
 import type { CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
@@ -42,14 +42,26 @@ describe("createCloudRestSave capsules", () => {
     const chat = { lastActivityAt: "2026-11-20T10:00:00.000Z" };
     let idle = true;
     let onPrepare = () => {};
+    let hang = false;
+    // ADE's transcript as the capsule copies it: its newest turn ended at 10:00, event 3.
+    const transcript = gzipSync(Buffer.from([
+      { sessionId: "chat-1", timestamp: "2026-11-20T09:59:00.000Z", sequence: 2, event: { type: "user_message", text: "Fix it." } },
+      { sessionId: "chat-1", timestamp: "2026-11-20T10:00:00.000Z", sequence: 3, event: { type: "done", status: "completed" } },
+      { sessionId: "chat-1", timestamp: "2026-11-20T10:00:01.000Z", sequence: 4, event: { type: "status", text: "idle" } },
+    ].map((line) => JSON.stringify(line)).join("\n"))).toString("base64");
     const prepareCloudRestCapsule = vi.fn(async (args: { sourceSessionId: string }) => {
       onPrepare();
+      // A preparation that never ends: the save's own end comes first.
+      if (hang) {
+        setImmediate(() => vi.advanceTimersByTime(60_000));
+        return await new Promise<never>(() => {});
+      }
       return {
         capsule: {
           version: 1,
           source: { provider: "claude", sessionId: args.sourceSessionId },
           forkTransport: { provider: "claude", kind: "claude-jsonl", nativeSessionId: "native-1", mainFile: { name: "native-1.jsonl", contentBase64Gzip: "aGk=", uncompressedBytes: 2 } },
-          transcriptEnvelopes: { contentBase64Gzip: "aGk=", uncompressedBytes: 2, truncated: false },
+          transcriptEnvelopes: { contentBase64Gzip: transcript, uncompressedBytes: 2, truncated: false },
         },
       };
     });
@@ -90,6 +102,9 @@ describe("createCloudRestSave capsules", () => {
     const idleSave = () => saver.save({ budgetMs: 60_000, reason: "idle", stillIdle: () => idle });
     return {
       chat,
+      hangPrepare: (next: boolean) => {
+        hang = next;
+      },
       uploaded,
       commits,
       prepareCloudRestCapsule,
@@ -111,10 +126,12 @@ describe("createCloudRestSave capsules", () => {
     expect((await rest.idleSave()).capsules).toBe(1);
     expect(rest.commits).toEqual([expect.objectContaining({ provider: "claude", transportKind: "claude-jsonl", sessionKind: "chat", laneId: "lane-1", parts: 1 })]);
     // What the restore reads: the provider's history, without the capsule's own transcript copy.
-    const saved = JSON.parse(gunzipSync(Buffer.from(rest.uploaded[0]!.bytes)).toString("utf8")) as { v: number; capsule: Record<string, unknown> };
+    const saved = JSON.parse(gunzipSync(Buffer.from(rest.uploaded[0]!.bytes)).toString("utf8")) as { v: number; capsule: Record<string, unknown>; transcriptEnd: unknown };
     expect(saved.v).toBe(1);
     expect(saved.capsule.forkTransport).toMatchObject({ kind: "claude-jsonl", nativeSessionId: "native-1" });
     expect(saved.capsule.transcriptEnvelopes).toBeUndefined();
+    // Where the chat stood: its newest turn, so a restore can tell the capsule is older than the chat.
+    expect(saved.transcriptEnd).toEqual({ at: "2026-11-20T10:00:00.000Z", sequence: 3 });
 
     expect((await rest.idleSave()).capsules).toBe(0);
     expect(rest.prepareCloudRestCapsule).toHaveBeenCalledTimes(1);
@@ -133,5 +150,21 @@ describe("createCloudRestSave capsules", () => {
     rest.leaveIdle();
     expect((await rest.idleSave()).capsules).toBe(1);
     expect(rest.uploaded.map((entry) => entry.part)).toEqual([1]);
+  });
+
+  it("waits for a capsule no longer than the save's own time, and tries it again at the next save", async () => {
+    const rest = setup();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      rest.hangPrepare(true);
+      expect(await rest.idleSave()).toMatchObject({ capsules: 0, skipped: 1 });
+      expect(rest.uploaded).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    rest.hangPrepare(false);
+    expect((await rest.idleSave()).capsules).toBe(1);
+    expect(rest.prepareCloudRestCapsule).toHaveBeenCalledTimes(2);
   });
 });

@@ -73,7 +73,12 @@ export async function cloudLaneWorkState(instanceId: string): Promise<CloudLaneW
 }
 
 export async function deleteCloudLane(instanceId: string, options: CloudLaneDeleteOptions & { skipCheck: boolean }): Promise<CloudLaneDeleteResult> {
-  const done = await call("deleteLane", { instanceId, skipCheck: options.skipCheck, keepChats: options.keepChats === true });
+  const done = await call("deleteLane", {
+    instanceId,
+    skipCheck: options.skipCheck,
+    keepChats: options.keepChats === true,
+    ...(options.onlyChats ? { onlyChats: [...options.onlyChats] } : {}),
+  });
   if (done.ok) forgetCloudLaneComputer(instanceId);
   return done;
 }

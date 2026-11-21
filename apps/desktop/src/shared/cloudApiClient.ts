@@ -509,6 +509,9 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       const response = await request<Response>("GET", cloudCapsulePath(machineKey, chatId, { part }), { rawResponse: true, timeoutMs: timeoutMs * 2 });
       return await response.arrayBuffer();
     },
+    /** Deletes a capsule a restore used (a move that kept it). Null on an older server, whose move deleted it already. */
+    deleteCapsule: (machineKey: string, chatId: string) =>
+      orNullOn404(() => request<{ deleted: boolean }>("DELETE", cloudCapsulePath(machineKey, chatId))),
     /* ---- Lane backups at rest (`laneBackups.ts`) ---- */
     /** The account's lane backups (of one lane with `laneId`, made on one computer with `machineKey`), newest first; empty from an older server. */
     laneBackups: async (laneId?: string | null, machineKey?: string | null): Promise<CloudLaneBackup[]> => {

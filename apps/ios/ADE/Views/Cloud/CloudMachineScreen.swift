@@ -964,7 +964,8 @@ extension View {
 /// The steps of a cloud lane's account delete once the person (or a checked
 /// lane move) decided it: the computer goes, then its row on the account,
 /// then the lane's saved chats. No wake and no work check. The delete sheet
-/// and the move after a lane moved off ADE Cloud both run it.
+/// and the move after a lane moved off ADE Cloud both run it; the move
+/// deletes only the saved copies of the chats that moved (`onlyChats`).
 enum CloudLaneComputerDelete {
   struct Outcome {
     /// Why the computer is still there; nil when it is gone.
@@ -979,6 +980,7 @@ enum CloudLaneComputerDelete {
     instanceId: String,
     accountMachineKey: String?,
     laneId: String,
+    onlyChats: Set<String>? = nil,
     sync: SyncService
   ) async -> Outcome {
     do {
@@ -1006,10 +1008,22 @@ enum CloudLaneComputerDelete {
     // The chats go after the computer, so a last saved part can't bring one back.
     var chatsLeft = false
     if let machineKey = accountMachineKey {
-      do {
-        try await client.deleteSavedChats(machineKey: machineKey, laneId: laneId)
-      } catch {
-        chatsLeft = true
+      if let onlyChats {
+        // A move: the chats it left (Done, archived, another surface) stay
+        // readable from ADE Cloud. Its chats are all under this key.
+        for chatId in onlyChats.sorted() {
+          do {
+            try await client.deleteSavedChat(machineKey: machineKey, chatId: chatId)
+          } catch {
+            chatsLeft = true
+          }
+        }
+      } else {
+        do {
+          try await client.deleteSavedChats(machineKey: machineKey, laneId: laneId)
+        } catch {
+          chatsLeft = true
+        }
       }
     }
     // The lists drop the lane and its chats now; an older read can't bring them back.

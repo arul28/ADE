@@ -18,7 +18,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { Z_LAYERS } from "../ui/zLayers";
 import type { AdeCloudTrayAction, AdeCloudTrayNotice } from "./useAdeCloudDraft";
 import { LaneMoveControl } from "../laneMove/LaneMoveControl";
-import type { LaneMoveSource } from "../laneMove/useLaneMoveTargets";
+import type { LaneMoveSource } from "../laneMove/laneMoveModel";
 
 
 /**

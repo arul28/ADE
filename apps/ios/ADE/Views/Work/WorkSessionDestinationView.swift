@@ -599,7 +599,7 @@ struct WorkSessionDestinationView: View {
   /// The side-chat panel (`/side`) over this chat, and what it shows.
   @State var sideChatPanelPresented = false
   /// "Move this lane to", opened from the prompt box's machine label.
-  @State var laneMoveSheetSource: LaneMoveSource?
+  @State private var laneMoveSheetSource: LaneMoveSource?
   @State var sideChatPanelState: WorkSideChatPanelState = .closed
 
   var initialOpeningPromptNeedsManualRetry: Bool {
@@ -2229,11 +2229,15 @@ struct WorkSessionDestinationView: View {
             laneId: session.laneId,
             laneName: session.laneName,
             surface: chatSummary?.surface,
+            fleetKey: sessionCloudMachineKey,
             sync: syncService
           )
     else { return nil }
     let sync = syncService
     let summary = chatSummary
+    // The chat's own machine, not the focused one: a bare lane id would
+    // name the focused computer.
+    let fleetKey = sessionCloudMachineKey
     return WorkComposerLaneMoveAction(key: "\(session.id)|\(session.laneId)|\(source.kind.rawValue)") {
       // Read again on the tap: the lane's computer may have woken or gone since.
       laneMoveSheetSource = laneMoveSourceForChat(
@@ -2241,6 +2245,7 @@ struct WorkSessionDestinationView: View {
         laneId: session.laneId,
         laneName: session.laneName,
         surface: summary?.surface,
+        fleetKey: fleetKey,
         sync: sync
       )
     }

@@ -65,19 +65,22 @@ enum CloudAtRestPreviews {
       ))
     case "duo-lane-move":
       // The machine list of a lane on one of the person's computers.
-      return AnyView(LaneMoveMenuFixture(source: LaneMoveData.ownSource, fixture: LaneMoveFixture(options: Data.moveOptions, items: LaneMoveData.items)))
+      return AnyView(LaneMoveMenuFixture(source: LaneMoveData.ownSource, backend: LaneMoveFixtureBackend(options: Data.moveOptions, items: LaneMoveData.items)))
     case "duo-lane-move-cloud":
       // The machine list of an awake ADE Cloud lane: Change size… under the machines.
-      return AnyView(LaneMoveMenuFixture(source: LaneMoveData.cloudSource, fixture: LaneMoveFixture(options: Data.moveOptions, items: LaneMoveData.items)))
+      return AnyView(LaneMoveMenuFixture(source: LaneMoveData.cloudSource, backend: LaneMoveFixtureBackend(options: Data.moveOptions, items: LaneMoveData.items)))
     case "duo-lane-move-asleep":
       // An asleep computer lists the same places; its move comes from the saved copy.
       return AnyView(LaneMoveMenuFixture(
         source: LaneMoveData.asleepSource,
-        fixture: LaneMoveFixture(restoreTargets: LaneMoveData.restoreTargets, preview: LaneMoveData.asleepPreview(saved: true))
+        backend: LaneMoveFixtureBackend(places: LaneMoveData.restoreTargets, savedCopy: LaneMoveData.asleepPreview(saved: true))
       ))
     case "duo-lane-move-asleep-wake":
-      // A computer that holds other lanes too wakes first.
-      return AnyView(CloudLaneMoveFixture(deleted: false))
+      // A computer that holds other lanes too wakes first, in the same sheet.
+      return AnyView(LaneMoveMenuFixture(
+        source: LaneMoveData.asleepSharedSource,
+        backend: LaneMoveFixtureBackend(options: Data.moveOptions, items: LaneMoveData.items)
+      ))
     case "duo-lane-move-review-asleep":
       return AnyView(LaneMoveReviewFixture(
         source: LaneMoveData.asleepSource,
@@ -100,7 +103,7 @@ enum CloudAtRestPreviews {
       // A kept lane: the computers that have this project open.
       return AnyView(LaneMoveMenuFixture(
         source: LaneMoveData.keptSource,
-        fixture: LaneMoveFixture(restoreTargets: LaneMoveData.restoreTargets, preview: LaneMoveData.preview)
+        backend: LaneMoveFixtureBackend(places: LaneMoveData.restoreTargets, savedCopy: LaneMoveData.preview)
       ))
     case "duo-lane-move-review":
       // Own computer to own computer; one chat and one CLI arrive as a summary.
@@ -115,6 +118,14 @@ enum CloudAtRestPreviews {
         target: LaneMoveData.restoreTargets[0],
         items: [],
         preview: LaneMoveData.preview
+      ))
+    case "duo-lane-move-review-restore-blocked":
+      // A kept lane with no chats of its own left: two are on other computers now.
+      return AnyView(LaneMoveReviewFixture(
+        source: LaneMoveData.keptSource,
+        target: LaneMoveData.restoreTargets[0],
+        items: [],
+        preview: LaneMoveData.blockedPreview
       ))
     case "duo-lane-move-moving":
       return AnyView(LaneMoveProgressFixture(run: LaneMoveData.run(.moving)))
@@ -417,6 +428,17 @@ private enum LaneMoveData {
     computer: LaneMoveCloudComputer(instanceId: "inst-fixture", accountMachineKey: CloudAtRestPreviews.Data.machineKey, laneId: "lane-upload")
   )
 
+  /// Asleep on a computer that holds other lanes too: no saved copy of this lane alone.
+  static let asleepSharedSource = LaneMoveSource(
+    kind: .cloudAsleep,
+    laneId: "lane-upload",
+    laneName: "Fix flaky upload test",
+    machineName: ADECloudMachine.name,
+    viaSessionId: nil,
+    fleetKey: "cloud-fixture",
+    computer: nil
+  )
+
   static let keptSource = LaneMoveSource(
     kind: .cloudGone,
     laneId: "lane-upload",
@@ -456,6 +478,20 @@ private enum LaneMoveData {
       CloudKeptLaneRestorePreview.Chat(chatId: "chat-a", title: "Fix the flaky upload test", provider: "claude", kind: "chat", history: .full),
       CloudKeptLaneRestorePreview.Chat(chatId: "chat-b", title: "Update the changelog", provider: "kimi", kind: "chat", history: .transcript),
       CloudKeptLaneRestorePreview.Chat(chatId: "cli-b", title: "Check the docs links", provider: "qwen", kind: "cli", history: .fresh),
+    ]
+  )
+
+  /// Only the branch and work come back; two chats moved to other computers.
+  static let blockedPreview = CloudKeptLaneRestorePreview(
+    laneId: preview.laneId,
+    laneName: preview.laneName,
+    branchRef: preview.branchRef,
+    hasRepository: true,
+    work: preview.work,
+    chats: [],
+    blocked: [
+      CloudKeptLaneRestorePreview.Blocked(chatId: "chat-a", title: "Fix the flaky upload test", kind: "chat"),
+      CloudKeptLaneRestorePreview.Blocked(chatId: "cli-a", title: "Run the upload tests 50 times", kind: "cli"),
     ]
   )
 
@@ -543,19 +579,37 @@ private enum LaneMoveData {
   }
 }
 
+/// The move sheet's backend on fixture screens: fixed answers, nothing sent.
+/// A wake comes up at once; a Move starts nothing.
+private struct LaneMoveFixtureBackend: LaneMoveBackend {
+  var options: AgentChatCrossMachineHandoffOptions? = nil
+  var items: [LaneMoveItem] = []
+  var places: [LaneMoveTarget] = []
+  var savedCopy: CloudKeptLaneRestorePreview? = nil
+
+  func restoreTargets() -> [LaneMoveTarget] { places }
+  func liveMachines(_ options: AgentChatCrossMachineHandoffOptions) -> [AgentChatCrossMachineHandoffMachineOption] { options.machines }
+  func readLive(source: LaneMoveSource) async throws -> LaneMoveLiveRead {
+    LaneMoveLiveRead(route: nil, options: options, items: items)
+  }
+  func wake(fleetKey: String) async -> String? { nil }
+  func preview(route: LaneMoveRoute, source: LaneMoveSource) async throws -> CloudKeptLaneRestorePreview {
+    guard let savedCopy else { throw LaneMoveReadFailure(message: "This fixture has no saved copy.") }
+    return savedCopy
+  }
+  func start(_ request: LaneMoveStartRequest) async throws -> String? { nil }
+}
+
 /// "Move this lane to": the machine list, with fixed places and no send.
 private struct LaneMoveMenuFixture: View {
   let source: LaneMoveSource
-  let fixture: LaneMoveFixture
+  let backend: LaneMoveFixtureBackend
 
   var body: some View {
     ADEColor.pageBackground.ignoresSafeArea()
-      .onAppear {
-        LaneMoveFixtureFlag.active = true
-        LaneMoveRuns.shared.seedPreview([])
-      }
+      .onAppear { LaneMoveRuns.shared.seedPreview([]) }
       .sheet(isPresented: .constant(true)) {
-        LaneMoveSheet(source: source, fixture: fixture)
+        LaneMoveSheet(source: source, backend: backend)
       }
   }
 }
@@ -569,10 +623,7 @@ private struct LaneMoveReviewFixture: View {
 
   var body: some View {
     ADEColor.pageBackground.ignoresSafeArea()
-      .onAppear {
-        LaneMoveFixtureFlag.active = true
-        LaneMoveRuns.shared.seedPreview([])
-      }
+      .onAppear { LaneMoveRuns.shared.seedPreview([]) }
       .sheet(isPresented: .constant(true)) {
         NavigationStack {
           LaneMoveReviewView(
@@ -584,7 +635,7 @@ private struct LaneMoveReviewFixture: View {
             initialRunId: nil,
             close: {},
             wake: source.kind == .cloudAsleep ? {} : nil,
-            fixturePreview: preview
+            backend: LaneMoveFixtureBackend(savedCopy: preview)
           )
         }
       }
@@ -609,14 +660,12 @@ private struct LaneMoveProgressFixture: View {
             changes: nil,
             initialRunId: run.id,
             close: {},
-            wake: source.kind == .cloudAsleep ? {} : nil
+            wake: source.kind == .cloudAsleep ? {} : nil,
+            backend: LaneMoveFixtureBackend()
           )
         }
       }
-      .onAppear {
-        LaneMoveFixtureFlag.active = true
-        LaneMoveRuns.shared.seedPreview([run])
-      }
+      .onAppear { LaneMoveRuns.shared.seedPreview([run]) }
   }
 }
 
@@ -638,31 +687,10 @@ private struct LaneMoveTagFixture: View {
     .padding(20)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .background(ADEColor.pageBackground.ignoresSafeArea())
-    .onAppear {
-      LaneMoveFixtureFlag.active = true
-      LaneMoveRuns.shared.seedPreview([])
-    }
+    .onAppear { LaneMoveRuns.shared.seedPreview([]) }
     .sheet(item: $opened) { source in
-      LaneMoveSheet(source: source, fixture: LaneMoveFixture(options: CloudAtRestPreviews.Data.moveOptions, items: LaneMoveData.items))
+      LaneMoveSheet(source: source, backend: LaneMoveFixtureBackend(options: CloudAtRestPreviews.Data.moveOptions, items: LaneMoveData.items))
     }
-  }
-}
-
-/// "Move to…" on a lane whose ADE Cloud computer sleeps or was deleted.
-private struct CloudLaneMoveFixture: View {
-  let deleted: Bool
-
-  var body: some View {
-    ADEColor.pageBackground.ignoresSafeArea()
-      .sheet(isPresented: .constant(true)) {
-        CloudLaneRestingMoveSheet(
-          laneId: "lane-upload",
-          laneName: "Fix flaky upload test",
-          fleetKey: deleted ? ADECloudMachine.savedFleetKeyPrefix + "mk_cloud_fixture" : "cloud-fixture",
-          deleted: deleted,
-          onAwake: {}
-        )
-      }
   }
 }
 

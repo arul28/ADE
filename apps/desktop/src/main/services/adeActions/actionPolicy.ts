@@ -418,7 +418,7 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // (`clear_caches` is not here: an agent may ask, and the action asks the person with a card.)
   // Moving a kept ADE Cloud lane to this machine brings its branch and every chat here and
   // then forgets the lane on ADE Cloud: the person's call, as a batch move of chats is.
-  cloud: [...CLOUD_SIGN_IN_WRITES, "invite_redeem", "restoreKeptLane"],
+  cloud: [...CLOUD_SIGN_IN_WRITES, "invite_redeem", "kept_lane_move"],
   // An agent asking to move a chat or batch must not approve its own request.
   // Only a person's client hosts an MCP App, so only it may pass an app's call on.
   chat: [
@@ -1259,7 +1259,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "referral", "invite_redeem",
     // A kept lane (its computer deleted) moved to this machine from the server copies:
     // what would come back, the move itself (user-only, above) and its progress.
-    "previewKeptLaneRestore", "restoreKeptLane", "getKeptLaneRestore",
+    "kept_lane_move_preview", "kept_lane_move", "kept_lane_move_status",
   ],
   // `list` reads the MCP setup (names and set/not-set, never a value).
   // `request` raises the MCP server card in the caller's own chat; the person

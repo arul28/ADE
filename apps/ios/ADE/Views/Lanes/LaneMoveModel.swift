@@ -241,13 +241,18 @@ func laneMoveBatchAllowsComputerDelete(_ record: LaneMoveBatchRecord) -> Bool {
         !record.items.isEmpty,
         record.items.contains(where: { $0.kind == "lane" })
   else { return false }
-  return record.items.allSatisfy { item in
-    guard item.state == "continued" else { return false }
-    switch item.kind {
-    case "lane": return nonEmptyTrimmed(item.destinationLaneId) != nil
-    case "chat": return nonEmptyTrimmed(item.destinationSessionId) != nil
-    default: return false
-    }
+  return record.items.allSatisfy(laneMoveBatchItemArrived)
+}
+
+/// One part of a batch arrived: it continued, with the lane or chat it made
+/// on the destination. The delete gate, the progress and the failure text
+/// all count arrivals with this.
+func laneMoveBatchItemArrived(_ item: LaneMoveBatchItem) -> Bool {
+  guard item.state == "continued" else { return false }
+  switch item.kind {
+  case "lane": return nonEmptyTrimmed(item.destinationLaneId) != nil
+  case "chat": return nonEmptyTrimmed(item.destinationSessionId) != nil
+  default: return false
   }
 }
 
@@ -256,10 +261,18 @@ func laneMoveBatchEnded(_ record: LaneMoveBatchRecord) -> Bool {
   ["completed", "partial", "cancelled"].contains(record.state)
 }
 
+/// The chats a batch carried that arrived, by their id on the source: only
+/// their saved copies go with the ADE Cloud computer.
+func laneMoveBatchMovedChatIds(_ record: LaneMoveBatchRecord) -> [String] {
+  record.items.compactMap { item in
+    item.kind == "chat" && laneMoveBatchItemArrived(item) ? nonEmptyTrimmed(item.sourceSessionId) : nil
+  }
+}
+
 /// What went wrong, for a batch that ended without everything arriving.
 func laneMoveBatchFailure(_ record: LaneMoveBatchRecord) -> String {
   if record.state == "cancelled" { return "The move was cancelled." }
-  let failed = record.items.filter { $0.state != "continued" }
+  let failed = record.items.filter { !laneMoveBatchItemArrived($0) }
   if let first = failed.compactMap({ nonEmptyTrimmed($0.error) }).first { return first }
   return "\(failed.count) of \(record.items.count) parts did not arrive."
 }
@@ -314,6 +327,17 @@ struct CloudKeptLaneRestorePreview: Decodable, Equatable {
   /// A move off an asleep computer: whether its saved copy holds all of the
   /// lane's work, else why not. Nil for a kept lane and from older brains.
   let fromComputer: FromComputer?
+  /// Chats and CLIs whose saved copy is on another computer of the person's
+  /// now: they don't come, so the lane stays on ADE Cloud too. Empty from
+  /// older brains.
+  let blocked: [Blocked]
+
+  struct Blocked: Decodable, Equatable {
+    let chatId: String
+    let title: String?
+    /// `chat` or `cli`.
+    let kind: String?
+  }
 
   /// The asleep computer's saved copy, as the destination read it with no wake.
   struct FromComputer: Decodable, Equatable {
@@ -347,7 +371,8 @@ struct CloudKeptLaneRestorePreview: Decodable, Equatable {
     hasRepository: Bool,
     work: Work?,
     chats: [Chat],
-    fromComputer: FromComputer? = nil
+    fromComputer: FromComputer? = nil,
+    blocked: [Blocked] = []
   ) {
     self.laneId = laneId
     self.laneName = laneName
@@ -356,9 +381,10 @@ struct CloudKeptLaneRestorePreview: Decodable, Equatable {
     self.work = work
     self.chats = chats
     self.fromComputer = fromComputer
+    self.blocked = blocked
   }
 
-  private enum CodingKeys: String, CodingKey { case laneId, laneName, branchRef, hasRepository, work, chats, fromComputer }
+  private enum CodingKeys: String, CodingKey { case laneId, laneName, branchRef, hasRepository, work, chats, fromComputer, blocked }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -369,6 +395,7 @@ struct CloudKeptLaneRestorePreview: Decodable, Equatable {
     work = c.lenient(Work.self, forKey: .work)
     chats = c.lenient([Chat].self, forKey: .chats) ?? []
     fromComputer = c.lenient(FromComputer.self, forKey: .fromComputer)
+    blocked = c.lenient([Blocked].self, forKey: .blocked) ?? []
   }
 
   var items: [LaneMoveItem] {
@@ -488,10 +515,12 @@ private let laneMoveLaneRowTitle = "Branch and work"
 /// Each part of a batch move, the lane first, as the brain lists them.
 func laneMoveProgressRows(batch: LaneMoveBatchRecord?, review: [LaneMoveItem]) -> [LaneMoveProgressRow] {
   let byId = Dictionary(review.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+  let ended = batch.map(laneMoveBatchEnded) ?? false
   return (batch?.items ?? []).map { item in
     let state: LaneMoveRowState
     switch item.state {
-    case "continued": state = .arrived
+    // Continued with nothing made there yet: not arrived, as the delete gate counts it.
+    case "continued": state = laneMoveBatchItemArrived(item) ? .arrived : (ended ? .failed : .moving)
     case "failed", "cancelled", "blocked", "unknown": state = .failed
     case "sending": state = .moving
     default: state = .waiting
@@ -577,9 +606,12 @@ func laneMoveSummaryNote(items: [LaneMoveItem], sourceMachineName: String, delet
   guard !reduced.isEmpty else { return nil }
   let names = reduced.map { "“\($0.title)”" }.joined(separator: ", ")
   let one = reduced.count == 1
-  let start = restores
-    ? "\(names) \(one ? "starts" : "start") fresh there, with a summary."
-    : "\(names) \(one ? "arrives" : "arrive") as a summary. \(one ? "Its agent can't" : "Their agents can't") carry \(one ? "its" : "their") full history to another machine."
+  // A move from saved copies has only what was saved: a CLI starts again,
+  // and its earlier session isn't kept anywhere to read.
+  if restores {
+    return "\(names) \(one ? "starts" : "start") fresh there. \(one ? "Its earlier session doesn't" : "Their earlier sessions don't") come back."
+  }
+  let start = "\(names) \(one ? "arrives" : "arrive") as a summary. \(one ? "Its agent can't" : "Their agents can't") carry \(one ? "its" : "their") full history to another machine."
   if deletesComputer { return "\(start) The full history is deleted with the \(ADECloudMachine.name) computer." }
   return "\(start) The full history stays on \(sourceMachineName)."
 }
@@ -596,7 +628,10 @@ func laneMoveIgnoredFilesNote(_ ignored: LaneMoveIgnoredFiles?, asleep: Bool) ->
   }
   let list: String
   if ignored.paths.isEmpty {
-    guard ignored.more > 0 else { return nil }
+    // None found: say nothing only when the scan finished.
+    guard ignored.more > 0 else {
+      return ignored.incomplete == true ? "Files git ignores (such as .env) don't move, and they go with the computer.\(after)" : nil
+    }
     list = laneMovePlural(ignored.more, "file")
   } else {
     let shown = ignored.paths.joined(separator: ", ")

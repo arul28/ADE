@@ -46,6 +46,12 @@ export type CloudKeptLaneRestorePreview = {
     history: CloudKeptLaneRestoreHistory;
   }>;
   /**
+   * Chats and CLIs whose saved copy is on another computer of the person's
+   * (a move there that didn't finish). They can't come here, and the move
+   * keeps the lane on ADE Cloud until they do. Absent from an older brain.
+   */
+  blocked?: Array<{ chatId: string; title: string | null; kind: "chat" | "cli" }>;
+  /**
    * For `fromComputer`: whether its saved copy holds all of the lane's work
    * (`saved`), else why not (`reason`; the move then wakes it instead). And
    * the files git ignores on it, which no saved copy holds.
@@ -79,9 +85,18 @@ export type CloudKeptLaneRestoreRecord = {
   updatedAt: string;
 };
 
-/** The runtime action names, in domain `cloud`. */
-export const CLOUD_KEPT_LANE_RESTORE_ACTIONS = {
-  preview: "previewKeptLaneRestore",
-  restore: "restoreKeptLane",
-  get: "getKeptLaneRestore",
-} as const;
+/**
+ * The fields of a preview, restore or get call, picked from any input by
+ * shape (an action's args, a phone's sync payload). The brain's store checks
+ * the values themselves.
+ */
+export function pickKeptLaneRestoreArgs(value: unknown): { laneId?: string; restoreId?: string; fromComputer?: CloudKeptLaneRestoreFromComputer } {
+  const record = (raw: unknown): Record<string, unknown> => (raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {});
+  const args = record(value);
+  const from = record(args.fromComputer);
+  return {
+    ...(typeof args.laneId === "string" ? { laneId: args.laneId } : {}),
+    ...(typeof args.restoreId === "string" ? { restoreId: args.restoreId } : {}),
+    ...(typeof from.instanceId === "string" ? { fromComputer: { instanceId: from.instanceId } } : {}),
+  };
+}

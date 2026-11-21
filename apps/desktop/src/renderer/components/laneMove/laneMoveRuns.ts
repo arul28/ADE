@@ -4,9 +4,11 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import type { CloudKeptLaneRestoreRecord } from "../../../shared/cloudKeptLaneRestore";
-import { stripElectronErrorWrapper } from "../../../shared/codedError";
-import { showToast } from "../app/toast/toastStore";
+import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
 import { deleteCloudLane } from "../cloudLane/cloudLaneActions";
+import { deleteCloudLaneWithCheck } from "../cloudLane/deleteCloudLane";
+import { forgetCloudLaneComputer } from "../../state/adeCloudLaneIndex";
+import { laneMoveErrorText as errorText, laneMoveItems } from "./laneMoveModel";
 
 /**
  * The lane moves this window started, and what each one is doing now.
@@ -55,6 +57,12 @@ export type LaneMoveRun =
       /** The source brain, which runs the batch. */
       pin: OpenProjectBinding;
       record: AgentChatCrossMachineBatchMoveRecord | null;
+      /**
+       * The chats that arrived, by their id on the source: the computer's
+       * delete deletes only their saved copies, and keeps the rest (a Done or
+       * archived chat the move left). Kept when the record isn't (a reload).
+       */
+      movedChatIds?: string[] | null;
     })
   | (LaneMoveRunBase & {
       kind: "restore";
@@ -62,7 +70,7 @@ export type LaneMoveRun =
       pin: OpenProjectBinding;
       record: CloudKeptLaneRestoreRecord | null;
       /** The lane's asleep ADE Cloud computer, which the restore deletes first with no wake. */
-      fromComputer?: string | null;
+      fromComputer: string | null;
     });
 
 const STORAGE_KEY = "ade.laneMoveRuns.v1";
@@ -121,17 +129,18 @@ export function keptLaneRestoreApi() {
   };
 }
 
-function errorText(error: unknown): string {
-  return stripElectronErrorWrapper(error instanceof Error ? error.message : String(error));
+/** Every lane and chat of the batch arrived where it was sent, each with its id there. */
+function batchArrived(record: AgentChatCrossMachineBatchMoveRecord): boolean {
+  const arrivedAs = (item: AgentChatCrossMachineBatchMoveRecord["items"][number]): string | null | undefined =>
+    item.kind === "lane" ? item.destinationLaneId : item.kind === "chat" ? item.destinationSessionId : null;
+  return record.state === "completed"
+    && record.items.some((item) => item.kind === "lane")
+    && record.items.every((item) => item.state === "continued" && Boolean(arrivedAs(item)?.trim()));
 }
 
-/** Every lane and chat of the batch arrived where it was sent. */
-function batchArrived(record: AgentChatCrossMachineBatchMoveRecord): boolean {
-  return record.state === "completed"
-    && record.items.length > 0
-    && record.items.some((item) => item.kind === "lane")
-    && record.items.every((item) => item.state === "continued"
-      && Boolean(item.kind === "lane" ? item.destinationLaneId : item.destinationSessionId));
+/** The source ids of the chats and CLIs the batch carried. */
+function movedChatIdsOf(record: AgentChatCrossMachineBatchMoveRecord): string[] {
+  return record.items.flatMap((item) => (item.kind === "chat" && item.state === "continued" ? [item.sourceSessionId] : []));
 }
 
 function batchEnded(record: AgentChatCrossMachineBatchMoveRecord): boolean {
@@ -171,14 +180,46 @@ function forgetLater(id: string): void {
   }, KEEP_ENDED_MS));
 }
 
+/**
+ * The lane's chats and CLIs on the source that the move did not carry: one
+ * started there during the move. Read just before the delete, which then
+ * keeps the computer. Null when the source can't be read (it then deletes:
+ * the move's own check passed, and the saved copies of chats it left stay).
+ */
+async function chatsLeftOnSource(run: Extract<LaneMoveRun, { kind: "live" }>): Promise<number | null> {
+  try {
+    const [rows, chats] = await Promise.all([
+      window.ade.sessions.list({ laneId: run.laneId, includeArchived: false, limit: null }, run.pin),
+      window.ade.agentChat.list({ laneId: run.laneId }, run.pin),
+    ]);
+    const moved = new Set(run.movedChatIds ?? []);
+    return laneMoveItems(rows, chats).filter((item) => !moved.has(item.sessionId)).length;
+  } catch (error) {
+    console.warn("[laneMove] reading the source before its delete failed", error);
+    return null;
+  }
+}
+
 async function deleteComputer(id: string): Promise<void> {
   const run = runs.find((entry) => entry.id === id);
   if (!run?.cloudInstanceId) return;
   update(id, (entry) => ({ ...entry, phase: "deleting", error: null }));
   try {
-    // The move carried the work and every chat, and the check above passed:
+    const left = run.kind === "live" ? await chatsLeftOnSource(run) : null;
+    if (left) {
+      throw new Error(left === 1
+        ? "A chat started on the lane during the move, so ADE kept the computer. Move the lane again to bring it."
+        : `${left} chats started on the lane during the move, so ADE kept the computer. Move the lane again to bring them.`);
+    }
+    // The move carried the work and its chats, and the check above passed:
     // the work check would only find what already arrived, so it is skipped.
-    const done = await deleteCloudLane(run.cloudInstanceId, { skipCheck: true, keepChats: false });
+    // Only the saved copies of the chats that arrived go; a chat the move
+    // left (Done, archived, another surface) stays readable from ADE Cloud.
+    const movedChatIds = run.kind === "live" ? run.movedChatIds ?? null : null;
+    const done = await deleteCloudLane(
+      run.cloudInstanceId,
+      movedChatIds ? { skipCheck: true, onlyChats: movedChatIds } : { skipCheck: true, keepChats: true },
+    );
     if (!done.ok) throw new Error(done.message || "ADE Cloud did not delete the computer.");
     update(id, (entry) => ({ ...entry, phase: "done" }));
     showToast({
@@ -194,7 +235,7 @@ async function deleteComputer(id: string): Promise<void> {
       tone: "warning",
       title: `Moved ${run.laneName}, but its ADE Cloud computer is still there`,
       message: `${message} Open the lane's machine menu to delete it.`,
-      durationMs: 18_000,
+      durationMs: READABLE_TOAST_DURATION_MS,
     });
   }
 }
@@ -215,7 +256,7 @@ function finish(id: string, arrived: boolean, failure: string | null): void {
         : run.cloudInstanceId
         ? `${failure ?? ""} Its ADE Cloud computer is kept, so nothing is lost.`.trim()
         : failure ?? "Open the lane's machine menu to try again.",
-      durationMs: 18_000,
+      durationMs: READABLE_TOAST_DURATION_MS,
     });
     forgetLater(id);
     return;
@@ -225,6 +266,8 @@ function finish(id: string, arrived: boolean, failure: string | null): void {
     return;
   }
   update(id, (entry) => ({ ...entry, phase: "done" }));
+  // The restore deleted the asleep computer: the cloud lists drop it now, not at their next read.
+  if (run.kind === "restore" && run.fromComputer) forgetCloudLaneComputer(run.fromComputer);
   showToast({
     tone: "success",
     title: `Moved ${run.laneName} to ${run.targetName}`,
@@ -239,13 +282,21 @@ async function read(id: string): Promise<void> {
   try {
     if (run.kind === "live") {
       const record = await window.ade.agentChat.getCrossMachineBatchMove({ batchId: run.id }, run.pin);
-      if (!record) throw new Error("The lane's machine no longer knows this move.");
-      const next = update(id, (entry) => (entry.kind === "live" ? { ...entry, record } : entry));
+      // The machine answered and has no such move: reading again can't help. Nothing was deleted.
+      if (!record) {
+        finish(id, false, "The lane's machine no longer knows this move. Open the lane there to see what arrived.");
+        return;
+      }
+      const next = update(id, (entry) => (entry.kind === "live" ? { ...entry, record, movedChatIds: movedChatIdsOf(record) } : entry));
       if (batchEnded(record)) finish(id, batchArrived(record), batchArrived(record) ? null : batchFailure(record));
       else if (next) schedule(id, next);
     } else {
       const record = await keptLaneRestoreApi().get({ restoreId: run.id }, run.pin);
-      if (!record) throw new Error("This machine no longer knows this move.");
+      // A restart of that machine's ADE forgets its restores; a new start goes on from what came back.
+      if (!record) {
+        finish(id, false, `${run.targetName} no longer knows this move. Try again to go on from what came back.`);
+        return;
+      }
       const next = update(id, (entry) => (entry.kind === "restore" ? { ...entry, record } : entry));
       // The restore forgets the kept lane itself, and only once every chat came back.
       if (record.state === "completed") finish(id, true, null);
@@ -325,9 +376,26 @@ export function laneMoveWakesInstead(run: LaneMoveRun): boolean {
   return run.kind === "restore" && run.phase === "failed" && run.record?.wakeInstead === true;
 }
 
-/** Tries the ADE Cloud computer's delete again, after a move that arrived. */
+/**
+ * Tries the ADE Cloud computer's delete again, after a move that arrived.
+ * Time has passed since the move's own check, so this one checks the
+ * computer's work again and warns before it deletes work not on GitHub.
+ */
 export function retryLaneMoveDelete(id: string): void {
-  void deleteComputer(id);
+  const run = runs.find((entry) => entry.id === id);
+  if (!run?.cloudInstanceId || run.phase === "deleting" || run.phase === "done") return;
+  const movedChatIds = run.kind === "live" ? run.movedChatIds ?? null : null;
+  update(id, (entry) => ({ ...entry, phase: "deleting", error: null }));
+  void deleteCloudLaneWithCheck({
+    instanceId: run.cloudInstanceId,
+    laneName: run.laneName,
+    askFirst: false,
+    ...(movedChatIds ? { onlyChats: movedChatIds } : { keepChats: true }),
+  }).then((deleted) => {
+    // The delete flow says how it went in its own toast.
+    update(id, (entry) => (deleted ? { ...entry, phase: "done" } : { ...entry, phase: "deleteFailed" }));
+    if (deleted) forgetLater(id);
+  });
 }
 
 /** Stops showing an ended run. */
@@ -376,7 +444,7 @@ function resume(): void {
     if (!Array.isArray(saved)) return;
     for (const run of saved) {
       if (!run?.id || !run.pin) continue;
-      // A delete cut off by the reload is tried again: the move had arrived.
+      // A delete cut off by the reload shows as not done, with Try again: the move had arrived.
       const phase: LaneMovePhase = run.phase === "deleting" ? "deleteFailed" : run.phase;
       runs.push({ ...run, phase });
       if (phase === "moving") schedule(run.id, run);

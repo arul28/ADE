@@ -5,8 +5,8 @@ import { useAppStore } from "../../state/appStore";
 import { useAdeCloudLaneForBinding, useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import { adeCloudMoveSource } from "../../state/adeCloudLaneWake";
 import { useCloudLaneWithoutComputerForChat } from "../chat/AdeCloudComposerParts";
-import type { LaneMoveSourceKind } from "./laneMoveModel";
-import type { LaneMoveSource } from "./useLaneMoveTargets";
+import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
+import type { LaneMoveSource, LaneMoveSourceKind } from "./laneMoveModel";
 
 /**
  * Where an open chat's lane can move from, for the composer's machine chip;
@@ -29,6 +29,8 @@ export function useChatLaneMoveSource(input: {
   const keptLane = useCloudLaneWithoutComputerForChat(pin, enabled && Boolean(sessionId));
   const machineName = useMachineLabelForBinding(pin);
   const lane = useAppStore((s) => (laneId ? findLane(s.lanes, s.crossMachineLanesByMachineId, laneId) : null));
+  // The machine's lane slice, which `adeCloudMoveSource` reads: a change to it renders again.
+  const slice = useAppStore((s) => (pin?.kind === "remote" ? s.crossMachineLanesByMachineId[pin.targetId] ?? null : null));
   // The cloud state is read when the chip renders; the index and the saved
   // chat locations it reads are the ones the chip's own label follows.
   const cloudKind = cloudLane && sessionId ? adeCloudMoveSource(pin, sessionId) : null;
@@ -45,7 +47,7 @@ export function useChatLaneMoveSource(input: {
         pin,
         sessionId,
         machineKey: keptLane.formerMachineKey,
-        machineName: "ADE Cloud",
+        machineName: ADE_CLOUD_NAME,
         cloudInstanceId: null,
       };
     }
@@ -75,7 +77,7 @@ export function useChatLaneMoveSource(input: {
     };
     // Keyed on the pin's key: a rebuilt pin is the same machine.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, sessionId, laneId, pinKey, keptLane, cloudLane?.laneId, cloudLane?.laneName, cloudLane?.instanceId, cloudKind, laneName, machineName]);
+  }, [enabled, sessionId, laneId, pinKey, keptLane, cloudLane?.laneId, cloudLane?.laneName, cloudLane?.instanceId, cloudKind, laneName, machineName, slice]);
 }
 
 function findLane(

@@ -14,7 +14,7 @@ import {
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
 import { openBytes, openJson, sealBytes, sealJson, userKeys, type UserKeys } from "./seal";
-import { logCloud, ownMachineMoveRefusal, ownedComputer, type CloudEnv, type ComputerRow } from "./store";
+import { logCloud, moveQueuedMessagesStatement, ownMachineMoveTarget, ownedComputer, type CloudEnv, type ComputerRow } from "./store";
 
 /**
  * CLI-session and shell copies (README, "ADE without a computer"). A cloud
@@ -313,46 +313,60 @@ export function deleteAccountSessionCopiesStatement(env: Pick<CloudEnv, "DB">, u
 /**
  * `POST /cloud/sessions/:m/:s/move`, from the new computer that continued a
  * deleted computer's CLI: the copy goes to the new computer's machine key,
- * sealed again under it, and the CLI's queued messages follow it. Later sends
- * then reach the new computer, and a send to the old address finds it by its
- * session id (`resolveTarget`). The same move again answers `moved: false`.
+ * sealed again under it, and the CLI's queued messages follow it
+ * (`moveQueuedMessagesStatement`). Later sends then reach the new computer,
+ * and a send to the old address finds it by its session id
+ * (`resolveTarget`). The same move again answers `moved: false`.
+ *
+ * Two moves of one copy at once: the batch that still finds the source,
+ * in the same transaction that deletes it, is the one that moves it. The
+ * other inserts nothing and answers `moved: false` when the copy is at its
+ * destination already, else `session_moved` (409): the copy went to
+ * another machine.
  */
 async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, userId: string, machineKey: string, sessionId: string, now: number): Promise<Response> {
   const body = await readCappedJson(request, BODY_OVERHEAD_BYTES);
   if (!body.ok) return unreadable();
-  const toMachineKey = typeof body.value.toMachineKey === "string" ? body.value.toMachineKey.trim() : "";
+  const requestedKey = typeof body.value.toMachineKey === "string" ? body.value.toMachineKey.trim() : "";
   const named = body.value.instanceId;
   const instanceId = typeof named === "string" ? named.trim() : "";
   // No `instanceId`: the person's own machine takes a CLI whose computer is deleted (a kept lane moved to it).
   const ownMachine = named == null;
-  if (!ROW_ID.test(toMachineKey) || (!ownMachine && !CLOUD_INSTANCE_ID.test(instanceId))) return unreadable();
+  if (!ROW_ID.test(requestedKey) || (!ownMachine && !CLOUD_INSTANCE_ID.test(instanceId))) return unreadable();
   let computer: { instance_id: string | null };
+  // The destination key as the account stores it: reads match it exactly.
+  let toMachineKey = requestedKey;
   if (ownMachine) {
-    const refusal = await ownMachineMoveRefusal(env, userId, machineKey, toMachineKey);
-    if (refusal) return fail(refusal.code, refusal.message, refusal.status);
+    const target = await ownMachineMoveTarget(env, userId, machineKey, requestedKey);
+    if (!target.ok) return fail(target.code, target.message, target.status);
+    toMachineKey = target.machineKey;
     computer = { instance_id: null };
   } else {
     const owned = await ownedComputer(env, userId, instanceId);
     // Only the caller's own computer, and only to its own machine key.
     if (!owned || owned.deleted_at != null) return fail("not_found", "ADE Cloud has no such computer.", 404);
-    if (owned.machine_key && owned.machine_key.toLowerCase() !== toMachineKey.toLowerCase()) {
+    if (owned.machine_key && owned.machine_key.toLowerCase() !== requestedKey.toLowerCase()) {
       return fail("wrong_machine", "A session moves only to the machine key of the computer that asks.", 409);
     }
+    toMachineKey = owned.machine_key ?? requestedKey;
     computer = owned;
   }
+  const sessionMoved = () => fail("session_moved", "This CLI's saved copy moved to another machine.", 409);
   const rowAt = (key: string) => env.DB.prepare("select * from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and kind = 'cli'")
     .bind(userId, key, sessionId).first<SessionRow>();
-  const moveMessages = env.DB.prepare(`
-    update cloud_chat_messages set machine_key = ?, instance_id = case when via_launch = 0 and state = 'queued' then ? else instance_id end
-    where user_id = ? and machine_key = ? and chat_id = ?
-  `).bind(toMachineKey, computer.instance_id, userId, machineKey, sessionId);
+  const moveMessages = moveQueuedMessagesStatement(env, { userId, fromMachineKey: machineKey, toMachineKey, chatId: sessionId, instanceId: computer.instance_id, now });
   if (machineKey === toMachineKey) return json({ moved: false } satisfies CloudSessionMoveResult);
   const source = await rowAt(machineKey);
   const target = await rowAt(toMachineKey);
   if (!source) return target ? json({ moved: false } satisfies CloudSessionMoveResult) : notFound();
+  /** The source is still the row this move read: the condition that makes this move the one that moves it. */
+  const sourceStillHere = "exists (select 1 from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and r2_key = ?)";
+  const claimSource = env.DB.prepare("delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and r2_key = ?")
+    .bind(userId, machineKey, sessionId, source.r2_key);
   if (target) {
-    // The new computer saved its own copy already: the old one only goes.
-    await env.DB.batch([moveMessages, env.DB.prepare("delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ?").bind(userId, machineKey, sessionId)]);
+    // The new computer saved its own copy already: the old one only goes. The delete is the claim.
+    const results = await env.DB.batch([claimSource, moveMessages]);
+    if ((results[0]?.meta?.changes ?? 0) !== 1) return await rowAt(toMachineKey) ? json({ moved: false } satisfies CloudSessionMoveResult) : sessionMoved();
     await bucket.delete(source.r2_key);
     logCloud("cloud.session_moved", { userId, instanceId: computer.instance_id });
     return json({ moved: true } satisfies CloudSessionMoveResult);
@@ -369,15 +383,25 @@ async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, use
   const key = objectKey(userId, toMachineKey, sessionId);
   await bucket.put(key, await sealBytes(keys.aes, copyAad(userId, toMachineKey, sessionId), opened));
   const resealed = summary == null ? null : await sealJson(keys, summaryAad(userId, toMachineKey, sessionId), summary);
-  await env.DB.batch([
+  // One transaction: the insert holds only while the source is still the row read above, then the
+  // source goes. Of two moves at once, the one that runs second inserts nothing.
+  const results = await env.DB.batch([
     env.DB.prepare(`
       insert into cloud_session_copies (user_id, machine_key, session_id, instance_id, project_key, lane_id, kind, parent_chat_id, summary_sealed, r2_key, bytes, line_count, last_activity_at, updated_at)
-      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? where ${sourceStillHere}
     `).bind(userId, toMachineKey, sessionId, computer.instance_id, source.project_key, source.lane_id, source.kind, source.parent_chat_id, resealed, key,
-      source.bytes, source.line_count, source.last_activity_at, now),
+      source.bytes, source.line_count, source.last_activity_at, now, userId, machineKey, sessionId, source.r2_key),
+    // Moved by the move that won: none are left under the old key, so this changes nothing for the other.
     moveMessages,
-    env.DB.prepare("delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ?").bind(userId, machineKey, sessionId),
+    claimSource,
   ]);
+  if ((results[0]?.meta?.changes ?? 0) !== 1) {
+    // The same move won already: its copy is under this key, so the object stays.
+    if (await rowAt(toMachineKey)) return json({ moved: false } satisfies CloudSessionMoveResult);
+    // Another machine took it: the object this move wrote belongs to no row.
+    await bucket.delete(key);
+    return sessionMoved();
+  }
   await bucket.delete(source.r2_key);
   logCloud("cloud.session_moved", { userId, instanceId: computer.instance_id });
   return json({ moved: true } satisfies CloudSessionMoveResult);

@@ -21,6 +21,9 @@ struct LaneDetailScreen: View {
   /// The machine the lane lives on, for the Duo's subtitle and dashboard.
   let machineName: String?
   let onRefreshRoot: @MainActor () async -> Void
+  /// Set by the host after "Wake and move" on the lane at rest: the move
+  /// sheet opens once the lane's chats are read.
+  @Binding var moveAfterWake: Bool
 
   @State private(set) var detail: LaneDetailPayload?
   @State var errorMessage: String?
@@ -68,6 +71,7 @@ struct LaneDetailScreen: View {
     showsBackButton: Bool = true,
     embedded: Bool = false,
     machineName: String? = nil,
+    moveAfterWake: Binding<Bool> = .constant(false),
     onRefreshRoot: @escaping @MainActor () async -> Void
   ) {
     self.laneId = laneId
@@ -78,6 +82,7 @@ struct LaneDetailScreen: View {
     self.embedded = embedded
     self.machineName = machineName
     self.onRefreshRoot = onRefreshRoot
+    _moveAfterWake = moveAfterWake
   }
 
   var currentSnapshot: LaneListSnapshot {
@@ -211,8 +216,10 @@ struct LaneDetailScreen: View {
     }
     // "Wake and move" on the lane at rest: the computer is up, so the move
     // sheet opens once the lane's chats are read.
-    .onChange(of: detail != nil, initial: true) { _, loaded in
-      if loaded, LaneMoveAfterWake.take(laneId: laneId), !laneMoveChats(detail?.chatSessions ?? []).isEmpty {
+    .onChange(of: detail != nil && moveAfterWake, initial: true) { _, ready in
+      guard ready else { return }
+      moveAfterWake = false
+      if !laneMoveChats(detail?.chatSessions ?? []).isEmpty {
         movePresented = true
       }
     }
