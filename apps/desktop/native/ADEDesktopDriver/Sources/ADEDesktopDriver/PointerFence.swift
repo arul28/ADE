@@ -18,6 +18,8 @@ final class PointerFence {
     private var runLoopSource: CFRunLoopSource?
     private var lastRealDisplayId: CGDirectDisplayID?
     private var lastFailureLogAt = Date.distantPast
+    /// The "no grant" line is logged once per off period, not on every retry.
+    private var reportedNoGrant = false
     /// Lane displays the pointer may cross because a real display is cut off
     /// behind them. Read on every fenced event, so it is computed on display
     /// changes (`refreshRoutes`), never per event.
@@ -41,10 +43,13 @@ final class PointerFence {
         // macOS 27 gates even a listen-only mouse tap behind Input Monitoring,
         // and creating the tap with no grant shows the system prompt by
         // itself, with nothing on screen to explain it. The tap could not run
-        // without the grant either, so skip it and say so. The next display
-        // change tries again, which picks up a grant given meanwhile.
+        // without the grant either, so skip it and say so. The driver calls
+        // this again on each permission probe, which picks up a later grant.
         if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27, !CGPreflightListenEventAccess() {
-            logFailure("pointer fence off: ADE has no Input Monitoring grant, so the pointer can cross onto a lane display at a shared corner")
+            if !reportedNoGrant {
+                reportedNoGrant = true
+                log("pointer fence off: ADE has no Input Monitoring grant, so the pointer can cross onto a lane display at a shared corner")
+            }
             return
         }
         let types: [CGEventType] = [
@@ -81,6 +86,10 @@ final class PointerFence {
         refreshRoutes()
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        if reportedNoGrant {
+            reportedNoGrant = false
+            log("pointer fence on: Input Monitoring was granted")
+        }
     }
 
     func stop() {

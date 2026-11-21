@@ -563,12 +563,19 @@ final class DriverRuntime: NSObject {
     /// A lane display was added or removed: the fence and the permission
     /// probe each run only while this driver owns a display.
     private func displaySetChanged() {
+        syncPointerFence()
+        updatePermissionProbe()
+    }
+
+    /// The fence runs while this driver owns a lane display. Also called on
+    /// each permission probe, so an Input Monitoring grant given while a
+    /// display is up starts it (`start` returns at once when it already runs).
+    private func syncPointerFence() {
         if displays.all().isEmpty {
             pointerFence.stop()
         } else {
             pointerFence.start()
         }
-        updatePermissionProbe()
     }
 
     private func updatePermissionProbe() {
@@ -598,6 +605,7 @@ final class DriverRuntime: NSObject {
         lastPermissions = Permissions.snapshot()
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.probePermissionsForChange()
+            self?.syncPointerFence()
         }
         RunLoop.main.add(timer, forMode: .common)
         permissionTimer = timer
