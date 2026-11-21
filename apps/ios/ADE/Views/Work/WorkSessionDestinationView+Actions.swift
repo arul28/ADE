@@ -494,6 +494,24 @@ extension WorkSessionDestinationView {
     return remote ?? syncService
   }
 
+  /// The chat's own machine is an ADE Cloud computer (its key, never the
+  /// tab's machine unless the chat lives there).
+  var providerSignInIsAdeCloud: Bool {
+    syncService.isCloudFleetKey(sessionCloudMachineKey)
+  }
+
+  /// Where the chat reads the account's sign-ins: the chat machine's live
+  /// connection, then the machine the phone drives. Account-wide, so either
+  /// answers the same; a read only uses a connection that is already up, so
+  /// it never wakes a cloud computer.
+  var adeCloudSignInReadHosts: [ProviderAccountsHost] {
+    guard providerSignInIsAdeCloud else { return [] }
+    var hosts: [ProviderAccountsHost] = []
+    if let remote = syncService.remoteChatConnection(for: sessionId) { hosts.append(remote) }
+    hosts.append(syncService)
+    return hosts
+  }
+
   /// The chat's machine, by name, for the sign-in card.
   var providerSignInMachineName: String {
     if let remote = syncService.remoteChatConnection(for: sessionId) { return remote.hostName ?? "its computer" }

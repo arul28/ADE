@@ -5240,11 +5240,12 @@ func eventCard(
       return WorkEventCardModel(
         id: envelope.id,
         kind: "error",
-        title: "\(name) was signed out",
+        // The card below fixes it: a sign-in on the computer, or on ADE Cloud the account's Claude pass.
+        title: "\(name) couldn't sign in",
         icon: "person.crop.circle.badge.exclamationmark",
         tint: .warning,
         timestamp: envelope.timestamp,
-        body: "Sign in below and your message sends again.",
+        body: "Fix the sign-in below, and your message sends again.",
         bullets: [],
         metadata: [],
         technicalDetail: detail ?? message,

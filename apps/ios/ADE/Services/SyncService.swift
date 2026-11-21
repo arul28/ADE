@@ -3163,10 +3163,12 @@ enum SyncUserFacingError {
       return "The computer took too long to answer."
     }
     if isSyncHostUnavailableError(error) {
-      if let snapshot = syncHostReadinessSnapshot(from: error) {
+      // The snapshot is read after the refusal, so it can already say
+      // "ready". The command still failed: never show that line as the error.
+      if let snapshot = syncHostReadinessSnapshot(from: error), snapshot.state != .ready {
         return snapshot.body
       }
-      return "This machine's project connection isn't ready yet."
+      return "This machine's project connection isn't ready yet. Try again in a moment."
     }
     if syncCodeIsPairingRejection(nsError.userInfo["ADEErrorCode"] as? String) {
       return "This phone is no longer paired with this machine. Pair again from Settings."

@@ -1595,6 +1595,12 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// A Muse chat before anything is sent: the machine says Muse has no login,
   /// so the card shows before a send.
   case chatSignInBeforeSend = "chat-signin-before-send"
+  /// A Claude chat on an ADE Cloud computer whose turn stopped because Claude
+  /// ended the account's pass: the pass card, not a sign-in on the computer.
+  /// See `WorkCloudClaudePassPreviewMachine`.
+  case chatSignInCloudPass = "chat-signin-cloud-pass"
+  /// The same chat before anything is sent: the pass card holds the send.
+  case chatSignInCloudPassBeforeSend = "chat-signin-cloud-pass-before-send"
   /// Settings › Account signed in, with three account machines. See
   /// `SettingsAccountPreviewHost`.
   case settingsAccount = "settings-account"
@@ -1913,6 +1919,10 @@ struct ADEPreviewScreenHost: View {
       WorkProviderSignInPreviewHost(recovered: true)
     case .chatSignInBeforeSend:
       WorkProviderSignInPreviewHost(beforeSend: true)
+    case .chatSignInCloudPass:
+      WorkCloudClaudePassPreviewHost(beforeSend: false)
+    case .chatSignInCloudPassBeforeSend:
+      WorkCloudClaudePassPreviewHost(beforeSend: true)
     case .settingsAccount:
       SettingsAccountPreviewHost()
     case .hubAccount:
@@ -3234,6 +3244,86 @@ private struct WorkProviderSignInPreviewHost: View {
         providerSignInMachineName: "Studio Mac"
       )
     }
+  }
+}
+
+/// `chat-signin-cloud-pass`: a Claude chat on an ADE Cloud computer after
+/// Claude ended the account's pass. The card points at the pass, and its
+/// button opens Settings › Providers › ADE Cloud › Claude.
+private struct WorkCloudClaudePassPreviewHost: View {
+  let beforeSend: Bool
+  @StateObject private var machine = WorkCloudClaudePassPreviewMachine()
+
+  private static let transcript: [WorkChatEnvelope] = {
+    let sessionId = WorkPreviewData.chatSummary.sessionId
+    let stamp = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-120))
+    var failure = WorkChatEnvelope(
+      sessionId: sessionId,
+      timestamp: stamp,
+      sequence: 2,
+      event: .error(
+        message: "Claude Code is not signed in.",
+        detail: nil,
+        category: "auth",
+        turnId: "turn-1",
+        title: "Authentication issue",
+        nextAction: ""
+      )
+    )
+    failure.signedOutAgent = "claude"
+    return [
+      WorkChatEnvelope(sessionId: sessionId, timestamp: stamp, sequence: 1, event: .userMessage(text: "Add a dark mode switch to the settings screen", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: true)),
+      failure,
+    ]
+  }()
+
+  var body: some View {
+    NavigationStack {
+      cloudChat
+    }
+  }
+
+  private var cloudChat: WorkChatSessionView {
+    var view = workPreviewChatSessionView(
+      transcript: beforeSend ? [] : Self.transcript,
+      provider: "claude",
+      providerSignInHost: machine,
+      providerSignInMachineName: "ADE Cloud"
+    )
+    view.providerSignInIsAdeCloud = true
+    view.adeCloudSignInReadHosts = [machine]
+    return view
+  }
+}
+
+/// The account as an ADE Cloud computer reads it: sign-ins shared with ADE
+/// Cloud, and one Claude pass that Claude ended two days ago.
+@MainActor
+private final class WorkCloudClaudePassPreviewMachine: ObservableObject, ProviderAccountsHost {
+  var supportsProviderAccounts: Bool { true }
+  var canChangeProviderAccounts: Bool { true }
+  var providerAccountsConnected: Bool { true }
+
+  func runProviderAccountsCommand(_ action: String, args: [String: Any]) async throws -> Any {
+    guard action == "providerLogins.status" else { return [String: Any]() }
+    let endedAt = Date().addingTimeInterval(-2 * 86_400).timeIntervalSince1970 * 1000
+    return [
+      "thisComputer": ["capture": "on", "reason": NSNull(), "message": NSNull(), "label": "ADE Cloud", "cloudComputer": true],
+      "cloud": ["enabled": true, "inUse": [String: String]()],
+      "signIns": [Any](),
+      "providers": [Any](),
+      "claudePasses": [[
+        "key": "claude-pass/0123456789ab",
+        "unreadable": false,
+        "label": "Claude pass",
+        "email": "sam@example.com",
+        "on": true,
+        "newChats": true,
+        "endsInDays": 0,
+        "state": "ended",
+        "endedAt": endedAt,
+      ]],
+    ]
   }
 }
 

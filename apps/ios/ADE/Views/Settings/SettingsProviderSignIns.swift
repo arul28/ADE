@@ -104,7 +104,15 @@ func providerCloudTile(_ provider: String, status: ProviderLoginsPhoneStatus) ->
   }
   if provider == "claude" {
     // Claude's own login is never carried: ADE Cloud uses a Claude pass.
-    let passes = (status.claudePasses ?? []).filter { $0.unreadable != true && $0.on != false }
+    switch providerCloudClaudePassNeed(status) {
+    case .ended(let at):
+      return tile(.notSignedIn, nil, providerCloudPassEndedLine(at))
+    case .off:
+      return tile(.notSignedIn, nil, "Off for ADE Cloud")
+    case .noPass, nil:
+      break
+    }
+    let passes = (status.claudePasses ?? []).filter { $0.unreadable != true && $0.on != false && $0.state != "ended" }
     if let pass = passes.first(where: { $0.newChats == true }) ?? passes.first {
       let ends = pass.endsInDays.map { $0 <= 14 ? ". Ends in \(max(0, Int($0))) days" : "" } ?? ""
       return tile(.signedIn, pass.email ?? pass.label, "Cloud pass\(ends)")
@@ -125,6 +133,57 @@ func providerCloudTile(_ provider: String, status: ProviderLoginsPhoneStatus) ->
     return tile(.notSignedIn, nil, "Every sign-in is off for ADE Cloud")
   }
   return tile(.notSignedIn, nil, "Sign in on any of your computers")
+}
+
+/// Why ADE Cloud has no Claude pass that works, from the account's passes
+/// (desktop `claudeTile` rows C1, C5 and C6).
+enum ProviderCloudClaudePassNeed: Equatable {
+  /// C1: the account has no Claude pass.
+  case noPass
+  /// C5: Claude ended every pass. The date is when the newest one ended.
+  case ended(at: Date?)
+  /// C6: no pass that still works is on for ADE Cloud.
+  case off
+}
+
+/// What ADE Cloud lacks to run Claude, or nil when a pass works or the phone
+/// can't tell (an older brain, a pass it can't read). Only a definite answer
+/// may hold a send. Sign-ins switched off for ADE Cloud are checked by the
+/// caller: that is a choice, not a missing pass.
+func providerCloudClaudePassNeed(_ status: ProviderLoginsPhoneStatus) -> ProviderCloudClaudePassNeed? {
+  guard let passes = status.claudePasses else { return nil }
+  if passes.isEmpty { return .noPass }
+  // A pass with no state comes from an older brain: not known, never ended.
+  let readable = passes.filter { $0.unreadable != true && $0.state != nil }
+  guard !readable.isEmpty else { return nil }
+  if readable.allSatisfy({ $0.state == "ended" }) {
+    let newest = readable.compactMap(\.endedAt).max()
+    return .ended(at: newest.map { Date(timeIntervalSince1970: $0 / 1000) })
+  }
+  if !readable.contains(where: { $0.on != false && $0.state != "ended" }) { return .off }
+  return nil
+}
+
+/// "today", "yesterday" or "on Nov 3", after "stopped working".
+func providerCloudPassEndDay(_ date: Date) -> String {
+  if Calendar.current.isDateInToday(date) { return "today" }
+  if Calendar.current.isDateInYesterday(date) { return "yesterday" }
+  let sameYear = Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year)
+  return "on " + (sameYear
+    ? date.formatted(.dateTime.month(.abbreviated).day())
+    : date.formatted(.dateTime.month(.abbreviated).day().year()))
+}
+
+/// "Claude ended your pass on Nov 3" (C5).
+func providerCloudPassEndedLine(_ endedAt: Date?) -> String {
+  endedAt.map { "Claude ended your pass \(providerCloudPassEndDay($0))" } ?? "Claude ended your pass"
+}
+
+/// The words of an ended pass, as desktop's end notice says them
+/// (`adeCloudEndNotice.ts`). The phone can't make a pass: it says where to.
+func providerCloudPassEndedDetail(_ endedAt: Date?) -> String {
+  let stopped = endedAt.map { "stopped working \(providerCloudPassEndDay($0))" } ?? "stopped working"
+  return "Claude chats and automations on your ADE Cloud computers \(stopped). ADE can't renew a pass on its own: renew it in the ADE desktop app, in Settings › Providers › ADE Cloud › Claude, and they work again."
 }
 
 /// Settings › Providers › ADE Cloud: the same tiles as each computer, the
@@ -168,9 +227,9 @@ struct ProviderCloudPlace: View {
           ADESettingsNotice(message: error, tone: .crit, dismiss: { model.error = nil })
         }
       } else if model.failed {
-        ADESettingsNotice(message: "ADE couldn't read your sign-ins on \(syncService.machineDisplayName).", actionTitle: "Retry") {
+        ADESettingsNotice(message: "ADE couldn't read your sign-ins on \(syncService.machineDisplayName).", actionTitle: "Retry", action: {
           Task { await model.load() }
-        }
+        })
       } else {
         ADESettingsRows { ADESettingsLoadingRow(title: "Reading your sign-ins…") }
       }
@@ -241,6 +300,14 @@ struct ProviderCloudProviderPage: View {
         .adeKitCard()
         let cards = status.cards(for: provider)
         if provider == "claude" {
+          switch status.cloud.enabled ? providerCloudClaudePassNeed(status) : nil {
+          case .ended(let at):
+            ADESettingsNotice(message: "Claude ended your pass for ADE Cloud. \(providerCloudPassEndedDetail(at))", tone: .crit)
+          case .off:
+            ADESettingsNotice(message: "Every Claude pass is off for ADE Cloud. Turn one on in the ADE desktop app, in Settings › Providers › ADE Cloud › Claude.", tone: .warn)
+          case .noPass, nil:
+            EmptyView()
+          }
           ADESettingsNotice(message: "ADE Cloud never uses Claude's own login. A Claude pass (one approve, good for a year, cloud only) is made in the ADE desktop app.", tone: .neutral)
         } else if cards.isEmpty {
           ADESettingsNotice(message: status.provider(provider)?.carry == "fallback"
@@ -266,6 +333,13 @@ struct ProviderCloudProviderPage: View {
         if let error = model.error {
           ADESettingsNotice(message: error, tone: .crit, dismiss: { model.error = nil })
         }
+      } else if model.failed || !model.supported {
+        // Opened from a chat, the read can fail where Settings would not show this page.
+        ADESettingsNotice(message: "ADE couldn't read your sign-ins. Connect to one of your computers, then try again.", actionTitle: "Retry", action: {
+          Task { await model.load() }
+        })
+      } else {
+        ADESettingsRows { ADESettingsLoadingRow(title: "Reading your sign-ins…") }
       }
     }
     .confirmationDialog(
