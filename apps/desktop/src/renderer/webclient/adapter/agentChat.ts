@@ -422,7 +422,18 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     crossMachineBatchSourceChanged: async (args, pin) => {
       guardPin("crossMachineBatchSourceChanged", pin);
-      return await callRequiredRead<AgentChatCrossMachineBatchSourceChangedResult>("chat.crossMachineBatchSourceChanged", args);
+      // Its answer decides a delete: only the host's answer now counts, never a kept one.
+      return await commands.call<AgentChatCrossMachineBatchSourceChangedResult>(
+        "chat.crossMachineBatchSourceChanged",
+        asRecord(args),
+        {
+          fallback: () => {
+            throw new Error("Chat history action 'chat.crossMachineBatchSourceChanged' is unavailable on the connected ADE host.");
+          },
+          authoritative: true,
+          retainLastRead: false,
+        },
+      );
     },
     retryCrossMachineBatchMove: async (args, pin) => {
       guardPin("retryCrossMachineBatchMove", pin);

@@ -186,13 +186,17 @@ async function handlePutPart(request: Request, env: CloudEnv, bucket: R2Bucket, 
   if (!keys) return unavailable();
   const key = partKey(upload.prefix, part);
   await bucket.put(key, await sealBytes(keys.aes, partAad(userId, machineKey, chatId, part), plain));
-  // Only this upload's count. A newer part 1 since then replaced it: this part belongs to nothing.
+  // Only this upload's count. It is not pending any more: a newer part 1 replaced it (this part belongs
+  // to nothing and goes), or it committed while this part was written (a repeat of a part it has, kept:
+  // the committed capsule reads it). Once replaced, an upload never commits, so the read below holds.
   const counted = await env.DB.prepare(`
     update cloud_fork_capsules set pending_parts = max(pending_parts, ?), pending_bytes = ?, updated_at = ?
     where user_id = ? and machine_key = ? and chat_id = ? and pending_r2_key = ?
   `).bind(part, bytesAfter, now, userId, machineKey, chatId, upload.prefix).run();
   if ((counted.meta?.changes ?? 0) !== 1) {
-    await bucket.delete(key);
+    const current = await readRow(env, userId, machineKey, chatId);
+    const committed = current?.committed_at != null && current.r2_key === upload.prefix && part <= current.parts;
+    if (!committed) await bucket.delete(key);
     return replaced();
   }
   const uploadId = uploadIdOf(upload.prefix);
@@ -264,16 +268,27 @@ async function handleReadPart(env: CloudEnv, bucket: R2Bucket, userId: string, m
   return new Response(opened as Uint8Array<ArrayBuffer>, { status: 200, headers: { "content-type": "application/octet-stream", "cache-control": "no-store" } });
 }
 
-/** Removes one capsule: its parts, any upload in progress, and its row. */
+/**
+ * Removes one capsule: its parts, any upload in progress, and its row. The
+ * row is marked first (unreadable, no upload pending), so a part in flight
+ * counts nothing and removes its own object, and a sweep that fails leaves
+ * the row for a delete again to finish.
+ */
 export async function deleteCapsule(env: CloudEnv, userId: string, machineKey: string, chatId: string): Promise<void> {
   const row = await readRow(env, userId, machineKey, chatId);
   if (!row) return;
+  await env.DB.prepare(`
+    update cloud_fork_capsules set committed_at = null, pending_r2_key = null, pending_parts = 0, pending_bytes = 0
+    where user_id = ? and machine_key = ? and chat_id = ?
+  `).bind(userId, machineKey, chatId).run();
   const bucket = env.CLOUD_CHATS;
   if (bucket) {
     // Every upload's prefix is under the capsule's own prefix.
     await deleteUnder(bucket, capsulePrefix(userId, machineKey, chatId));
   }
-  await env.DB.prepare("delete from cloud_fork_capsules where user_id = ? and machine_key = ? and chat_id = ?").bind(userId, machineKey, chatId).run();
+  // Still as marked: a new save that started meanwhile is a capsule of its own, and stays.
+  await env.DB.prepare("delete from cloud_fork_capsules where user_id = ? and machine_key = ? and chat_id = ? and pending_r2_key is null and committed_at is null")
+    .bind(userId, machineKey, chatId).run();
 }
 
 /** A lane's capsules on one machine go with the lane. Bounded: a lane has few chats. */

@@ -225,7 +225,7 @@ struct LaneMoveReviewView: View {
       ? laneMoveProgressRows(batch: run.batch, review: items)
       : laneMoveProgressRows(restore: run.restore, review: preview?.items ?? [])
     let arrived = parts.filter { $0.state == .arrived }.count
-    let ended = run.phase == .failed || run.phase == .deleteFailed || run.phase == .moveAgain
+    let ended = run.phase == .failed || run.phase == .deleteFailed || run.phase == .moveAgain || run.phase == .pushFirst
     let failure = parts.first(where: { $0.state == .failed && $0.error != nil })?.error ?? run.error
     Section {
       VStack(alignment: .leading, spacing: 6) {
@@ -282,6 +282,7 @@ struct LaneMoveReviewView: View {
     case .done: return run.deletesComputer ? "Moved. The \(cloud) computer is deleted." : "Moved. Everything arrived."
     case .deleteFailed: return "Everything arrived, but the \(cloud) computer is still there."
     case .moveAgain: return "Everything the move carried arrived. The lane on \(cloud) has more since, so its computer is kept. Move the lane again to bring it."
+    case .pushFirst: return "Everything the move carried arrived, but the lane's files on \(cloud) may have changed since, so its computer is kept. Push to GitHub and delete commits the lane's files there, pushes them to its branch, checks nothing is left off GitHub, then deletes the computer. Then pull the branch on \(run.targetName)."
     case .failed:
       if run.computer != nil { return "Not all of it arrived. The \(cloud) computer is kept, so nothing is lost." }
       if run.kind == .restore, run.fromComputer != nil { return "Not all of it arrived. The lane stays in your account, so nothing is lost." }
@@ -341,6 +342,22 @@ struct LaneMoveReviewView: View {
           .adeInspectable("Lanes.Move.RetryDelete")
           Button("Close") { close() }
             .buttonStyle(ADEKitButtonStyle(wide: true))
+        case .pushFirst:
+          Button {
+            ADEHaptics.light()
+            runs.pushAndDelete(id: run.id)
+          } label: {
+            Label("Push to GitHub and delete", systemImage: "arrow.up.circle")
+          }
+          .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
+          .adeInspectable("Lanes.Move.PushAndDelete")
+          // Keeps the computer: the run ends; the computer's own screen can still delete it.
+          Button("Keep computer") {
+            runs.dismiss(id: run.id)
+            close()
+          }
+          .buttonStyle(ADEKitButtonStyle(wide: true))
+          .adeInspectable("Lanes.Move.KeepComputer")
         case .moveAgain:
           // Nothing to retry: Close ends this run, and the lane's sheet starts a fresh move.
           Button("Close") {

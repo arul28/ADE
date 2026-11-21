@@ -461,12 +461,15 @@ async function eventWakeComputer(env: CloudEnv, computer: ComputerRow, now: numb
  * while no delete claims the row, and that clears the backups it rested with,
  * which every delete claim needs. Of a wake and a delete claim at once,
  * exactly one write passes: a claim first refuses the wake here, and a wake
- * first makes the claim fail. False when a delete holds the computer. A start
- * that then fails leaves the computer resting not saved; its next sleep saves it.
+ * first makes the claim fail. It clears the report too, as a wake's status
+ * write does, so a Sleep that saved before this wake can't mark the computer
+ * resting with that report after it (`markRestedWithBackups` needs the
+ * report). False when a delete holds the computer. A start that then fails
+ * leaves the computer resting not saved; its next sleep saves it.
  */
 async function takeFromDeletes(env: CloudEnv, instanceId: string, now: number): Promise<boolean> {
   const taken = await env.DB.prepare(`
-    update cloud_computers set backup_rest_at = null
+    update cloud_computers set backup_rest_at = null, backup_report_state = null, backup_report_id = null
     where instance_id = ? and deleted_at is null and (idle_deleting_at is null or idle_deleting_at < ?)
   `).bind(instanceId, now - SAVED_DELETE_CLAIM_STALE_MS).run();
   return (taken.meta?.changes ?? 0) === 1;
@@ -911,20 +914,23 @@ async function resizeAwake(
   provider: CloudProvider,
   resize: { cpu: number; memory: number; disk?: number },
   now: number,
-): Promise<{ status: string } | { blocked: Refused }> {
-  const wake = async (): Promise<Refused | null> => {
+): Promise<{ status: string } | { blocked: Refused } | { refused: Response }> {
+  const wake = async (): Promise<{ blocked: Refused } | { refused: Response } | null> => {
     const { blocked } = await wakeBlocker(env, computer.user_id, now);
-    if (blocked) return blocked;
+    if (blocked) return { blocked };
     const capped = await awakeRoom(env, { ...computer, status: "sleeping" }, now);
-    if (capped) return capped;
+    if (capped) return { blocked: capped };
+    // As every wake: it is use, and a delete that holds the computer refuses it in the same write.
+    const deleting = await idleUseRefusal(env, { ...computer, status: "sleeping" }, now);
+    if (deleting) return { refused: deleting };
     const status = await provider.startInstance(computer.instance_id);
     await recordStatus(env, computer, status, now, "resize");
     return null;
   };
   let woken = false;
   if (computer.status === "sleeping") {
-    const blocked = await wake();
-    if (blocked) return { blocked };
+    const stopped = await wake();
+    if (stopped) return stopped;
     woken = true;
   }
   try {
@@ -937,8 +943,8 @@ async function resizeAwake(
     // The provider gives no time it fell asleep, so the stretch up to now is
     // metered: at most the row's lag (about a minute), accepted.
     if (computer.status !== "sleeping") await recordStatus(env, computer, "sleeping", now, "resize");
-    const blocked = await wake();
-    if (blocked) return { blocked };
+    const stopped = await wake();
+    if (stopped) return stopped;
     return { status: await provider.resizeInstance(computer.instance_id, resize) };
   }
 }
@@ -1031,6 +1037,10 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
       if ("blocked" in awake) {
         if (nextDisk !== currentDisk) await releaseDiskReservation();
         return refuse(awake.blocked);
+      }
+      if ("refused" in awake) {
+        if (nextDisk !== currentDisk) await releaseDiskReservation();
+        return awake.refused;
       }
       status = awake.status;
     } catch (error) {
@@ -1366,25 +1376,31 @@ async function handleDelete(request: Request, env: CloudEnv, computer: ComputerR
     await unmarkKeepLaneStatement(env, computer.instance_id).run();
   }
   const reason = shortText(body.reason, 200) ?? (keepLane ? "freed" : "user");
+  // Whether the provider's delete ran: until it did, every way out gives the mark and the claim back.
+  let providerDeleted = false;
   try {
     // A wake that passed before the claim would put work after the save: read again right before the delete.
     if (onlyIfSaved) {
       const refused = await refuseUnlessRestsSaved(env, provider, computer);
-      if (refused instanceof Response) {
-        await unmarkKeepLaneStatement(env, computer.instance_id).run();
-        await giveBack();
-        return refused;
-      }
+      if (refused instanceof Response) return refused;
     }
     await deleteComputer(env, provider, computer, { who, reason }, now);
+    providerDeleted = true;
   } catch (error) {
     // The provider deleted it but the row stayed open: the mark and the claim stay, so a
     // retry (with no live computer) or the tick finding it gone closes it with the lane kept.
-    if (error instanceof ComputerCloseError) throw error;
-    // Nothing was deleted: the mark goes, so a later close can't keep a lane nobody freed.
-    if (keepLane) await unmarkKeepLaneStatement(env, computer.instance_id).run();
-    await giveBack();
+    if (error instanceof ComputerCloseError) providerDeleted = true;
     throw error;
+  } finally {
+    if (!providerDeleted) {
+      // Nothing was deleted: the mark goes, so a later close can't keep a lane nobody freed,
+      // and the claim goes whatever that write does, so the computer takes work again.
+      if (keepLane) {
+        await unmarkKeepLaneStatement(env, computer.instance_id).run().catch((error: unknown) =>
+          reportCloudFailure("cloud.keep_lane_unmark_failed", { instanceId: computer.instance_id, message: error instanceof Error ? error.message : "unknown" }));
+      }
+      await giveBack();
+    }
   }
   // Only the person's delete takes the lane's backups. A failed create, a cancelled
   // launch, a move or a cleanup also keeps no lane here, but the backup may be the lane's only copy.

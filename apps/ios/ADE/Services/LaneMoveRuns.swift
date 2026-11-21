@@ -65,9 +65,14 @@ struct LaneMoveRun: Identifiable, Codable, Equatable {
     /// Moved, but the ADE Cloud computer could not be deleted, or ADE
     /// couldn't check the lane on it first.
     case deleteFailed
-    /// Moved, but the lane on the ADE Cloud computer has chats or files the
-    /// move didn't carry, so the computer is kept. A fresh move brings them.
+    /// Moved, but chats started on the lane on the ADE Cloud computer during
+    /// the move, so the computer is kept. A fresh move brings them.
     case moveAgain
+    /// Moved, but the lane's files on the ADE Cloud computer changed after the
+    /// move, or its older ADE can't say, so the computer is kept. Its chats
+    /// already moved, so a new move has nothing to carry: the way on is to
+    /// push the files to GitHub and delete the computer (`pushAndDelete`).
+    case pushFirst
     /// Part of it, or none of it, arrived. Nothing was deleted.
     case failed
   }
@@ -105,7 +110,9 @@ struct LaneMoveRun: Identifiable, Codable, Equatable {
     case id, kind, laneId, laneName, targetName, route, computer, phase, error, startedAt, arrived, fromComputer, movedChatIds
   }
 
-  var isOpen: Bool { phase == .moving || phase == .deleting || phase == .deleteFailed || phase == .failed || phase == .moveAgain }
+  var isOpen: Bool {
+    phase == .moving || phase == .deleting || phase == .deleteFailed || phase == .failed || phase == .moveAgain || phase == .pushFirst
+  }
 
   /// A run that keeps the lane from a second move until it is closed. A run
   /// that asks for a fresh move doesn't.
@@ -454,8 +461,10 @@ final class LaneMoveRuns: ObservableObject {
   /// What the read of the lane on the computer found before its delete.
   private enum SourceCheck {
     case clear
-    /// The lane has more since the move: the computer stays and a new move brings it.
+    /// Chats started on the lane since the move: the computer stays and a new move brings them.
     case moveAgain(String)
+    /// Its files changed since the move, or its ADE can't say: the computer stays until they are pushed.
+    case pushFirst(String)
     /// ADE couldn't read the lane: the computer stays and the delete can be tried again.
     case unreadable(String)
   }
@@ -472,13 +481,13 @@ final class LaneMoveRuns: ObservableObject {
     }
     do {
       guard let change = try await sync.laneMoveBatchSourceChanged(route: run.route, batchId: run.id) else {
-        // An older ADE on the computer can't check its files: the delete goes on, as before.
+        // An older ADE on the computer can't check its files: never a silent delete.
         laneMoveLog.notice("lane_move source_files_check=unsupported")
-        return .clear
+        return .pushFirst("The ADE on the lane's \(cloud) computer is too old to check for files that changed after the move, so ADE kept the computer. Push its work to GitHub, then pull the branch on \(run.targetName).")
       }
       if change.changed {
         laneMoveLog.notice("lane_move source_files_check=changed")
-        return .moveAgain("Files on the lane changed on \(cloud) after the move, so ADE kept the computer. Move the lane again to bring them.")
+        return .pushFirst("Files on the lane changed on \(cloud) after the move, so ADE kept the computer. Push them to GitHub, then pull the branch on \(run.targetName).")
       }
       return .clear
     } catch {
@@ -495,7 +504,7 @@ final class LaneMoveRuns: ObservableObject {
     if fixture { return }
     #endif
     guard let run = self.run(id: id), run.kind == .live, run.arrived, let computer = run.computer, let sync,
-          run.phase != .deleting, run.phase != .done, run.phase != .moveAgain else { return }
+          run.phase != .deleting, run.phase != .done, run.phase != .moveAgain, run.phase != .pushFirst else { return }
     update(id) { $0.phase = .deleting; $0.error = nil }
     let toasts = CloudLaneActions.shared
     let failure: String?
@@ -510,6 +519,15 @@ final class LaneMoveRuns: ObservableObject {
         detail: reason
       )
       forgetLater(id)
+      return
+    case .pushFirst(let reason):
+      // Its chats already moved, so a new move has nothing to carry: the move's screen offers the push.
+      update(id) { $0.phase = .pushFirst; $0.error = reason }
+      toasts.toast = ADEToastMessage(
+        text: "Moved \(run.laneName), but kept its \(ADECloudMachine.name) computer",
+        kind: .info,
+        detail: "\(reason) Open the move again to do it."
+      )
       return
     case .unreadable(let reason):
       failure = reason
@@ -555,6 +573,88 @@ final class LaneMoveRuns: ObservableObject {
         kind: .success,
         detail: "Its \(ADECloudMachine.name) computer is deleted."
       )
+    await sync.refreshCloudServerInstances()
+    forgetLater(id)
+  }
+
+  /// For a move whose lane files changed on the ADE Cloud computer after it
+  /// (`pushFirst`): ADE commits and pushes the computer's lane work to
+  /// GitHub, reads again that nothing is left off GitHub, then deletes the
+  /// computer and the saved copies of the chats that moved. A chat started
+  /// there since keeps the computer, as the first delete did; so does a push
+  /// that didn't finish.
+  func pushAndDelete(id: String) {
+    Task { await pushThenDelete(id: id) }
+  }
+
+  private func pushThenDelete(id: String) async {
+    #if DEBUG
+    if fixture { return }
+    #endif
+    guard let run = self.run(id: id), run.kind == .live, run.arrived, run.phase == .pushFirst,
+          let computer = run.computer, let sync else { return }
+    let cloud = ADECloudMachine.name
+    let toasts = CloudLaneActions.shared
+    update(id) { $0.phase = .deleting; $0.error = nil }
+    func keep(_ why: String) {
+      update(id) { $0.phase = .pushFirst; $0.error = why }
+      toasts.toast = ADEToastMessage(text: "Kept \(run.laneName)'s \(cloud) computer", kind: .failure, detail: "\(why) Nothing was deleted.")
+    }
+    guard let left = await chatsLeftOnSource(run, sync: sync) else {
+      keep("ADE couldn't check the lane's chats on \(cloud).")
+      return
+    }
+    if left > 0 {
+      let reason = left == 1
+        ? "A chat started on the lane since the move, so ADE kept the computer. Move the lane again to bring it."
+        : "\(left) chats started on the lane since the move, so ADE kept the computer. Move the lane again to bring them."
+      update(id) { $0.phase = .moveAgain; $0.error = reason }
+      toasts.toast = ADEToastMessage(text: "Kept \(run.laneName)'s \(cloud) computer", kind: .info, detail: reason)
+      forgetLater(id)
+      return
+    }
+    guard let client = await sync.cloudServerClient() else {
+      keep("Sign in to ADE, then try again.")
+      return
+    }
+    let pushed = await client.runPushWork(instanceId: computer.instanceId, check: false)
+    guard let tally = pushed.tally, tally.failed == 0, tally.leftLanes.isEmpty else {
+      keep(pushed.error ?? "ADE couldn't push all of the computer's work to GitHub.")
+      return
+    }
+    // Pushed: read once more, so nothing new since slips through.
+    let work = await client.workState(instanceId: computer.instanceId)
+    guard work.unpushed == false else {
+      keep(work.message ?? "Some of the computer's work still isn't on GitHub.")
+      return
+    }
+    let outcome = await CloudLaneComputerDelete.run(
+      client: client,
+      instanceId: computer.instanceId,
+      accountMachineKey: computer.accountMachineKey,
+      laneId: computer.laneId,
+      onlyChats: Set(run.movedChatIds ?? []),
+      sync: sync
+    )
+    if let failure = outcome.failure {
+      // The work is on GitHub now; only the delete is left to try again.
+      update(id) { $0.phase = .deleteFailed; $0.error = failure }
+      toasts.toast = ADEToastMessage(
+        text: "Pushed \(run.laneName), but its \(cloud) computer is still there",
+        kind: .info,
+        detail: "\(failure) Open the move again to delete it."
+      )
+      return
+    }
+    update(id) { $0.phase = .done }
+    toasts.deleted(instanceId: computer.instanceId)
+    toasts.toast = ADEToastMessage(
+      text: "Pushed \(run.laneName) and deleted its \(cloud) computer",
+      kind: outcome.chatsLeft ? .info : .success,
+      detail: outcome.chatsLeft
+        ? "Its files are on GitHub; pull the branch on \(run.targetName). Some saved copies of the chats that moved are still there. Delete them in Work."
+        : "Its files are on GitHub; pull the branch on \(run.targetName)."
+    )
     await sync.refreshCloudServerInstances()
     forgetLater(id)
   }

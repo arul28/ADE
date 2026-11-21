@@ -496,26 +496,28 @@ async function insertRow(
     select ?, ?, ?, ?, ?, ?, ?, coalesce((select max(seq) from cloud_chat_messages where user_id = ? and machine_key = ? and chat_id = ?), 0) + 1, ?, ?, ?, 'queued', ?, ?
     ${copyHere}
     on conflict (user_id, machine_key, chat_id, message_id) do nothing
+    returning *
   `).bind(
     userId, chat.machine_key, chat.chat_id, input.messageId, where.instanceId, where.launchId, where.viaLaunch ? 1 : 0,
     userId, chat.machine_key, chat.chat_id,
     sealed, input.provider, input.modelId, now, now,
     ...(copyHere ? [userId, chat.machine_key, chat.chat_id] : []),
-  ).run();
-  let changes = 0;
+  ).all<ChatMessageRow>();
+  let inserted: ChatMessageRow | null;
   try {
-    changes = (await insert()).meta?.changes ?? 0;
+    inserted = (await insert()).results?.[0] ?? null;
   } catch (error) {
     // Two sends raced for the same place: the next one is free now.
     if (!(error instanceof Error && /UNIQUE/i.test(error.message))) throw error;
-    changes = (await insert()).meta?.changes ?? 0;
+    inserted = (await insert()).results?.[0] ?? null;
   }
-  const row = await readRow(env, userId, chat.machine_key, chat.chat_id, input.messageId);
-  if (!row) {
-    if (where.copyAt) return null;
-    throw new Error("A queued message wasn't stored.");
-  }
-  return { row, created: changes === 1 };
+  // The row the insert wrote, as it wrote it: a move that takes it to another key right after still finds it sent.
+  if (inserted) return { row: inserted, created: true };
+  // Nothing inserted: the same message id again (its row answers), or the copy moved before the insert.
+  const existing = await readRow(env, userId, chat.machine_key, chat.chat_id, input.messageId);
+  if (existing) return { row: existing, created: false };
+  if (where.copyAt) return null;
+  throw new Error("A queued message wasn't stored.");
 }
 
 async function handleSend(request: Request, env: CloudEnv, userId: string, machineKey: string, chatId: string, deps: ChatMessageDeps): Promise<Response> {

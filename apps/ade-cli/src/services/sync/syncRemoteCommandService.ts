@@ -8805,10 +8805,16 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   // ADE Web and the phone pin the destination machine. The preview and the progress are reads;
   // the move needs a controlling device, and the person asking is the person.
   const keptLaneCall = async (action: "kept_lane_move_preview" | "kept_lane_move" | "kept_lane_move_status", payload: Record<string, unknown>) => {
-    const handler = args.cloudActions?.()?.[action];
+    const domain = args.cloudActions?.() ?? null;
+    const handler = domain?.[action];
     if (typeof handler !== "function") throw new Error(`cloud has no "${action}" here. Update ADE on this computer.`);
+    // The same gate as every other ADE Cloud call: with ADE Cloud off here, the command isn't here.
+    const accessOn = await cloudDomainEnabled(domain, (error) => {
+      args.logger.warn("cloud.remote_access_read_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+    if (!accessOn) throw new Error(`cloud has no "${action}" here.`);
     // `fromComputer`: the lane's asleep ADE Cloud computer, released first (the store checks the id).
-    return await (handler as (input: unknown) => Promise<unknown>)(pickKeptLaneRestoreArgs(payload));
+    return await (handler as (input: unknown) => Promise<unknown>).call(domain, pickKeptLaneRestoreArgs(payload));
   };
   register("cloud.previewKeptLaneRestore", { viewerAllowed: true }, async (payload) => await keptLaneCall("kept_lane_move_preview", payload));
   register("cloud.restoreKeptLane", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => await keptLaneCall("kept_lane_move", payload));

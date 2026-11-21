@@ -104,6 +104,7 @@ function runLabel(phase: LaneMovePhase, targetName: string): string {
     case "deleting": return `Moved to ${targetName}. Deleting the ${ADE_CLOUD_NAME} computer…`;
     case "deleteFailed": return `Moved to ${targetName}. The ${ADE_CLOUD_NAME} computer is still there.`;
     case "moveAgain": return `Moved to ${targetName}. Some work stayed on ${ADE_CLOUD_NAME}; move the lane again.`;
+    case "pushFirst": return `Moved to ${targetName}. Files stayed on ${ADE_CLOUD_NAME}; push them to GitHub.`;
     case "failed": return `The move to ${targetName} did not finish.`;
     default: return `Moving to ${targetName}…`;
   }

@@ -155,12 +155,25 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   async function request<T>(method: string, path: string, init: RequestOptions = {}): Promise<T> {
+    // One limit for the whole call: the sign-in token's wait counts against it, and the fetch gets what is left.
+    const limitMs = init.timeoutMs ?? timeoutMs;
+    const startedAt = Date.now();
+    const outOfTime = () => new CloudApiError("ADE Cloud did not answer in time. Try again.", "timeout", 0);
     const headers: Record<string, string> = { accept: "application/json", ...init.headers };
     if (!init.anonymous) {
-      const token = await options.accessToken();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(outOfTime()), limitMs);
+      });
+      const tokenWait = Promise.resolve(options.accessToken());
+      // A token that fails after the limit has nobody waiting for it.
+      tokenWait.catch(() => undefined);
+      const token = await Promise.race([tokenWait, late]).finally(() => clearTimeout(timer));
       if (!token) throw new CloudApiError("Sign in to ADE to use ADE Cloud.", "unauthorized", 401);
       headers.authorization = `Bearer ${token}`;
     }
+    const leftMs = limitMs - (Date.now() - startedAt);
+    if (leftMs <= 0) throw outOfTime();
     let body: BodyInit | undefined;
     if (init.raw) {
       body = init.raw.bytes;
@@ -175,7 +188,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     };
     let response: Response;
     try {
-      response = await fetcher(`${base}${path}`, { method, headers, body, signal: AbortSignal.timeout(init.timeoutMs ?? timeoutMs) });
+      response = await fetcher(`${base}${path}`, { method, headers, body, signal: AbortSignal.timeout(leftMs) });
     } catch (error) {
       throw noAnswer(error);
     }

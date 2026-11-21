@@ -721,10 +721,15 @@ extension SyncService {
     "chat:\(machineKey ?? "")/\(chatId)"
   }
 
+  /// The newest delete that covers the row: its lane's, or its own chat's
+  /// (by machine, or with no machine). An older lane delete must not hide a
+  /// newer chat delete.
   private func deletedTick(of row: CloudSavedChatRow) -> UInt64? {
-    if let laneId = row.laneId, let tick = cloudDeletedLaneTicks[laneId] { return tick }
-    return cloudDeletedLaneTicks[Self.deletedChatKey(machineKey: row.machineKey, chatId: row.chatId)]
-      ?? cloudDeletedLaneTicks[Self.deletedChatKey(machineKey: nil, chatId: row.chatId)]
+    [
+      row.laneId.flatMap { cloudDeletedLaneTicks[$0] },
+      cloudDeletedLaneTicks[Self.deletedChatKey(machineKey: row.machineKey, chatId: row.chatId)],
+      cloudDeletedLaneTicks[Self.deletedChatKey(machineKey: nil, chatId: row.chatId)],
+    ].compactMap { $0 }.max()
   }
 
   private func readCloudServer() async {

@@ -129,7 +129,9 @@ export function createGithubSessionEnv(deps: {
     return shim;
   };
   const envFor = (token: string, env: NodeJS.ProcessEnv, owner: string): GithubSessionEnv =>
-    shimFor(env, owner) ?? { GH_TOKEN: token, [GH_TOKEN_SOURCE_ENV]: GH_TOKEN_SOURCE_ACCOUNT_APP };
+    shimFor(env, owner) ?? frozenEnv(token);
+  /** The token in the session's environment, marked as ADE's (no per-call shim). */
+  const frozenEnv = (token: string): GithubSessionEnv => ({ GH_TOKEN: token, [GH_TOKEN_SOURCE_ENV]: GH_TOKEN_SOURCE_ACCOUNT_APP });
   const accountGhToken = (): string | null => {
     try {
       return deps.peekAccountGhToken?.()?.trim() || null;
@@ -158,7 +160,8 @@ export function createGithubSessionEnv(deps: {
       ? await Promise.race([lookup, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), APP_LOOKUP_WITH_FALLBACK_MS); })])
         .finally(() => clearTimeout(timer))
       : await lookup;
-    return appToken ?? ghCopy;
+    // Read again: a copy removed during the wait is not handed out.
+    return appToken ?? (ghCopy ? accountGhToken() : null);
   };
 
   /**
@@ -179,7 +182,12 @@ export function createGithubSessionEnv(deps: {
       if (!needsToken(env)) return null;
       const owner = await deps.readRepoOwner();
       lastOwner = owner;
-      if (!owner) return null;
+      // No GitHub owner (no remote yet): only the account's `gh` login copy can
+      // answer, for example to clone a private repository.
+      if (!owner) {
+        const ghCopy = accountGhToken();
+        return ghCopy ? frozenEnv(ghCopy) : null;
+      }
       const token = await appTokenOrCopy(owner);
       return token ? envFor(token, env, owner) : null;
     } catch {
@@ -208,7 +216,8 @@ export function createGithubSessionEnv(deps: {
       const owner = lastOwner;
       if (!owner) {
         warm(env);
-        return null;
+        const ghCopy = accountGhToken();
+        return ghCopy ? frozenEnv(ghCopy) : null;
       }
       const token = deps.peekAccountAppToken();
       const cached = token ? deps.readGrant.peek?.(owner, "account_app", token) ?? null : null;

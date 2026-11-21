@@ -357,6 +357,7 @@ func laneMoveRunLabel(_ run: LaneMoveRun) -> String {
   case .deleting: return "Moved to \(run.targetName). Deleting the \(ADECloudMachine.name) computer…"
   case .deleteFailed: return "Moved to \(run.targetName). The \(ADECloudMachine.name) computer is still there."
   case .moveAgain: return "Moved to \(run.targetName). Some work stayed on \(ADECloudMachine.name); move the lane again."
+  case .pushFirst: return "Moved to \(run.targetName). Files stayed on \(ADECloudMachine.name); push them to GitHub."
   case .failed: return "The move to \(run.targetName) did not finish."
   case .done: return "Moved to \(run.targetName)."
   case .moving: return "Moving to \(run.targetName)…"
