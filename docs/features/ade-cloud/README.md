@@ -1609,7 +1609,11 @@ One busy list, `decideCloudBusy` in
 - **Saved chats.** Each row of `GET /cloud/chats` carries `computer`:
   `exists`, or `deleted` with its time and reason (`you`, `freed`, `idle`,
   `plan`, `automation`, `project`, `launch`, `other`). A live computer with
-  the copy's machine key wins, so a moved lane's chats read `exists`.
+  the copy's machine key wins, so a moved lane's chats read `exists`. A copy
+  that no ADE Cloud computer saved reads `null`: it moved with its lane to one
+  of the person's own machines. The desktop and the phone list it nowhere
+  (`cloudSavedChatsSync.ts`, `restingCloudMachineRows`), because that machine
+  lists its own chats and is never a deleted ADE Cloud computer.
 - **After a move,** a chat shows once. A machine that lists a chat itself wins
   over a saved copy (`crossMachineLanes.ts`, `useWorkMachineRouter.ts`). The
   saved-chats read gives each chat id one computer: an existing one, then a

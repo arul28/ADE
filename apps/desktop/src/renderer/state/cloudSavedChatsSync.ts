@@ -297,6 +297,15 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       const connection = connectionFor(context.connections, machineKey, rows[0]!.instanceId);
       const box = cloudBoxes ? cloudBoxForMachine(cloudBoxes, { machineKey, hostname: rows[0]!.instanceId }) : null;
       const laneComputer = adeCloudLaneComputerForMachine({ machineKey, hostname: rows[0]!.instanceId });
+      // Copies the server says no ADE Cloud computer ever saved (`computer:
+      // null`): they moved to one of the person's own machines with its lane.
+      // That machine lists its own chats, and one removed from the account is
+      // not a deleted ADE Cloud computer, so they list nowhere. An older
+      // server sends no field (undefined) and decides nothing here.
+      if (!box && !laneComputer && rows.every((row) => !row.savedOnMachineKey && row.computer === null)) {
+        byMachine.delete(machineKey);
+        continue;
+      }
       // Gone only when the account says so: the list's own answer for the
       // computer that saved the chats (a row moved to its lane's new computer
       // speaks for the old one, so it doesn't count), the live computer list,

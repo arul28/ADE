@@ -223,6 +223,14 @@ describe("the server's answer for a saved chat's computer", () => {
     expect(slice!.computerGone === true).toBe(gone);
     expect(slice!.sessions.map((session) => session.id).sort()).toEqual(chats.map((chat) => (chat as { chatId: string }).chatId).sort());
   });
+
+  it("lists nowhere a copy no ADE Cloud computer saved: it moved to the person's own machine with its lane", async () => {
+    window.ade = { cloud: { savedChats: { list: async () => ({ nextCursor: null, chats: [told("chat-1", 2, null)] }) } } } as unknown as typeof window.ade;
+
+    await refreshCloudSavedChats({ projectKey: "repo-key", isActive: () => true, connections: [] as never });
+
+    expect(useAppStore.getState().crossMachineLanesByMachineId[MACHINE_ID]).toBeUndefined();
+  });
 });
 
 describe("a lane deleted while a saved chats read is out", () => {
