@@ -987,7 +987,7 @@ export async function resolvePendingPhoneBeta(env: CloudEnv, now: number): Promi
       continue;
     }
     await env.DB.batch([
-      ...found.map((userId) => phoneBetaAddStatement(env.DB, userId, email, now)),
+      ...found.map((userId) => phoneBetaAddStatement(env.DB, userId, email, now, { whilePending: true })),
       env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(email),
     ]);
     logCloud("cloud.phone_beta_claimed", { count: found.length, retried: true });

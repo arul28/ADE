@@ -1239,10 +1239,15 @@ export async function loadAccount(env: CloudEnv, userId: string, now: number): P
  * Puts `userId` on the ADE Cloud iPhone beta list, keeping `email` (the
  * address the owner typed) when one is given and the one it had otherwise.
  * Shared by the owner's add, a waiting email's claim and its hourly retry.
+ * `whilePending`: a claim adds only while that waiting email is still there,
+ * in the same write, so an owner's remove during the Clerk lookup holds.
  */
-export function phoneBetaAddStatement(db: D1Database, userId: string, email: string | null, now: number): D1PreparedStatement {
-  return db.prepare("insert into cloud_phone_beta (user_id, email, added_at) values (?, ?, ?) on conflict(user_id) do update set email = coalesce(excluded.email, cloud_phone_beta.email)")
-    .bind(userId, email, now);
+export function phoneBetaAddStatement(db: D1Database, userId: string, email: string | null, now: number, { whilePending = false }: { whilePending?: boolean } = {}): D1PreparedStatement {
+  const upsert = "on conflict(user_id) do update set email = coalesce(excluded.email, cloud_phone_beta.email)";
+  return whilePending
+    ? db.prepare(`insert into cloud_phone_beta (user_id, email, added_at) select ?, ?, ? where exists (select 1 from cloud_phone_beta_pending where email = ?) ${upsert}`)
+      .bind(userId, email, now, email)
+    : db.prepare(`insert into cloud_phone_beta (user_id, email, added_at) values (?, ?, ?) ${upsert}`).bind(userId, email, now);
 }
 
 /**
@@ -1266,7 +1271,7 @@ async function claimPhoneBetaInvite(env: CloudEnv, userId: string, now: number):
       .bind(JSON.stringify(emails)).first<{ email: string }>();
     if (!found) return;
     await env.DB.batch([
-      phoneBetaAddStatement(env.DB, userId, found.email, now),
+      phoneBetaAddStatement(env.DB, userId, found.email, now, { whilePending: true }),
       env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(found.email),
     ]);
     logCloud("cloud.phone_beta_claimed", { userId });
