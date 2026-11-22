@@ -1,4 +1,5 @@
 import { CaretDown, Check, GearSix, Info, SlidersHorizontal, Warning } from "@phosphor-icons/react";
+import { useSponsoredCardOnScreen } from "./sponsored/sponsoredOnScreen";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
@@ -190,8 +191,13 @@ export function AdeCloudTray({
   const primaryRef = useRef<HTMLButtonElement | null>(null);
   const moreRef = useRef<HTMLSpanElement | null>(null);
   const [need, setNeed] = useState<string | null>(null);
-  const [primaryAction, ...moreActions] = notice.actions;
-  const actionsKey = notice.actions.join(" ");
+  // No ADE upgrade button beside a sponsored card: Settings holds the plan instead.
+  const sponsoredOnScreen = useSponsoredCardOnScreen();
+  const actions = sponsoredOnScreen && notice.actions.includes("upgrade")
+    ? [...new Set(notice.actions.map((action): AdeCloudTrayAction => (action === "upgrade" ? "settings" : action)))]
+    : notice.actions;
+  const [primaryAction, ...moreActions] = actions;
+  const actionsKey = actions.join(" ");
   // The width the long line needs: icon, sentence and every action. Read once
   // per notice; the CSS (cloudBrand.css .adec-tray-long) compares it with the
   // tray's width on every resize. The sentence is kept in em, so a change of

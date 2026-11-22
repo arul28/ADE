@@ -160,7 +160,7 @@ import type {
   CtoCloudHomeEvent,
   CtoCloudHomeMethod,
 } from "../shared/ctoCloudHome";
-import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredConsent, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
@@ -14513,6 +14513,10 @@ const adeBridge = {
     setAgentLimits: (limits: Partial<CloudAgentLimits>): Promise<CloudAgentLimits | null> =>
       ipcRenderer.invoke(IPC.cloudSetAgentLimits, { limits }),
     setExtraHours: (enabled: boolean): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraHours, { enabled }),
+    setSponsoredConsent: (consent: CloudSponsoredConsent): Promise<CloudSponsoredState | null> => ipcRenderer.invoke(IPC.cloudSponsoredConsent, { consent }),
+    sponsoredSeen: (input: CloudSponsoredSeenRequest): Promise<void> => ipcRenderer.invoke(IPC.cloudSponsoredSeen, input),
+    sponsoredAd: (input: CloudSponsoredAdRequest): Promise<CloudSponsoredAdAnswer> => ipcRenderer.invoke(IPC.cloudSponsoredAd, input),
+    sponsoredViewed: (impUrl: string): Promise<void> => ipcRenderer.invoke(IPC.cloudSponsoredViewed, { impUrl }),
     openCheckout: (plan?: CloudPaidPlanId, cleanup?: CloudPlanCleanupPick): Promise<CloudOpenCheckoutResult> =>
       ipcRenderer.invoke(IPC.cloudOpenCheckout, plan ? { plan, ...(cleanup ? { cleanup } : {}) } : undefined),
     pickPlanCleanup: (input: { planId: CloudPlanId } & CloudPlanCleanupPick): Promise<CloudAccountState | null> =>

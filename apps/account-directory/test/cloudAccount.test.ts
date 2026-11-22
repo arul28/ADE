@@ -4988,6 +4988,8 @@ describe("sponsored cards", () => {
     seedAccount(harness, OWNER);
     seedComputer(harness);
     harness.insert("cloud_sponsored_consent", { user_id: OWNER, consent: "granted", email_hash: "e".repeat(64), decided_at: NOW });
+    // The computer saved a copy of the chat after its turn: it runs there.
+    harness.insert("cloud_chat_copies", { user_id: OWNER, machine_key: "mk-1", chat_id: "chat-1", instance_id: INSTANCE, r2_key: "chats/1", updated_at: NOW });
   });
 
   it("sends the person's chat, address and device once per reply, and answers the same card again", async () => {
@@ -5019,6 +5021,8 @@ describe("sponsored cards", () => {
     ["the chat is on the person's own machine", () => undefined, { instanceId: "notacloud1" }, "not_cloud"],
     ["the computer is another account's", () => { harness.exec("update cloud_computers set user_id = ? where instance_id = ?", OTHER, INSTANCE); }, {}, "not_cloud"],
     ["the computer was deleted", () => { harness.exec("update cloud_computers set deleted_at = ? where instance_id = ?", NOW, INSTANCE); }, {}, "not_cloud"],
+    ["the chat doesn't run on that computer", () => undefined, { chatId: "chat-elsewhere" }, "not_cloud"],
+    ["the chat is a subagent's", () => { harness.exec("update cloud_chat_copies set parent_chat_id = 'chat-0' where chat_id = 'chat-1'"); }, {}, "not_cloud"],
   ])("no card and nothing sent to Gravity when %s", async (_label, arrange, overrides, reason) => {
     arrange();
     const answer = await (await send(OWNER, "/cloud/sponsored/ad", adBody(overrides))).json();

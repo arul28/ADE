@@ -6411,6 +6411,7 @@ function AgentChatMessageListMain({
   onCancelQueuedMessage,
   onRestoreCancelledQueue,
   onStopSubagent,
+  trailing = null,
   turnDiffSummaries,
   sessionEnded = false,
   sessionProvider = null,
@@ -6503,6 +6504,8 @@ function AgentChatMessageListMain({
   onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
   /** Stop one running Claude subagent / background task by provider task id. */
   onStopSubagent?: (taskId: string) => void;
+  /** One row under the last turn (a sponsored card on an ADE Cloud Free chat); the pane memoizes it. */
+  trailing?: React.ReactNode;
   turnDiffSummaries?: TurnDiffSummary[];
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
@@ -9731,6 +9734,7 @@ function AgentChatMessageListMain({
                 <div style={{ height: bottomSpacerHeight }} aria-hidden />
               </div>
               {trailingProof}
+              {trailing}
               {streamingIndicator}
               {turnDivider}
             </div>
@@ -9739,6 +9743,7 @@ function AgentChatMessageListMain({
             <div className="flex min-w-0 max-w-full flex-col gap-[length:var(--chat-row-gap)]">
               {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
               {trailingProof}
+              {trailing}
               {streamingIndicator}
               {turnDivider}
             </div>

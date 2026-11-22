@@ -2,6 +2,7 @@ import { gravityAds } from "@gravity-ai/api";
 import { sha256Hex } from "../sinkUtils";
 import {
   CLOUD_PATHS,
+  isGravityUrl,
   CLOUD_SPONSORED_CONSENTS,
   CLOUD_SPONSORED_DEVICE_TYPES,
   CLOUD_SPONSORED_MESSAGE_MAX_CHARS,
@@ -217,7 +218,7 @@ const plainText = (value: unknown, max: number): string => (typeof value === "st
 export function adOfGravity(raw: unknown, test: boolean): CloudSponsoredAd | null {
   if (!raw || typeof raw !== "object") return null;
   const ad = raw as Record<string, unknown>;
-  const clickUrl = httpsUrl(ad.clickUrl);
+  const clickUrl = isGravityUrl(ad.clickUrl) ? httpsUrl(ad.clickUrl) : null;
   const brand = plainText(ad.brandName, 80);
   const text = plainText(ad.adText, 300);
   if (!clickUrl || !brand || !text) return null;
@@ -228,7 +229,7 @@ export function adOfGravity(raw: unknown, test: boolean): CloudSponsoredAd | nul
     text,
     cta: plainText(ad.cta, 40) || null,
     clickUrl,
-    impUrl: httpsUrl(ad.impUrl),
+    impUrl: isGravityUrl(ad.impUrl) ? httpsUrl(ad.impUrl) : null,
     favicon: httpsUrl(ad.favicon),
     test,
   };
@@ -346,7 +347,14 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   const consent = await readConsent(env, userId);
   if (consent?.consent !== "granted") return none("consent");
   // Only a chat on one of the account's own ADE Cloud computers: never one on the person's own machine.
-  if (!await ownCloudComputer(env, userId, body.instanceId)) return none("not_cloud");
+  const computer = await ownCloudComputer(env, userId, body.instanceId);
+  if (!computer) return none("not_cloud");
+  // And the chat itself runs there: that computer saved a copy of it after a
+  // turn (`chats.ts`), and it is a person's chat, not a subagent's. Never
+  // stored, so the first reply's ask may come again once its copy is saved.
+  const copy = await env.DB.prepare("select parent_chat_id from cloud_chat_copies where user_id = ? and chat_id = ? and instance_id = ? limit 1")
+    .bind(userId, chatId, computer.instance_id).first<{ parent_chat_id: string | null }>();
+  if (!copy || copy.parent_chat_id) return none("not_cloud");
   // One request per finished reply: a second ask (a reload, a second screen) reads the first answer.
   const stored = await readTurn(env, userId, chatId, turnId, now);
   if (stored) return json(stored);

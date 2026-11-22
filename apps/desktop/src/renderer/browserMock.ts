@@ -3099,7 +3099,26 @@ function getMockChatTranscriptEvents(sessionId: string): any[] {
     ...base,
     ...browserMockQuestionEvents(sessionId),
     ...browserMockCodexStallEvents(sessionId),
+    ...browserMockSponsoredTurnEvents(sessionId),
     ...(browserMockSentEvents.get(sessionId) ?? []),
+  ];
+}
+
+/**
+ * `?mockSponsored=ask|on` with `?mockCloudLaneMachine=1`: the ADE Cloud chat
+ * ends on a finished reply, so a sponsored card (or the one-time question)
+ * shows under it (`SponsoredReplySlot`).
+ */
+// Read once: the app routes away from the first URL and drops its query.
+const BROWSER_MOCK_SPONSORED = browserMockFlag("mockSponsored");
+function browserMockSponsoredTurnEvents(sessionId: string): any[] {
+  if (!BROWSER_MOCK_SPONSORED || !/^(cloud-chat-1|mock-session-codex-1)$/.test(sessionId)) return [];
+  const at = (offsetMs: number) => new Date(Date.now() - 60_000 + offsetMs).toISOString();
+  const turnId = "cloud-turn-1";
+  return [
+    { sessionId, timestamp: at(0), event: { type: "user_message", text: "Add a Postgres database for the checkout service and wire up the order table.", turnId } },
+    { sessionId, timestamp: at(20_000), event: { type: "text", turnId, text: "I added a `orders` table with a migration, a typed query helper, and a connection pool in `src/db.ts`. The checkout handler now writes each order in one transaction. Set `DATABASE_URL` to your Postgres connection string before you run it." } },
+    { sessionId, timestamp: at(21_000), event: { type: "done", turnId, status: "completed", model: "gpt-6.2" } },
   ];
 }
 

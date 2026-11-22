@@ -26,6 +26,7 @@ import {
 import { type CloudSignInStatus } from "../../../shared/cloudSignIns";
 import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { IPC } from "../../../shared/ipc";
+import { isGravityUrl, type CloudSponsoredAdAnswer, type CloudSponsoredAdRequest, type CloudSponsoredSeenRequest, type CloudSponsoredState } from "../../../shared/adeCloud";
 import { CloudApiError, createCloudApiClient } from "../../../shared/cloudApiClient";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer } from "../../../shared/adeCloudMachine";
 import { isCloudTierId } from "../../../shared/cloudTiers";
@@ -276,6 +277,52 @@ export function registerCloudIpc(args: {
     if (!baseUrl) throw new AdeExpectedError("ADE's account service isn't set up on this computer.", "environment");
     return createCloudApiClient({ baseUrl, accessToken: () => getAccountToken() });
   };
+  // Sponsored cards on Free-plan ADE Cloud chats (`gravity.ts`). Account level,
+  // so no pin: the server checks the plan, the answer, and that the chat's
+  // computer is one of this account's ADE Cloud computers. The renderer only
+  // shows what the server returns.
+  ipcMain.handle(IPC.cloudSponsoredConsent, async (event, arg: { consent?: unknown }): Promise<CloudSponsoredState | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredConsent)) return null;
+    if (arg?.consent !== "granted" && arg?.consent !== "declined") throw new AdeExpectedError("Pick yes or no.", "user");
+    const state = await accountApi().setSponsoredConsent(arg.consent);
+    logger.info("cloud.sponsored_consent", { consent: arg.consent });
+    sendToAllWindows(IPC.cloudStatusChanged);
+    return state;
+  });
+  ipcMain.handle(IPC.cloudSponsoredSeen, async (event, arg: CloudSponsoredSeenRequest | undefined): Promise<void> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredSeen)) return;
+    if (!arg || typeof arg.instanceId !== "string") return;
+    try {
+      await accountApi().sponsoredSeen(arg);
+    } catch (error) {
+      logger.debug("cloud.sponsored_seen_failed", { error: getErrorMessage(error) });
+    }
+  });
+  ipcMain.handle(IPC.cloudSponsoredAd, async (event, arg: CloudSponsoredAdRequest | undefined): Promise<CloudSponsoredAdAnswer> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredAd)) return { ad: null, reason: "unavailable" };
+    if (!arg || typeof arg.instanceId !== "string" || typeof arg.chatId !== "string" || typeof arg.turnId !== "string") return { ad: null, reason: "unavailable" };
+    try {
+      return await accountApi().sponsoredAd(arg);
+    } catch (error) {
+      logger.debug("cloud.sponsored_ad_failed", { error: getErrorMessage(error) });
+      return { ad: null, reason: "unavailable" };
+    }
+  });
+  // The page may not reach outside hosts (`rendererCsp.ts`), so its card's view
+  // link goes from here: only one of Gravity's own links, once per card.
+  const viewedAds = new Set<string>();
+  ipcMain.handle(IPC.cloudSponsoredViewed, async (event, arg: { impUrl?: unknown } | undefined): Promise<void> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredViewed)) return;
+    const impUrl = arg?.impUrl;
+    if (!isGravityUrl(impUrl) || viewedAds.has(impUrl)) return;
+    viewedAds.add(impUrl);
+    if (viewedAds.size > 500) viewedAds.delete(viewedAds.values().next().value as string);
+    try {
+      await fetch(impUrl, { method: "GET", redirect: "follow", signal: AbortSignal.timeout(10_000) });
+    } catch (error) {
+      logger.debug("cloud.sponsored_viewed_failed", { error: getErrorMessage(error) });
+    }
+  });
   // A lane's saved work (`laneBackups.ts`): read with no wake and no hours, account level.
   registerCloudLaneBackupIpc({ accountApi, logger });
   ipcMain.handle(IPC.cloudChatMessageSend, async (event, arg?: Record<string, unknown>): Promise<CloudChatSendAnswer> => {

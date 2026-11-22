@@ -1229,6 +1229,12 @@ export const IPC = {
   cloudGetAgentLimits: "ade.cloud.getAgentLimits",
   cloudSetAgentLimits: "ade.cloud.setAgentLimits",
   cloudSetExtraHours: "ade.cloud.setExtraHours",
+  /** Sponsored cards (account level, no pin): the answer to the one-time question, a viewer's presence, one card per finished reply. */
+  cloudSponsoredConsent: "ade.cloud.sponsoredConsent",
+  cloudSponsoredSeen: "ade.cloud.sponsoredSeen",
+  cloudSponsoredAd: "ade.cloud.sponsoredAd",
+  /** Reports a card's view to Gravity once half of it was on screen (the page itself may not reach outside hosts). */
+  cloudSponsoredViewed: "ade.cloud.sponsoredViewed",
   cloudOpenCheckout: "ade.cloud.openCheckout",
   cloudSetExtraPhoneMinutes: "ade.cloud.setExtraPhoneMinutes",
   cloudPickPlanCleanup: "ade.cloud.pickPlanCleanup",

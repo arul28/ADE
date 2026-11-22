@@ -1,5 +1,6 @@
 import { useRef, useState, type ReactNode } from "react";
-import { ArrowSquareOut, Clock, CreditCard, Desktop, DeviceMobile, Info, Lightning, MoonStars, Robot, Sparkle } from "@phosphor-icons/react";
+import { ArrowSquareOut, Clock, CreditCard, Desktop, DeviceMobile, Info, Lightning, Megaphone, MoonStars, Robot, Sparkle } from "@phosphor-icons/react";
+import { noteCloudSponsoredState } from "../../../state/cloudAccountStore";
 import {
   CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
   CLOUD_HOUR_UNIT_SENTENCE,
@@ -88,7 +89,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   const current = cloudPlanIdOf(account);
   const paid = account.plan === "paid";
   const pastDue = account.billing.notice === "past_due";
-  const { billing, extraHours } = account;
+  const { billing, extraHours, sponsored } = account;
   const nextPlanId = pro ? billing.nextPlanId ?? null : null;
   // A paid plan with a move down waiting: its own column undoes the move (uncharged).
   const canStay = paid && !pastDue && !billing.cancelAtPeriodEnd && current !== "free" && nextPlanId != null && nextPlanId !== current;
@@ -398,8 +399,29 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
           <p className="adecd-howto-fineprint">{CLOUD_SMALL_FAIR_USE_SENTENCE}</p>
         </div>
 
-        {extraHours.available || phoneExtra ? (
+        {extraHours.available || phoneExtra || sponsored?.ads ? (
           <div className="adecd-addons">
+            {sponsored?.ads ? (
+              <div className="kit-panel adecd-addon" data-on={sponsored.consent === "granted" || undefined}>
+                <div className="adecd-addon-top">
+                  <span className="adecd-addon-icon"><Megaphone size={15} weight="duotone" /></span>
+                  <b>Sponsored cards</b>
+                  <SettingsToggle
+                    checked={sponsored.consent === "granted"}
+                    disabled={busy}
+                    label="Sponsored cards"
+                    onChange={(enabled) => void run(async () => {
+                      noteCloudSponsoredState(await bridge?.setSponsoredConsent?.(enabled ? "granted" : "declined"));
+                    })}
+                  />
+                </div>
+                <small className="adecd-addon-state">
+                  {sponsored.consent === "granted"
+                    ? "On. A Free chat on ADE Cloud can show one sponsored card under a finished reply. Gravity, our ad partner, picks it from your last message and the reply."
+                    : "Off. Your ADE Cloud chats show no sponsored cards."}
+                </small>
+              </div>
+            ) : null}
             {extraHours.available ? (
               <div className="kit-panel adecd-addon" data-on={extraHours.enabled || undefined}>
                 <div className="adecd-addon-top">

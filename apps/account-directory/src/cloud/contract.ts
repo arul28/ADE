@@ -3109,6 +3109,20 @@ export type CloudSponsoredAdRequest = {
   messages: CloudSponsoredMessage[];
   device: CloudSponsoredDevice;
 };
+/**
+ * Gravity's own hosts: a card's view and click links must be on one of them,
+ * so a card can't send anyone (or a client's fetch) anywhere else.
+ */
+export function isGravityUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return url.protocol === "https:" && ["trygravity.ai", "trygravity.com"].some((root) => host === root || host.endsWith(`.${root}`));
+  } catch {
+    return false;
+  }
+}
 export type CloudSponsoredAd = {
   id: string;
   brand: string;

@@ -106,6 +106,13 @@ import {
   type CloudJiraSearchResult,
   type CloudLinearQueryRequest,
   type CloudLinearQueryResult,
+  type CloudSponsoredAdAnswer,
+  type CloudSponsoredAdRequest,
+  type CloudSponsoredConsent,
+  type CloudSponsoredIndexAnswer,
+  type CloudSponsoredIndexRequest,
+  type CloudSponsoredSeenRequest,
+  type CloudSponsoredState,
 } from "../../../account-directory/src/cloud/contract";
 
 export type CloudApiFetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -241,6 +248,15 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     /** `enabled` false with `readOnly` true: blocked, but reading works (`reason` is the server's sentence). */
     access: () => request<CloudAccess>("GET", CLOUD_PATHS.access),
     account: () => request<CloudAccountState>("GET", CLOUD_PATHS.account),
+    /* ---- Sponsored cards and the Index (account level, `gravity.ts`) ---- */
+    /** The account's answer to the sponsored question, on every machine. */
+    setSponsoredConsent: (consent: CloudSponsoredConsent) => request<CloudSponsoredState>("PUT", CLOUD_PATHS.sponsoredConsent, { body: { consent } }),
+    /** A person has a chat or terminal of this ADE Cloud computer open. */
+    sponsoredSeen: (input: CloudSponsoredSeenRequest) => request<{ ok: boolean }>("POST", CLOUD_PATHS.sponsoredSeen, { body: input }),
+    /** One card under a finished reply, or none (always a 200). */
+    sponsoredAd: (input: CloudSponsoredAdRequest) => request<CloudSponsoredAdAnswer>("POST", CLOUD_PATHS.sponsoredAd, { body: input, timeoutMs: 10_000 }),
+    /** An agent's Index search on its own ADE Cloud computer. */
+    sponsoredIndex: (input: CloudSponsoredIndexRequest) => request<CloudSponsoredIndexAnswer>("POST", CLOUD_PATHS.sponsoredIndex, { body: input, timeoutMs: 15_000 }),
     listComputers: async () => (await request<{ data: CloudInstance[] }>("GET", CLOUD_PATHS.instances)).data,
 
     /* ---- A lane on a new computer (the server launcher) ---- */

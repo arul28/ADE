@@ -173,13 +173,36 @@
 .adecl-tier-now-check { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--kit-text-2); margin-right: auto; }
 
 
-/* The computer limit card (CloudComputerLimitCard): three ways out, the computers to free up or delete. */
-.adecl-limit-ways { margin: 0; padding: 0 0 0 18px; display: grid; gap: 12px; font-size: 12.5px; line-height: 1.45; }
-.adecl-limit-ways > li > b { display: block; font-weight: 600; color: var(--color-fg); }
-.adecl-limit-why { display: block; color: var(--kit-text-3); font-size: 12px; }
+/* The computer limit card (CloudComputerLimitCard): three ways out side by side, the chosen one's step below. */
+.adecl-limit-ways { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.adecl-limit-ways[data-count="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.adecl-limit-way {
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+  padding: 10px 12px; text-align: left; cursor: pointer;
+  border: 1px solid var(--kit-rule); border-radius: var(--radius-lg);
+  background: transparent; color: var(--color-fg);
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.adecl-limit-way:hover { background: var(--kit-hover); }
+.adecl-limit-way:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+.adecl-limit-way[aria-pressed="true"] { border-color: color-mix(in srgb, var(--adec-400) 70%, transparent); background: color-mix(in srgb, var(--adec-600) 12%, transparent); }
+.adecl-limit-way-head { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
+.adecl-limit-way-head > svg { flex: none; color: var(--kit-text-3); }
+.adecl-limit-way[aria-pressed="true"] .adecl-limit-way-head > svg { color: var(--adec-400); }
+.adecl-limit-way-line { font-size: 11.5px; line-height: 1.4; color: var(--kit-text-3); }
+.adecl-limit-step { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--kit-rule); display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
+.adecl-limit-step-q { margin: 0; font-weight: 600; color: var(--color-fg); }
+.adecl-limit-what { margin: 2px 0 0; line-height: 1.5; color: var(--kit-text-2); }
+.adecl-limit-what b { font-weight: 600; color: var(--color-fg); }
+.adecl-limit-facts { margin: 0; padding-left: 18px; display: grid; gap: 2px; color: var(--kit-text-2); }
 .adecl-limit-empty { margin: 6px 0 0; font-size: 12px; color: var(--kit-text-3); }
-.adecl-limit-lanes { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; max-height: 220px; overflow-y: auto; }
-.adecl-limit-lane { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 6px; border: 1px solid var(--kit-rule); border-radius: 8px; }
-.adecl-limit-lane > svg { flex: none; color: var(--kit-text-3); }
-.adecl-limit-lane-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.adecl-limit-lane-actions { flex: none; display: flex; gap: 4px; }
+.adecl-limit-pick { display: grid; gap: 4px; max-height: 200px; overflow-y: auto; }
+.adecl-limit-pick-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 8px; border: 1px solid var(--kit-rule); border-radius: 8px; cursor: pointer; }
+.adecl-limit-pick-row:hover { background: var(--kit-hover); }
+.adecl-limit-pick-row:has(input:checked) { border-color: color-mix(in srgb, var(--adec-400) 60%, transparent); }
+.adecl-limit-pick-row[data-disabled] { cursor: default; opacity: 0.55; }
+.adecl-limit-pick-row[data-disabled]:hover { background: transparent; }
+.adecl-limit-pick-row input { margin: 0; accent-color: var(--adec-400); }
+.adecl-limit-pick-row > svg { flex: none; color: var(--kit-text-3); }
+.adecl-limit-pick-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.adecl-limit-pick-state { flex: none; font-size: 11.5px; color: var(--kit-text-3); }

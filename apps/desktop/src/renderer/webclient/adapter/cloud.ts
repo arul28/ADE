@@ -1,4 +1,4 @@
-import { cloudCatalogOf, isCloudInstanceId } from "../../../shared/adeCloud";
+import { cloudCatalogOf, isCloudInstanceId, isGravityUrl } from "../../../shared/adeCloud";
 import { cloudMachineOfInstance } from "../../../shared/cloudMachineOfInstance";
 import { cloudMachineRefusal, runCloudMachineLifecycleAction } from "../../../shared/cloudMachineActions";
 import { CloudApiError, type CloudApiClient } from "../../../shared/cloudApiClient";
@@ -518,6 +518,22 @@ export function createWebCloudNamespace(
     openBillingPortal: () => billing.openBillingPortal(),
     openFreeUnlock: () => billing.openFreeUnlock(),
     setExtraHours: (enabled) => billing.setExtraHours(enabled),
+    // Sponsored cards: straight from this browser to the account server, which
+    // reads the browser's own address and user agent. Account level, no pin.
+    setSponsoredConsent: async (consent) => (await accountClient.cloudApi()?.setSponsoredConsent(consent)) ?? null,
+    sponsoredSeen: async (input) => {
+      await accountClient.cloudApi()?.sponsoredSeen(input).catch(() => undefined);
+    },
+    sponsoredAd: async (input) => {
+      const api = accountClient.cloudApi();
+      if (!api) return { ad: null, reason: "unavailable" };
+      return api.sponsoredAd(input).catch(() => ({ ad: null, reason: "unavailable" as const }));
+    },
+    // This page may reach Gravity itself (`_headers`: `connect-src https:`).
+    sponsoredViewed: async (impUrl) => {
+      if (!isGravityUrl(impUrl)) return;
+      await fetch(impUrl, { mode: "no-cors", credentials: "omit", keepalive: true }).catch(() => undefined);
+    },
     setExtraPhoneMinutes: (choice) => billing.setExtraPhoneMinutes(choice),
     pickPlanCleanup: (input) => billing.pickPlanCleanup(input),
   };

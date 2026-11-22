@@ -1,5 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
-import type { CloudAccountState, CloudMachinesResult } from "../../shared/adeCloud";
+import type { CloudAccountState, CloudMachinesResult, CloudSponsoredState } from "../../shared/adeCloud";
 import { useAdeCloudEnabled } from "./cloudAccess";
 
 /**
@@ -62,6 +62,15 @@ function take(result: CloudMachinesResult | null | undefined): void {
 /** A read of the computer list answered (from `useCloudMachines`): its account is the newest. */
 export function noteCloudAccountRead(result: CloudMachinesResult | null | undefined): void {
   take(result);
+}
+
+/**
+ * The account's sponsored answer changed (the server's reply to it): every
+ * surface reading this store sees it at once, before the next list read.
+ */
+export function noteCloudSponsoredState(next: CloudSponsoredState | null | undefined): void {
+  if (!account || !next) return;
+  publish({ ...account, sponsored: next });
 }
 
 /** Whether the shared computer list is watched; while it is, this store does not read on its own. */
