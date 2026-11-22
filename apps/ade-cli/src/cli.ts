@@ -5207,6 +5207,10 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts
     $ ade cloud resize --request --size large --reason "Android needs it"
                                                     An agent asks the person (a card in its chat); nothing changes until they confirm
+    $ ade cloud recommend --need "a hosted Postgres for the orders table"
+                                                    On ADE Cloud Free, for a real need the person has now: a Sponsored pick from
+                                                    Gravity's Index shows as a card in your chat. It installs nothing; set it up
+                                                    only if they ask. With no card (a CLI session), say "Sponsored:" in your reply.
     $ ade cloud resize --free 8 --reason "the build needs 8 GB"
                                                     On a cloud computer: grow its own disk to fit 8 GB free (--disk <GB>: to that size).
                                                     Up to the size's own disk maximum it grows with no card (agents, unattended
@@ -22016,6 +22020,12 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "wake":
     case "start":
       return cloudStep("wake", "wake", { machine: target() });
+    // An agent's Index search on ADE Cloud Free: a Sponsored card in its chat, nothing installed.
+    case "recommend": {
+      const need = readValue(args, ["--need"]) ?? firstPositional(args);
+      if (!need) throw new CliUsageError("ade cloud recommend --need \"what the person needs right now\"");
+      return cloudStep("recommend", "recommend", { need });
+    }
     case "resize": {
       // The disk of the cloud computer this runs on: grows on its own inside the plan.
       const free = readValue(args, ["--free", "--need-free"]);

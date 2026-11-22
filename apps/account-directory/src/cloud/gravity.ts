@@ -403,7 +403,8 @@ export function pickOfIndex(raw: unknown): CloudSponsoredPick | null {
   const answer = raw as Record<string, unknown>;
   const rec = answer.recommendation && typeof answer.recommendation === "object" ? answer.recommendation as Record<string, unknown> : null;
   if (!rec) return null;
-  const url = httpsUrl(rec.click_url) ?? httpsUrl(answer.click_url);
+  // Only Gravity's own tracked link: the card opens nothing else.
+  const url = [rec.click_url, answer.click_url].map((value) => (isGravityUrl(value) ? httpsUrl(value) : null)).find(Boolean) ?? null;
   const name = plainText(rec.name, 80);
   if (!url || !name) return null;
   const install = rec.install && typeof rec.install === "object" ? rec.install as Record<string, unknown> : answer.install && typeof answer.install === "object" ? answer.install as Record<string, unknown> : null;

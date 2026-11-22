@@ -4974,6 +4974,7 @@ describe("sponsored cards", () => {
   const DEVICE = { type: "desktop", os: "macos", osVersion: "15.1", ua: "ADE/1.2.133" };
   const adBody = (overrides: Row = {}) => ({ instanceId: INSTANCE, chatId: "chat-1", turnId: "turn-1", messages: [{ role: "user", content: "set up a database" }, { role: "assistant", content: "Use Postgres." }], device: DEVICE, ...overrides });
   const send = (caller: string, path: string, body: unknown) => harness.send(caller, "POST", path, body, { "cf-connecting-ip": "203.0.113.7" });
+  const gravityEnv = () => harness.env as unknown as { GRAVITY_ADS?: string };
 
   beforeEach(() => {
     gravityCalls = [];
@@ -5012,8 +5013,8 @@ describe("sponsored cards", () => {
   });
 
   it.each<[string, () => void, Row, string]>([
-    ["the switch is off", () => { harness.env.GRAVITY_ADS = undefined as never; }, {}, "off"],
-    ["the account is not a tester", () => { (harness.env as Row).GRAVITY_ADS = "testers"; }, {}, "off"],
+    ["the switch is off", () => { gravityEnv().GRAVITY_ADS = undefined; }, {}, "off"],
+    ["the account is not a tester", () => { gravityEnv().GRAVITY_ADS = "testers"; }, {}, "off"],
     ["the plan is paid", () => { harness.exec("update cloud_accounts set plan = 'paid' where user_id = ?", OWNER); }, {}, "plan"],
     ["the plan is paid and past due", () => { harness.exec("update cloud_accounts set plan = 'paid', stripe_status = 'past_due' where user_id = ?", OWNER); }, {}, "plan"],
     ["the account said no", () => { harness.exec("update cloud_sponsored_consent set consent = 'declined' where user_id = ?", OWNER); }, {}, "consent"],
@@ -5031,9 +5032,9 @@ describe("sponsored cards", () => {
   });
 
   it("tells clients nothing while the switch is off, and the answer while it is on", async () => {
-    harness.env.GRAVITY_ADS = undefined as never;
+    gravityEnv().GRAVITY_ADS = undefined;
     expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toBeUndefined();
-    (harness.env as Row).GRAVITY_ADS = "all";
+    gravityEnv().GRAVITY_ADS = "all";
     expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "granted", test: true });
     // A no on one machine is the answer on every machine.
     expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);

@@ -24,6 +24,8 @@ import {
   type CloudPhoneState,
   type CloudPhoneView,
   type CloudReferralSummary,
+  type CloudSponsoredIndexAnswer,
+  type CloudSponsoredIndexRequest,
 } from "../../../../../account-directory/src/cloud/contract";
 import {
   CLOUD_ACCESS_REFUSED,
@@ -493,6 +495,11 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async setExtraPhoneMinutes(choice): Promise<CloudAccountState> {
       return await request("POST", CLOUD_PATHS.billingExtraPhone, { body: choice }) as CloudAccountState;
+    },
+
+    async sponsoredIndex(input: CloudSponsoredIndexRequest): Promise<CloudSponsoredIndexAnswer> {
+      const body = record(await request("POST", CLOUD_PATHS.sponsoredIndex, { body: input, timeoutMs: 15_000 }));
+      return { pick: (record(body?.pick) as CloudSponsoredIndexAnswer["pick"]) ?? null, ...(typeof body?.reason === "string" ? { reason: body.reason as CloudSponsoredIndexAnswer["reason"] } : {}) };
     },
 
     async readReferral(): Promise<CloudReferralSummary> {

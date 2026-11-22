@@ -295,7 +295,7 @@ export function registerCloudIpc(args: {
     try {
       await accountApi().sponsoredSeen(arg);
     } catch (error) {
-      logger.debug("cloud.sponsored_seen_failed", { error: getErrorMessage(error) });
+      logger.info("cloud.sponsored_seen_failed", { error: getErrorMessage(error) });
     }
   });
   ipcMain.handle(IPC.cloudSponsoredAd, async (event, arg: CloudSponsoredAdRequest | undefined): Promise<CloudSponsoredAdAnswer> => {
@@ -304,7 +304,7 @@ export function registerCloudIpc(args: {
     try {
       return await accountApi().sponsoredAd(arg);
     } catch (error) {
-      logger.debug("cloud.sponsored_ad_failed", { error: getErrorMessage(error) });
+      logger.info("cloud.sponsored_ad_failed", { error: getErrorMessage(error) });
       return { ad: null, reason: "unavailable" };
     }
   });
@@ -320,7 +320,7 @@ export function registerCloudIpc(args: {
     try {
       await fetch(impUrl, { method: "GET", redirect: "follow", signal: AbortSignal.timeout(10_000) });
     } catch (error) {
-      logger.debug("cloud.sponsored_viewed_failed", { error: getErrorMessage(error) });
+      logger.info("cloud.sponsored_viewed_failed", { error: getErrorMessage(error) });
     }
   });
   // A lane's saved work (`laneBackups.ts`): read with no wake and no hours, account level.

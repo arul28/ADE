@@ -1,4 +1,5 @@
 import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
+import { SponsoredTerminalViewer } from "../chat/sponsored/SponsoredTerminalViewer";
 import { useMemo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type CSSProperties } from "react";
 import { RemoteMachineUpdateGate } from "../remoteTargets/RemoteMachineUpdateGate";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
@@ -881,6 +882,7 @@ function CliSessionSurface({
           className="h-full w-full"
         />
         {showSidePane ? <CliActionsSidePane /> : null}
+        {inputBoxAvailable ? <SponsoredTerminalViewer pin={runtimePin} visible={pageActive && terminalVisible} /> : null}
       </div>
       <CliPromptSlot>
       {showInputBox ? (

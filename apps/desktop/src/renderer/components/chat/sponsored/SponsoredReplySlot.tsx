@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, X } from "@phosphor-icons/react";
 import type { AgentChatEventEnvelope } from "../../../../shared/types";
 import { isGravityUrl, type CloudSponsoredAd, type CloudSponsoredAdAnswer, type CloudSponsoredConsent } from "../../../../shared/adeCloud";
@@ -7,6 +7,7 @@ import { openExternalUrl } from "../../../lib/openExternal";
 import { Button } from "../../ui/Button";
 import { holdSponsoredPlace, releaseSponsoredPlace, useSponsoredPlaceHolder } from "./sponsoredOnScreen";
 import { SPONSORED_TURN_FRESH_MS, lastFinishedTurn, sponsoredDevice } from "./sponsoredTurn";
+import { useDocumentVisible, useSponsoredViewer } from "./useSponsoredViewer";
 import "./sponsored.css";
 
 /**
@@ -25,13 +26,10 @@ import "./sponsored.css";
  * its pin).
  */
 
-/** How often a visible cloud chat tells the server someone is watching (the Index needs a person there). */
-const SEEN_EVERY_MS = 4 * 60_000;
 const ANSWER_CACHE_LIMIT = 50;
 const NOT_CLOUD_RETRY_MS = 12_000;
 
 const answers = new Map<string, Promise<CloudSponsoredAdAnswer>>();
-const lastSeenAt = new Map<string, number>();
 const viewedAds = new Set<string>();
 const hiddenTurns = new Set<string>();
 
@@ -42,14 +40,6 @@ function askOnce(key: string, ask: () => Promise<CloudSponsoredAdAnswer>): Promi
   answers.set(key, pending);
   if (answers.size > ANSWER_CACHE_LIMIT) answers.delete(answers.keys().next().value as string);
   return pending;
-}
-
-function subscribeVisibility(listener: () => void): () => void {
-  document.addEventListener("visibilitychange", listener);
-  return () => document.removeEventListener("visibilitychange", listener);
-}
-function useDocumentVisible(): boolean {
-  return useSyncExternalStore(subscribeVisibility, () => document.visibilityState === "visible", () => false);
 }
 
 /** Whether `ref`'s element has at least `threshold` of itself on screen. */
@@ -126,18 +116,7 @@ function SponsoredReplySlotOn({
   const anchorOnScreen = useOnScreen(anchorRef, 0, wanted);
 
   // Someone is watching this computer's chat: the Index may answer its agents.
-  useEffect(() => {
-    if (consent !== "granted" || !visible) return;
-    const tell = () => {
-      const last = lastSeenAt.get(instanceId) ?? 0;
-      if (Date.now() - last < SEEN_EVERY_MS) return;
-      lastSeenAt.set(instanceId, Date.now());
-      void window.ade?.cloud?.sponsoredSeen?.({ instanceId, device: sponsoredDevice() });
-    };
-    tell();
-    const timer = window.setInterval(tell, SEEN_EVERY_MS);
-    return () => window.clearInterval(timer);
-  }, [consent, visible, instanceId]);
+  useSponsoredViewer(instanceId, consent === "granted");
 
   const [ad, setAd] = useState<{ key: string; ad: CloudSponsoredAd } | null>(null);
   // A chat's first reply can be asked about before its computer saved the

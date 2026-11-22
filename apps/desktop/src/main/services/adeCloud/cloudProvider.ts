@@ -35,6 +35,8 @@ import type {
   CloudPlanCleanupPick,
   CloudPlanId,
   CloudReferralSummary,
+  CloudSponsoredIndexAnswer,
+  CloudSponsoredIndexRequest,
   CloudUpdateChannel,
   CloudUpdateCheck,
 } from "../../../../../account-directory/src/cloud/contract";
@@ -226,6 +228,8 @@ export type CloudProvider = {
   setExtraPhoneMinutes?(choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }): Promise<CloudAccountState>;
   /** The account's invite link and what it earned (`/cloud/referrals`). Account-level. */
   readReferral(): Promise<CloudReferralSummary>;
+  /** An agent's Index search on its own ADE Cloud computer (`/cloud/sponsored/index`); the server decides. */
+  sponsoredIndex?(input: CloudSponsoredIndexRequest): Promise<CloudSponsoredIndexAnswer>;
   /**
    * Enters someone's invite: a pasted link or a bare code. A refusal throws a
    * `CloudProviderError` whose message is the sentence to show and whose

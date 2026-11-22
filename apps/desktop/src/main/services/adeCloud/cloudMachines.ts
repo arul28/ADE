@@ -21,6 +21,8 @@ import {
   readCloudInviteRefusalReason,
   type CloudInviteRedeemOutcome,
   type CloudReferralSummary,
+  type CloudSponsoredIndexAnswer,
+  type CloudSponsoredIndexRequest,
 } from "../../../shared/adeCloud";
 import { CLOUD_MACHINE_KEY_METADATA, cloudMachineOfInstance as toCloudMachine } from "../../../shared/cloudMachineOfInstance";
 import { cloudMachineRefusal, runCloudMachineLifecycleAction } from "../../../shared/cloudMachineActions";
@@ -525,6 +527,12 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     account: async (): Promise<CloudAccountState | null> => {
       const client = await deps.client();
       return client ? await client.getAccount() : null;
+    },
+    /** An agent's Index search (`cloud.recommend`); no pick without ADE Cloud here. */
+    sponsoredIndex: async (input: CloudSponsoredIndexRequest): Promise<CloudSponsoredIndexAnswer> => {
+      const client = await deps.client();
+      if (!client?.sponsoredIndex) return { pick: null, reason: "unavailable" };
+      return await client.sponsoredIndex(input);
     },
     /** The account's invite link and what it earned; null without ADE Cloud here. */
     referral: async (): Promise<CloudReferralSummary | null> => {

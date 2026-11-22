@@ -1,4 +1,5 @@
 import type { AgentChatEventEnvelope } from "../../../../shared/types";
+import { SPONSORED_PICK_CARD_VARIANT } from "../../../../shared/sponsoredPick";
 import { CLOUD_SPONSORED_MESSAGE_MAX_CHARS, type CloudSponsoredDevice, type CloudSponsoredMessage } from "../../../../shared/adeCloud";
 
 /** A card is asked for only under a reply this recent: an old chat opened later gets none. */
@@ -45,6 +46,8 @@ export function lastFinishedTurn(events: readonly AgentChatEventEnvelope[]): Spo
       break;
     }
     if (event.type === "text" && (!event.turnId || event.turnId === turnId)) reply.push(event.text);
+    // The agent showed a Sponsored pick in this reply: one Gravity card is enough.
+    if (event.type === "ade_card" && event.variant === SPONSORED_PICK_CARD_VARIANT) return null;
   }
   const answer = tail(reply.reverse().join(""));
   const asked = tail(request);

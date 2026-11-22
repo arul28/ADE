@@ -379,7 +379,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     write: [
       "create", "sleep", "wake", "resize", "copy", "move", "delete", "invite_redeem",
       "kept_lane_move",
-      "update", "set_limits", "lane_launch", "lane_launch_cancel", "tier_request",
+      "update", "set_limits", "lane_launch", "lane_launch_cancel", "tier_request", "recommend",
       "clear_caches", "grow_disk",
       "lane_delete", "lane_free", "lane_start", "lane_keep", "saved_chat_delete", "session_delete", "backup_forget", "job_cancel",
       "cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_save_key", "cloud_sign_in_remove",
