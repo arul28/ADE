@@ -448,11 +448,24 @@ account bearer. The plan rules, hours, disk and cleanups are in
 - `cloud_computers` records each computer's owner. A call for another
   account's or an unknown instance id is 404.
 - Every wake, start, send and create refusal is `{ code, message }` from
-  `CLOUD_REFUSAL_CODES`. Clients show `message`.
+  `CLOUD_REFUSAL_CODES`. Clients show `message`. `computer_limit` adds
+  `CloudComputerLimitDetail` (`planId`, `limit`, `total`, `lanes`,
+  `nextPlan`) flat on the error.
 - A create ignores the client's template and uses the channel's image in
   `cloud_settings` (an exact `ade@N`). Sizes are the eight in
-  `src/cloud/plans.ts`; disk is 4 GB on create. No plan limits the number of
-  computers; about 25 may be awake at once (`AWAKE_COMPUTER_CAP`).
+  `src/cloud/plans.ts`; disk is 4 GB on create (or the repository's
+  remembered setup disk), and grows to the size's `diskMaxGb`: there is no
+  account-wide disk and no extra disk (Pricing v2). Each plan allows a
+  number of computers (`computerLimit`: Free 2, Plus 3, Pro 10, Max 20);
+  asleep ones count. `reserveComputer` counts them in its one conditional
+  insert (pending reservations until they time out; a move's pair once; a
+  move itself is never refused), so concurrent creates can't pass the limit;
+  past it, 403 `computer_limit`. About 25 may be awake at once
+  (`AWAKE_COMPUTER_CAP`).
+- An outside agent (ADE MCP: lane metadata `ade_made_by_agent: "mcp"`, a
+  launch's `madeBy.agent: "mcp"`, or `origin: "mcp"` on a copy, move, start or
+  sent message) on the free plan (`past_due` included) is refused with 403
+  `outside_agent_free_plan`.
 - Every delete writes `cloud_delete_log` (after it reads the provider's
   history); every power change writes `cloud_power_log`.
 
@@ -460,15 +473,20 @@ account bearer. The plan rules, hours, disk and cleanups are in
 
 - It reads the provider's list once when a computer exists, and writes only on
   change. Hours settle when an awake stretch ends; live hours add the open
-  stretches. Hours are integer thousandths of a Small-hour. Free accounts
+  stretches. Hours are integer thousandths of a Medium-hour, and a Small
+  computer uses none (`usesHours`; migration `0052_pricing_v2.sql` converted
+  the stored numbers from Small-hours). Free accounts
   reset on the 1st UTC; paid accounts follow Stripe's `period_end`
   (`applyCloudPlanChange` is the one place a plan changes).
 - At 0 hours with extra hours off, it runs
-  `ade cloud prepare-stop --timeout 40 --json` on each awake computer (it
+  `ade cloud prepare-stop --timeout 40 --json` on each awake computer that
+  uses hours (every computer on an account with no free plan:
+  `free_refused_at` or `free_github_hold`; Small keeps running otherwise) (it
   stops the agents and saves the chats and each lane's backup), then stops
   it (409 retries; 400 is cold storage and stays). When that save's report
   is current, the computer rests with it (`backup_rest_at`). Every start and
-  create is refused; no wake is free. Timed wakes are dropped.
+  create of a size that uses hours is refused; no wake is free. Those
+  computers' timed wakes are dropped; Small's stay.
 - It sleeps an awake computer with no check-in for 10 minutes.
 - Daily after 02:00 UTC, it corrects each computer-day to the provider's
   `awake_minutes` and alerts the owner to unexplained minutes. Every 10
@@ -487,11 +505,13 @@ An iOS Simulator at NoMac, one per account, driven from any machine with
 `ade apple` (`src/cloud/phones.ts`, migrations `0047_cloud_phone_beta.sql` and
 `0048_cloud_phone_usage.sql`, shapes in `contract.ts`). Who may use it is the
 var `CLOUD_PHONE_ACCESS`: `beta` (the default: only accounts the owner adds;
-everyone else reads `soon`), `all`, or `off`. `CLOUD_PHONES_PAUSED=1` refuses
+everyone else reads `off`, and a start answers 403 `phone_not_on_account`),
+`all`, or `off`. `CLOUD_PHONES_PAUSED=1` refuses
 new phones (503 `phone_paused`) while running ones finish. The launch plan is
 `docs/plans/ade-cloud-iphone-launch.md`.
 
-- `GET /cloud/phone` answers `CloudPhoneState`: `access` (`on`, `soon`, `off`),
+- `GET /cloud/phone` answers `CloudPhoneState`: `access` (`on` or `off`; older
+  servers sent `soon`),
   the period's `minutes`, and the live `phone`. `POST /cloud/phone`
   `{ device? }` starts the account's phone (or answers its live one) and mints
   a token for that phone (sent again, it answers the live phone with a fresh
@@ -507,8 +527,7 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   The account read (`CloudAccountState.phone`) comes from D1 only.
 - Past the plan's minutes: the free plan stops (402 `phone_minutes_out`). A paid
   plan with extra iPhone minutes on (`POST /cloud/billing/extra-phone`
-  `{ enabled, monthlyLimitUsd? }`, its own switch beside extra hours and
-  extra disk) keeps going at 2.5¢ a minute up to its monthly limit (402
+  `{ enabled, monthlyLimitUsd? }`, its own switch beside extra hours) keeps going at 2.5¢ a minute up to its monthly limit (402
   `phone_extra_limit` at it). Every phone starts with NoMac's spend cap and time
   limit set to what the account may still use, so it stops by itself there.
   Minutes used while the switch was on stay owed after it goes off. A change
@@ -558,7 +577,9 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   `STRIPE_PRO_PRICE_ID`, `STRIPE_MAX_PRICE_ID`,
   `STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID` (flat, one meter; the older
   `STRIPE_EXTRA_HOURS_PRICE_ID` serves older subscriptions until renewal),
-  `STRIPE_DISK_PRICE_ID` ($2 per 10 GB a month) and `STRIPE_METER_EVENT`.
+  and `STRIPE_METER_EVENT` (2¢ a Medium-hour on every plan). Extra disk is
+  no longer sold: `STRIPE_DISK_PRICE_ID` and `STRIPE_DISK_METER_EVENT` are
+  unread, and `POST /cloud/billing/extra-disk` is a 404.
 - Each plan and add-on is its own product, so Checkout names each line. The
   customer gets the account's email from Clerk.
 - Checkout, the portal and free-unlock answer a URL; Stripe returns to
@@ -574,14 +595,14 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   renewal starts fresh hours; `active` again restores from `past_due`. A
   failed payment moves the account to free rules with extra hours off, an
   email and `billing.notice`.
-- Each tick reports every whole extra Small-hour as one meter event, keyed by
+- Each tick reports every whole extra Medium-hour as one meter event, keyed by
   the hour's place in the period, so a retry never counts twice.
 
 ### ADE Cloud safety
 
 Anti-spam and fast owner alerts, not usage limits (`src/cloud/blocks.ts`,
 `src/cloud/safety.ts`, migration `0037_cloud_safety.sql`). The free plan is
-100 hours with the GitHub rules (`freePlanGithub.ts`: a GitHub account at
+50 hours (Medium-hours; Small is unlimited) and 2 computers with the GitHub rules (`freePlanGithub.ts`: a GitHub account at
 least 30 days old, one free plan per GitHub account).
 
 - **Kill switch.** `CLOUD_CREATES_PAUSED=1` refuses every new computer, copy
@@ -612,9 +633,12 @@ least 30 days old, one free plan per GitHub account).
     blocked card can't unlock free hours. Both alert the owner.
 - **The iPhone beta list.** `POST /cloud/owner/phone-beta` `{ "email": "…" }`
   or `{ "userId": "user_…" }` adds an account (an email is looked up in Clerk
-  once; the row keeps the id, and the address for the owner's reading).
-  `{ …, "enabled": false }` removes it, and `{}` lists the rows. See "The ADE
-  Cloud iPhone".
+  once; the row keeps the id, and the address for the owner's reading). An
+  email Clerk doesn't know yet waits in `cloud_phone_beta_pending` (answer
+  `pending: true`); the account that first appears with it as a verified
+  address takes it (`claimPhoneBetaInvite`, `cloud.phone_beta_claimed`).
+  `{ …, "enabled": false }` removes it (a waiting email too), and `{}` lists
+  the rows and the waiting emails (`pending`). See "The ADE Cloud iPhone".
 - **One card, one free unlock** (`cloud_free_card_claims`, unique on the
   fingerprint). The free-unlock Checkout takes cards only, asks for 3D Secure
   (`request_three_d_secure=any`), and the webhook reads the fingerprint from
@@ -1113,6 +1137,12 @@ To set up either one:
    the remote migrations, then deploys. A merge to `main` that touches this
    app runs the production deploy (`.github/workflows/deploy-web.yml`). Check
    with `npx wrangler d1 migrations list DB --remote --env production`.
+   `0052_pricing_v2.sql` converts stored hours from Small-hours to
+   Medium-hours and must not run twice or apart from its Worker: the deploy
+   script's order (migrations, then the Worker at once) is the one that is
+   safe. Rerun `scripts/stripe-setup.mjs` (new 2¢ Pro and Max extra-hours
+   prices, new product descriptions) and update the
+   `STRIPE_EXTRA_HOURS_{PRO,MAX}_PRICE_ID` vars before that deploy.
 
 Release builds use the production origin. Set `ADE_ACCOUNT_DIRECTORY_URL` on a
 machine only for a trusted self-hosted override. `ONLINE_WINDOW_MS` (default

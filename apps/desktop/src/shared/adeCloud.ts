@@ -2,6 +2,8 @@ import type {
   CloudAccountState,
   CloudCatalog,
   CloudComputerActivityReport,
+  CloudComputerLimitDetail,
+  CloudComputerLimitLane,
   CloudComputerStatus,
   CloudDiskRefusalReason,
   CloudDiskUsage,
@@ -23,7 +25,8 @@ import type {
   CloudSustainedCpuReport,
   CloudTimedWakesCancelled,
 } from "../../../account-directory/src/cloud/contract";
-import { CLOUD_INVITE_REFUSAL_REASONS, formatCloudCents, overPlanDiskSentence } from "../../../account-directory/src/cloud/contract";
+import { CLOUD_INVITE_REFUSAL_REASONS, CLOUD_PLAN_SENTENCE_NAMES, formatCloudCents } from "../../../account-directory/src/cloud/contract";
+import { cloudCatalog } from "../../../account-directory/src/cloud/plans";
 import type {
   CloudEarnedHours,
   CloudFreePlan,
@@ -50,6 +53,18 @@ export {
 export type { CloudEarnedHours, CloudFreePlan, CloudFreePlanGithub, CloudFreePlanGithubState, CloudFreePlanState, CloudFreeUnlockResult, CloudInviteRedeemResult, CloudInviteRefusalReason, CloudReferralSummary, CloudSustainedCpuReport };
 /** The shared sentences for a cheaper plan's limits and cancelled timed wakes (the server's emails say the same). */
 export { overPlanLimitsSentence, planCleanupDoneSentence, planCleanupSentence, timedWakesCancelledSentence } from "../../../account-directory/src/cloud/contract";
+/** Pricing v2's shared sentences and codes (`docs/plans/pricing-v2-and-gravity.md`): every surface says the same. */
+export {
+  CLOUD_COMPUTER_LIMIT_CODE,
+  CLOUD_HOUR_UNIT_SENTENCE,
+  CLOUD_OUTSIDE_AGENT_FREE_CODE,
+  CLOUD_OUTSIDE_AGENT_FREE_MESSAGE,
+  CLOUD_SMALL_FAIR_USE_SENTENCE,
+  CLOUD_SMALL_UNLIMITED_SENTENCE,
+  cloudComputersPhrase,
+  computerLimitSentence,
+} from "../../../account-directory/src/cloud/contract";
+export type { CloudComputerLimitDetail, CloudComputerLimitLane };
 /** The idle cleanup's shared sentences (the server's emails say the same). */
 export {
   CLOUD_IGNORED_FILES_MAX_PATHS,
@@ -152,28 +167,11 @@ export function cloudKindLabel(kind: CloudMachineKind): string {
 
 /**
  * The server's sizes and plans (`GET /cloud/account`) for a surface that has
- * no account yet. The only copy on a client; everything else reads the answer.
+ * no account yet: the server's own catalog code, with only what every server
+ * sells (Pro, Max and extra disk are offered only when the server sends them).
+ * No client keeps numbers of its own; everything else reads the answer.
  */
-const CLOUD_CATALOG_FALLBACK: CloudCatalog = {
-  sizes: [
-    { type: "default", cpu: 2, memoryGb: 4, multiplierMilli: 1000, tier: "small", label: "Small", diskMaxGb: 12 },
-    { type: "default", cpu: 4, memoryGb: 8, multiplierMilli: 2000, tier: "medium", label: "Medium", diskMaxGb: 20 },
-    { type: "default", cpu: 4, memoryGb: 16, multiplierMilli: 3300, tier: null, label: "Standard 4 CPU, 16 GB", diskMaxGb: 40 },
-    { type: "default", cpu: 4, memoryGb: 32, multiplierMilli: 5800, tier: null, label: "Standard 4 CPU, 32 GB", diskMaxGb: 80 },
-    { type: "vm", cpu: 2, memoryGb: 4, multiplierMilli: 2500, tier: null, label: "Full 2 CPU, 4 GB", diskMaxGb: 100 },
-    { type: "vm", cpu: 4, memoryGb: 8, multiplierMilli: 5000, tier: "large", label: "Large", diskMaxGb: 50 },
-    { type: "vm", cpu: 4, memoryGb: 16, multiplierMilli: 8000, tier: "xlarge", label: "X-Large", diskMaxGb: 100 },
-    { type: "vm", cpu: 4, memoryGb: 32, multiplierMilli: 14500, tier: null, label: "Full 4 CPU, 32 GB", diskMaxGb: 100 },
-  ],
-  // Only what every server sells: Pro and extra disk are offered only when the server sends them.
-  plans: {
-    free: { includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 60, extraHourCents: null },
-    paid: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 80, extraHourCents: 2 },
-  },
-  diskStepGb: 4,
-  paidPriceUsd: 5,
-  extraHourCents: 2,
-};
+const CLOUD_CATALOG_FALLBACK: CloudCatalog = cloudCatalog({ pro: false, max: false, extraDisk: false });
 
 /**
  * The sizes and plans the server answers with, or the fallback until the
@@ -235,6 +233,117 @@ export function cloudExtraHourCentsOf(planId: CloudPlanId, catalog: CloudCatalog
   return own === undefined ? catalog.extraHourCents : own;
 }
 
+/*
+ * Pricing v2 (`docs/plans/pricing-v2-and-gravity.md`): each plan has a number
+ * of cloud computers (asleep or not), Small computers never use hours, and
+ * hours count Medium-hours. A server before it says so by leaving out
+ * `catalog.hourUnit`; its `computerLimit` and `computers.limit` were a hidden
+ * awake cap, never shown as a plan limit.
+ */
+
+/** True when the catalog is Pricing v2's (Medium-hours, a computer limit per plan). */
+export function cloudCatalogIsPricingV2(catalog: Pick<CloudCatalog, "hourUnit">): boolean {
+  return catalog.hourUnit === "medium";
+}
+
+/** How many cloud computers a plan allows, asleep or not, from the catalog; null from a server before Pricing v2. */
+export function cloudPlanComputerLimitOf(facts: Pick<CloudPlanFacts, "computerLimit"> | null | undefined, catalog: Pick<CloudCatalog, "hourUnit">): number | null {
+  if (!cloudCatalogIsPricingV2(catalog)) return null;
+  const limit = facts?.computerLimit;
+  return typeof limit === "number" && Number.isFinite(limit) && limit >= 0 ? limit : null;
+}
+
+/** The account's computers and its plan's limit (asleep or not), or null when the server doesn't say (before Pricing v2). */
+export function cloudAccountComputers(account: Pick<CloudAccountState, "computers" | "catalog"> | null | undefined): { total: number; limit: number } | null {
+  if (!account?.computers || !cloudCatalogIsPricingV2(cloudCatalogOf(account))) return null;
+  const { total, limit } = account.computers;
+  if (typeof limit !== "number" || !Number.isFinite(limit) || typeof total !== "number") return null;
+  return { total, limit };
+}
+
+/** Whether the account uses all its plan's cloud computers, so a new cloud lane is refused (`computer_limit`). */
+export function cloudComputerLimitReached(account: Pick<CloudAccountState, "computers" | "catalog"> | null | undefined): boolean {
+  const computers = cloudAccountComputers(account);
+  return computers != null && computers.total >= computers.limit;
+}
+
+/** The next plan up that the server sells, with its computers and price, or null (Max, or not sold). */
+export function cloudNextPlanUp(account: Pick<CloudAccountState, "plan" | "planId" | "catalog">): CloudComputerLimitDetail["nextPlan"] {
+  const catalog = cloudCatalogOf(account);
+  const current = cloudPlanIdOf(account);
+  const order: CloudPaidPlanId[] = ["plus", "pro", "max"];
+  for (const planId of order) {
+    if (CLOUD_PLAN_RANK[planId] <= CLOUD_PLAN_RANK[current]) continue;
+    const facts = planId === "plus" ? catalog.plans.plus ?? catalog.plans.paid : catalog.plans[planId];
+    const computerLimit = cloudPlanComputerLimitOf(facts, catalog);
+    if (!facts || computerLimit == null) return null;
+    return { planId, computerLimit, priceUsd: facts.priceUsd };
+  }
+  return null;
+}
+
+/**
+ * What the computer limit card shows, built from the account when no refusal
+ * carried it (the card opened before a new lane): the limit, the count, and
+ * the next plan. `lanes` comes from the caller's list of the account's computers.
+ */
+export function cloudComputerLimitDetailOf(
+  account: Pick<CloudAccountState, "plan" | "planId" | "catalog" | "computers">,
+  lanes: CloudComputerLimitLane[] = [],
+): CloudComputerLimitDetail | null {
+  const computers = cloudAccountComputers(account);
+  if (!computers) return null;
+  return { planId: cloudPlanIdOf(account), limit: computers.limit, total: computers.total, lanes, nextPlan: cloudNextPlanUp(account) };
+}
+
+/** A `computer_limit` refusal's detail (flat on the server's `error`), or null when it isn't one. */
+export function readCloudComputerLimitDetail(value: unknown): CloudComputerLimitDetail | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.limit !== "number" || typeof raw.total !== "number") return null;
+  const planId: CloudPlanId = raw.planId === "free" || isPaidPlanId(raw.planId) ? raw.planId : "free";
+  const lanes = Array.isArray(raw.lanes)
+    ? raw.lanes.flatMap((entry): CloudComputerLimitLane[] => {
+      if (!entry || typeof entry !== "object") return [];
+      const lane = entry as Record<string, unknown>;
+      if (typeof lane.instanceId !== "string" || !lane.instanceId) return [];
+      return [{
+        instanceId: lane.instanceId,
+        laneName: typeof lane.laneName === "string" && lane.laneName ? lane.laneName : lane.instanceId,
+        awake: lane.awake === true,
+        lastAwakeAt: typeof lane.lastAwakeAt === "number" && Number.isFinite(lane.lastAwakeAt) ? lane.lastAwakeAt : null,
+        hasLane: lane.hasLane !== false,
+      }];
+    })
+    : [];
+  const next = raw.nextPlan && typeof raw.nextPlan === "object" ? raw.nextPlan as Record<string, unknown> : null;
+  const nextPlan = next && isPaidPlanId(next.planId) && typeof next.computerLimit === "number" && typeof next.priceUsd === "number"
+    ? { planId: next.planId, computerLimit: next.computerLimit, priceUsd: next.priceUsd }
+    : null;
+  return { planId, limit: raw.limit, total: raw.total, lanes, nextPlan };
+}
+
+/** "You're using all 2 of your cloud computers.": the limit card's title. */
+export function cloudComputerLimitTitle(detail: Pick<CloudComputerLimitDetail, "limit">): string {
+  return `You're using all ${detail.limit} of your cloud computers.`;
+}
+
+/** The limit card's third way out: "Move to Plus for 3 computers." */
+export function cloudComputerLimitUpgradeLabel(nextPlan: NonNullable<CloudComputerLimitDetail["nextPlan"]>): string {
+  return `Move to ${CLOUD_PLAN_SENTENCE_NAMES[nextPlan.planId]} for ${nextPlan.computerLimit} computers`;
+}
+
+/**
+ * Whether outside agents (ADE MCP) may start ADE Cloud work on the account's
+ * plan, from the catalog: false only when the server says so (Free since
+ * Pricing v2). The server refuses anyway (`outside_agent_free_plan`); this
+ * only answers early.
+ */
+export function cloudOutsideAgentsAllowed(account: Pick<CloudAccountState, "plan" | "planId" | "catalog"> | null | undefined): boolean {
+  if (!account) return true;
+  return cloudPlanFactsOf(account, cloudCatalogOf(account))?.outsideAgents !== false;
+}
+
 /** "2¢", "1.5¢": an extra hour's price as people read it. */
 export const formatCloudCentsPerHour = (cents: number): string => `${Number(cents.toFixed(2))}¢`;
 /** "2.5¢": an extra iPhone minute's price as people read it. */
@@ -244,7 +353,11 @@ export const CLOUD_PLAN_LABELS: Readonly<Record<CloudPlanId, string>> = { free: 
 /** Plan order, cheapest first: whether a move between two plans is up or down. */
 export const CLOUD_PLAN_RANK: Readonly<Record<CloudPlanId, number>> = { free: 0, plus: 1, pro: 2, max: 3 };
 
-/** Hours of a Small computer this size uses per hour awake. */
+/**
+ * Hours of the plan this size uses per hour awake (Medium-hours since Pricing
+ * v2: Medium 1, Large 2.5, X-Large 4), from the catalog. 0 for Small, which
+ * never uses hours.
+ */
 export function cloudHoursRate(kind: CloudMachineKind, shape: CloudShapeId, catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK): number {
   const { cpu, memoryGb } = cloudShapeById(shape);
   const type = cloudInstanceType(kind);
@@ -252,14 +365,21 @@ export function cloudHoursRate(kind: CloudMachineKind, shape: CloudShapeId, cata
   return (size?.multiplierMilli ?? 1000) / 1000;
 }
 
-/** "2× hours". */
+/**
+ * "Uses no hours" for Small, "Uses 2.5 hours an hour" for the rest: a size's
+ * rate in words, never a multiplier. Where the account's hours are known,
+ * surfaces say how long they last instead (`cloudTierHoursAt`).
+ */
 export function formatCloudHoursRate(rate: number): string {
-  return `${rate}× hours`;
+  if (!(rate > 0)) return "Uses no hours";
+  return `Uses ${Number(rate.toFixed(2))} ${rate === 1 ? "hour" : "hours"} an hour`;
 }
 
-/** "about 3.3 hours" per hour awake, for approval cards. */
+/** What a size uses of the plan, as one sentence for approval cards: Small never uses hours. */
 export function describeCloudHoursUse(kind: CloudMachineKind, shape: CloudShapeId, catalog?: CloudCatalog): string {
-  return `about ${cloudHoursRate(kind, shape, catalog)} hours of your plan for each hour it's awake`;
+  const rate = cloudHoursRate(kind, shape, catalog);
+  if (!(rate > 0)) return "Small computers never use your hours.";
+  return `It uses about ${Number(rate.toFixed(2))} ${rate === 1 ? "hour" : "hours"} of your plan for each hour it's awake, and none while it sleeps.`;
 }
 
 /** Android needs a full computer of Medium or bigger. */
@@ -301,7 +421,8 @@ export function cloudMachineRunsAndroid(machine: Pick<CloudMachine, "type" | "sh
 export function cloudAndroidNeedsVmCost(boxShape: CloudShape | null, kind: CloudMachineKind = "box"): string {
   const vmShape = cloudAndroidVmShape(boxShape);
   const rate = cloudHoursRate("vm", vmShape.id);
-  const more = boxShape ? `, about ${(rate - cloudHoursRate(kind, boxShape.id)).toFixed(1).replace(/\.0$/, "")} more than this computer` : "";
+  const boxRate = boxShape ? cloudHoursRate(kind, boxShape.id) : null;
+  const more = boxRate == null ? "" : boxRate > 0 ? `, about ${(rate - boxRate).toFixed(1).replace(/\.0$/, "")} more than this computer` : "; this Small computer uses none";
   return "This computer can't run the Android emulator. A full computer can, at Medium or bigger. "
     + `A ${vmShape.label} full computer uses about ${rate} hours for each hour it's awake${more}.`;
 }
@@ -469,7 +590,7 @@ export type CloudMachine = {
   /** The size ADE offers this shape as, when it is one of them. */
   shapeId: CloudShapeId | null;
   region: string | null;
-  /** How fast it uses hours while awake, as multiples of a Small computer. Null at a size ADE doesn't offer. */
+  /** Hours of the plan it uses per hour awake (0 for Small, `cloudHoursRate`). Null at a size ADE doesn't offer. */
   hoursRate: number | null;
   /** Suspended for non-payment (the provider's `past_due`). */
   pastDue: boolean;
@@ -608,10 +729,9 @@ export function cloudDiskFullLegacyReason(reason: string): CloudDiskFullReason {
  */
 export function cloudDiskFullMessage(
   reason: string | null | undefined,
-  catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK,
   exactReason?: string | null,
 ): string | null {
-  const wayOut = cloudDiskGrowRefusedWayOut(reason, catalog, exactReason);
+  const wayOut = cloudDiskGrowRefusedWayOut(reason, exactReason);
   return wayOut ? `This computer's disk is full. ${wayOut}` : null;
 }
 
@@ -622,22 +742,21 @@ export function cloudDiskFullMessage(
  */
 export function cloudDiskGrowRefusedWayOut(
   reason: string | null | undefined,
-  catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK,
   exactReason?: string | null,
 ): string | null {
-  // A server before Pro keeps each free computer at its own few GB; a newer one shares the free disk.
-  const freeRule = cloudCatalogHasPro(catalog)
-    ? `Free computers share ${catalog.plans.free.diskGb} GB of disk at one time. A paid plan gives more.`
-    : `Free computers stay at ${catalog.plans.free.diskGb} GB each; a paid plan lets it grow.`;
+  // Since Pricing v2 there is no plan or account disk: only a size's own disk
+  // maximum (`tier_limit`) stops a grow. The other reasons come from older
+  // servers; each still gets a way out, never a GB figure.
+  const growOrMove = "Free up space on it, or move it to a bigger size.";
   const known: Partial<Record<CloudDiskRefusalReason | CloudDiskFullReason, string>> = {
-    plan_disk: freeRule,
-    needs_approval: "Turn on extra disk in Settings to let it grow.",
-    extra_off: "Delete a computer you no longer use, or turn on extra disk in Settings.",
-    monthly_limit: "Extra disk reached the monthly limit you set. Raise it in Settings.",
+    plan_disk: growOrMove,
+    needs_approval: growOrMove,
+    extra_off: growOrMove,
+    monthly_limit: growOrMove,
     tier_limit: "This size can't have a bigger disk. Move it to a bigger size.",
     unavailable: "ADE Cloud can't grow it right now.",
-    free_limit: freeRule,
-    account_limit: "Your computers use all your plan's disk at one time. Delete a computer you no longer use, turn on extra disk, or pick a bigger plan in Settings.",
+    free_limit: growOrMove,
+    account_limit: growOrMove,
   };
   for (const value of [exactReason, reason]) {
     if (!value) continue;
@@ -774,7 +893,7 @@ export function cloudHoursLeftMilli(account: Pick<CloudAccountState, "hours" | "
 /** The name ADE gives a computer it made with no lane name (`cloudMachineCreator`). */
 export const CLOUD_MACHINE_DEFAULT_NAME = "ADE Cloud computer";
 
-/** At this share of the plan's disk, ADE warns and offers "Free up space". */
+/** At this share of one computer's disk, ADE warns and offers "Free up space". */
 export const CLOUD_DISK_WARN_SHARE = 0.8;
 
 /** Percent of a limit used, 0 to 100; 0 for no limit. */
@@ -875,6 +994,8 @@ export function readCloudPlanCleanup(value: unknown): CloudPlanCleanup | null {
     ...(Array.isArray(raw.choices) ? { choices: computersOf(raw.choices) } : {}),
     usedGb: finite(raw.usedGb),
     limitGb: finite(raw.limitGb),
+    ...(typeof raw.computerCount === "number" && Number.isFinite(raw.computerCount) ? { computerCount: raw.computerCount } : {}),
+    ...(typeof raw.computerLimit === "number" && Number.isFinite(raw.computerLimit) ? { computerLimit: raw.computerLimit } : {}),
     startsAt: typeof raw.startsAt === "number" && Number.isFinite(raw.startsAt) ? raw.startsAt : null,
     freeing: freeing && typeof freeing.push === "boolean" && Array.isArray(freeing.instanceIds) && typeof freeing.at === "number"
       ? { push: freeing.push, at: freeing.at, instanceIds: freeing.instanceIds.filter((id): id is string => typeof id === "string") }
@@ -887,17 +1008,6 @@ export function readCloudPlanCleanup(value: unknown): CloudPlanCleanup | null {
 export type CloudInviteRedeemOutcome =
   | { ok: true; rewarded: boolean; referral: CloudReferralSummary | null }
   | { ok: false; reason: CloudInviteRefusalReason | "unavailable"; message: string };
-
-/**
- * Why no computer can wake on an account on the free plan (a cancelled plan
- * rolls to it) whose computers hold more disk than the plan has, or null. A
- * failed payment (`past_due`) is not this: its computers keep working. The
- * server refuses the wake (`over_plan_disk`) with the same sentence.
- */
-export function cloudOverPlanDiskMessage(account: Pick<CloudAccountState, "plan" | "disk"> | null | undefined): string | null {
-  if (!account || account.plan !== "free" || account.disk.limitGb == null || account.disk.usedGb <= account.disk.limitGb) return null;
-  return overPlanDiskSentence(account.disk.usedGb, account.disk.limitGb);
-}
 
 /**
  * Why work that nobody approves (a full-auto chat, an automation, the
@@ -968,10 +1078,6 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
       detail: "Your account follows the free plan until it's paid. Update your card to bring your plan back.",
     };
   }
-  const overPlanDisk = cloudOverPlanDiskMessage(account);
-  if (overPlanDisk) {
-    return { id: "cloud-over-plan-disk", tone: "warning", title: "Your computers can't wake", detail: overPlanDisk };
-  }
   // The free plan's GitHub rules hold its hours: they don't come back at the reset, so say why instead.
   const github = account.rules === "free" ? cloudFreePlanOf(account).github : undefined;
   if (account.hours.state === "zero" && github && github.state !== "ok" && github.sentence) {
@@ -983,17 +1089,18 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
     return { id: CLOUD_FREE_REFUSED_BANNER_ID, tone: "warning", title: "No free hours on this account", detail: freePlan.sentence };
   }
   if (account.hours.state === "zero") {
+    // Small computers never use hours, so they keep working: only the bigger sizes stop.
+    const bigger = `Medium, Large and X-Large computers are stopped until ${resetDate}. Small computers keep working.`;
+    const plans = cloudCatalogHasMax(catalog)
+      ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} hours a month, Pro ${formatCloudHours(catalog.plans.pro.includedMilli)} and Max ${formatCloudHours(catalog.plans.max.includedMilli)}.`
+      : cloudCatalogHasPro(catalog)
+        ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} hours a month, and Pro ${formatCloudHours(catalog.plans.pro.includedMilli)}.`
+        : ` The paid plan has ${formatCloudHours(catalog.plans.paid.includedMilli)} hours a month.`;
     return {
       id: "cloud-hours-zero",
       tone: "warning",
-      title: "You're out of ADE Cloud hours",
-      detail: account.extraHours.available
-        ? `Your computers are stopped until ${resetDate}. Turn on extra hours to keep going sooner.`
-        : cloudCatalogHasMax(catalog)
-          ? `Your computers are stopped until ${resetDate}. Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} hours a month, Pro ${formatCloudHours(catalog.plans.pro.includedMilli)} and Max ${formatCloudHours(catalog.plans.max.includedMilli)}.`
-        : cloudCatalogHasPro(catalog)
-          ? `Your computers are stopped until ${resetDate}. Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} hours a month, and Pro ${formatCloudHours(catalog.plans.pro.includedMilli)}.`
-          : `Your computers are stopped until ${resetDate}. The paid plan has ${formatCloudHours(catalog.plans.paid.includedMilli)} hours a month.`,
+      title: "You're out of hours for bigger computers",
+      detail: account.extraHours.available ? `${bigger} Turn on extra hours to keep going sooner.` : `${bigger}${plans}`,
     };
   }
   if (account.hours.state === "warn95" || account.hours.state === "warn80") {
@@ -1069,11 +1176,12 @@ export type CloudMachineActionResult = {
   message: string;
   /**
    * What stops the action, so the card can offer the way out:
-   * plans and hours (0 hours, more disk than the free plan has, or more
-   * computers or disk than the plan in force allows), or wait for a backup
-   * window.
+   * plans and hours (0 hours, all the plan's computers in use, or more
+   * computers than the plan in force allows), or wait for a backup window.
    */
-  blocker: "rate_limited" | "out_of_hours" | "over_plan_disk" | "over_plan_limits" | null;
+  blocker: "rate_limited" | "out_of_hours" | "computer_limit" | "over_plan_limits" | null;
+  /** With `computer_limit`: what the limit card shows (the server's `CloudComputerLimitDetail`). */
+  computerLimit?: CloudComputerLimitDetail | null;
   /** For `delete`: the box is gone but its account row could not be removed. */
   accountRowLeft?: boolean;
   /**

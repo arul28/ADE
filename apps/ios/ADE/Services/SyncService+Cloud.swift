@@ -167,11 +167,20 @@ struct CloudPhoneAccount: Decodable, Equatable {
     let limitGb: Double?
   }
 
-  /// No plan limits how many computers an account has; `limit` is still sent
-  /// for older builds and is never shown.
+  /// How many cloud computers the account has (asleep or not) and how many
+  /// are awake. `limit` is the plan's computer limit from a Pricing v2
+  /// server; an older one sent the hidden awake cap there, which is never
+  /// shown (read it through `CloudPhoneAccount.computerLimit`).
   struct Computers: Decodable, Equatable {
     let total: Int
     let awake: Int
+    let limit: Int?
+  }
+
+  /// The ADE Cloud iPhone's access for this account (`CloudAccountPhone`):
+  /// `on`, else nothing of it shows. Older servers sent `soon`.
+  struct Phone: Decodable, Equatable {
+    let access: String
   }
 
   struct RecentUse: Decodable, Equatable {
@@ -257,7 +266,7 @@ struct CloudPhoneAccount: Decodable, Equatable {
   struct TimedWakesCancelled: Decodable, Equatable {
     let at: Double
     let count: Int
-    /// `out_of_hours` or `over_plan_disk`.
+    /// `out_of_hours`, or `over_plan_disk` from a server before Pricing v2.
     let reason: String
   }
 
@@ -311,12 +320,20 @@ struct CloudPhoneAccount: Decodable, Equatable {
   }
 
   /// What one plan includes. The price is in the payload but the phone never
-  /// shows it (App Store rule: the iPhone app does not sell plans).
+  /// shows it (App Store rule: the iPhone app does not sell plans). `diskGb`
+  /// is for older builds only and is not read.
   struct PlanFacts: Decodable, Equatable {
+    /// A month's hours for the sizes bigger than Small, in thousandths of a
+    /// Medium-hour (`Catalog.hourUnit`). Small computers never use them.
     let includedMilli: Int
-    let diskGb: Double
-    /// Phone minutes a month (shown on the plan table only); nil from an older server.
+    /// Phone minutes a month (shown on the plan table only, while the ADE
+    /// Cloud iPhone is on for the account); nil from an older server.
     let phoneMinutes: Int?
+    /// How many cloud computers the plan allows, asleep or not. Read only
+    /// from a Pricing v2 catalog: older servers sent the awake cap here.
+    let computerLimit: Int?
+    /// Extra hours past the plan are sold on it (never shown as a price).
+    let extraHourCents: Double?
   }
 
   struct Catalog: Decodable, Equatable {
@@ -338,6 +355,10 @@ struct CloudPhoneAccount: Decodable, Equatable {
     }
     let plans: Plans
     let sizes: [Size]
+    /// `medium` from a Pricing v2 server: hours count Medium-hours, Small
+    /// uses none, and each plan has a computer limit. Older servers leave it
+    /// out (Small-hours, no limit).
+    let hourUnit: String?
   }
 
   let plan: String
@@ -358,10 +379,11 @@ struct CloudPhoneAccount: Decodable, Equatable {
   /// entries, which decode with only an id and a date.
   let dueForDeletion: [IdleCleanup]
   let referral: CloudPhoneReferral?
+  let phone: Phone?
 
   private enum CodingKeys: String, CodingKey {
     case plan, planId, hours, extraHours, disk, computers, recentUse, billing, catalog
-    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, dueForDeletion, referral
+    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, dueForDeletion, referral, phone
   }
 
   init(from decoder: Decoder) throws {
@@ -382,7 +404,29 @@ struct CloudPhoneAccount: Decodable, Equatable {
     timedWakesCancelled = c.lenient(TimedWakesCancelled.self, forKey: .timedWakesCancelled)
     dueForDeletion = c.lenient([IdleCleanup].self, forKey: .dueForDeletion) ?? []
     referral = c.lenient(CloudPhoneReferral.self, forKey: .referral)
+    phone = c.lenient(Phone.self, forKey: .phone)
   }
+
+  /// The server counts hours in Medium-hours and limits computers per plan
+  /// (Pricing v2, `docs/plans/pricing-v2-and-gravity.md`).
+  var isPricingV2: Bool { catalog?.hourUnit == "medium" }
+
+  /// The plan's computer limit, only from a Pricing v2 server (an older one
+  /// sent the hidden awake cap in the same field, never a plan limit).
+  var computerLimit: Int? {
+    guard isPricingV2, let limit = computers?.limit, limit > 0 else { return nil }
+    return limit
+  }
+
+  /// Every cloud computer the plan allows is taken: a new lane is refused.
+  var atComputerLimit: Bool {
+    guard let limit = computerLimit, let total = computers?.total else { return false }
+    return total >= limit
+  }
+
+  /// The ADE Cloud iPhone is on for this account. Anything else (`off`, an
+  /// older server's `soon`, no answer) shows nothing of it.
+  var phoneOn: Bool { phone?.access == "on" }
 
   /// Out of hours for this period, as the server counts it.
   var outOfHours: Bool { hours.state == "zero" }
@@ -921,6 +965,7 @@ extension SyncService {
       case .unauthorized: return .failed("ADE Cloud did not accept this sign-in. Sign in again to wake \(name).")
       // The server said no and why (blocked, out of hours, too many awake): its sentence.
       case .refused(_, let message): return .failed(message)
+      case .computerLimit(let limit): return .failed(limit.headline)
       case .transport: return .failed("ADE Cloud did not answer. Check the connection and try again.")
       case .unreadable: return .failed("ADE Cloud sent an answer this app can't read.")
       case .server(let status, let message):

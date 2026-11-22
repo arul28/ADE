@@ -74,8 +74,9 @@ struct CloudIphoneSheet: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 14) {
         VStack(alignment: .leading, spacing: 10) {
-          ADEKitTag(text: status.access == "soon" ? "Coming soon" : "Not available")
-          Text(status.reason ?? cloudIphoneAccessFallback(status.access))
+          // Never "coming soon": a person without access sees only that it isn't available.
+          ADEKitTag(text: "Not available")
+          Text(cloudIphoneAccessFallback(status.access))
             .font(.system(size: 13.5))
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -651,11 +652,10 @@ func cloudIphoneTime(_ ms: Double) -> String {
   return formatter.string(from: Date(timeIntervalSince1970: ms / 1000))
 }
 
-/// Why the phone cannot be shown, when the host sends no sentence.
+/// Why the phone cannot be shown. The same words for every access but `on`
+/// (an older host's `soon` too): nothing says it is coming.
 func cloudIphoneAccessFallback(_ access: String) -> String {
-  access == "soon"
-    ? "The ADE Cloud iPhone is coming soon. It isn't on this account yet."
-    : "The ADE Cloud iPhone isn't available right now."
+  "The ADE Cloud iPhone isn't available on this account."
 }
 
 /// A page failure a person can read; a cancelled navigation is not one.

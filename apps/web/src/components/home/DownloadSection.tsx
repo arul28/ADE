@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { FREE_PLAN, formatCount } from "../../lib/cloudPricing";
+import { CLOUD_SMALL_UNLIMITED_SHORT } from "../../lib/cloudPricing";
 import { MARKETING_CTA_POSITIONS, MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { InstallBlock } from "./Hero";
 
@@ -23,15 +23,15 @@ export function DownloadSection() {
           <span className="text-white/45">On every screen.</span>
         </h2>
         <p className="mx-auto mt-5 max-w-[30rem] text-[15px] leading-[1.6] text-white/55">
-          The app costs nothing. ADE Cloud is optional, and starts with{" "}
+          The app costs nothing. ADE Cloud is optional, with{" "}
           <Link
             to="/pricing"
             data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING}
             className="focus-ring rounded text-white/85 underline decoration-white/25 underline-offset-4 hover:text-white"
           >
-            {formatCount(FREE_PLAN.hours)} free hours a month
-          </Link>
-          .
+            {CLOUD_SMALL_UNLIMITED_SHORT.charAt(0).toLowerCase() + CLOUD_SMALL_UNLIMITED_SHORT.slice(1)}
+          </Link>{" "}
+          on the free plan.
         </p>
         <InstallBlock position={MARKETING_CTA_POSITIONS.FOOTER} />
       </div>

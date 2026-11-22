@@ -23,6 +23,7 @@ const OPEN_ADE_CLOUD = "ade://settings/integrations.ade-cloud";
 const DOCS = "https://ade-app.dev/docs/cloud/overview";
 const LINKS = {
   firstLane: `${DOCS}#start-a-lane-on-ade-cloud`,
+  // The docs page's section keeps its old anchor.
   hours: `${DOCS}#hours-and-disk`,
   billing: `${DOCS}#manage-your-plan-and-billing`,
   pricing: "https://ade-app.dev/pricing",
@@ -132,13 +133,13 @@ function tile(href: string, glyph: Parameters<typeof icon>[0], label: string): s
 
 const hoursText = (milli: number): string => (milli / 1000).toLocaleString("en-US");
 
-/** The plan's three numbers, all from `CLOUD_PLANS`. */
+/** The plan's three facts, from `CLOUD_PLANS` (Pricing v2: hours are Medium-hours, and Small uses none). */
 function planFacts(plan: CloudPaidPlanId): string {
   const terms = CLOUD_PLANS[plan];
   const facts: Array<[string, string]> = [
-    [hoursText(terms.includedMilli), "hours a month"],
-    [`${terms.diskGb} GB`, "disk"],
-    ["Any number", "of computers"],
+    [String(terms.computerLimit), "cloud computers"],
+    ["Unlimited", "Small computers"],
+    [hoursText(terms.includedMilli), "hours a month on a Medium"],
   ];
   return `<ul class="facts">${facts.map(([value, label]) => `<li><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></li>`).join("")}</ul>`;
 }
@@ -154,7 +155,7 @@ function contentFor(kind: ReturnKind, plan: CloudPaidPlanId | null): Content {
         heading: plan ? `Thank you. You're on ${CLOUD_PLANS[plan].label}.` : "Thank you. Your plan is ready.",
         lede: "It shows in ADE in a moment. Your hours start fresh today.",
         body: plan ? planFacts(plan) : "",
-        tiles: [tile(LINKS.firstLane, "lane", "Start your first cloud lane"), tile(LINKS.hours, "hours", "How hours and disk work"), tile(LINKS.billing, "card", "Manage billing")],
+        tiles: [tile(LINKS.firstLane, "lane", "Start your first cloud lane"), tile(LINKS.hours, "hours", "How hours work"), tile(LINKS.billing, "card", "Manage billing")],
       };
     case "cancelled":
       return {
@@ -163,7 +164,7 @@ function contentFor(kind: ReturnKind, plan: CloudPaidPlanId | null): Content {
         heading: "Nothing changed.",
         lede: "You left checkout before paying, so you weren't charged. Your plan is as it was.",
         body: "",
-        tiles: [tile(LINKS.pricing, "plans", "Compare the plans"), tile(LINKS.hours, "hours", "How hours and disk work")],
+        tiles: [tile(LINKS.pricing, "plans", "Compare the plans"), tile(LINKS.hours, "hours", "How hours work")],
       };
     case "card":
       return {
@@ -172,7 +173,7 @@ function contentFor(kind: ReturnKind, plan: CloudPaidPlanId | null): Content {
         heading: "Your free hours are on.",
         lede: "You weren't charged. They show in ADE in a moment.",
         body: "",
-        tiles: [tile(LINKS.firstLane, "lane", "Start your first cloud lane"), tile(LINKS.hours, "hours", "How hours and disk work")],
+        tiles: [tile(LINKS.firstLane, "lane", "Start your first cloud lane"), tile(LINKS.hours, "hours", "How hours work")],
       };
     case "card_cancelled":
       return {
@@ -181,7 +182,7 @@ function contentFor(kind: ReturnKind, plan: CloudPaidPlanId | null): Content {
         heading: "Nothing changed.",
         lede: "You left before saving a card. Your free hours start when your GitHub account is 30 days old.",
         body: "",
-        tiles: [tile(LINKS.hours, "hours", "How hours and disk work")],
+        tiles: [tile(LINKS.hours, "hours", "How hours work")],
       };
     case "portal":
       return {

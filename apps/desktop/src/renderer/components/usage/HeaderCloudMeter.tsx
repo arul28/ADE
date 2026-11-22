@@ -1,15 +1,13 @@
 import { ArrowSquareOut, Gift } from "@phosphor-icons/react";
 import {
-  CLOUD_DISK_WARN_SHARE,
+  cloudAccountComputers,
   cloudCatalogOf,
   cloudEarnedHoursOf,
   cloudHoursLeftMilli,
   cloudPlanLabelOf,
   cloudReferralOf,
   formatCloudDate,
-  formatCloudGb,
   formatCloudHours,
-  percentOf,
   type CloudAccountState,
 } from "../../../shared/adeCloud";
 import { navigateToAppTarget } from "../../lib/openExternal";
@@ -98,11 +96,11 @@ export function HeaderCloudRing({ state }: { state: CloudAccountState }) {
   );
 }
 
-/** The popover's first panel: hours, when they reset, disk, extra and earned hours, and the way to the dashboard. */
+/** The popover's first panel: hours for bigger computers, when they reset, computers, extra and earned hours, and the way to the dashboard. */
 export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountState; onNavigate: () => void }) {
   const pct = hoursLeftPct(state);
   const hours = hoursOf(state);
-  const diskLimit = state.disk.limitGb ?? 0;
+  const computers = cloudAccountComputers(state);
   // The invite card shows only with a referral; with no rewards left there is nothing to invite to.
   const canInvite = (cloudReferralOf(state)?.rewardsLeft ?? 0) > 0;
   const open = (anchor?: string) => {
@@ -119,15 +117,14 @@ export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountSta
       </div>
       <div className="flex items-baseline gap-1.5">
         <span className={cn("text-[20px] font-medium leading-6 text-fg", USAGE_NUMERIC_CLASS)}>{formatCloudHours(hours.leftMilli)} h</span>
-        <span className={cn("text-muted-fg", USAGE_TEXT.micro)}>left of {formatCloudHours(hours.totalMilli)} h this month</span>
+        <span className={cn("text-muted-fg", USAGE_TEXT.micro)}>left of {formatCloudHours(hours.totalMilli)} h for bigger computers</span>
       </div>
       <div className="kit-meter" data-level={usageLeftLevel(pct)}><span style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: usageLeftLevel(pct) == null ? BRAND_FILL : undefined }} /></div>
       <div className={cn("flex flex-wrap gap-x-3 gap-y-1 text-muted-fg", USAGE_TEXT.micro)}>
-        <span>Disk {formatCloudGb(state.disk.usedGb)}{diskLimit > 0 ? ` of ${formatCloudGb(diskLimit)}` : ""}</span>
-        <span>{state.computers.total} {state.computers.total === 1 ? "computer" : "computers"}, {state.computers.awake} awake</span>
+        <span>{computers ? `${computers.total} of ${computers.limit} computers` : `${state.computers.total} ${state.computers.total === 1 ? "computer" : "computers"}`}, {state.computers.awake} awake</span>
+        <span>Small computers unlimited</span>
         {hours.earnedMilli > 0 ? <span>Includes {formatCloudHours(hours.earnedMilli)} h earned</span> : null}
-        {state.extraHours.available ? <span>Extra Linux hours {state.extraHours.enabled ? "on" : "off"}</span> : null}
-        {diskLimit > 0 && percentOf(state.disk.usedGb, diskLimit) >= CLOUD_DISK_WARN_SHARE * 100 ? <span className="text-[var(--kit-warn)]">Disk almost full</span> : null}
+        {state.extraHours.available ? <span>Extra hours {state.extraHours.enabled ? "on" : "off"}</span> : null}
       </div>
       <div className="flex items-center gap-1.5 pt-0.5">
         <button type="button" className="kit-btn" data-size="sm" onClick={() => open()}>

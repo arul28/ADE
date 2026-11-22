@@ -42,7 +42,7 @@ export function buildCloudDiskGrowCard(input: {
       variant: CLOUD_DISK_GROW_CARD_VARIANT,
       state: "live",
       title: "Growing this computer's disk",
-      subtitle: `${sizes} · ${extra ?? "inside your plan's disk or approved by you"}`,
+      subtitle: extra ? `${sizes} · ${extra}` : `${sizes} · up to this size's disk maximum`,
       rows: [
         ask,
         { key: "restart", icon: "running", text: "Restart the computer and start ADE again" },

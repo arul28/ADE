@@ -1,5 +1,5 @@
 import { useRef, useState, type ComponentType, type ReactNode } from "react";
-import { Check, ChevronDown, Clock, Cpu, Gift, HardDrive, MemoryStick, Recycle, Server, Timer, Zap } from "lucide-react";
+import { Bot, Check, ChevronDown, Clock, Cpu, Gift, MemoryStick, Recycle, Server, Timer, X, Zap } from "lucide-react";
 
 import { CloudLockup } from "../../components/cloud/CloudMark";
 import { ComingSoon } from "../../components/cloud/ComingSoon";
@@ -9,21 +9,29 @@ import { InstallBlock } from "../../components/home/Hero";
 import { Page } from "../../components/Page";
 import { cn } from "../../lib/cn";
 import {
-  EXTRA_DISK_USD_PER_10GB_MONTH,
+  CLOUD_HOUR_UNIT_SENTENCE,
+  CLOUD_OFFER_REST_SENTENCE,
+  CLOUD_SMALL_FAIR_USE_SENTENCE,
+  CLOUD_SMALL_UNLIMITED_PARTS,
+  CLOUD_SMALL_UNLIMITED_SENTENCE,
   FINDER_DAYS_A_MONTH,
   FREE_PLAN,
   FREE_RULES,
+  HOURLY_SIZES,
   INVITE_RULES,
+  MOST_COMPUTERS,
   PAID_IDLE_DAYS,
   PRICING_PLANS,
   PRICING_SIZES,
-  centsPerIncludedHour,
+  SMALL_SIZE,
+  cloudComputersPhrase,
   formatCents,
   formatCount,
   formatUsd,
-  planDayLine,
+  hoursOnSize,
+  hoursOnSizesLine,
+  listNames,
   suggestPlan,
-  COMPUTER_START_DISK_GB,
   type PricingPlan,
   type PricingSize,
 } from "../../lib/cloudPricing";
@@ -32,7 +40,7 @@ import { captureMarketingFeature } from "../../lib/marketingAnalyticsBrowser";
 import { PLAN_CTAS } from "../../lib/planLinks";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 
-/** Each plan's tower over its card: more floors and more lights for more hours. */
+/** Each plan's tower over its card: more floors and more lights for a bigger plan. */
 const PLAN_TOWERS: Record<PricingPlan["id"], { floors: number; lit: number; seed: number }> = {
   free: { floors: 3, lit: 0.25, seed: 3 },
   plus: { floors: 5, lit: 0.35, seed: 8 },
@@ -42,16 +50,24 @@ const PLAN_TOWERS: Record<PricingPlan["id"], { floors: number; lit: number; seed
 
 const PAID_PLANS = PRICING_PLANS.filter((plan) => plan.extraHourCents != null);
 const CHEAPEST_PAID = [...PAID_PLANS].sort((a, b) => a.priceUsd - b.priceUsd)[0];
-const SMALL = PRICING_SIZES[0]!;
+const OUTSIDE_AGENT_PLANS = PRICING_PLANS.filter((plan) => plan.outsideAgents);
+const NO_OUTSIDE_AGENT_PLANS = PRICING_PLANS.filter((plan) => !plan.outsideAgents);
+/** The extra hour's prices, one entry when every paid plan charges the same. */
+const EXTRA_HOUR_PRICES = [...new Set(PAID_PLANS.map((plan) => plan.extraHourCents ?? 0))];
 
 const days = (count: number): string => `${count} ${count === 1 ? "day" : "days"}`;
 const hoursWord = (count: number): string => `${formatCount(count)} ${count === 1 ? "hour" : "hours"}`;
 
-/** "2¢ on Plus, 1.5¢ on Pro and 1.2¢ on Max". */
+/** "2¢ on every paid plan", or "2¢ on Plus, 1.5¢ on Pro and 1.2¢ on Max" while they differ. */
 function extraHourList(): string {
-  const parts = PAID_PLANS.map((plan) => `${formatCents(plan.extraHourCents ?? 0)} on ${plan.name}`);
-  return parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts.join("");
+  if (EXTRA_HOUR_PRICES.length === 1) return `${formatCents(EXTRA_HOUR_PRICES[0]!)} on every paid plan`;
+  return listNames(PAID_PLANS.map((plan) => `${formatCents(plan.extraHourCents ?? 0)} on ${plan.name}`));
 }
+
+/** "Free has 2 cloud computers, Plus 3, Pro 10 and Max 20". */
+const COMPUTER_LIMITS_LINE = listNames(
+  PRICING_PLANS.map((plan, index) => (index === 0 ? `${plan.name} has ${cloudComputersPhrase(plan.computerLimit)}` : `${plan.name} ${formatCount(plan.computerLimit)}`)),
+);
 
 const serifHeading = "font-display text-white";
 const wrap = "mx-auto max-w-[1180px] px-5 sm:px-8";
@@ -110,12 +126,12 @@ function PricingHero() {
             className={cn(serifHeading, "mt-5")}
             style={{ fontSize: "clamp(44px, 5.6vw, 84px)", lineHeight: 0.98, letterSpacing: "-0.04em" }}
           >
-            {formatCount(FREE_PLAN.hours)} hours free, every month.
+            {CLOUD_SMALL_UNLIMITED_PARTS[0]}
             <br />
-            <span className="text-white/45">More costs pennies.</span>
+            <span className="text-white/45">{CLOUD_SMALL_UNLIMITED_PARTS[1]}</span>
           </h1>
           <p className="mx-auto mt-5 max-w-[44rem] text-[clamp(16px,1.3vw,19px)] leading-[1.6] text-white/65">
-            {CHEAPEST_PAID ? `${formatCount(CHEAPEST_PAID.hours)} hours for $${CHEAPEST_PAID.priceUsd}. ` : ""}A computer that is asleep uses none.
+            {CLOUD_OFFER_REST_SENTENCE}
           </p>
         </div>
 
@@ -125,7 +141,9 @@ function PricingHero() {
           ))}
         </div>
 
-        <p className="mt-6 text-center text-[14px] text-white/45">Prices are monthly, in US dollars.</p>
+        <p className="mx-auto mt-6 max-w-[48rem] text-center text-[14px] leading-[1.6] text-white/45">
+          Prices are monthly, in US dollars. {CLOUD_HOUR_UNIT_SENTENCE} {CLOUD_SMALL_FAIR_USE_SENTENCE}
+        </p>
         <ComingSoon compact className="mt-8" />
       </div>
     </section>
@@ -141,7 +159,6 @@ const PLAN_CARD_TONES: Record<"lamp" | "violet" | "quiet", string> = {
 
 function PlanCard({ plan }: { plan: PricingPlan }) {
   const tower = PLAN_TOWERS[plan.id];
-  const perHour = centsPerIncludedHour(plan);
   const free = plan.priceUsd === 0;
   const cheapest = plan.id === CHEAPEST_PAID?.id;
   const lit = free || cheapest;
@@ -161,11 +178,7 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
       />
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-[18px] font-semibold text-white">{plan.name}</h2>
-        {free ? (
-          <Badge tone="lamp">No credit card</Badge>
-        ) : perHour ? (
-          <Badge tone={cheapest ? "violet" : "quiet"}>{perHour} an hour</Badge>
-        ) : null}
+        {free ? <Badge tone="lamp">No credit card</Badge> : null}
       </div>
       <p className="mt-4 flex items-baseline gap-1.5">
         <span
@@ -179,15 +192,16 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
       <div className="mt-5 rounded-2xl border border-white/[0.08] bg-black/25 px-4 py-3.5">
         <p className="flex items-baseline gap-1.5">
           <span className="text-[30px] font-semibold leading-none tracking-tight text-white">{formatCount(plan.hours)}</span>
-          <span className="text-[15px] text-white/60">hours</span>
+          <span className="text-[15px] text-white/60">hours for bigger computers</span>
         </p>
-        <p className="mt-1 text-[13px] text-white/50">About {planDayLine(plan)}</p>
+        <p className="mt-1.5 text-[13px] leading-[1.5] text-white/50">{hoursOnSizesLine(plan.hours)}</p>
       </div>
       <ul className="mt-5 flex flex-1 flex-col gap-3 text-[14px]">
-        <PlanLine icon={HardDrive} label="Disk" value={`${plan.diskGb} GB`} />
-        <PlanLine icon={Zap} label="Past your hours" value={plan.extraHourCents == null ? "Pauses" : `${formatCents(plan.extraHourCents)} / hour`} />
+        <PlanLine icon={Server} label="Cloud computers" value={formatCount(plan.computerLimit)} />
+        <PlanLine icon={Cpu} label="Small computers" value="Unlimited" />
+        <PlanLine icon={Zap} label="Extra hours" value={plan.extraHourCents == null ? "None" : `${formatCents(plan.extraHourCents)} each`} />
+        <PlanLine icon={Bot} label="Outside agents" value={plan.outsideAgents ? "Yes" : "No"} />
         <PlanLine icon={Timer} label="Unused kept" value={days(plan.idleDays)} />
-        <PlanLine icon={Server} label="Computers" value="No limit" />
       </ul>
       <PlanButton
         cta={PLAN_CTAS[plan.id].cta}
@@ -229,27 +243,25 @@ function Badge({ tone, children }: { tone: "lamp" | "violet" | "quiet"; children
   );
 }
 
-const MAX_COMPUTERS = 20;
 /** Every hour of the month, round-the-clock. */
 const MAX_HOURS_A_MONTH = 24 * FINDER_DAYS_A_MONTH;
 const HOURS_STEP = 10;
 
 /**
  * "Not sure which plan?": computers, hours a month each and size make a month
- * of hours, and the plan that runs it. Only the first change is reported, never
- * the numbers.
+ * of hours (none on Small), and the plan that has the computers and runs the
+ * hours. Only the first change is reported, never the numbers.
  */
 function PlanFinder() {
   const [computers, setComputers] = useState(2);
   const [hoursEach, setHoursEach] = useState(120);
-  const [sizeId, setSizeId] = useState<PricingSize["id"]>(SMALL.id);
+  const [sizeId, setSizeId] = useState<PricingSize["id"]>(SMALL_SIZE.id);
   const reported = useRef(false);
 
-  const size = PRICING_SIZES.find((entry) => entry.id === sizeId) ?? SMALL;
+  const size = PRICING_SIZES.find((entry) => entry.id === sizeId) ?? SMALL_SIZE;
+  const usesHours = size.rate > 0;
   const hours = Math.round(computers * hoursEach * size.rate);
-  // Each computer takes its starting disk from the plan's shared disk.
-  const diskGb = computers * COMPUTER_START_DISK_GB;
-  const suggestion = suggestPlan(hours, diskGb);
+  const suggestion = suggestPlan(hours, computers);
   const best = suggestion?.pick;
   const other = suggestion?.other ?? null;
 
@@ -271,16 +283,16 @@ function PlanFinder() {
         <div className="flex flex-col gap-8">
           <Slider
             id="finder-computers"
-            label="Computers working at once"
+            label="Cloud computers"
             value={computers}
             min={1}
-            max={MAX_COMPUTERS}
+            max={MOST_COMPUTERS}
             display={String(computers)}
             onChange={(value) => change(() => setComputers(value))}
           />
           <Slider
             id="finder-hours"
-            label="Hours a month, each machine"
+            label="Hours a month, each computer"
             value={hoursEach}
             min={HOURS_STEP}
             max={Math.floor(MAX_HOURS_A_MONTH / HOURS_STEP) * HOURS_STEP}
@@ -318,7 +330,15 @@ function PlanFinder() {
         <div className="flex flex-col justify-between rounded-[22px] bg-[#13112a] p-6 sm:p-8" aria-live="polite">
           <div>
             <p className="text-[14px] text-white/55">
-              About <span className="font-semibold text-white">{formatCount(hours)} hours</span> a month
+              {usesHours ? (
+                <>
+                  About <span className="font-semibold text-white">{hoursWord(hours)}</span> of your plan a month
+                </>
+              ) : (
+                <>
+                  <span className="font-semibold text-white">No hours:</span> {size.label} computers never use them
+                </>
+              )}
             </p>
             {best ? (
               <>
@@ -328,13 +348,13 @@ function PlanFinder() {
                   <span className="ml-2 font-sans text-[15px] tracking-normal text-white/45">a month</span>
                 </p>
                 <p className="mt-4 text-[15px] leading-[1.6] text-white/65">
-                  {best.extraDiskGb > 0
-                    ? `${computers} computers need ${diskGb} GB of disk. ${best.plan.name} includes ${best.plan.diskGb} GB; the other ${best.extraDiskGb} GB is extra disk at $${EXTRA_DISK_USD_PER_10GB_MONTH} for each 10 GB.${best.extraHours > 0 ? ` Extra hours cost ${formatCents(best.plan.extraHourCents ?? 0)} each.` : ""}`
+                  {!usesHours
+                    ? `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)}, and ${size.label} computers never use your hours.`
                     : best.extraHours > 0
-                    ? `${best.plan.name} includes ${hoursWord(best.plan.hours)}. The other ${hoursWord(best.extraHours)} cost ${formatCents(best.plan.extraHourCents ?? 0)} each, with extra hours turned on.`
+                    ? `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)} and ${hoursWord(best.plan.hours)}. The other ${hoursWord(best.extraHours)} cost ${formatCents(best.plan.extraHourCents ?? 0)} each, with extra hours turned on.`
                     : best.plan.priceUsd === 0
-                      ? `That fits in the free ${hoursWord(best.plan.hours)}.`
-                      : `${best.plan.name} includes ${hoursWord(best.plan.hours)}, so ${hoursWord(best.spareHours)} are left over.`}
+                      ? `That fits in the free ${hoursWord(best.plan.hours)}, on ${cloudComputersPhrase(best.plan.computerLimit)}.`
+                      : `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)} and ${hoursWord(best.plan.hours)}, ${best.spareHours > 0 ? `so ${hoursWord(best.spareHours)} ${best.spareHours === 1 ? "is" : "are"} left over` : "just enough"}.`}
                 </p>
                 {other ? (
                   <p className="mt-2 text-[14px] leading-[1.6] text-white/45">
@@ -428,13 +448,13 @@ function DetailsSection() {
   return (
     <section aria-labelledby="details-title" className={cn(wrap, "pt-[clamp(64px,7vw,96px)]")}>
       <SectionTitle id="details-title" title="The details">
-        Sizes, extras, the free plan and what happens to computers nobody uses.
+        Sizes, extras, outside agents, the free plan and what happens to computers nobody uses.
       </SectionTitle>
       <div className="mt-8 flex flex-col gap-4">
         <SizesPanel />
         <div className="grid gap-4 lg:grid-cols-3">
           <ExtraHoursCard />
-          <ExtraDiskCard />
+          <OutsideAgentsCard />
           <FreePlanCard />
         </div>
         <CleanupPanel />
@@ -464,17 +484,14 @@ function DetailCard({ accent, icon: Icon, title, note, children, className }: { 
   );
 }
 
-const MAX_RATE = Math.max(...PRICING_SIZES.map((size) => size.rate));
-
-/** Each size as a card: how fast it uses hours, drawn as a bar, and its machine as three chips. */
+/**
+ * Each size as a card: Small never uses hours; every bigger size shows how
+ * long each plan's hours last on it (time, never a multiplier), and its
+ * machine as two chips.
+ */
 function SizesPanel() {
   return (
-    <DetailCard
-      accent={AMBER}
-      icon={Cpu}
-      title="Sizes"
-      note={`One hour on ${SMALL.label} is one hour of your plan. Bigger sizes count more.`}
-    >
+    <DetailCard accent={AMBER} icon={Cpu} title="Sizes" note={CLOUD_HOUR_UNIT_SENTENCE}>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {PRICING_SIZES.map((size, index) => (
           <div
@@ -485,23 +502,29 @@ function SizesPanel() {
               className="pointer-events-none absolute inset-0"
               style={{ background: `radial-gradient(100% 70% at 100% 0%, rgba(255,210,122,${0.06 + index * 0.05}), transparent 60%)` }}
             />
-            <div className="relative flex items-baseline justify-between">
-              <h3 className="text-[18px] font-semibold text-white">{size.label}</h3>
-              <span className="font-display text-[44px] leading-none text-[color:var(--color-lamp)]">{size.rate}×</span>
-            </div>
+            <h3 className="relative text-[18px] font-semibold text-white">{size.label}</h3>
             <p className="relative mt-1 truncate text-[14px] text-white/65">{size.use}</p>
-            <div className="relative mt-5 flex gap-1" aria-label={`Uses ${size.rate} hours of your plan each hour`}>
-              {Array.from({ length: MAX_RATE }, (_, i) => (
-                <span
-                  key={i}
-                  className={cn("h-2 flex-1 rounded-full", i < size.rate ? "bg-[color:var(--color-lamp)] shadow-[0_0_10px_rgba(255,210,122,0.5)]" : "bg-white/[0.08]")}
-                />
-              ))}
-            </div>
+            {size.rate > 0 ? (
+              <div className="relative mt-5">
+                <p className="text-[12.5px] text-white/50">Hours on {size.label}, each month</p>
+                <dl className="mt-2 grid grid-cols-4 gap-1 text-center">
+                  {PRICING_PLANS.map((plan) => (
+                    <div key={plan.id} className="rounded-[10px] bg-white/[0.04] px-0.5 py-2">
+                      <dt className="text-[11.5px] text-white/45">{plan.name}</dt>
+                      <dd className="mt-0.5 font-mono text-[13px] tabular-nums text-[color:var(--color-lamp)]">{formatCount(hoursOnSize(plan.hours, size) ?? 0)}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            ) : (
+              <div className="relative mt-5 rounded-[10px] bg-[rgba(255,210,122,0.08)] px-3 py-2">
+                <p className="font-display text-[26px] leading-none text-[color:var(--color-lamp)]">Unlimited</p>
+                <p className="mt-1 text-[12.5px] text-white/55">Never uses your hours, on every plan</p>
+              </div>
+            )}
             <div className="relative mt-5 flex gap-1 text-[12.5px] text-white/75">
               <SpecChip icon={Cpu} title="CPUs">{size.cpu} CPU</SpecChip>
-              <SpecChip icon={MemoryStick} title="Memory">{size.memoryGb} GB</SpecChip>
-              <SpecChip icon={HardDrive} title="Disk, at most">{size.diskMaxGb} GB</SpecChip>
+              <SpecChip icon={MemoryStick} title="Memory">{size.memoryGb} GB memory</SpecChip>
             </div>
           </div>
         ))}
@@ -521,45 +544,72 @@ function SpecChip({ icon: Icon, title, children }: { icon: ComponentType<{ class
 
 function ExtraHoursCard() {
   const most = Math.max(...PAID_PLANS.map((plan) => plan.extraHourCents ?? 0));
+  const onePrice = EXTRA_HOUR_PRICES.length === 1 ? EXTRA_HOUR_PRICES[0]! : null;
   return (
     <DetailCard accent={AMBER} icon={Clock} title="Extra hours" note="Paid plans can go past their hours, if you turn it on.">
-      <ul className="flex flex-col gap-4">
-        {PAID_PLANS.map((plan) => (
-          <li key={plan.id}>
-            <div className="flex items-baseline justify-between">
-              <span className="text-[15px] text-white/75">{plan.name}</span>
-              <span className="text-[14px] text-white/50">
-                <span className="font-display text-[24px] text-white">{formatCents(plan.extraHourCents ?? 0)}</span> an hour
-              </span>
-            </div>
-            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
-              <div className="h-full rounded-full" style={{ width: `${((plan.extraHourCents ?? 0) / most) * 100}%`, background: AMBER.color }} />
-            </div>
-          </li>
-        ))}
-      </ul>
-      <p className="mt-5 text-[13.5px] text-white/45">On Free, work pauses until next month instead.</p>
+      {onePrice != null ? (
+        <>
+          <p className="flex items-baseline gap-2">
+            <span className="font-display text-[56px] leading-none" style={{ color: AMBER.color }}>
+              {formatCents(onePrice)}
+            </span>
+            <span className="text-[15px] text-white/55">for each hour past your plan's</span>
+          </p>
+          <ul className="mt-6 flex flex-col gap-3 text-[14px] leading-relaxed text-white/70">
+            {[`On ${listNames(PAID_PLANS.map((plan) => plan.name))}`, "Billed after use", "Turn it on in ADE Cloud settings"].map((line) => (
+              <li key={line} className="flex items-start gap-2.5">
+                <Check className="mt-0.5 h-4 w-4 shrink-0" style={{ color: AMBER.color }} />
+                {line}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <ul className="flex flex-col gap-4">
+          {PAID_PLANS.map((plan) => (
+            <li key={plan.id}>
+              <div className="flex items-baseline justify-between">
+                <span className="text-[15px] text-white/75">{plan.name}</span>
+                <span className="text-[14px] text-white/50">
+                  <span className="font-display text-[24px] text-white">{formatCents(plan.extraHourCents ?? 0)}</span> an hour
+                </span>
+              </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                <div className="h-full rounded-full" style={{ width: `${((plan.extraHourCents ?? 0) / most) * 100}%`, background: AMBER.color }} />
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-5 text-[13.5px] text-white/45">On Free, bigger computers pause until next month instead. Small computers keep working.</p>
     </DetailCard>
   );
 }
 
-function ExtraDiskCard() {
+/** Which plans let an agent outside ADE (through ADE MCP) start ADE Cloud work. */
+function OutsideAgentsCard() {
   return (
-    <DetailCard accent={SKY} icon={HardDrive} title="Extra disk" note="Shared by all your computers.">
-      <p className="flex items-baseline gap-2">
-        <span className="font-display text-[56px] leading-none" style={{ color: SKY.color }}>
-          ${EXTRA_DISK_USD_PER_10GB_MONTH}
-        </span>
-        <span className="text-[15px] text-white/55">for each 10 GB, a month</span>
+    <DetailCard accent={SKY} icon={Bot} title="Outside agents" note="Agents outside ADE, through ADE MCP.">
+      <p className="text-[15px] leading-[1.6] text-white/70">
+        A bot or another app's agent can start work on ADE Cloud on {listNames(OUTSIDE_AGENT_PLANS.map((plan) => plan.name))}.
       </p>
-      <ul className="mt-6 flex flex-col gap-3 text-[14px] leading-relaxed text-white/70">
-        {["Counted by the day: pay only for the days you keep it", "You set the most it can cost each month", "Turn it on in ADE Cloud settings"].map((line) => (
-          <li key={line} className="flex items-start gap-2.5">
-            <Check className="mt-0.5 h-4 w-4 shrink-0" style={{ color: SKY.color }} />
-            {line}
+      <ul className="mt-6 grid grid-cols-2 gap-3 text-[14px] text-white/75">
+        {PRICING_PLANS.map((plan) => (
+          <li key={plan.id} className="flex items-center gap-2.5">
+            {plan.outsideAgents ? (
+              <Check className="h-4 w-4 shrink-0" style={{ color: SKY.color }} />
+            ) : (
+              <X className="h-4 w-4 shrink-0 text-white/35" />
+            )}
+            <span className={plan.outsideAgents ? undefined : "text-white/45"}>{plan.name}</span>
           </li>
         ))}
       </ul>
+      {NO_OUTSIDE_AGENT_PLANS.length > 0 ? (
+        <p className="mt-5 text-[13.5px] text-white/45">
+          Agents inside ADE, automations and webhooks use ADE Cloud on {listNames(NO_OUTSIDE_AGENT_PLANS.map((plan) => plan.name))} too.
+        </p>
+      ) : null}
     </DetailCard>
   );
 }
@@ -602,15 +652,17 @@ function FreePlanCard() {
   const rules = [
     `A GitHub account at least ${days(FREE_RULES.githubMinAgeDays)} old`,
     "Newer account? Add a card to start now. It is not charged.",
-    "One free plan for each GitHub account",
+    "One free plan for each GitHub account, and for each computer you use it from",
     `Invite a friend: you both get ${formatCount(INVITE_RULES.rewardHours)} extra hours that never expire, for up to ${INVITE_RULES.rewardLimit} friends`,
   ];
   return (
     <DetailCard accent={MINT} icon={Gift} title="The free plan" note="You never pay to start.">
       <p className="font-display text-[34px] leading-[1.05]" style={{ color: MINT.color }}>
-        {formatCount(FREE_PLAN.hours)} h <span className="text-white/35">·</span> {FREE_PLAN.diskGb} GB
+        Unlimited Small
       </p>
-      <p className="text-[14px] text-white/50">every month</p>
+      <p className="text-[14px] text-white/50">
+        {cloudComputersPhrase(FREE_PLAN.computerLimit)} · {hoursWord(FREE_PLAN.hours)} for bigger ones, every month
+      </p>
       <ul className="mt-5 flex flex-col gap-3 text-[14px] leading-relaxed text-white/70">
         {rules.map((rule) => (
           <li key={rule} className="flex items-start gap-2.5">
@@ -633,27 +685,35 @@ function FaqSection() {
             Press its button: ADE's web app signs you in and takes you to checkout. Or pick one in the ADE app, in
             Settings under ADE Cloud. Free needs no credit card.
           </FaqItem>
+          <FaqItem question="Are Small computers really unlimited?">
+            Yes. {CLOUD_SMALL_UNLIMITED_SENTENCE} Each one counts toward your plan's cloud computers, and it sleeps when
+            work stops. {CLOUD_SMALL_FAIR_USE_SENTENCE}
+          </FaqItem>
           <FaqItem question="What is an hour?">
-            One hour of a {SMALL.label} computer while it is awake. Bigger sizes count more:{" "}
-            {PRICING_SIZES.slice(1)
-              .map((size) => `${size.label} uses ${size.rate}×`)
-              .join(", ")}
-            . A computer that is asleep uses no hours, and your hours start over each month.
+            {CLOUD_HOUR_UNIT_SENTENCE} Free's {hoursWord(FREE_PLAN.hours)} last {hoursOnSizesLine(FREE_PLAN.hours, ", ")}.
+            A computer that is asleep uses no hours, and your hours start over each month.
           </FaqItem>
           <FaqItem question="What happens when my hours run out?">
-            On Free, your computers stop until next month, or until you pick a paid plan. On a paid plan, turn on extra
-            hours in Settings and your agents keep working: each extra hour costs {extraHourList()}. With extra hours
-            off, work stops at your plan's hours.
+            On Free, your {listNames(HOURLY_SIZES.map((size) => size.label))} computers stop until next month, or until
+            you pick a paid plan; {SMALL_SIZE.label} computers keep working. On a paid plan, turn on extra hours in
+            Settings and your agents keep working: each extra hour costs {extraHourList()}. With extra hours off, work
+            on the bigger sizes stops at your plan's hours.
           </FaqItem>
           <FaqItem question="Can I change plans or cancel?">
             Yes, any time in Settings › ADE Cloud. A bigger plan starts right away, and you pay the difference for the
-            rest of the month. A smaller plan, or cancelling, starts when your month ends. If your computers use more
-            disk than the new plan has, ADE asks which to keep, and pushes the others' work to their branches before it
-            frees them.
+            rest of the month. A smaller plan, or cancelling, starts when your month ends. If you have more cloud
+            computers than the new plan allows, ADE asks which to keep, and pushes the others' work to their branches
+            before it frees them.
           </FaqItem>
-          <FaqItem question="Is there a limit on computers?">
-            No. Give every task its own computer. They all share your plan's hours and disk, so you never pay per
-            computer.
+          <FaqItem question="How many cloud computers can I have?">
+            {COMPUTER_LIMITS_LINE}, asleep or not. At the limit, free up a computer from another lane (the lane and its
+            chats stay, and it gets a new computer the next time you send a message there), delete a lane, or move to a
+            bigger plan.
+          </FaqItem>
+          <FaqItem question="Can agents outside ADE use ADE Cloud?">
+            On {listNames(OUTSIDE_AGENT_PLANS.map((plan) => plan.name))}, yes: an agent connected through ADE MCP can
+            start work on ADE Cloud.
+            {NO_OUTSIDE_AGENT_PLANS.length > 0 ? ` On ${listNames(NO_OUTSIDE_AGENT_PLANS.map((plan) => plan.name))}, it can't.` : ""}
           </FaqItem>
           <FaqItem question="What happens to computers I don't use?">
             After {days(FREE_PLAN.idleDays)} unused on Free, or {days(PAID_IDLE_DAYS)} on a paid plan, ADE deletes the

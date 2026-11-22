@@ -56,7 +56,7 @@ export function cloudMachineOfInstance(instance: CloudInstance, catalog: CloudCa
     machineKey: instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null,
     createdAtMs: instance.created != null ? instance.created * 1000 : null,
     sleep: cloudSleepPolicyOf(instance),
-    diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA], catalog, instance.metadata[CLOUD_DISK_FULL_REASON_METADATA]),
+    diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA], instance.metadata[CLOUD_DISK_FULL_REASON_METADATA]),
     update: updateOf(instance),
     // Use facts the computer reported while awake: read with the list, no wake.
     lastActiveAtMs: instance.lastActiveAt ?? null,

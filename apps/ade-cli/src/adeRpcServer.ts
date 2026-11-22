@@ -4239,7 +4239,7 @@ const CLOUD_APPROVED_ACTIONS = new Set([
   "lane_launch", "lane_launch_cancel",
   // Clears a computer's caches: the person's dashboard, or an agent that asks with a card.
   "clear_caches",
-  // Grows this computer's disk: inside the plan alone; extra disk asks in the stamped chat.
+  // Grows this computer's disk, up to its size's maximum (Pricing v2: no plan disk).
   "grow_disk",
   // The card goes to the stamped chat, never one the caller names.
   "tier_request",

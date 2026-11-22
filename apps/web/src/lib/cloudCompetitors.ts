@@ -1,4 +1,4 @@
-import { planCostsFor } from "./cloudPricing";
+import { FINDER_DAYS_A_MONTH, HOURLY_SIZES, SMALL_SIZE, planCostsFor, type PlanCost, type PricingSize } from "./cloudPricing";
 
 /**
  * What other agent apps charge for a cloud computer, for the home page's
@@ -37,11 +37,26 @@ export type Rival = {
   source: string;
 };
 
-/** ADE Cloud's own bill: the cheapest plan that runs `hours` of a Small computer (2 CPUs, 4 GB). */
-export const ADE_MACHINE = "2 CPUs · 4 GB";
+const machineOf = (size: PricingSize): string => `${size.cpu} CPUs · ${size.memoryGb} GB`;
 
-export function adeMonthlyUsd(hours: number): number {
-  return planCostsFor(hours)[0]?.costUsd ?? 0;
+/**
+ * ADE Cloud is charted twice: its Small computer, which never uses hours (so
+ * any month of it is $0 on Free, inside the plan's computers and fair use),
+ * and its Medium, the size whose hour is the plan's hour and the nearest to
+ * the 8 GB machines most rows compare.
+ */
+export const ADE_SMALL = { label: SMALL_SIZE.label, machine: machineOf(SMALL_SIZE) };
+const MEDIUM_SIZE = HOURLY_SIZES[0]!;
+export const ADE_MEDIUM = { label: MEDIUM_SIZE.label, machine: machineOf(MEDIUM_SIZE) };
+
+/** ADE Cloud's bill for `hours` of a Medium computer in a month: the cheapest plan that runs them. */
+export function adeMediumMonthly(hours: number): PlanCost | null {
+  return planCostsFor(hours * MEDIUM_SIZE.rate)[0] ?? null;
+}
+
+/** ADE Cloud's bill for `hours` of Small computers: the cheapest plan with the computers they need, since Small uses no hours. */
+export function adeSmallMonthly(hours: number): PlanCost | null {
+  return planCostsFor(0, Math.max(1, Math.ceil(hours / (24 * FINDER_DAYS_A_MONTH))))[0] ?? null;
 }
 
 /** Replicas' cheapest plan for `hours` of Small: Developer ($50) or a Team step ($200, $300, ...), each billing 1.5x past its usage. */

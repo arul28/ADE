@@ -34,6 +34,7 @@ enum CloudRefusalCode {
     "needs_paid_plan", "disk_limit", "over_plan_limits", "git_credential_missing",
     "github_app_not_installed", "template_unset", "template_unavailable",
     "linear_needs_renewal", "plan_past_due", "too_many_messages", "message_taken",
+    "computer_limit", "outside_agent_free_plan",
   ]
 
   /// Refusals of the Linear, Jira and limits routes (`CLOUD_INTEGRATION_ERROR_CODES`,
@@ -401,6 +402,9 @@ struct CloudServerClient {
     /// The server refused the action and said why (`account_blocked`,
     /// `out_of_hours`, `too_many_awake`, …). `message` is the sentence to show.
     case refused(code: String, message: String)
+    /// A new computer past the plan's computers (`computer_limit`, 403):
+    /// what the limit card shows, with the server's sentence.
+    case computerLimit(CloudComputerLimit)
     case server(Int, message: String?)
     case transport
     case unreadable
@@ -769,6 +773,9 @@ func cloudServerFailure(status: Int, body: Data) -> CloudServerClient.Failure {
   let message = detail?.message.flatMap { nonEmptyTrimmed($0) }
   if status == 401 { return .unauthorized }
   if status == 404 { return .noAccess }
+  if code == CloudComputerLimit.code {
+    return .computerLimit(CloudComputerLimit(refusal: body, message: message))
+  }
   if let code, CloudRefusalCode.all.contains(code) || CloudRefusalCode.reads.contains(code) {
     return .refused(code: code, message: message ?? "ADE Cloud can't do that right now.")
   }
@@ -1208,4 +1215,109 @@ func cloudPhoneKindChangeReason(to tier: CloudPhoneTier) -> String {
   tier.full
     ? "Moving to a full computer makes a new computer; start it from ADE on a computer."
     : "Moving to a standard computer makes a new computer; start it from ADE on a computer."
+}
+
+/// The plan's cloud computers are all taken (Pricing v2): a new lane, chat or
+/// copy is refused with `computer_limit` and these facts
+/// (`CloudComputerLimitDetail` in contract.ts). The phone shows them as one
+/// card with three ways out: free up another lane's computer (the lane and
+/// its chats stay), delete a lane, or the next plan's limit as a fact (the
+/// iPhone app sells nothing, App Store 3.1.1). Every field but the sentence
+/// may be missing; the card then fills in from the account's state.
+struct CloudComputerLimit: Equatable, Identifiable {
+  static let code = "computer_limit"
+
+  /// A computer the card offers to free up or delete, least recently used first.
+  struct Lane: Equatable, Identifiable {
+    let instanceId: String
+    let laneName: String
+    let awake: Bool
+    let lastAwakeAt: Double?
+    var id: String { instanceId }
+  }
+
+  struct NextPlan: Equatable {
+    let planId: String
+    let computerLimit: Int
+  }
+
+  /// One card per refusal: a second refusal opens a fresh one.
+  let id = UUID()
+  /// The server's sentence (or the phone's own when it sent none).
+  let message: String
+  let planId: String?
+  let limit: Int?
+  let total: Int?
+  let lanes: [Lane]
+  let nextPlan: NextPlan?
+
+  init(message: String, planId: String?, limit: Int?, total: Int?, lanes: [Lane], nextPlan: NextPlan?) {
+    self.message = message
+    self.planId = planId
+    self.limit = limit
+    self.total = total
+    self.lanes = lanes
+    self.nextPlan = nextPlan
+  }
+
+  /// From the refusal's body (`{ error: { code, message, ...detail } }`);
+  /// a part this app can't read drops alone.
+  init(refusal body: Data, message: String?) {
+    struct Envelope: Decodable {
+      struct LaneRow: Decodable {
+        let instanceId: String?
+        let laneName: String?
+        let awake: Bool?
+        let lastAwakeAt: Double?
+      }
+      struct Next: Decodable {
+        let planId: String?
+        let computerLimit: Int?
+      }
+      struct Detail: Decodable {
+        let planId: String?
+        let limit: Int?
+        let total: Int?
+        let lanes: [LaneRow]?
+        let nextPlan: Next?
+
+        private enum CodingKeys: String, CodingKey { case planId, limit, total, lanes, nextPlan }
+
+        init(from decoder: Decoder) throws {
+          let c = try decoder.container(keyedBy: CodingKeys.self)
+          planId = c.lenient(String.self, forKey: .planId)
+          limit = c.lenient(Int.self, forKey: .limit)
+          total = c.lenient(Int.self, forKey: .total)
+          lanes = c.lenient([LaneRow].self, forKey: .lanes)
+          nextPlan = c.lenient(Next.self, forKey: .nextPlan)
+        }
+      }
+      let error: Detail?
+    }
+    let detail = (try? JSONDecoder().decode(Envelope.self, from: body))?.error
+    let lanes: [Lane] = (detail?.lanes ?? []).compactMap { row in
+      guard let id = row.instanceId.flatMap({ nonEmptyTrimmed($0) }) else { return nil }
+      return Lane(instanceId: id, laneName: row.laneName.flatMap { nonEmptyTrimmed($0) } ?? "Computer \(id.prefix(6))", awake: row.awake ?? false, lastAwakeAt: row.lastAwakeAt)
+    }
+    let next = detail?.nextPlan.flatMap { next -> NextPlan? in
+      guard let planId = next.planId, let limit = next.computerLimit else { return nil }
+      return NextPlan(planId: planId, computerLimit: limit)
+    }
+    self.init(
+      message: message ?? CloudComputerLimit.headline(limit: detail?.limit),
+      planId: detail?.planId,
+      limit: detail?.limit,
+      total: detail?.total,
+      lanes: lanes,
+      nextPlan: next
+    )
+  }
+
+  /// "You're using all 3 of your cloud computers."
+  static func headline(limit: Int?) -> String {
+    guard let limit else { return "You're using all of your cloud computers." }
+    return "You're using all \(limit) of your cloud computers."
+  }
+
+  var headline: String { Self.headline(limit: limit) }
 }

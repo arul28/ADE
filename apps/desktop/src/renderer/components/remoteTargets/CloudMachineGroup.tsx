@@ -18,6 +18,7 @@ import { Banner } from "../ui/notice";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { CloudLaneSavedWork } from "../cloudLane/CloudLaneSavedWork";
+import { openCloudComputerLimitCard } from "../cloudLane/CloudComputerLimitCard";
 import type { NoticeAction } from "../ui/notice/NoticeParts";
 import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
 import {
@@ -48,7 +49,7 @@ export function CloudGroupHead({
       {ADE_CLOUD_NAME}
       {loading ? <CircleNotch size={11} className="animate-spin" aria-label="Checking ADE Cloud" /> : null}
       {totals.hoursRate > 0 ? (
-        <span className="ade-cx-cloud-head-facts kit-num" title="How fast the computers awake now use your hours, as multiples of a Small computer.">
+        <span className="ade-cx-cloud-head-facts kit-num" title="How fast the computers awake now use your hours. One hour is one hour on a Medium; Small computers use none.">
           {formatCloudHoursRate(totals.hoursRate)} now
         </span>
       ) : null}
@@ -123,7 +124,9 @@ export function CloudGroupBanners({
 
 /** What a failed action blocks on, as the buttons that clear it. */
 function errorActions(error: CloudBoxActionError, onOpenSettings?: (() => void) | null): NoticeAction[] | undefined {
-  const needsPlan = error.blocker === "out_of_hours" || error.blocker === "over_plan_disk" || error.blocker === "over_plan_limits";
+  // At the computer limit: the card with its three ways out (free up, delete, move up).
+  if (error.blocker === "computer_limit") return [{ label: "See your options", onClick: () => openCloudComputerLimitCard(error.computerLimit ?? null) }];
+  const needsPlan = error.blocker === "out_of_hours" || error.blocker === "over_plan_limits";
   return needsPlan && onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined;
 }
 

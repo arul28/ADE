@@ -2,7 +2,7 @@ import { authenticate } from "../callerToken";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { readBoundedJson } from "../sinkUtils";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
-import { CloudBillingError, accountReturnUrl, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours, webReturnUrl, type BillingReturnUrlFor } from "./billing";
+import { CloudBillingError, accountReturnUrl, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraHours, webReturnUrl, type BillingReturnUrlFor } from "./billing";
 import { setExtraPhoneMinutes } from "./phoneBilling";
 import { parseSustainedCpuReport, recordSustainedCpu } from "./abuseSignals";
 import { buildAccountState } from "./accountState";
@@ -53,12 +53,16 @@ import {
   CLOUD_COMPUTER_COMMANDS,
   CLOUD_EDGE_PATHS,
   CLOUD_PATHS,
+  CLOUD_COMPUTER_LIMIT_CODE,
+  CLOUD_OUTSIDE_AGENT_FREE_CODE,
+  CLOUD_OUTSIDE_AGENT_FREE_MESSAGE,
   CLOUD_PLAN_PAST_DUE_SENTENCE,
   cloudAutoSizeRefusalSentence,
-  formatCloudCents,
+  computerLimitSentence,
   overPlanLimitsSentence,
   type CloudAccess,
-  type CloudDiskLimitLane,
+  type CloudComputerLimitDetail,
+  type CloudComputerLimitLane,
   type CloudDiskRefusalReason,
   type CloudInstance,
   type CloudPlanId,
@@ -76,32 +80,26 @@ import { boundedDisplayText } from "../displayText";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson, tooManyRequests } from "./http";
 import {
   AWAKE_COMPUTER_CAP,
-  DISK_ON_CREATE_GB,
+  CLOUD_PLANS,
   DISK_STEP_GB,
-  CENT_MICROS,
-  extraDiskCentsPer10GbMonthOf,
-  extraDiskMicrosPerGbDayOf,
-  extraDiskMonthMicros,
   WAKE_PORT,
   cloudSizeFor,
-  daysLeftIn,
   isMeteredStatus,
   isPaidPlanId,
+  nextPlanUp,
   setupStartDiskGb,
   tierOf,
   type CloudSize,
 } from "./plans";
 import { CloudProviderError, cloudErrorMessage, createCloudProvider, type CloudProvider } from "./provider";
 import {
-  accountDiskGb,
-  accountDiskSql,
+  accountComputerCount,
+  accountComputerCountSql,
   cloudOffers,
-  countedPlanDiskGb,
+  computerLimitOf,
+  computerLimitPlanOf,
   diskDayStatement,
-  extraDiskMicrosThisPeriod,
-  countedDiskGb,
-  freePlanOverDisk,
-  overPlanDiskMessage,
+  hasNoFreePlan,
   planIdOf,
   logCloud,
   nameMachineAfterComputerStatement,
@@ -112,7 +110,7 @@ import {
   ComputerCloseError,
   deleteComputer,
   goneFromProviderStatements,
-  isOutOfHours,
+  isOutOfHoursFor,
   isPendingId,
   listComputers,
   liveUsedMilli,
@@ -172,11 +170,22 @@ const MAX_EXEC_TIMEOUT_MS = 15 * 60_000;
 
 const NOT_FOUND_MESSAGE = "ADE Cloud has no such computer.";
 const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
-const outOfHours = () => fail("out_of_hours", "You're out of ADE Cloud hours for this period.", 402);
+/**
+ * At 0 hours only the sizes that use hours are refused, so the sentence says
+ * Small keeps working; an account with no free plan (`hasNoFreePlan`) runs
+ * nothing, and hears the plain sentence.
+ */
+const outOfHours = (account?: Pick<AccountRow, "plan" | "free_refused_at" | "free_github_hold">) => fail(
+  "out_of_hours",
+  account && !hasNoFreePlan(account)
+    ? "You're out of ADE Cloud hours for this period. Small computers never use hours, so they keep working."
+    : "You're out of ADE Cloud hours for this period.",
+  402,
+);
 const badDiskStep = () => badRequest(`Disk grows in steps of ${DISK_STEP_GB} GB.`);
 const noProviderKey = () => fail("unavailable", cloudErrorMessage("no_provider_key", 503), 503);
-/** Another change took the room while this one ran. */
-const diskChanged = () => fail("disk_limit", "Your computers' disk changed while this ran. Try again.", 409);
+/** Another change took the computer's disk while this one ran. */
+const diskChanged = () => fail("disk_limit", "This computer's disk changed while this ran. Try again.", 409);
 
 const CANT_MAKE_COMPUTER_MESSAGE = "ADE Cloud can't make a computer right now. Try again soon.";
 /** A free account at the owner's free-use cap: nothing new, no disk growth. Never names why. */
@@ -188,31 +197,74 @@ type Refused = { response: Response; refusal: CloudRefusal };
 /** What every handler gets from the request: one clock, and a way to finish work after the response. */
 type CloudRequestContext = { now: number; waitUntil: CloudWaitUntil };
 
-function diskRefusal(code: string, message: string, reason: CloudDiskRefusalReason, refusal: CloudRefusal, lanes?: CloudDiskLimitLane[]): Refused {
-  return { response: fail(code, message, 403, { reason, ...(lanes?.length ? { lanes } : {}) }), refusal };
+function diskRefusal(code: string, message: string, reason: CloudDiskRefusalReason, refusal: CloudRefusal): Refused {
+  return { response: fail(code, message, 403, { reason }), refusal };
 }
 
-/**
- * The computers that hold the account's disk, biggest first, for a refusal at
- * its limit (`CloudDiskLimitLane`). Empty when they can't be read: the list
- * only helps the refusal, so a failed read never changes the answer.
+/*
+ * ---- The computer limit (Pricing v2) ----
+ *
+ * Each plan has a number of cloud computers, asleep or not
+ * (`CLOUD_PLANS[].computerLimit`, `computerLimitOf`). A create, a copy and a
+ * new lane's launch past it are refused with 403 `computer_limit`; the
+ * error carries `CloudComputerLimitDetail` beside `code` and `message`, flat
+ * on `error`, for the limit card. The count is part of the reservation's one
+ * conditional insert (`reserveComputer`), so two creates at once can't both
+ * take the last slot. A move replaces its computer and is never refused for
+ * it.
  */
-async function diskLimitLanes(env: CloudEnv, userId: string): Promise<CloudDiskLimitLane[]> {
+
+/** The account's made computers, least recently used first, for the limit card. Empty when they can't be read. */
+async function computerLimitLanes(env: CloudEnv, userId: string): Promise<CloudComputerLimitLane[]> {
   try {
     const rows = await env.DB.prepare(`
-      select coalesce(lane_name, name, instance_id) as label, disk_gb from cloud_computers
-      where user_id = ? and deleted_at is null and disk_gb > 0
-      order by disk_gb desc limit 20
-    `).bind(userId).all<{ label: string; disk_gb: number }>();
-    return (rows.results ?? []).map((row) => ({ laneName: row.label, diskGb: row.disk_gb }));
+      select instance_id, coalesce(lane_name, name, instance_id) as label, status, last_awake_at, (lane_id is not null and lane_name is not null) as has_lane from cloud_computers
+      where user_id = ? and deleted_at is null and instance_id not like 'pending:%'
+      order by coalesce(last_awake_at, created_at), instance_id limit 30
+    `).bind(userId).all<{ instance_id: string; label: string; status: string; last_awake_at: number | null; has_lane: number }>();
+    return (rows.results ?? []).map((row) => ({ instanceId: row.instance_id, laneName: row.label, awake: isMeteredStatus(row.status), lastAwakeAt: row.last_awake_at, hasLane: row.has_lane === 1 }));
   } catch (error) {
-    logCloud("cloud.disk_limit_lanes_failed", { userId, error: error instanceof Error ? error.message : "unknown" });
+    logCloud("cloud.computer_limit_lanes_failed", { userId, error: error instanceof Error ? error.message : "unknown" });
     return [];
   }
 }
 
-/** The ways out of a refused grow on a paid plan, the same on Plus and Pro. */
-const PAID_DISK_WAYS_OUT = "Delete a computer you no longer use, or turn on extra disk in Settings.";
+/** The refusal at the computer limit, with what the card shows. */
+async function computerLimitRefusal(env: CloudEnv, account: AccountRow, now: number): Promise<Refused> {
+  const planId = computerLimitPlanOf(account);
+  const next = nextPlanUp(planId, cloudOffers(env));
+  const detail: CloudComputerLimitDetail = {
+    planId,
+    limit: computerLimitOf(account),
+    total: await accountComputerCount(env, account.user_id, now),
+    lanes: await computerLimitLanes(env, account.user_id),
+    nextPlan: next ? { planId: next, computerLimit: CLOUD_PLANS[next].computerLimit, priceUsd: CLOUD_PLANS[next].priceUsd } : null,
+  };
+  logCloud("cloud.computer_limit_reached", { userId: account.user_id, plan: planId, limit: detail.limit, total: detail.total });
+  return { response: fail(CLOUD_COMPUTER_LIMIT_CODE, computerLimitSentence(detail), 403, detail), refusal: "computer_limit" };
+}
+
+/** A copy's or a server copy's early answer at the limit (the reservation checks again in the same write as the insert). */
+async function computerLimitCheck(env: CloudEnv, account: AccountRow, now: number): Promise<Refused | null> {
+  return await accountComputerCount(env, account.user_id, now) >= computerLimitOf(account) ? computerLimitRefusal(env, account, now) : null;
+}
+
+/*
+ * ---- Outside agents (Pricing v2) ----
+ *
+ * An outside agent (an app connected through ADE MCP) may start ADE Cloud
+ * work only on a paid plan (`CloudPlanFacts.outsideAgents`). It marks itself
+ * `ade_made_by_agent: "mcp"` on a create or copy, `madeBy.agent: "mcp"` on a
+ * launch (which reaches `createComputer` with that metadata), and `origin:
+ * "mcp"` on a start, a server copy and a sent message. Reads stay allowed.
+ */
+const isOutsideAgentMetadata = (metadata: Record<string, string>): boolean => metadata.ade_made_by_agent === "mcp";
+
+/** 403 `outside_agent_free_plan` with the sentence the agent passes on, on free-plan rules (`past_due` included); else null. */
+function outsideAgentRefusal(account: AccountRow, outsideAgent: boolean): Refused | null {
+  if (!outsideAgent || CLOUD_PLANS[planIdOf(account)].outsideAgents) return null;
+  return { response: fail(CLOUD_OUTSIDE_AGENT_FREE_CODE, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, 403), refusal: "outside_agent_free" };
+}
 
 /*
  * ---- The awake cap ----
@@ -292,64 +344,13 @@ function tierRefusal(size: CloudSize, diskGb: number, moving: boolean): Refused 
 }
 
 /**
- * Whether the account may hold `nextTotalGb` of disk at one time, and the most
- * the one-write reservation may let it reach. Inside the plan's disk: yes (a
- * downgrade waiting for the period end already holds to the next plan's
- * disk, so the switch finds nothing unpaid). Past it: never on the free plan;
- * on a paid plan only with extra disk set up, on, and inside the monthly
- * limit, which must hold for a full month of the new amount, not just the
- * days left in this period.
- */
-async function diskRoom(env: CloudEnv, account: AccountRow, nextTotalGb: number, now: number): Promise<{ ok: true; capGb: number } | ({ ok: false } & Refused)> {
-  const planGb = countedPlanDiskGb(account);
-  if (nextTotalGb <= planGb) return { ok: true, capGb: planGb };
-  // Past the plan's disk: a refusal names what holds it (read only when it refuses).
-  const atLimit = async (code: string, message: string, reason: Exclude<CloudDiskRefusalReason, "unavailable" | "tier_limit">): Promise<{ ok: false } & Refused> =>
-    ({ ok: false, ...diskRefusal(code, message, reason, reason, await diskLimitLanes(env, account.user_id)) });
-  if (planIdOf(account) === "free") {
-    // `past_due` follows the free plan's disk until the card works again: that is its way out.
-    const message = account.stripe_status === "past_due" && account.plan === "paid"
-      ? "Your last payment didn't go through. Update your card in Manage, then try again."
-      : `Free computers share ${planGb} GB of disk at one time, and this would go past it. Delete a computer you no longer use, or move to a bigger plan.`;
-    return await atLimit("needs_paid_plan", message, "plan_disk");
-  }
-  const overPlan = `Your computers share ${planGb} GB of disk at one time, and this would go past it.`;
-  if (!cloudOffers(env).extraDisk) {
-    return await atLimit("disk_limit", `${overPlan} Delete a computer you no longer use.`, "extra_off");
-  }
-  const extraGb = nextTotalGb - planGb;
-  const limitCents = account.extra_disk_limit_cents;
-  const needsApproval = () => atLimit(
-    "disk_limit",
-    `This needs ${extraGb} GB more disk than your plan's ${planGb} GB at one time. Extra disk is ${formatCloudCents(extraDiskCentsPer10GbMonthOf(account))} for each 10 GB a month, counted by the day. Turn it on in Settings, or delete a computer you no longer use.`,
-    "needs_approval",
-  );
-  if (account.extra_disk_state !== "on") {
-    // `off`: never decided, so it asks once; `asked`: turned down.
-    return account.extra_disk_state === "off" ? await needsApproval() : await atLimit("disk_limit", `${overPlan} ${PAID_DISK_WAYS_OUT}`, "extra_off");
-  }
-  if (limitCents == null) return await needsApproval();
-  const thisPeriod = await extraDiskMicrosThisPeriod(env, account) + extraGb * extraDiskMicrosPerGbDayOf(account) * daysLeftIn(account.period_end, now);
-  if (Math.max(thisPeriod, extraDiskMonthMicros(extraGb, account)) > limitCents * CENT_MICROS) {
-    return await atLimit("disk_limit", `This would pass the ${formatCloudCents(limitCents)} a month you set for extra disk. Raise the limit in Settings, or delete a computer you no longer use.`, "monthly_limit");
-  }
-  return { ok: true, capGb: nextTotalGb };
-}
-
-/**
- * Over the plan in force (a cheaper plan started with more disk than it
- * allows, and nobody picked what goes): a new computer is refused
- * until the person cleans up or picks in ADE. Nothing is ever freed for it.
+ * Over the plan in force (a cheaper plan started with more computers than it
+ * allows, and nobody picked what goes): a new computer is refused until the
+ * person cleans up or picks in ADE. Nothing is ever freed for it.
  */
 function overPlanLimits(env: CloudEnv, account: AccountRow, computers: ComputerRow[]): Refused | null {
   const over = overPlanInForce(env, account, computers);
   return over ? { response: fail("over_plan_limits", overPlanLimitsSentence(over), 403), refusal: "over_plan_limits" } : null;
-}
-
-/** On the free plan with more disk than it has, a wake is refused (`freePlanOverDisk`). */
-function overPlanDisk(account: AccountRow, computers: ComputerRow[]): Refused | null {
-  const diskGb = countedDiskGb(computers);
-  return freePlanOverDisk(account, diskGb) ? { response: fail("over_plan_disk", overPlanDiskMessage(diskGb), 402), refusal: "over_plan_disk" } : null;
 }
 
 /** The plan to label an event with, for a route that didn't load the account. */
@@ -359,8 +360,8 @@ async function planIdFor(env: CloudEnv, userId: string): Promise<CloudPlanId> {
   return row ? planIdOf(row) : "free";
 }
 
-/** An agent's create or copy carries the chat that asked; a person's doesn't. */
-const originOf = (metadata: Record<string, string>): CloudActionOrigin => (metadata.ade_made_by_chat ? "agent" : "person");
+/** An agent's create or copy carries the chat that asked, or the agent that made it; a person's doesn't. */
+const originOf = (metadata: Record<string, string>): CloudActionOrigin => (metadata.ade_made_by_chat || metadata.ade_made_by_agent ? "agent" : "person");
 
 export function isCloudRequest(url: URL): boolean {
   return url.pathname === PREFIX || url.pathname.startsWith(`${PREFIX}/`);
@@ -409,16 +410,38 @@ async function providerCall(run: () => Promise<Response>): Promise<Response> {
   }
 }
 
-async function getAccountContext(env: CloudEnv, userId: string, now: number): Promise<{ account: AccountRow; computers: ComputerRow[]; outOfHours: boolean }> {
+/**
+ * The account, its computers, and whether a computer at a rate may not run
+ * for lack of hours (`isOutOfHoursFor`: Small never uses hours, except on an
+ * account with no free plan).
+ */
+async function getAccountContext(env: CloudEnv, userId: string, now: number): Promise<{
+  account: AccountRow;
+  computers: ComputerRow[];
+  outOfHoursFor: (multiplierMilli: number) => Refused | null;
+}> {
   const account = await loadAccount(env, userId, now);
   const computers = await listComputers(env, userId);
-  return { account, computers, outOfHours: isOutOfHours(account, liveUsedMilli(account, computers, now)) };
+  const liveUsed = liveUsedMilli(account, computers, now);
+  return {
+    account,
+    computers,
+    outOfHoursFor: (multiplierMilli) => (isOutOfHoursFor(account, liveUsed, multiplierMilli) ? { response: outOfHours(account), refusal: "out_of_hours" } : null),
+  };
 }
 
-/** Why the account's computers may not wake now (0 hours, or disk the free plan doesn't cover), or null. */
-async function wakeBlocker(env: CloudEnv, userId: string, now: number): Promise<{ blocked: Refused | null; account: AccountRow }> {
-  const { account, computers, outOfHours: empty } = await getAccountContext(env, userId, now);
-  return { account, blocked: empty ? { response: outOfHours(), refusal: "out_of_hours" } : overPlanDisk(account, computers) };
+/**
+ * Why `computer` may not wake now (0 hours on a size that uses them), or null.
+ * `multiplierMilli` is the rate it wakes at: a resize's new size.
+ */
+async function wakeBlocker(
+  env: CloudEnv,
+  computer: Pick<ComputerRow, "user_id" | "multiplier_milli">,
+  now: number,
+  multiplierMilli = computer.multiplier_milli,
+): Promise<{ blocked: Refused | null; account: AccountRow }> {
+  const { account, outOfHoursFor } = await getAccountContext(env, computer.user_id, now);
+  return { account, blocked: outOfHoursFor(multiplierMilli) };
 }
 
 /**
@@ -447,7 +470,7 @@ async function eventWakeComputer(env: CloudEnv, computer: ComputerRow, now: numb
   const provider = providerFor(env);
   if (!provider) return "failed";
   if (await isCloudBlocked(env, computer.user_id)) return "refused:account_blocked";
-  const { blocked } = await wakeBlocker(env, computer.user_id, now);
+  const { blocked } = await wakeBlocker(env, computer, now);
   if (blocked) return `refused:${blocked.refusal}`;
   if (await awakeRoom(env, computer, now)) return "refused:too_many_awake";
   // A delete holds it (an idle cleanup's, or a move from its saved copy): a wake now would put work after the save.
@@ -463,16 +486,17 @@ async function markGone(env: CloudEnv, computer: ComputerRow, now: number): Prom
 }
 
 /**
- * A reservation that makes the awake cap and the disk limit hold under
- * concurrent creates. `capGb` is the most disk the account may hold at one time (from
- * `diskRoom`). A move leaves its source out of the sum and records it in
- * `moving_from`: the move deletes it, and one still there after
- * `MOVE_GRACE_MS` counts again (the tick's `endMoves`).
+ * A reservation that makes the awake cap and the computer limit hold under
+ * concurrent creates: the counts are in the same write as the insert, and the
+ * reservation itself counts until it is made or `PENDING_TIMEOUT_MS` passes
+ * (`accountComputerCountSql`). A move replaces its computer, so it is never
+ * held to the limit; it records its source in `moving_from`, the pair counts
+ * once while the move runs, and a source still there after `MOVE_GRACE_MS`
+ * counts again (the tick's `endMoves`).
  */
 async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
   size: CloudSize;
   diskGb: number;
-  capGb: number;
   moveFromInstanceId: string | null;
   name: string | null;
   requestId: string;
@@ -489,7 +513,7 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
       lane_id, lane_name, lane_project_origin, lane_branch)
     select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?, ?
     where (select count(*) from cloud_computers where user_id = ? and deleted_at is null and ${AWAKE_CAP_COUNT_SQL}) < ?
-      and ${accountDiskSql("?", { except: true })} + ? <= ?
+      and (? = 1 or ${accountComputerCountSql("?")} < ?)
       and not exists (select 1 from cloud_computers where request_id = ? and user_id <> ?)
       and not exists (select 1 from cloud_computers where request_id = ? and user_id = ? and deleted_at is null)
       and not exists (select 1 from cloud_computers where deleted_at is null and moving_from is not null and (moving_from = ? or instance_id = ?))
@@ -498,7 +522,7 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
     args.templateVersion, args.name, args.now, args.now, args.now, args.moveFromInstanceId, args.channel,
     args.lane.laneId, args.lane.laneName, args.lane.projectOrigin, args.lane.branch,
     account.user_id, cutoff, AWAKE_COMPUTER_CAP,
-    account.user_id, args.moveFromInstanceId ?? "", args.diskGb, args.capGb,
+    args.moveFromInstanceId ? 1 : 0, account.user_id, args.moveFromInstanceId ?? "", cutoff, computerLimitOf(account),
     args.requestId, account.user_id,
     args.requestId, account.user_id,
     args.moveFromInstanceId, args.moveFromInstanceId,
@@ -518,9 +542,11 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
     reportAwakeCap(account.user_id, "create", awake);
     return { ok: false, ...tooManyAwake() };
   }
-  // Another create took the room after `diskRoom` said yes: say what is true now.
-  const room = await diskRoom(env, account, await accountDiskGb(env, account.user_id, args.moveFromInstanceId ?? "") + args.diskGb, args.now);
-  return room.ok ? { ok: false, response: diskChanged(), refusal: null } : room;
+  if (!args.moveFromInstanceId && await accountComputerCount(env, account.user_id, args.now) >= computerLimitOf(account)) {
+    return { ok: false, ...await computerLimitRefusal(env, account, args.now) };
+  }
+  // What's left: the computer to move started another move meanwhile.
+  return { ok: false, response: fail("computer_busy", "This computer is in the middle of a move. Try again when the move is done.", 409), refusal: null };
 }
 
 async function releasePending(env: CloudEnv, pendingId: string): Promise<void> {
@@ -659,7 +685,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
     reportCloudFailure("cloud.create_refused_no_template_version", { userId, channel });
     return refused(fail("template_unset", CANT_MAKE_COMPUTER_MESSAGE, 503));
   }
-  const { account, computers, outOfHours: empty } = await getAccountContext(env, userId, now);
+  const { account, computers, outOfHoursFor } = await getAccountContext(env, userId, now);
   const isMove = body.moveFromInstanceId !== undefined;
   const action = isMove ? "move" : "create";
   const { metadata, requestId } = withRequestId(clientMetadata);
@@ -667,21 +693,26 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   // The owner's kill switch (a move replaces a computer, so it still runs) and the hourly limit.
   const newWork = await newWorkRefusal(env, userId, isMove ? "move" : "create", now, waitUntil);
   if (newWork) return refused(newWork);
-  if (empty) return refused(refuse({ response: outOfHours(), refusal: "out_of_hours" }));
+  // An outside agent (ADE MCP) on the free plan: a create, a move and a new lane's launch alike.
+  const outside = outsideAgentRefusal(account, isOutsideAgentMetadata(clientMetadata));
+  if (outside) return refused(refuse(outside));
+  // Only the size being made: a Small computer never uses hours.
+  const empty = outOfHoursFor(size.multiplierMilli);
+  if (empty) return refused(refuse(empty));
   // The owner's cap limits free use only: a paid account is never refused here.
   if (await freeCapRefuses(env, account, now, waitUntil)) return refused(refuse({ response: cantMakeComputer(), refusal: "owner_limit" }));
   // A move replaces its computer, so it adds nothing: only a new computer waits for the account to fit.
   const over = isMove ? null : overPlanLimits(env, account, computers);
   if (over) return refused(refuse(over));
 
-  // A move carries the old computer's disk; a plain create always starts at the smallest.
-  let diskGb = DISK_ON_CREATE_GB;
+  // A move carries the old computer's disk; a plain create starts at the smallest, or at its repository's setup disk.
+  let diskGb = setupStartDiskGb(size, extras.setupDiskGb);
   let moveFromInstanceId: string | null = null;
   let lane = laneFactsOf(metadata);
   if (isMove) {
     const source = typeof body.moveFromInstanceId === "string" ? await ownedComputer(env, userId, body.moveFromInstanceId) : null;
     if (!source) return refused(notFound());
-    // One move at a time per computer: a chain (A to B, then B to C) would leave both A and B out of the disk.
+    // One move at a time per computer: a chain (A to B, then B to C) would leave both A and B out of the count.
     if (source.moving_from != null || await env.DB.prepare("select 1 as busy from cloud_computers where moving_from = ? and deleted_at is null limit 1").bind(source.instance_id).first()) {
       return refused(fail("computer_busy", "This computer is in the middle of a move. Try again when the move is done.", 409));
     }
@@ -696,23 +727,8 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
     const tooBig = tierRefusal(size, diskGb, true);
     if (tooBig) return refused(refuse(tooBig));
   }
-  // The move's source is deleted at the end of the move, so its disk isn't counted twice while it runs.
-  const otherDiskGb = await accountDiskGb(env, userId, moveFromInstanceId ?? "");
-  // A launch whose repository's setup grew its disk before starts there, inside the plan's disk.
-  if (!isMove) diskGb = setupStartDiskGb(size, extras.setupDiskGb, otherDiskGb, countedPlanDiskGb(account));
-  const room = await diskRoom(env, account, otherDiskGb + diskGb, now);
-  if (!room.ok) return refused(refuse(room));
-
-  const reserve = (disk: number, capGb: number) =>
-    reserveComputer(env, account, { size, diskGb: disk, capGb, moveFromInstanceId, name, requestId, templateVersion, channel, lane, now });
-  let reservation = await reserve(diskGb, room.capGb);
-  if (!reservation.ok && !("replay" in reservation) && diskGb !== DISK_ON_CREATE_GB && !isMove) {
-    // Another create took the room the bigger start needed: start at 4 GB, as before.
-    diskGb = DISK_ON_CREATE_GB;
-    const again = await diskRoom(env, account, await accountDiskGb(env, userId, "") + diskGb, now);
-    if (!again.ok) return refused(refuse(again));
-    reservation = await reserve(diskGb, again.capGb);
-  }
+  // The computer limit is checked in the reservation's own write (a move is never held to it).
+  const reservation = await reserveComputer(env, account, { size, diskGb, moveFromInstanceId, name, requestId, templateVersion, channel, lane, now });
   if (!reservation.ok) {
     if ("replay" in reservation) return await replayRequest(env, provider, userId, requestId, now) ?? { kind: "in_progress" };
     return refused(reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response);
@@ -754,13 +770,13 @@ type ForkPlan = {
   account: AccountRow;
   size: CloudSize;
   diskGb: number;
-  capGb: number;
   track: ReturnType<typeof cloudActionTracker>["track"];
   refuse: ReturnType<typeof cloudActionTracker>["refuse"];
 };
 
 /**
- * A copy's rules (the owner's switch, hours, limits, size, disk), for the copy
+ * A copy's rules (the owner's switch, outside agents, hours, the computer
+ * limit, size, disk), for the copy
  * route and the server copy (`copies.ts`) alike, so a server copy is refused
  * at its start for exactly what would refuse its fork.
  */
@@ -772,31 +788,36 @@ async function planFork(
   { now, waitUntil }: CloudRequestContext,
 ): Promise<{ ok: true; plan: ForkPlan } | { ok: false; response: Response }> {
   const no = (response: Response) => ({ ok: false as const, response });
-  const { account, computers, outOfHours: empty } = await getAccountContext(env, computer.user_id, now);
+  const { account, computers, outOfHoursFor } = await getAccountContext(env, computer.user_id, now);
   const { track, refuse } = cloudActionTracker({
     env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: originOf(metadataIn), key: computer.instance_id, refusedAction: "copy", now,
   });
   const newWork = await newWorkRefusal(env, computer.user_id, "copy", now, waitUntil);
   if (newWork) return no(newWork);
-  if (empty) return no(refuse({ response: outOfHours(), refusal: "out_of_hours" }));
-  if (await freeCapRefuses(env, account, now, waitUntil)) return no(refuse({ response: cantMakeComputer(), refusal: "owner_limit" }));
-  const over = overPlanLimits(env, account, computers);
-  if (over) return no(refuse(over));
-
+  const outside = outsideAgentRefusal(account, isOutsideAgentMetadata(metadataIn));
+  if (outside) return no(refuse(outside));
   const resources = body.resources && typeof body.resources === "object" ? body.resources as Record<string, unknown> : null;
   const size = resources
     ? cloudSizeFor(computer.type, resources.cpu, resources.memory)
     : cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
   if (!size) return no(badRequest("That size isn't one ADE Cloud offers."));
+  // Only the copy's own size: a Small copy never uses hours.
+  const empty = outOfHoursFor(size.multiplierMilli);
+  if (empty) return no(refuse(empty));
+  if (await freeCapRefuses(env, account, now, waitUntil)) return no(refuse({ response: cantMakeComputer(), refusal: "owner_limit" }));
+  const over = overPlanLimits(env, account, computers);
+  if (over) return no(refuse(over));
+  // A copy adds a computer: refused at the limit now (the reservation checks again in its own write).
+  const atLimit = await computerLimitCheck(env, account, now);
+  if (atLimit) return no(refuse(atLimit));
+
   const requestedDisk = typeof resources?.disk === "number" ? resources.disk : computer.disk_gb;
   if (!Number.isInteger(requestedDisk)) return no(badRequest("That disk size isn't valid."));
   if (requestedDisk < computer.disk_gb) return no(badRequest("A copy's disk can't be smaller than the original's."));
   if (requestedDisk !== computer.disk_gb && requestedDisk % DISK_STEP_GB !== 0) return no(badDiskStep());
   const tooBig = tierRefusal(size, requestedDisk, requestedDisk === computer.disk_gb);
   if (tooBig) return no(refuse(tooBig));
-  const room = await diskRoom(env, account, await accountDiskGb(env, computer.user_id) + requestedDisk, now);
-  if (!room.ok) return no(refuse(room));
-  return { ok: true, plan: { account, size, diskGb: requestedDisk, capGb: room.capGb, track, refuse } };
+  return { ok: true, plan: { account, size, diskGb: requestedDisk, track, refuse } };
 }
 
 /** Why a copy of `computer` with this fork body would be refused now, or null when it may go ahead (the server copy's start). */
@@ -826,14 +847,13 @@ export async function forkComputer(env: CloudEnv, computer: ComputerRow, provide
   }
   const planned = await planFork(env, computer, body, metadataIn, ctx);
   if (!planned.ok) return refused(planned.response);
-  const { account, size, diskGb, capGb, track, refuse } = planned.plan;
+  const { account, size, diskGb, track, refuse } = planned.plan;
 
   const { metadata, requestId } = withRequestId(metadataIn);
   const name = computerName(body.name);
   const reservation = await reserveComputer(env, account, {
     size,
     diskGb,
-    capGb,
     moveFromInstanceId: null,
     name: name ?? computer.name,
     requestId,
@@ -882,8 +902,8 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
 /**
  * A resize on an awake computer. The provider refuses a resize (like a
  * restart or a restore) of a sleeping one with `invalid_request`, so a
- * sleeping computer is woken first, under the same rules as any wake (the
- * free plan's disk), and the wake is recorded so its time is metered. The row
+ * sleeping computer is woken first, under the same rules as any wake (hours,
+ * at the new size's rate), and the wake is recorded so its time is metered. The row
  * can be a minute behind the provider: a refusal on a computer the row calls
  * awake reads the provider once, and wakes and asks again if it sleeps.
  *
@@ -897,9 +917,11 @@ async function resizeAwake(
   provider: CloudProvider,
   resize: { cpu: number; memory: number; disk?: number },
   now: number,
+  /** The rate it runs at after the resize: the wake is held to the new size's hours rule. */
+  multiplierMilli: number,
 ): Promise<{ status: string } | { blocked: Refused } | { refused: Response }> {
   const wake = async (): Promise<{ blocked: Refused } | { refused: Response } | null> => {
-    const { blocked } = await wakeBlocker(env, computer.user_id, now);
+    const { blocked } = await wakeBlocker(env, computer, now, multiplierMilli);
     if (blocked) return { blocked };
     const capped = await awakeRoom(env, { ...computer, status: "sleeping" }, now);
     if (capped) return { blocked: capped };
@@ -935,15 +957,17 @@ async function resizeAwake(
 async function handleResize(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, { now, waitUntil }: CloudRequestContext): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  const { account, outOfHours: empty } = await getAccountContext(env, computer.user_id, now);
+  const { account, outOfHoursFor } = await getAccountContext(env, computer.user_id, now);
   // The computer's own disk grower says so; anything else is a person or their agent.
   const origin: CloudActionOrigin = body.origin === "auto" ? "system" : "person";
   const refusedAction: CloudRefusedAction = body.disk !== undefined ? "grow" : "tier_change";
   const { track, refuse } = cloudActionTracker({ env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin, key: computer.instance_id, refusedAction, now });
-  if (empty) return refuse({ response: outOfHours(), refusal: "out_of_hours" });
 
   const size = cloudSizeFor(computer.type, body.cpu ?? computer.cpu, body.memory ?? computer.memory_gb);
   if (!size) return badRequest("That size isn't one ADE Cloud offers.");
+  // The size it runs at after: at 0 hours a resize to Small (or a Small's disk grow) goes ahead, one to a bigger size doesn't.
+  const empty = outOfHoursFor(size.multiplierMilli);
+  if (empty) return refuse(empty);
 
   if (body.disk !== undefined && (typeof body.disk !== "number" || !Number.isInteger(body.disk))) return badRequest("That disk size isn't valid.");
   // The provider's size, not the row's: a grow whose answer was lost leaves the row ahead, and a retry must still ask for it.
@@ -974,22 +998,16 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
     if (isMeteredStatus(computer.status) && body.computerIdle !== true) {
       return fail("computer_busy", "A disk can only grow while the computer is idle.", 409);
     }
-    // Reserved in one write, so two grows at once can't pass the shared limit together.
-    // Already this size on the row: a retry, and its room is already held.
+    // Reserved in one write held to the size it read, so two grows at once can't both pass.
+    // There is no account-wide disk (Pricing v2): only this size's own maximum, checked above.
+    // Already this size on the row: a retry, and its reservation is already held.
     if (nextDisk !== computer.disk_gb) {
       if (await freeCapRefuses(env, account, now, waitUntil)) return refuse({ response: cantGrowDisk(), refusal: "owner_limit" });
-      // The other computers plus this one at its new size (a move's source too, while its move runs).
-      const room = await diskRoom(env, account, await accountDiskGb(env, computer.user_id, computer.instance_id) + nextDisk, now);
-      if (!room.ok) return refuse(room);
       const reserved = await env.DB.prepare(`
         update cloud_computers set disk_gb = ?, disk_reserved_at = ?, disk_confirmed_gb = coalesce(disk_confirmed_gb, disk_gb)
         where instance_id = ? and disk_gb = ?
-          and ${accountDiskSql("?", { except: true })} + ? <= ?
-      `).bind(nextDisk, now, computer.instance_id, computer.disk_gb, computer.user_id, computer.instance_id, nextDisk, room.capGb).run();
-      if (reserved.meta.changes !== 1) {
-        const again = await diskRoom(env, account, await accountDiskGb(env, computer.user_id, computer.instance_id) + nextDisk, now);
-        return again.ok ? diskChanged() : refuse(again);
-      }
+      `).bind(nextDisk, now, computer.instance_id, computer.disk_gb).run();
+      if (reserved.meta.changes !== 1) return diskChanged();
     } else if (nextDisk !== currentDisk) {
       // A retry: its room is held, so only the clock needs renewing.
       await env.DB.prepare("update cloud_computers set disk_reserved_at = ? where instance_id = ?").bind(now, computer.instance_id).run();
@@ -1016,7 +1034,7 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
   const finish = (async (): Promise<Response> => {
     let status: string;
     try {
-      const awake = await resizeAwake(env, computer, provider, resize, now);
+      const awake = await resizeAwake(env, computer, provider, resize, now, size.multiplierMilli);
       if ("blocked" in awake) {
         if (nextDisk !== currentDisk) await releaseDiskReservation();
         return refuse(awake.blocked);
@@ -1109,7 +1127,7 @@ async function prepareForPersonSleep(provider: CloudProvider, computer: Computer
 }
 
 async function handleSleepLike(env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number, reason: string, backupReportId: string | null = null): Promise<Response> {
-  const { blocked } = await wakeBlocker(env, computer.user_id, now);
+  const { blocked } = await wakeBlocker(env, computer, now);
   // Only the person's Sleep: the computer's own idle sleep comes when nothing runs, with its own save.
   const person = reason === "user";
   const prepare: SleepPrepare = person ? await prepareForPersonSleep(provider, computer) : { reportId: backupReportId, frozen: false, answeredAt: Date.now() };
@@ -1133,11 +1151,13 @@ async function handleSleepLike(env: CloudEnv, computer: ComputerRow, provider: C
 async function handleStart(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, { now, waitUntil }: CloudRequestContext): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  const { account, blocked } = await wakeBlocker(env, computer.user_id, now);
-  if (blocked) {
-    // Every wake is use, so none goes through at 0 hours. The lanes' work reads from their backups with no wake.
-    const { refuse } = cloudActionTracker({ env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: "person", key: computer.instance_id, refusedAction: "wake", now });
-    return refuse(blocked);
+  const { account, blocked } = await wakeBlocker(env, computer, now);
+  // `origin: "mcp"`: an outside agent waking the computer for work, refused on the free plan.
+  const outside = outsideAgentRefusal(account, body.origin === "mcp");
+  if (outside || blocked) {
+    // Every wake is use, so none goes through at 0 hours (a Small computer's does). The lanes' work reads from their backups with no wake.
+    const { refuse } = cloudActionTracker({ env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: outside ? "agent" : "person", key: computer.instance_id, refusedAction: "wake", now });
+    return refuse((outside ?? blocked)!);
   }
   // At the awake cap, a wake waits a few seconds for another computer to sleep before it says so.
   const capped = await awakeRoom(env, computer, now, AWAKE_CAP_WAIT_MS);
@@ -1195,7 +1215,7 @@ async function handleUpdate(request: Request, env: CloudEnv, computer: ComputerR
     return fail("template_unset", CANT_MAKE_COMPUTER_MESSAGE, 503);
   }
   if (computer.update_state === "updating") return fail("update_in_progress", new CloudUpdateInProgressError().message, 409);
-  const { blocked } = await wakeBlocker(env, computer.user_id, now);
+  const { blocked } = await wakeBlocker(env, computer, now);
   if (blocked) return blocked.response;
   // An update wakes a sleeping computer, so it counts toward the awake cap like any wake.
   const capped = await awakeRoom(env, computer, now);
@@ -1404,7 +1424,7 @@ async function handleExec(request: Request, env: CloudEnv, computer: ComputerRow
   if (asleep) {
     const accountBlock = await blockedNow(env, computer.user_id);
     if (accountBlock) return accountBlock;
-    const { blocked } = await wakeBlocker(env, computer.user_id, now);
+    const { blocked } = await wakeBlocker(env, computer, now);
     if (blocked) return blocked.response;
     const capped = await awakeRoom(env, computer, now, AWAKE_CAP_WAIT_MS);
     if (capped) return capped.response;
@@ -1477,11 +1497,13 @@ async function handleList(env: CloudEnv, userId: string, provider: CloudProvider
  */
 async function moveRefusal(env: CloudEnv, source: ComputerRow, size: CloudSize, { now, waitUntil }: CloudRequestContext): Promise<Response | null> {
   const userId = source.user_id;
-  const { account, outOfHours: empty } = await getAccountContext(env, userId, now);
+  const { account, outOfHoursFor } = await getAccountContext(env, userId, now);
   const { refuse } = cloudActionTracker({ env, waitUntil, userId, plan: planIdOf(account), origin: "person", key: source.instance_id, refusedAction: "move", now });
   const newWork = await newWorkRefusal(env, userId, "move", now, waitUntil);
   if (newWork) return newWork;
-  if (empty) return refuse({ response: outOfHours(), refusal: "out_of_hours" });
+  // The size it moves to: a move to a Small never uses hours.
+  const empty = outOfHoursFor(size.multiplierMilli);
+  if (empty) return refuse(empty);
   if (await freeCapRefuses(env, account, now, waitUntil)) return refuse({ response: cantMakeComputer(), refusal: "owner_limit" });
   if (source.moving_from != null || await env.DB.prepare("select 1 as busy from cloud_computers where moving_from = ? and deleted_at is null limit 1").bind(source.instance_id).first()) {
     return fail("computer_busy", "This computer is in the middle of a move. Try again when the move is done.", 409);
@@ -1489,11 +1511,9 @@ async function moveRefusal(env: CloudEnv, source: ComputerRow, size: CloudSize, 
   if (readPlanCleanupChoiceIds(account).includes(source.instance_id)) {
     return fail("computer_busy", "ADE is freeing this computer for your plan, so it can't move now.", 409);
   }
+  // A move replaces its computer, so the computer limit never refuses it.
   const tooBig = tierRefusal(size, source.disk_gb, true);
   if (tooBig) return refuse(tooBig);
-  // The old computer's disk carries over and isn't counted twice while the move runs.
-  const room = await diskRoom(env, account, await accountDiskGb(env, userId, source.instance_id) + source.disk_gb, now);
-  if (!room.ok) return refuse(room);
   return null;
 }
 
@@ -1583,7 +1603,7 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
     // A resting computer wakes to push its work: the same rules as a command's wake (hours, the awake cap).
     wakeRefusal: async () => {
       if (isMeteredStatus(computer.status)) return null;
-      const { blocked } = await wakeBlocker(env, computer.user_id, ctx.now);
+      const { blocked } = await wakeBlocker(env, computer, ctx.now);
       if (blocked) return blocked.response;
       return (await awakeRoom(env, computer, ctx.now, AWAKE_CAP_WAIT_MS))?.response ?? null;
     },
@@ -1689,14 +1709,14 @@ async function refuseForeignWake(body: Record<string, unknown> | null, env: Clou
 }
 
 const BILLING_PATHS = new Set<string>([CLOUD_PATHS.billingCheckout, CLOUD_PATHS.billingPortal, CLOUD_PATHS.billingExtraHours, CLOUD_PATHS.billingExtraDisk, CLOUD_PATHS.billingExtraPhone, CLOUD_PATHS.billingPlanCleanup, CLOUD_PATHS.billingFreeUnlock]);
-/** The most a person may set as extra disk's monthly limit, in dollars. */
-const EXTRA_DISK_LIMIT_MAX_USD = 1000;
+/** The most a person may set as a monthly limit (extra iPhone minutes), in dollars. */
+const MONTHLY_LIMIT_MAX_USD = 1000;
 
-/** A monthly limit in whole dollars from $1 to `EXTRA_DISK_LIMIT_MAX_USD`, or null when it isn't one. */
+/** A monthly limit in whole dollars from $1 to `MONTHLY_LIMIT_MAX_USD`, or null when it isn't one. */
 function readMonthlyLimitUsd(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= EXTRA_DISK_LIMIT_MAX_USD ? value : null;
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MONTHLY_LIMIT_MAX_USD ? value : null;
 }
-const LIMIT_SENTENCE = `Pick a monthly limit from $1 to $${EXTRA_DISK_LIMIT_MAX_USD}`;
+const LIMIT_SENTENCE = `Pick a monthly limit from $1 to $${MONTHLY_LIMIT_MAX_USD}`;
 
 /**
  * Where Stripe sends the person back: this server's own page, or the hosted
@@ -1745,8 +1765,8 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
   if (!BILLING_PATHS.has(path)) return null;
   if (request.method !== "POST") return notFound();
   const offers = cloudOffers(env);
-  // Not set up yet: as if it didn't exist.
-  if (path === CLOUD_PATHS.billingExtraDisk && !offers.extraDisk) return notFound();
+  // Extra disk is no longer sold (Pricing v2), and an extra that isn't set up: as if it didn't exist.
+  if (path === CLOUD_PATHS.billingExtraDisk) return notFound();
   if (path === CLOUD_PATHS.billingExtraPhone && !extraPhoneOffered(env)) return notFound();
   try {
     // The desktop sends the portal no body, which reads as `{}`.
@@ -1767,16 +1787,6 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
       return json(await buildAccountState(env, userId, now));
     }
     if (typeof body.enabled !== "boolean") return badRequest(UNREADABLE_REQUEST_MESSAGE);
-    if (path === CLOUD_PATHS.billingExtraDisk) {
-      if (!body.enabled) {
-        await setExtraDisk(env, userId, { enabled: false }, now);
-      } else {
-        const limit = readMonthlyLimitUsd(body.monthlyLimitUsd);
-        if (limit == null) return badRequest(`${LIMIT_SENTENCE}.`);
-        await setExtraDisk(env, userId, { enabled: true, monthlyLimitCents: limit * 100 }, now);
-      }
-      return json(await buildAccountState(env, userId, now));
-    }
     if (path === CLOUD_PATHS.billingExtraPhone) {
       if (!body.enabled) {
         await setExtraPhoneMinutes(env, userId, { enabled: false }, now);
@@ -1784,7 +1794,7 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
         // No limit is only ever chosen (null or left out).
         await setExtraPhoneMinutes(env, userId, { enabled: true, monthlyLimitCents: null }, now);
       } else {
-        // A limit is whole dollars, as extra disk's.
+        // A limit is whole dollars.
         const limit = readMonthlyLimitUsd(body.monthlyLimitUsd);
         if (limit == null) return badRequest(`${LIMIT_SENTENCE}, or none.`);
         await setExtraPhoneMinutes(env, userId, { enabled: true, monthlyLimitCents: limit * 100 }, now);
@@ -1916,10 +1926,15 @@ const DRAIN_EXEC_TIMEOUT_MS = 120_000;
 function chatWakeFor(env: CloudEnv, userId: string, provider: CloudProvider | null, ctx: CloudRequestContext, launchDeps: LaunchRouteDeps): ChatWake {
   const { now } = ctx;
   return {
-    check: async (computer) => {
+    check: async (computer, { outsideAgent }) => {
       const accountBlock = await blockedNow(env, computer.user_id);
       if (accountBlock) return accountBlock;
-      const { blocked } = await wakeBlocker(env, computer.user_id, now);
+      const { account, blocked } = await wakeBlocker(env, computer, now);
+      const outside = outsideAgentRefusal(account, outsideAgent);
+      if (outside) {
+        cloudActionTracker({ env, waitUntil: ctx.waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: "agent", key: computer.instance_id, refusedAction: "wake", now }).refuse(outside);
+        return outside.response;
+      }
       if (blocked) return blocked.response;
       if (computer.update_state === "updating") return fail("update_in_progress", new CloudUpdateInProgressError().message, 409);
       // A computer that never reported `chat_queue` can't drain, and the image a
@@ -2039,13 +2054,17 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
     if (request.method === "PUT") {
       const accountBlock = await blockedNow(env, caller.userId);
       if (accountBlock) return accountBlock;
-      const { blocked } = await wakeBlocker(env, caller.userId, Date.now());
-      if (blocked) return blocked.response;
       // Read once: the ownership check and the wake handler share this body.
       // Reading a clone with the bounded reader can wait on the other branch.
       const body = await readBoundedJson(request, 4096);
       const refused = await refuseForeignWake(body, env, caller.userId);
       if (refused) return refused;
+      // At 0 hours only a computer whose size uses hours can't take a timed wake: a Small one can.
+      const computer = typeof body?.instanceId === "string" ? await ownedComputer(env, caller.userId, body.instanceId.trim()) : null;
+      if (computer) {
+        const { blocked } = await wakeBlocker(env, computer, Date.now());
+        if (blocked) return blocked.response;
+      }
       return handleCloudWakeRequest(request, env, Date.now(), body);
     }
     return handleCloudWakeRequest(request, env);
@@ -2176,7 +2195,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
           isStopped: computer.status === "stopped",
           startStopped: async () => recordStatus(env, computer, await provider.startInstance(computer.instance_id), now, "sign_in"),
           wakeBlocked: async () => (await blockedNow(env, caller.userId))
-            ?? (await wakeBlocker(env, caller.userId, now)).blocked?.response
+            ?? (await wakeBlocker(env, computer, now)).blocked?.response
             ?? (await awakeRoom(env, computer, now))?.response ?? null,
         });
       }

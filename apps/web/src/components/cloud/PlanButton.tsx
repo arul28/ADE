@@ -10,7 +10,7 @@ import { guessPlatform } from "../home/SiteNav";
  * ADE Cloud's plan and "get started" buttons. A paid plan opens the web app
  * with `?cloudPlan=<plan>`: it signs the person in, then goes straight to
  * Stripe's checkout for that plan. Free, and a button with no plan, open the
- * install dialog, because the free hours start in the app.
+ * install dialog, because the free plan starts in the app.
  */
 export function PlanButton({
   children,

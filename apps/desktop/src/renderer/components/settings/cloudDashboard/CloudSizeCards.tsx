@@ -1,13 +1,14 @@
 import { useId, useRef, type KeyboardEvent } from "react";
 import { Check } from "@phosphor-icons/react";
-import { cloudTierFacts, cloudTierHoursAt, type CloudTier, type CloudTierId } from "../../../../shared/cloudTiers";
+import { cloudTierFacts, cloudTierHoursAt, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../../shared/cloudTiers";
 import { CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import "./cloudSizeCards.css";
 
 /**
- * The size cards, one per size: how fast it uses hours (big), CPU, memory
- * and how far the disk can grow, "Full computer" where it is one, and the
- * hours left at that size. What it runs is on hover; the desktop screen every
+ * The size cards, one per size: how long your hours last on it (big; Small
+ * says "Unlimited", it never uses hours), CPU and memory, and "Full
+ * computer" where it is one. Hours are time on each size, never a
+ * multiplier. What it runs is on hover; the desktop screen every
  * size has and the extra-hour price are said once (the Sizes head, the plans'
  * "how it works" panel). The ADE Cloud page picks the default size with
  * them, and the change-size dialog picks a lane's new size (one look for both).
@@ -59,9 +60,11 @@ export function CloudSizeCards({
           const facts = cloudTierFacts(tier);
           const id = `${idBase}-${tier.id}`;
           const marked = tier.id === markId;
-          const described = [marked ? `${id}-mark` : null, `${id}-rate`, `${id}-specs`, leftMilli != null ? `${id}-left` : null]
-            .filter(Boolean)
-            .join(" ");
+          const described = [marked ? `${id}-mark` : null, `${id}-rate`, `${id}-specs`].filter(Boolean).join(" ");
+          const usesHours = cloudTierUsesHours(tier);
+          // Time on this size: Small is unlimited; the others say how long the hours left last here.
+          const big = !usesHours ? "Unlimited" : leftMilli != null ? cloudTierHoursAt(tier, leftMilli) : null;
+          const under = !usesHours ? "never uses your hours" : leftMilli != null ? "left at this size" : facts.rateLine.toLowerCase();
           return (
             <button
               key={tier.id}
@@ -82,21 +85,15 @@ export function CloudSizeCards({
                 <b>{tier.label}</b>
                 {marked ? <span id={`${id}-mark`} className="kit-tag adecd-sizecard-pick" data-tone="accent"><Check size={10} weight="bold" />{markLabel}</span> : null}
               </span>
-              <span id={`${id}-rate`} className="adecd-sizecard-rate" aria-label={facts.rateLine}>
-                <b className="kit-num" data-face="ui">{facts.rate}×</b>
-                <span>hours</span>
+              <span id={`${id}-rate`} className="adecd-sizecard-rate">
+                {big ? <b className="kit-num" data-face="ui">{big}</b> : null}
+                <span>{under}</span>
               </span>
               <span id={`${id}-specs`} className="adecd-sizecard-specs">
-                {[`${tier.cpu} CPU`, `${tier.memoryGb} GB memory`, tier.diskMaxGb != null ? `up to ${tier.diskMaxGb} GB disk` : null]
-                  .filter(Boolean)
+                {[`${tier.cpu} CPU`, `${tier.memoryGb} GB memory`]
                   .map((fact, at) => <span key={fact}>{at > 0 ? " · " : null}<span className="adecd-sizecard-fact">{fact}</span></span>)}
               </span>
               {facts.full ? <span className="kit-tag adecd-sizecard-full">Full computer</span> : null}
-              {leftMilli != null ? (
-                <span id={`${id}-left`} className="adecd-sizecard-left">
-                  <b className="kit-num" data-face="ui">{cloudTierHoursAt(tier, leftMilli)}</b> left at this size
-                </span>
-              ) : null}
             </button>
           );
         })}

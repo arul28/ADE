@@ -174,12 +174,10 @@ struct CloudMachineFacts: View {
         }
         if let tier {
           fact("Size", "\(tier.label)\(tier.full ? ", full computer" : "") · \(tier.cpu) CPU · \(cloudGbText(tier.memoryGb)) GB")
-          fact("Uses", cloudHoursRate(tier.rate))
+          fact("Hours", tier.hoursLine(leftMilli: store.hoursLeftMilli))
         } else if let size = machine.size {
           fact("Size", size)
-          if let rate = machine.hoursRate { fact("Uses", cloudHoursRate(rate)) }
         }
-        if let resources = machine.resources { fact("Disk", cloudGb(resources.diskGb)) }
         let lastRun = cloudLastRun(machine, now: store.now)
         if !lastRun.isEmpty { fact("Last run", lastRun) }
         if machine.pastDue == true { fact("State", "Suspended") }
@@ -196,7 +194,7 @@ struct CloudMachineFacts: View {
         ADESettingsNotice(message: memory, tone: .warn)
       }
       if machine.noLane {
-        Text("Made before each lane had its own computer. It still counts toward your computers and disk.")
+        Text("Made before each lane had its own computer. It still counts toward your cloud computers.")
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -367,9 +365,9 @@ struct CloudMachineSizeCard: View {
         Button("Cancel", role: .cancel) {}
       } message: { tier in
         if tier.type == current.type {
-          Text("It restarts on the new size, so running chats and terminals stop. Their chats are saved first. \(tier.rateLine).")
+          Text("It restarts on the new size, so running chats and terminals stop. Their chats are saved first. \(tier.label): \(tier.hoursLine(leftMilli: store.hoursLeftMilli)).")
         } else {
-          Text("ADE copies its files to a new computer and deletes this one. Its lane and chats come along. It takes a few minutes and uses hours on both while it copies. \(tier.rateLine).")
+          Text("ADE copies its files to a new computer and deletes this one. Its lane and chats come along. It takes a few minutes and uses hours on both while it copies. \(tier.label): \(tier.hoursLine(leftMilli: store.hoursLeftMilli)).")
         }
       }
     }
@@ -414,7 +412,7 @@ struct CloudMachineSizeCard: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         Spacer(minLength: 8)
-        Text(cloudHoursRate(tier.rate))
+        Text(store.hoursLeftMilli.map { tier.hoursLeftLabel($0) } ?? (tier.usesHours ? "Uses hours" : "Unlimited"))
           .font(.system(size: 13, weight: .semibold))
           .monospacedDigit()
           .foregroundStyle(CloudBrandColor.mark)
@@ -428,9 +426,9 @@ struct CloudMachineSizeCard: View {
     .disabled(isCurrent || (!sameKind && store.movesUnsupported) || busy)
     .accessibilityHint(
       isCurrent ? "Its size now."
-        : sameKind ? "\(tier.rateLine). It restarts on the new size."
+        : sameKind ? "\(tier.hoursLine(leftMilli: store.hoursLeftMilli)). It restarts on the new size."
         : store.movesUnsupported ? cloudPhoneKindChangeReason(to: tier)
-        : "\(tier.rateLine). ADE moves it to a new computer."
+        : "\(tier.hoursLine(leftMilli: store.hoursLeftMilli)). ADE moves it to a new computer."
     )
   }
 }
@@ -864,6 +862,11 @@ final class CloudLaneActions: ObservableObject {
   /// Hosts on screen, the frontmost last.
   @Published private(set) var hosts: [UUID] = []
   private var deletePresenter: UUID?
+  /// The computer-limit card (`computer_limit`), on the host frontmost when it was asked.
+  @Published private(set) var computerLimit: CloudComputerLimit?
+  private var limitPresenter: UUID?
+  /// Computers the limit card is freeing now (it takes minutes; the card may close meanwhile).
+  @Published private(set) var freeing: Set<String> = []
 
   /// Asks before deleting a cloud lane. `fromMenu`: a context menu is still
   /// closing, and a sheet presented into that is dropped.
@@ -886,6 +889,47 @@ final class CloudLaneActions: ObservableObject {
     Task { @MainActor in
       try? await Task.sleep(for: .milliseconds(450))
       show()
+    }
+  }
+
+  /// Every cloud computer of the plan is taken (a refused new lane, chat or
+  /// message): one card with the ways out. A second refusal replaces it.
+  func showComputerLimit(_ limit: CloudComputerLimit) {
+    limitPresenter = hosts.last
+    computerLimit = limit
+  }
+
+  func computerLimit(for host: UUID) -> CloudComputerLimit? { limitPresenter == host ? computerLimit : nil }
+
+  func closeComputerLimit() {
+    computerLimit = nil
+    limitPresenter = nil
+  }
+
+  /// "Free up" on the limit card: the lane's work is pushed, its computer
+  /// goes, the lane and its chats stay (`freeLane`, which ADE Cloud runs on
+  /// its own). The result shows as a toast, and the card closes once one
+  /// computer is free.
+  func freeUp(_ lane: CloudComputerLimit.Lane) {
+    guard !freeing.contains(lane.instanceId) else { return }
+    freeing.insert(lane.instanceId)
+    Task { @MainActor [self] in
+      defer { freeing.remove(lane.instanceId) }
+      let sync = SyncMenuSafePublisher.shared.service
+      guard let client = await sync.cloudServerClient() else {
+        toast = ADEToastMessage(text: "Couldn't free \(lane.laneName)'s computer", kind: .failure, detail: "Sign in to ADE, then try again.")
+        return
+      }
+      let outcome = await client.freeLane(instanceId: lane.instanceId)
+      sync.refreshCloudServerIfStale(force: true)
+      if outcome.ok {
+        ADEHaptics.success()
+        if computerLimit?.lanes.contains(where: { $0.instanceId == lane.instanceId }) == true { closeComputerLimit() }
+        toast = ADEToastMessage(text: "Freed \(lane.laneName)'s computer", detail: "You have a cloud computer free. Send your message again.")
+      } else {
+        ADEHaptics.error()
+        toast = ADEToastMessage(text: "Kept \(lane.laneName)'s computer", kind: .failure, detail: outcome.message)
+      }
     }
   }
 
@@ -920,6 +964,7 @@ final class CloudLaneActions: ObservableObject {
 
   func detach(_ host: UUID) {
     hosts.removeAll { $0 == host }
+    if limitPresenter == host { closeComputerLimit() }
     // A host gone from screen leaves no sheet waiting to reopen.
     manageTargets[host] = nil
   }
@@ -943,6 +988,12 @@ private struct CloudLaneActionsHost: ViewModifier {
       )) { target in
         CloudLaneDeleteSheet(target: target)
       }
+      .sheet(item: Binding(
+        get: { actions.computerLimit(for: id) },
+        set: { if $0 == nil { actions.closeComputerLimit() } }
+      )) { limit in
+        CloudComputerLimitSheet(limit: limit)
+      }
       .adeToast(Binding(
         get: { actions.hosts.last == id ? actions.toast : nil },
         set: { if $0 == nil { actions.toast = nil } }
@@ -958,6 +1009,203 @@ extension View {
   /// so does each sheet a cloud lane's delete can be asked from.
   func cloudLaneActionsHost() -> some View {
     modifier(CloudLaneActionsHost())
+  }
+}
+
+// MARK: - The computer limit
+
+/// "You're using all 3 of your cloud computers." (Pricing v2): a new lane
+/// needs its own computer and the plan's are all taken. Three ways out: free
+/// up another lane's computer (the lane and its chats stay; it gets a new
+/// computer with its next message), delete a lane, or the next plan's
+/// computers, said as a fact (the iPhone app sells nothing, App Store
+/// 3.1.1/3.1.3). The refusal's facts first; what it leaves out comes from
+/// the account's state.
+struct CloudComputerLimitSheet: View {
+  let limit: CloudComputerLimit
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  @ObservedObject private var actions = CloudLaneActions.shared
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
+  @State private var askFree: CloudComputerLimit.Lane?
+  private var syncService: SyncService { syncPublishes.service }
+
+  private var account: CloudPhoneAccount? { cloudStore.account }
+  private var limitCount: Int? { limit.limit ?? account?.computerLimit }
+
+  /// The account's computers, least recently used first.
+  private var lanes: [CloudComputerLimit.Lane] {
+    if !limit.lanes.isEmpty { return limit.lanes }
+    return syncService.cloudServerInstances
+      .filter { !$0.isGone }
+      .sorted { ($0.lastActiveAt ?? 0) < ($1.lastActiveAt ?? 0) }
+      .map { instance in
+        CloudComputerLimit.Lane(
+          instanceId: instance.id,
+          laneName: instance.laneName ?? instance.name.flatMap { nonEmptyTrimmed($0) } ?? "Computer \(instance.id.prefix(6))",
+          awake: instance.isAwake,
+          lastAwakeAt: instance.lastActiveAt
+        )
+      }
+  }
+
+  /// The next plan's computers, from the refusal or the catalog; nil on Max.
+  private var nextPlan: CloudComputerLimit.NextPlan? {
+    if let next = limit.nextPlan { return next }
+    guard let account, account.isPricingV2, let plans = account.catalog?.plans else { return nil }
+    let order: [(String, CloudPhoneAccount.PlanFacts?)] = [("free", plans.free), ("plus", plans.plus ?? plans.paid), ("pro", plans.pro), ("max", plans.max)]
+    guard let index = order.firstIndex(where: { $0.0 == (limit.planId ?? account.currentPlanId) }), index + 1 < order.count,
+          let facts = order[index + 1].1, let computers = facts.computerLimit else { return nil }
+    return CloudComputerLimit.NextPlan(planId: order[index + 1].0, computerLimit: computers)
+  }
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 16) {
+          VStack(alignment: .leading, spacing: 6) {
+            Text(CloudComputerLimit.headline(limit: limitCount))
+              .font(.system(size: 17, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .fixedSize(horizontal: false, vertical: true)
+            Text("Each lane on ADE Cloud has its own computer, asleep or awake. Make room one of these ways.")
+              .font(.system(size: 13))
+              .foregroundStyle(ADEColor.textSecondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          way(
+            symbol: "shippingbox",
+            title: "Free up a computer from another lane",
+            detail: "The lane and its chats stay. It gets a new computer the next time you send a message there."
+          )
+          if !lanes.isEmpty {
+            VStack(spacing: 0) {
+              ForEach(Array(lanes.enumerated()), id: \.element.id) { index, lane in
+                if index > 0 { ADESettingsHairline() }
+                row(lane)
+              }
+            }
+            .adeKitCard(padding: 0)
+          }
+          way(
+            symbol: "trash",
+            title: "Delete a lane",
+            detail: "Open a lane's menu above. Its branch stays on GitHub; its chats go."
+          )
+          if let next = nextPlan {
+            way(
+              symbol: "square.stack.3d.up",
+              title: "\(cloudPlanLabel(next.planId)) has \(next.computerLimit) cloud \(next.computerLimit == 1 ? "computer" : "computers")",
+              detail: "A bigger plan has room for more lanes on ADE Cloud."
+            )
+          }
+        }
+        .padding(16)
+      }
+      .background(ADEColor.pageBackground.ignoresSafeArea())
+      .navigationTitle("Cloud computers")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .topBarTrailing) {
+          Button(role: .close) { actions.closeComputerLimit() }
+            .accessibilityLabel("Close")
+        }
+      }
+      .confirmationDialog(
+        askFree.map { "Free up \($0.laneName)'s computer?" } ?? "",
+        isPresented: Binding(get: { askFree != nil }, set: { if !$0 { askFree = nil } }),
+        titleVisibility: .visible,
+        presenting: askFree
+      ) { lane in
+        Button("Free up") { actions.freeUp(lane) }
+        Button("Cancel", role: .cancel) {}
+      } message: { lane in
+        Text("ADE pushes the lane's work to GitHub, then removes its computer. The lane and its chats stay; your next message there makes a new computer.\(lane.awake ? " Work running on it stops." : "")")
+      }
+    }
+    .presentationDetents([.medium, .large])
+    // The lane's delete and its computer's page open over this card.
+    .cloudLaneActionsHost()
+  }
+
+  private func way(symbol: String, title: String, detail: String) -> some View {
+    HStack(alignment: .top, spacing: 10) {
+      Image(systemName: symbol)
+        .font(.system(size: 12, weight: .medium))
+        .foregroundStyle(CloudBrandColor.mark)
+        .frame(width: 26, height: 26)
+        .background(CloudBrandColor.violet.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title)
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(detail)
+          .font(.system(size: 12.5))
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .accessibilityElement(children: .combine)
+  }
+
+  private func deleteTarget(_ lane: CloudComputerLimit.Lane) -> CloudLaneDeleteTarget? {
+    guard let instance = syncService.cloudServerInstances.first(where: { $0.id == lane.instanceId }),
+          let laneId = instance.laneId else { return nil }
+    return CloudLaneDeleteTarget(
+      instanceId: instance.id,
+      accountMachineKey: instance.machineKey,
+      laneId: laneId,
+      laneName: nonEmptyTrimmed(instance.laneName) ?? lane.laneName,
+      unpushed: instance.laneWork?.unpushed,
+      onDeleted: { @MainActor in
+        CloudLaneActions.shared.closeComputerLimit()
+        syncService.refreshCloudServerIfStale(force: true)
+      }
+    )
+  }
+
+  private func row(_ lane: CloudComputerLimit.Lane) -> some View {
+    let freeing = actions.freeing.contains(lane.instanceId)
+    // A computer known to hold no lane has no lane to keep: Manage deletes it.
+    let holdsLane = syncService.cloudServerInstances.first { $0.id == lane.instanceId }.map { $0.laneId != nil } ?? true
+    return HStack(spacing: 10) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(lane.laneName)
+          .font(.system(size: 14.5, weight: .medium))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        Text(lane.awake ? "Awake now" : lane.lastAwakeAt.map { "Asleep · used \(cloudAgo($0, now: Date()))" } ?? "Asleep")
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      Spacer(minLength: 8)
+      if freeing {
+        ProgressView().controlSize(.small)
+          .accessibilityLabel("Freeing")
+      } else {
+        if holdsLane {
+          Button("Free up") { askFree = lane }
+            .buttonStyle(ADEKitButtonStyle())
+        }
+        Menu {
+          Button { actions.manageComputer(instanceId: lane.instanceId, showsOpenWork: false) } label: {
+            Label("Manage computer", systemImage: "slider.horizontal.3")
+          }
+          if let target = deleteTarget(lane) {
+            Button(role: .destructive) { actions.delete(target, fromMenu: true) } label: {
+              Label("Delete lane", systemImage: "trash")
+            }
+          }
+        } label: {
+          Image(systemName: "ellipsis")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 32, height: 32)
+        }
+        .accessibilityLabel("More for \(lane.laneName)")
+      }
+    }
+    .padding(.horizontal, ADEKit.inset)
+    .padding(.vertical, 10)
   }
 }
 

@@ -626,6 +626,9 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     setStage(record, stageId, "failed", { error: sentence });
     record.snapshot.phase = "failed";
     record.snapshot.error = sentence;
+    // A refusal the card answers itself (the computer limit card); a retry clears it.
+    if (error instanceof LaunchStepError && error.refusal) record.snapshot.cloud.refusal = error.refusal;
+    else delete record.snapshot.cloud.refusal;
     publish(record);
     logger.warn("cloud_lane_launch.failed", {
       launchId: record.snapshot.launchId,
@@ -674,6 +677,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     try {
       record.snapshot.phase = "running";
       record.snapshot.error = null;
+      delete record.snapshot.cloud.refusal;
       if (record.via !== "server") await startOverOnServer(record);
       assertActive(record, signal);
       const brain = await runServerLaunch(record, signal);

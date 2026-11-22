@@ -1,14 +1,25 @@
 ---
 name: ade-cloud
-description: "Before any ADE Cloud work via `ade cloud`, and when this computer needs more free disk (grow it with `ade cloud resize --free`): the account (plan, hours, disk, ADE Cloud iPhone (iOS Simulator) minutes, every plan's price and what it includes, computers, lanes, sizes, agent limits, whether a new lane can start), start, follow, retry or cancel a cloud lane at the size the work needs (Android, Docker), explain a refusal, propose a cleanup (`ade cloud lanes --stale`, then free or delete a lane), manage the lanes, saved chats, CLI copies, backups and server jobs of the account, manage the computers (list, sleep, wake, a resize request, work-state, clear caches, delete). Agents start lanes; they never make a computer."
+description: "Before any ADE Cloud work via `ade cloud`, and when this computer needs more free disk (grow it with `ade cloud resize --free`): the account (plan, computers and the plan's computer limit, hours, ADE Cloud iPhone (iOS Simulator) minutes, every plan's price and what it includes, lanes, sizes, agent limits, whether a new lane can start), start, follow, retry or cancel a cloud lane at the size the work needs (Android, Docker), explain a refusal, propose a cleanup (`ade cloud lanes --stale`, then free or delete a lane), manage the lanes, saved chats, CLI copies, backups and server jobs of the account, manage the computers (list, sleep, wake, a resize request, work-state, clear caches, delete). Agents start lanes; they never make a computer."
 ---
 
 # ADE Cloud
 
 ADE Cloud gives a lane its own Linux computer on the person's ADE account. The
-computer sleeps when idle and uses plan hours only while awake. The person
-manages lanes, not computers. The plan also has ADE Cloud iPhone minutes: an
-iOS Simulator any machine uses (section 6).
+computer sleeps when idle. The person manages lanes, not computers.
+
+What a plan includes (read the numbers from `plans` in the status, never from
+here or memory):
+- Unlimited Small computers. They never use the plan's hours.
+- A number of cloud computers, asleep or not (`plan.includes.computers`).
+  Every computer counts, Small too; each new lane needs one.
+- Hours for the bigger sizes. One hour is one hour on a Medium; Large and
+  X-Large use more an hour (`sizes[].hoursRate`), Small none. Hours are spent
+  only while a computer is awake.
+- No plan limits disk: each size has its own disk maximum.
+- Outside agents (ADE MCP apps) may use ADE Cloud on paid plans only.
+- On some accounts, ADE Cloud iPhone minutes: an iOS Simulator any machine
+  uses (section 6). Only when `iphone` is in the status.
 
 You start lanes on ADE Cloud; you never make a computer. Each new lane gets its
 own computer at the size you pick (section 2). `ade cloud create`, `copy` and
@@ -22,7 +33,8 @@ answer is no. Don't run them; start a lane instead.
 
 - If `canStartLane.ok` is false, tell the person `canStartLane.reason` as it is, and stop.
 - Never work around a limit: no other size, no copy, no delete to make room.
-- Take sizes, hours rates, hours, iPhone minutes, limits and prices from this answer, never from memory. Plan questions: `plans` lists each plan's price, hours, disk, iPhone minutes and prices past the plan (`current` is theirs).
+- Take sizes, hours rates, hours, computers, limits and prices from this answer, never from memory. Plan questions: `plans` lists each plan's price, computers, hours (`hoursOnSizes` says them as time on each size), whether outside agents may use it and the price of an extra hour (`current` is theirs).
+- Say hours as time on a size ("50 hours on a Medium, 20 on a Large"), never as a multiplier, and never say Small uses "0 hours": Small computers never use hours.
 - It wakes nothing and costs nothing. Read it again before each new lane.
 
 ## 2. Start a lane
@@ -31,7 +43,7 @@ answer is no. Don't run them; start a lane instead.
 `ade lanes create --machine cloud --launch-id <a new UUID> --name "<name>"` makes the lane alone, with no chat.
 Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `chat create`, `lanes create` and `chat launch-status`; every other `--machine` is refused. An app is an unattended agent there (the next point).
 
-- Size: leave out `--size` to use the person's saved size (`defaultSize`). Medium when Small is too slow. Large or X-Large (full computers) only for Android or Docker: pass `--size large` (or `xlarge`) when you start the lane. With no `--size`, a Small whose setup runs out of memory moves to Medium once by itself (the launch says so), and that repository starts at Medium after that; a size you pass stays, so passing `--size small` turns this off.
+- Size: leave out `--size` to use the person's saved size (`defaultSize`). Small uses no hours, so prefer it; Medium when Small is too slow. Large or X-Large (full computers) only for Android or Docker: pass `--size large` (or `xlarge`) when you start the lane. With no `--size`, a Small whose setup runs out of memory moves to Medium once by itself (the launch says so), and that repository starts at Medium after that; a size you pass stays, so passing `--size small` turns this off.
 - Push the branch first. The lane starts from the pushed copy; uncommitted changes stay here.
 - The approval card asks the person in your chat, with the size and its hours rate. No answer in 5 minutes means no.
 - In a full-auto chat, an automation or an ADE MCP app, nobody watches. ADE answers with the agent limits (`agents` in the status): only sizes in `sizesAllowed`, at most `newComputersLeftToday` new computers today. Each new lane counts one. A person never counts.
@@ -54,13 +66,15 @@ Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `
 
 | The sentence says | Next step |
 |---|---|
-| out of ADE Cloud hours | Tell the person. Hours come back on `hours.resetsAt`. |
-| too many of your computers are awake at once | Put a computer you aren't using to sleep (`ade cloud sleep`), then try again. No plan limits how many computers there are. |
+| You're using all N of your cloud computers | Tell the person the sentence as it is. The three ways out are theirs: free up a computer from another lane (`ade cloud lanes free <lane>`, with its card), delete a lane (`ade cloud lanes delete <lane>`, with its card), or move to the next plan in Settings › ADE Cloud. Propose which lane (section 5); never pick a smaller size or delete to make room on your own. |
+| out of ADE Cloud hours | Tell the person. Hours come back on `hours.resetsAt`. A Small computer keeps working: a lane at `--size small` still starts. |
+| ADE Cloud can't be started by outside agents on the Free plan | Pass the sentence on to the person as it is, and stop. Only a paid plan lets outside agents use ADE Cloud. |
+| too many of your computers are awake at once | Put a computer you aren't using to sleep (`ade cloud sleep`), then try again. |
 | Free hours need a GitHub account | The person connects GitHub in Settings › Integrations › GitHub. |
 | Your GitHub account is new, so free hours start on | Tell the person the day. They can add a card (no charge) in Settings › ADE Cloud to start now. Never add one yourself. |
 | This GitHub account already has a free plan | Tell the person. Only a paid plan gives hours here; never make another account. |
 | ADE couldn't check your GitHub account | Try again in a few minutes. |
-| ADE Cloud disk space is full | Propose a cleanup (section 5). |
+| the computer's disk is full | Grow it (`ade cloud resize --free`, What you manage), or clear caches. |
 | Sign in to ADE to use ADE Cloud | The person signs in to ADE in the app. |
 | isn't available on this account | Tell the person. Never ask for a key. |
 | your agents hit today's limit | Tell the person; the sentence names the setting. No retry today. |
@@ -74,7 +88,7 @@ Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `
 | a launch step failed | Run it again with the same `--launch-id`. |
 | Agents don't make ADE Cloud computers | Start a lane on ADE Cloud with the size the work needs (section 2). A computer with no lane is the person's to make, in Settings › ADE Cloud. |
 
-## 5. When space or hours run low
+## 5. When computers or hours run low
 
 Propose a cleanup to the person first: which lanes, and why each is safe (its
 pull request is merged, nothing is unpushed, unused for long, `deletesAt`).
@@ -82,15 +96,16 @@ Delete nothing without their yes. Deleting a lane deletes its computer.
 
 The cleanup, in order (reads wake nothing):
 
-1. `ade cloud lanes --stale --json`: lanes unused a week or due for cleanup,
-   biggest disk first. `ade cloud lanes --json` lists every lane: on a
+1. `ade cloud lanes --stale --json`: lanes unused a week or due for cleanup. `ade cloud lanes --json` lists every lane: on a
    computer (`state` awake, asleep, …) or `computer_deleted` (the lane and its
    chats stay; its next message makes a new computer on its branch).
 2. `ade cloud lanes git <lane> --json` and `ade cloud backups --json`: what is
    not on GitHub yet.
 3. Then one of these. Each shows the person a card in your chat:
    - `ade cloud lanes free <lane>`: keep it for later. ADE pushes its work,
-     removes its computer and keeps the lane and its chats.
+     removes its computer and keeps the lane and its chats; the lane gets a
+     new computer the next time a message is sent there. This frees one of
+     the plan's computers.
    - `ade cloud lanes delete <lane>`: the lane, its computer and its saved
      chats (`--keep-chats` keeps them). ADE checks the work first and names
      it on the card; the card also offers Keep for later. A person always
@@ -111,8 +126,9 @@ warnings; using the computer, or "Keep it" in Settings › ADE Cloud, keeps it.
 
 ## 6. The ADE Cloud iPhone
 
-`iphone` in the status: `access` on, or soon (not on this account yet; say so).
-With access, `ade devices use ios@cloud`, then `ade apple …` (ade-apple).
+`iphone` is in the status only when the account has the ADE Cloud iPhone.
+Without it, the account has none: don't offer it. With it,
+`ade devices use ios@cloud`, then `ade apple …` (ade-apple).
 
 - It spends `iphone.minutes` while it runs, building included; they come back
   on `iphone.resetsAt`. At 0 the phone stops, unless extra minutes are on
@@ -124,7 +140,7 @@ With access, `ade devices use ios@cloud`, then `ade apple …` (ade-apple).
 ## Never
 
 - Make a computer: `ade cloud create` (a standard or a full computer), `ade cloud copy` or `ade cloud move`. Start a lane with the size it needs instead. ADE refuses an agent's make unless the person says yes on its card.
-- Change the plan, or turn on or raise extra hours, disk or iPhone minutes: only the person does, in Settings › ADE Cloud.
+- Change the plan, or turn on or raise extra hours or iPhone minutes: only the person does, in Settings › ADE Cloud.
 - Delete a computer you didn't make without the person's yes on its card, or any computer over ADE MCP.
 - Change a size (`ade cloud resize --shape`) yourself (growing the disk with `--free` is yours to do). Ask instead: `ade cloud resize --request --size large --reason "<why>"` puts a card in your chat, and the person confirms it.
 - Wake computers to look at them: the status already knows.
@@ -143,14 +159,10 @@ each delete has its card. Each asks the person like a new lane when it uses hour
 `create`, `copy` and `move` are the person's (see Never).
 On a lane's cloud computer that needs more disk (a build, an emulator, a
 big install), grow it yourself: `ade cloud resize --free <GB> --reason "<why>"`
-(or `--disk <GB>` for a size). Inside the plan's disk it grows with no card,
-unattended chats too. Paid extra disk past the plan asks the person on a card in
-a watched chat. With nobody watching, the agent limits answer: inside
-`agents.extraDiskMonthCents` (null, the default, means up to the account's own
-monthly extra-disk limit; 0 means none) it grows and your chat gets a line with
-the cost; past it the answer is no. Extra disk the person never turned on is no
-for everyone. At the account's storage limit, or past the agents' extra disk, a
-card names the computers that hold the disk. The grow restarts the computer: the
+(or `--disk <GB>` for a size). It grows with no card, unattended chats too, up
+to its size's disk maximum; no plan limits disk and it costs nothing more. At
+the size's maximum the answer names it: ask for a bigger size with
+`ade cloud resize --request`. The grow restarts the computer: the
 command waits, and ADE continues your chat after the restart with a note that
 the disk grew. Never ask the person to grow it instead.
 On a lane's cloud computer with a full disk, `ade actions run cloud.clear_caches`
@@ -159,7 +171,7 @@ asks the person with a card first; with nobody watching the answer is no. A comp
 activity and wakes on use, so you rarely need `sleep` or `wake`. The one
 exception: `ade chat send` or `ade chat message` to a chat on a sleeping cloud
 computer does not wake it. The "not found" answer names the computer and the
-`ade cloud wake <id>` to run; run it (a wake uses hours), then send again.
+`ade cloud wake <id>` to run; run it (a wake uses hours, except on a Small), then send again.
 `ade cloud work-state` lists the lanes with work not pushed yet. Freeing a computer (keeping its lane) is refused while the agent works: stop it or wait.
 With nobody there you cannot change a size: ask with `ade cloud resize --request`, as in Never.
 `ade cloud invite --text` shows the person's invite link, friends joined and hours earned. Only the person enters a friend's invite, in Settings › Account.

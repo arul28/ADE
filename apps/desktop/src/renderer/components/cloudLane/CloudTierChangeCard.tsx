@@ -164,7 +164,7 @@ export function CloudTierChangeCard({
             {to.label}
           </span>
           <span className="adecl-tier-rate kit-num">
-            {from ? `${rateText(from)} to ` : ""}{rateText(to)}
+            {from ? `${rateText(from)}, then ${rateText(to).toLowerCase()}` : rateText(to)}
           </span>
         </div>
       ) : null}

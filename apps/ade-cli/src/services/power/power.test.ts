@@ -1116,20 +1116,12 @@ describe("cloud disk grow an agent or the Android emulator asks for", () => {
     vi.restoreAllMocks();
   });
 
-  // An X-Large computer with an 8 GB disk and 2.7 GB free asks for 7.2 GB free: a 16 GB disk. Plus has 30 GB at one
-  // time; `usedGb` is all the account's computers now. Extra disk is $2 for 10 GB a month, the monthly limit $10:
-  // from 26 GB used the grow goes 4 GB past the plan, about 80¢ a month. The approval answers yes, no, or the agent
-  // limits' refusal (decided in `cloud.grow_disk`'s approval, `cloudAgentActions.test.ts`). `usedAfterAsk`: another
-  // computer took more of the plan's disk while the approval waited, so the grow now costs more.
+  // An X-Large computer with an 8 GB disk and 2.7 GB free asks for 7.2 GB free: a 16 GB disk. Since Pricing v2 no
+  // plan limits disk (the server's `disk.limitGb` an older one still sends is ignored) and there is no paid extra
+  // disk: up to the size's disk maximum it grows with no card, however much the account's computers use.
   it.each([
-    ["inside the plan's disk: it grows with no card", { usedGb: 8, extra: "off" }, "yes", { asked: 0, grows: true, state: "grown" }],
-    ["past the plan with extra disk on: the person's yes on a card, then it grows", { usedGb: 26, extra: "on" }, "yes", { asked: 1, grows: true, state: "grown" }],
-    ["past the plan with extra disk on, and the person says no: nothing grows", { usedGb: 26, extra: "on" }, "no", { asked: 1, grows: false, state: "declined" }],
-    ["past the plan with extra disk turned down: no card, the computers holding the disk named", { usedGb: 26, extra: "asked" }, "yes", { asked: 0, grows: false, state: "limit" }],
-    ["past the agents' extra disk: nothing grows, the computers holding the disk named", { usedGb: 26, extra: "on" }, "agent_limit", { asked: 1, grows: false, state: "limit", reason: "agent_limit" }],
-    ["the cost rises while the approval waits: asked again at the new cost, then it grows", { usedGb: 26, extra: "on", usedAfterAsk: 28 }, "yes", { asked: 2, grows: true, state: "grown" }],
-    ["the account's extra disk never turned on: no card, nothing grows", { usedGb: 26, extra: "off" }, "yes", { asked: 0, grows: false, state: "limit", reason: "needs_approval" }],
-    ["past the account's own monthly limit: no card, nothing grows", { usedGb: 78, extra: "on" }, "yes", { asked: 0, grows: false, state: "limit", reason: "monthly_limit" }],
+    ["little of the account's disk in use: it grows with no card", { usedGb: 8, extra: "off" }, "yes", { asked: 0, grows: true, state: "grown" }],
+    ["more than an old plan's disk in use: still no card, it grows", { usedGb: 78, extra: "on" }, "no", { asked: 0, grows: true, state: "grown" }],
   ] as Array<[string, { usedGb: number; extra: "off" | "on" | "asked"; usedAfterAsk?: number }, "yes" | "no" | "agent_limit", { asked: number; grows: boolean; state: string; reason?: string }]>)("%s", async (_label, account, answer, expected) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-disk-fit-"));
     try {

@@ -11,11 +11,9 @@ import type {
 } from "../../../account-directory/src/cloud/contract";
 import { formatCloudCents } from "../../../account-directory/src/cloud/contract";
 import {
-  cloudCatalogHasPro,
   cloudCatalogOf,
   cloudInstanceType,
   cloudMachineKindOf,
-  cloudPlanIdOf,
   type CloudAgentLimits,
   type CloudMachine,
 } from "./adeCloud";
@@ -38,14 +36,13 @@ export function cloudDiskLimitNamesLanes(reason: CloudDiskLimitReason): boolean 
 }
 
 /**
- * What a disk grow ADE or an agent asks for may do, by the plan rules:
- * - `plan`: inside the plan's disk at one time and the size's own cap. It
- *   grows with nothing to ask.
- * - `extra`: past the plan's disk, inside the extra disk the person turned on
- *   and its monthly limit. It costs money, so the person says yes first.
- * - `limit`: it can't grow: the size's cap, the free plan, extra disk off or
- *   turned down, the monthly limit, or a plan ADE couldn't read (it never
- *   guesses about money). `reason` is the server's reason for the same answer.
+ * What a disk grow ADE or an agent asks for may do (Pricing v2: no plan or
+ * account disk, only each size's own maximum):
+ * - `plan`: inside the size's own maximum. It grows with nothing to ask.
+ * - `extra`: only from servers before Pricing v2 (paid extra disk); ADE no
+ *   longer offers it.
+ * - `limit`: it can't grow: the size's maximum (`tier_limit`), or an account
+ *   ADE couldn't read. `reason` is the server's reason for the same answer.
  *
  * The server checks all of it again on the grow.
  */
@@ -105,65 +102,11 @@ export function cloudDiskGrowFit(
   if (maxGb != null && toGb > maxGb) {
     return limit("tier_limit", `This size's disk grows to ${maxGb} GB, and ${toGb} GB is needed. Move it to a bigger size.`);
   }
-  if (!account) return limit("unavailable", "ADE couldn't read your plan's disk, so it didn't grow this one. Try again in a minute.");
-  const growTo = `Grow this computer's disk from ${fromGb} GB to ${toGb} GB.`;
-  const free = account.rules === "free" || cloudPlanIdOf(account) === "free";
-  const limitGb = account.disk.limitGb;
-  if (limitGb == null) {
-    // An older server gives no account limit only on a free account, whose computers stay at their first disk.
-    return limit("plan_disk", `Free computers stay at ${catalog.plans.free.diskGb} GB each; a paid plan lets it grow.`);
-  }
-  const afterGb = account.disk.usedGb - fromGb + toGb;
-  const pastGb = afterGb - limitGb;
-  if (pastGb <= 0) {
-    return { kind: "plan", fromGb, toGb, sentence: `${growTo} Your computers then have ${afterGb} GB of your plan's ${limitGb} GB at one time. The computer restarts.` };
-  }
-  if (free) {
-    const upgrade = cloudCatalogHasPro(catalog) ? "get Plus" : "get a paid plan";
-    return limit("plan_disk", `Free computers have ${catalog.plans.free.diskGb} GB of disk at one time. Delete a computer, or ${upgrade}.`);
-  }
-  const past = { pastGb, limitGb };
-  const extra = account.extraDisk;
-  const extraPrice = catalog.extraDiskCentsPer10GbMonth;
-  if (!extra || extraPrice == null) {
-    // An older paid server: no extra disk to offer or price.
-    return limit("extra_off", `A ${toGb} GB disk would pass the ${limitGb} GB your computers have at one time. Delete a computer you no longer use, then try again.`, past);
-  }
-  if (extra.state === "on") {
-    const limitCents = extra.monthlyLimitCents;
-    if (limitCents == null) {
-      // The server asks before any extra disk while no monthly limit is set.
-      return limit("needs_approval", `A ${toGb} GB disk goes ${pastGb} GB past your plan's ${limitGb} GB at one time. Set a monthly limit for extra disk in Settings, or delete a computer.`, { settings: true, ...past });
-    }
-    // The server's two rules: the extra disk, kept for a full month, costs no more than the limit;
-    // and this period's extra disk so far, plus this one for the days left (at least one), fits it too.
-    const periodEnd = account.billing?.periodEnd;
-    const daysLeft = typeof periodEnd === "number" && Number.isFinite(periodEnd) ? Math.max(1, Math.ceil((periodEnd - Date.now()) / 86_400_000)) : 0;
-    const periodCents = (extra.usedCents ?? 0) + (pastGb * extraPrice * daysLeft) / (10 * 30);
-    if ((pastGb * extraPrice) / 10 > limitCents || periodCents > limitCents) {
-      return limit("monthly_limit", `A ${toGb} GB disk would pass the ${formatCloudCents(limitCents)} a month you set for extra disk. Raise the limit in Settings, or delete a computer you no longer use.`, { settings: true, ...past });
-    }
-    const monthCents = Math.ceil((pastGb / 10) * extraPrice);
-    return {
-      kind: "extra",
-      fromGb,
-      toGb,
-      pastGb,
-      limitGb,
-      monthCents,
-      limitCents,
-      sentence: `${growTo} That is ${pastGb} GB past your plan, about ${formatCloudCents(monthCents)} a month, inside your ${formatCloudCents(limitCents)} monthly limit. The computer restarts.`,
-    };
-  }
-  if (extra.state === "asked") {
-    return limit("extra_off", `A ${toGb} GB disk goes ${pastGb} GB past your plan's ${limitGb} GB at one time. Turn on extra disk in Settings or delete a computer.`, { settings: true, ...past });
-  }
-  // `off`: never decided. Extra disk is turned on in Settings, with its monthly limit.
-  return limit(
-    "needs_approval",
-    `A ${toGb} GB disk goes ${pastGb} GB past your plan's ${limitGb} GB at one time. Extra disk costs ${formatCloudCents(extraPrice)} for each 10 GB a month: turn it on in Settings, or delete a computer.`,
-    { settings: true, ...past, undecidedCentsPer10Gb: extraPrice },
-  );
+  if (!account) return limit("unavailable", "ADE couldn't read your ADE Cloud account, so it didn't grow this disk. Try again in a minute.");
+  // Since Pricing v2 there is no plan or account disk (`disk.limitGb` is
+  // null): a disk grows up to its size's own maximum, nothing else. The
+  // server checks it again on the grow.
+  return { kind: "plan", fromGb, toGb, sentence: `Grow this computer's disk from ${fromGb} GB to ${toGb} GB. The computer restarts.` };
 }
 
 /**

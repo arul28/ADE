@@ -23,7 +23,7 @@ import {
 } from "../../desktop/src/shared/laneShareRights";
 import { LANE_SHARE_GRANT_ID_PATTERN } from "../../desktop/src/shared/laneShareDirectory";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
-import { CLOUD_AGENT_EXTRA_DISK_MAX_CENTS, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
+import { CLOUD_AGENT_EXTRA_DISK_MAX_CENTS, CLOUD_SMALL_UNLIMITED_SENTENCE, cloudAccountComputers, formatCloudHoursRate, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
   setSharedAccountLiveQuotaFetcher,
@@ -5169,8 +5169,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   xlarge are full computers: Android and Docker need one.
 
     $ ade cloud status --text                     Everything in one read: can a new lane start (and why not),
-                                                    plan, hours, disk, computers, each lane, sizes, agent limits
-    $ ade cloud list --text                       Computers, state, size, how fast each uses hours
+                                                    plan, hours, computers (N of your plan's), each lane, sizes, agent limits
+    $ ade cloud list --text                       Computers, state, size, how many hours each uses an hour (Small: none)
 
   Lanes, chats and saved work (reads wake nothing; each delete asks you first)
 
@@ -5203,25 +5203,22 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     you on a card in its chat, and with nobody to ask the answer is no.
                                                     Agents start a lane with the size it needs (--machine cloud --size).
     $ ade cloud sleep <machine>                   Sleep now (uses no hours)
-    $ ade cloud wake <machine>                    Wake (the server refuses it at 0 hours)
+    $ ade cloud wake <machine>                    Wake (at 0 hours the server refuses it, except a Small one)
     $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts
     $ ade cloud resize --request --size large --reason "Android needs it"
                                                     An agent asks the person (a card in its chat); nothing changes until they confirm
     $ ade cloud resize --free 8 --reason "the build needs 8 GB"
                                                     On a cloud computer: grow its own disk to fit 8 GB free (--disk <GB>: to that size).
-                                                    Inside the plan's disk it grows with no card (agents, unattended too); paid
-                                                    extra disk asks the person in a watched chat, and follows the agent limits
-                                                    (--extra-disk) with nobody watching; at a limit a card names what holds
-                                                    the disk. It restarts the computer; the call waits, and ADE continues your
-                                                    chat after the restart. Use it instead of asking the person to grow it.
+                                                    Up to the size's own disk maximum it grows with no card (agents, unattended
+                                                    too); past it, move the lane to a bigger size. It restarts the computer; the
+                                                    call waits, and ADE continues your chat after the restart. Use it instead of
+                                                    asking the person to grow it.
     $ ade cloud update <machine>                  Move to its channel's image now and restart; files stay
                                                     (each computer also updates itself when idle or asleep)
     $ ade cloud copy <machine> --name "lane box"  A new computer with the same files (a warm copy; an agent's asks you)
     $ ade cloud move <machine> --to vm|box        Change kind, keeping every repo, lane and chat (an agent's asks you)
     $ ade cloud delete <machine>                  Gone for good, files and all
-    $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may do (--per-day N, --max-shape large, --unattended on|off,
-                                                    --extra-disk <dollars a month>|none|limit: paid extra disk they may grow into;
-                                                    limit, the default, is up to your monthly extra-disk limit)
+    $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may do (--per-day N, --max-shape large, --unattended on|off)
     $ ade chat create --machine cloud --size medium --provider <p> --model <id> --prompt "…"
                                                     A new lane on its own new computer (sizes: small, medium,
                                                     large, xlarge); the chat starts there
@@ -5240,12 +5237,16 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   extra hours. The free plan is given once per computer and once per GitHub
   account, which must be at least 30 days old (or add a card, no charge).
 
-  Plans: Free, Plus, Pro and Max. \`ade cloud hours\` shows yours, with its hours and disk.
-  Change it in Settings › ADE Cloud › Plans.
-  Disk is what all your computers hold at one time, not a monthly amount.
-  No plan limits how many computers you have.
-  On a paid plan, extra disk past the plan's is counted by the day, inside a
-  monthly limit you set. A grow past it is refused with a sentence that says why.
+  Plans: Free, Plus, Pro and Max. \`ade cloud status\` lists each with its price,
+  cloud computers and hours, from ADE Cloud itself. Change it in Settings › ADE Cloud › Plans.
+  Unlimited Small computers on every plan: they never use your hours. Bigger
+  computers use hours: one hour is one hour on a Medium computer, so the same
+  hours last less on a Large or an X-Large (status shows them as time on each).
+  Each plan has a number of cloud computers, asleep or not. At the limit a new
+  lane is refused: free up a computer from another lane (ade cloud lanes free
+  <lane>: the lane and its chats stay, and it gets a new computer at its next
+  message), delete a lane, or move to a bigger plan.
+  Outside agents (ADE MCP) may start ADE Cloud work on paid plans only.
 
   Asks first: create, resize, update, copy, move, delete,
   raising the limits, a new lane (--machine cloud). The card shows in your chat and gives up
@@ -22192,7 +22193,7 @@ function formatCloudList(value: unknown): string {
   if (!machines.length) lines.push("No ADE Cloud computers. A new lane on ADE Cloud makes one: ade chat create --machine cloud, or ade lanes create --machine cloud --name <name>.");
   for (const box of machines) {
     const sleep = isRecord(box.sleep) && box.sleep.state !== "auto" ? "sleep pending" : "";
-    const rate = typeof box.hoursRate === "number" ? `${box.hoursRate}× hours` : "—";
+    const rate = typeof box.hoursRate === "number" ? formatCloudHoursRate(box.hoursRate).toLowerCase() : "—";
     lines.push(`${String(box.name ?? box.instanceId)}  ${String(box.state)}  ${String(box.size ?? "")}  ${rate}  ${sleep}  (${String(box.instanceId)})`);
   }
   const account = isRecord(raw) && isRecord(raw.account) ? raw.account : null;
@@ -22210,15 +22211,15 @@ function formatCloudAccount(value: unknown): string {
   const catalog = isRecord(account.catalog) && isRecord(account.catalog.plans) ? cloudCatalogOf({ catalog: account.catalog as CloudCatalog }) : cloudCatalogOf(null);
   const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" || account.planId === "max" ? account.planId : undefined;
   const plan = `${cloudPlanLabelOf({ plan: account.plan === "paid" ? "paid" : "free", planId }, catalog)} plan`;
-  const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left, resets ${resets}`;
-  const disk = isRecord(account.disk) && typeof account.disk.usedGb === "number"
-    ? typeof account.disk.limitGb === "number" ? `${account.disk.usedGb} of ${account.disk.limitGb} GB disk` : `${account.disk.usedGb} GB disk`
-    : null;
-  // No plan limits how many computers an account has: a count, never "of N".
-  const computers = isRecord(account.computers) && typeof account.computers.total === "number"
-    ? `${account.computers.total} ${account.computers.total === 1 ? "computer" : "computers"}`
-    : null;
-  const atOneTime = disk || computers ? `\n${[disk && `${disk} in use`, computers].filter(Boolean).join(", ")}.` : "";
+  const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left for bigger computers, resets ${resets}`;
+  // Cloud computers asleep or not, of the plan's limit (Pricing v2; an older server's limit was a hidden cap, never shown).
+  const counted = cloudAccountComputers({ computers: account.computers as CloudAccountState["computers"], catalog: catalog });
+  const computers = counted
+    ? `${counted.total} of ${counted.limit} cloud computers in use (asleep or not)`
+    : isRecord(account.computers) && typeof account.computers.total === "number"
+      ? `${account.computers.total} ${account.computers.total === 1 ? "computer" : "computers"}`
+      : null;
+  const atOneTime = `\n${CLOUD_SMALL_UNLIMITED_SENTENCE}${computers ? ` ${computers}.` : ""}`;
   // Earned hours (referrals), used after the plan's hours; and why a computer gets no free hours.
   const earned = cloudEarnedHoursOf(account as Pick<CloudAccountState, "earnedHours">);
   const earnedLine = earned.grantedMilli > 0 ? `\n${formatCloudHours(earned.leftMilli)} earned hours left (they never expire).` : "";
@@ -22229,7 +22230,7 @@ function formatCloudAccount(value: unknown): string {
   const githubLine = github && github.state !== "ok" && github.sentence
     ? `\n${github.sentence}${github.state === "no_github" ? " Connect it in Settings › Integrations › GitHub." : github.state === "too_new" && github.canUnlockWithCard ? " Add the card in Settings › ADE Cloud." : ""}`
     : "";
-  return (hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`) + atOneTime + earnedLine + freeLine + githubLine;
+  return (hours.state === "zero" ? `${plan}: out of hours for bigger computers (Small keeps working). ${left}` : `${plan}: ${left}`) + atOneTime + earnedLine + freeLine + githubLine;
 }
 
 /** Where the person enters a friend's invite: the app only, never a terminal. */

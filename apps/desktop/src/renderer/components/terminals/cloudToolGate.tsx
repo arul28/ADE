@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Moon } from "@phosphor-icons/react";
-import { cloudOutOfHours, cloudOverPlanDiskMessage, type CloudMachine } from "../../../shared/adeCloud";
+import { cloudCatalogOf, cloudOutOfHours, type CloudMachine } from "../../../shared/adeCloud";
+import { cloudTierOfMachine, cloudTiers, cloudTierUsesHours } from "../../../shared/cloudTiers";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { openCloudPlanSettings } from "../remoteTargets/openCloudPlanSettings";
 import { CloudLaneSavedWork } from "../cloudLane/CloudLaneSavedWork";
@@ -12,7 +13,8 @@ import { useNativeToolFeeds } from "./NativeToolFeedsContext";
 /**
  * ADE Cloud's half of a Work tool: a person opening a tool that needs the
  * computer wakes it (a stopped computer starts), a restored tab or a background
- * read never does, and at 0 hours the tool says so instead.
+ * read never does, and at 0 hours the tool says so instead (a Small computer
+ * never uses hours, so it still wakes).
  *
  * Account-level on the wake (ADE Cloud knows the machine by its id); the tool
  * itself keeps its `pin`. Everything here is a no-op off the machine list:
@@ -92,9 +94,9 @@ export function CloudToolGate({
   useStillWatching(tool, pin, box);
 
   const down = computerIsDown(box);
-  const outOfHours = cloudOutOfHours(account);
-  // On the free plan with more disk than the plan has, the server refuses every wake.
-  const overPlanDisk = cloudOverPlanDiskMessage(account);
+  // Out of hours stops the sizes that use them; a Small computer keeps working.
+  const tier = box ? cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(account))) : null;
+  const outOfHours = cloudOutOfHours(account) && !(tier && !cloudTierUsesHours(tier));
   const instanceId = box?.instanceId ?? null;
   const openedByPerson = opened != null && opened.tool === tool && Date.now() - opened.at < OPENED_BY_PERSON_WINDOW_MS;
   const [waking, setWaking] = useState(false);
@@ -121,10 +123,10 @@ export function CloudToolGate({
 
   // A click wakes once; a reopened tab shows the button instead.
   useEffect(() => {
-    if (!down || outOfHours || overPlanDisk || !openedByPerson || !instanceId || wakeTriedFor.current === instanceId) return;
+    if (!down || outOfHours || !openedByPerson || !instanceId || wakeTriedFor.current === instanceId) return;
     wakeTriedFor.current = instanceId;
     wake();
-  }, [down, instanceId, openedByPerson, outOfHours, overPlanDisk, wake]);
+  }, [down, instanceId, openedByPerson, outOfHours, wake]);
 
   if (!needsComputer || !box || (!down && !waking && box.state !== "starting")) return <>{children}</>;
   // ADE Cloud is one machine: the lane's computer is "This lane's computer", never its own name.
@@ -138,10 +140,12 @@ export function CloudToolGate({
     </div>
   );
   if (outOfHours && down) {
-    return restingGate({ id: "cloud-tool-out-of-hours", title: "Out of hours", detail: `${name} needs ADE Cloud hours to wake. They come back when your hours reset.` });
-  }
-  if (overPlanDisk && down) {
-    return restingGate({ id: "cloud-tool-over-plan-disk", title: "This lane's computer can't wake", detail: overPlanDisk, actions: [{ label: "Plans and hours", onClick: openCloudPlanSettings }] });
+    return restingGate({
+      id: "cloud-tool-out-of-hours",
+      title: "Out of hours",
+      detail: `${name} needs ADE Cloud hours to wake at its size. They come back when your hours reset; a Small computer never uses them.`,
+      actions: [{ label: "Plans and hours", onClick: openCloudPlanSettings }],
+    });
   }
   const comingUp = waking || box.state === "starting";
   return (

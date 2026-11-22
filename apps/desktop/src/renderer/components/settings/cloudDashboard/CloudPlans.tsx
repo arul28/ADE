@@ -1,7 +1,10 @@
 import { useRef, useState, type ReactNode } from "react";
-import { ArrowSquareOut, Clock, CreditCard, DeviceMobile, HardDrives, Info, Lightning, MoonStars, Sparkle } from "@phosphor-icons/react";
+import { ArrowSquareOut, Clock, CreditCard, Desktop, DeviceMobile, Info, Lightning, MoonStars, Robot, Sparkle } from "@phosphor-icons/react";
 import {
   CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
+  CLOUD_HOUR_UNIT_SENTENCE,
+  CLOUD_SMALL_FAIR_USE_SENTENCE,
+  CLOUD_SMALL_UNLIMITED_SENTENCE,
   CLOUD_PLAN_LABELS,
   CLOUD_PLAN_RANK,
   cloudCatalogHasMax,
@@ -11,6 +14,7 @@ import {
   cloudFreePlanOf,
   cloudPlanIdOf,
   cloudPlanLabelOf,
+  cloudPlanComputerLimitOf,
   formatCloudCents,
   formatCloudCentsPerHour,
   formatCloudCentsPerMinute,
@@ -27,6 +31,7 @@ import { ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
+import { cloudHoursOnSizesLine, cloudTiers } from "../../../../shared/cloudTiers";
 import { SettingsSelect, SettingsToggle } from "../primitives/SettingsControls";
 import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
 import { CloudFreeGithubNotice } from "./CloudFreeGithubNotice";
@@ -34,9 +39,6 @@ import { useStillWhenHidden } from "./CloudSky";
 import { CLOUD_PLAN_MOMENT_TOAST_ID } from "./cloudPlanMoment";
 import "./cloudPlans.css";
 
-/** The monthly limits a person picks for extra disk, in dollars. */
-const EXTRA_DISK_LIMITS = ["5", "10", "20", "50"];
-const DEFAULT_EXTRA_DISK_LIMIT = "10";
 /** The monthly limits a person picks for extra iPhone minutes, in dollars; "none" is no limit. */
 const EXTRA_PHONE_LIMITS = ["5", "10", "25", "50", "100"];
 
@@ -44,23 +46,23 @@ type Column = { id: CloudPlanId; facts: CloudPlanFacts };
 
 /**
  * Plans side by side (what each includes, the current one marked) with one
- * action per plan, then the paid plan's extra Linux hours, Linux disk and
- * iPhone minutes, and the way to Stripe's billing page. Replaces the two bare
- * "Plus" / "Pro" buttons.
+ * action per plan, then the paid plan's extra hours and iPhone minutes, and
+ * the way to Stripe's billing page (Pricing v2: cloud computers per plan,
+ * unlimited Small computers, hours for the bigger sizes shown as time on each
+ * size, no disk). Every number is the server catalog's.
  *
  * Reads nothing of its own: the account comes from the page's computer list.
  * Account level, so no pin.
  */
 /**
  * A plan card's one tag: "Your plan", "From Dec 1" for the plan that takes
- * over at the period's end, or "5× the hours" on the plan right above yours
- * (`moreHours`, counted from yours; 0 elsewhere, since "3× the hours" on a
- * plan further up would read as 3× yours). Null when none applies.
+ * over at the period's end, or "+1 computer" on the plan right above yours
+ * (`moreComputers`, counted from yours; 0 elsewhere). Null when none applies.
  */
-function planCardTag({ isCurrent, startsLater, until, moreHours }: { isCurrent: boolean; startsLater: boolean; until: string; moreHours: number }): ReactNode {
+function planCardTag({ isCurrent, startsLater, until, moreComputers }: { isCurrent: boolean; startsLater: boolean; until: string; moreComputers: number }): ReactNode {
   if (isCurrent) return <span className="adecd-plancard-tag" data-tone="current">Your plan</span>;
   if (startsLater) return <span className="adecd-plancard-tag">From {until}</span>;
-  if (moreHours >= 2) return <span className="adecd-plancard-tag" data-tone="next">{moreHours}× the hours</span>;
+  if (moreComputers > 0) return <span className="adecd-plancard-tag" data-tone="next">+{moreComputers} {moreComputers === 1 ? "computer" : "computers"}</span>;
   return null;
 }
 
@@ -75,12 +77,14 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   useStillWhenHidden(sectionRef);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [diskLimit, setDiskLimit] = useState(DEFAULT_EXTRA_DISK_LIMIT);
   const [phoneLimit, setPhoneLimit] = useState("none");
-  // A downgrade over the cheaper plan's disk: the question first (CloudPlanLimitsDialog).
+  // A downgrade past the cheaper plan's computers: the question first (CloudPlanLimitsDialog).
   const [asking, setAsking] = useState<CloudPaidPlanId | null>(null);
 
   const catalog = cloudCatalogOf(account);
+  const tiers = cloudTiers(catalog);
+  // A plan's computers, from the catalog; null from a server before Pricing v2 (its number was a hidden cap, never shown).
+  const computersOf = (facts: CloudPlanFacts): number | null => cloudPlanComputerLimitOf(facts, catalog);
   const pro = cloudCatalogHasPro(catalog) ? catalog.plans.pro : null;
   const max = cloudCatalogHasMax(catalog) ? catalog.plans.max : null;
   const current = cloudPlanIdOf(account);
@@ -99,20 +103,17 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   // What a move down to each cheaper plan would go over (only plans it goes over are sent).
   const previewFor = (plan: CloudPlanId): CloudPlanCleanup | null =>
     (account.downgradePreviews as Partial<Record<CloudPlanId, CloudPlanCleanup>> | undefined)?.[plan] ?? null;
-  const showPhoneMinutes = columns.some((column) => column.facts.phoneMinutes != null);
-  // Coming soon until this account has the ADE Cloud iPhone (an older server sends no `phone`).
-  const phoneSoon = account.phone?.access !== "on";
+  // The ADE Cloud iPhone shows only to an account that has it (`on`); everyone else sees nothing of it.
+  const phoneOn = account.phone?.access === "on";
+  const showPhoneMinutes = phoneOn && columns.some((column) => column.facts.phoneMinutes != null);
   const currentExtraCents = cloudExtraHourCentsOf(current, catalog);
-  // An account from before the new plans keeps its old hours and disk until its
+  // An account from before the new plans keeps its old hours until its
   // period ends; the table lists the new ones, so the plan's column says so.
   const currentFacts = columns.find((column) => column.id === current)?.facts ?? null;
   const oldTerms = paid && !pastDue && currentFacts
-    ? {
-        hoursMilli: account.hours.includedMilli > 0 && account.hours.includedMilli !== currentFacts.includedMilli ? account.hours.includedMilli : null,
-        diskGb: account.disk.limitGb != null && account.disk.limitGb !== currentFacts.diskGb ? account.disk.limitGb : null,
-      }
+    ? { hoursMilli: account.hours.includedMilli > 0 && account.hours.includedMilli !== currentFacts.includedMilli ? account.hours.includedMilli : null }
     : null;
-  const keepsOldTerms = oldTerms != null && (oldTerms.hoursMilli != null || oldTerms.diskGb != null);
+  const keepsOldTerms = oldTerms?.hoursMilli != null;
   const until = formatCloudDate(billing.periodEnd);
   // The plan after renewal: a waiting move, Free after a cancel, or the same plan on the new numbers.
   const afterId = billing.cancelAtPeriodEnd ? "free" : nextPlanId != null && nextPlanId !== current ? nextPlanId : current;
@@ -165,14 +166,14 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
     if (CLOUD_PLAN_RANK[target.id] > CLOUD_PLAN_RANK[current]) {
       const ok = await confirmDialog({
         title: `Move to ${label}?`,
-        message: `${label} is $${target.facts.priceUsd} a month with ${formatCloudHours(target.facts.includedMilli)} hours. You pay the difference for the rest of this month now. Hours you used stay used.`,
+        message: `${label} is $${target.facts.priceUsd} a month${computersOf(target.facts) != null ? ` with ${computersOf(target.facts)} cloud computers and` : " with"} ${formatCloudHours(target.facts.includedMilli)} hours for bigger computers. You pay the difference for the rest of this month now. Hours you used stay used.`,
         confirmLabel: `Move to ${label}`,
       });
       if (ok) await checkout(target.id);
       return;
     }
-    // A move down starts with the next month. Over the cheaper plan's disk, ADE
-    // asks first: clean up yourself (no move), or pick what ADE frees now.
+    // A move down starts with the next month. Past the cheaper plan's computers,
+    // ADE asks first: clean up yourself (no move), or pick what ADE frees now.
     if (previewFor(target.id)) {
       setAsking(target.id);
       return;
@@ -224,19 +225,9 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
     return { label: `Move to ${CLOUD_PLAN_LABELS[column.id]}`, primary: CLOUD_PLAN_RANK[column.id] === CLOUD_PLAN_RANK[current] + 1 };
   };
 
-  // Extra disk (paid only, and only when the server sells it).
-  const planGb = account.disk.limitGb;
-  const extraDisk = account.extraDisk?.available && catalog.extraDiskCentsPer10GbMonth != null && planGb != null
-    ? { ...account.extraDisk, centsPer10Gb: catalog.extraDiskCentsPer10GbMonth, planGb }
-    : null;
-  const extraDiskOn = extraDisk?.state === "on";
-  const shownDiskLimit = extraDiskOn && extraDisk.monthlyLimitCents != null ? String(Math.floor(extraDisk.monthlyLimitCents / 100)) : diskLimit;
-  const diskLimitOptions = (EXTRA_DISK_LIMITS.includes(shownDiskLimit) ? EXTRA_DISK_LIMITS : [...EXTRA_DISK_LIMITS, shownDiskLimit].sort((a, b) => Number(a) - Number(b)))
-    .map((value) => ({ value, label: `Up to $${value} a month` }));
-
   // Extra iPhone minutes (paid only, and only when the server sells them).
   const phone = account.phone;
-  const phoneExtra = phone?.extra.available && phone.minutes ? { ...phone.extra, included: phone.minutes.included } : null;
+  const phoneExtra = phoneOn && phone?.extra.available && phone.minutes ? { ...phone.extra, included: phone.minutes.included } : null;
   const phoneExtraOn = phoneExtra?.enabled === true;
   // On: the saved limit (null is "none"). Off: the person's pick for when they turn it on.
   const shownPhoneLimit = phoneExtra?.enabled
@@ -263,8 +254,8 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   if (paid && !billing.cancelAtPeriodEnd && account.downgradePreviews?.free) {
     notes.push(`If you cancel: ${account.downgradePreviews.free.sentence} ADE deletes nothing on its own; once Free starts, new computers wait until you clean up or pick what ADE frees here.`);
   }
-  if (keepsOldTerms && afterFacts) {
-    notes.push(`${CLOUD_PLAN_LABELS[current]} keeps your old ${[oldTerms?.hoursMilli != null ? `${formatCloudHours(oldTerms.hoursMilli)} hours` : null, oldTerms?.diskGb != null ? `${oldTerms.diskGb} GB` : null].filter(Boolean).join(" and ")} until ${until}. From then ${afterId === current ? "it has" : `you're on ${CLOUD_PLAN_LABELS[afterId]}, with`} ${formatCloudHours(afterFacts.includedMilli)} hours and ${afterFacts.diskGb} GB, as on its card.`);
+  if (keepsOldTerms && afterFacts && oldTerms?.hoursMilli != null) {
+    notes.push(`${CLOUD_PLAN_LABELS[current]} keeps your old ${formatCloudHours(oldTerms.hoursMilli)} hours until ${until}. From then ${afterId === current ? "it has" : `you're on ${CLOUD_PLAN_LABELS[afterId]}, with`} ${formatCloudHours(afterFacts.includedMilli)} hours, as on its card.`);
   }
   // The rule, unless the GitHub notice above already says how it applies to you.
   if (!paid && !githubHeld) {
@@ -297,13 +288,16 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
             // The plan right above the current one: the one to sell, with how much more it gives.
             const isNext = !isCurrent && CLOUD_PLAN_RANK[column.id] === CLOUD_PLAN_RANK[current] + 1 && action != null;
             const below = index > 0 ? columns[index - 1]! : null;
-            const more = below && below.facts.includedMilli > 0 ? Math.floor(column.facts.includedMilli / below.facts.includedMilli) : 0;
+            const computers = computersOf(column.facts);
+            const belowComputers = below ? computersOf(below.facts) : null;
+            const more = computers != null && belowComputers != null ? Math.max(0, computers - belowComputers) : 0;
             const tag = planCardTag({
               isCurrent,
               startsLater: nextPlanId === column.id || (billing.cancelAtPeriodEnd && column.id === "free"),
               until,
-              moreHours: isNext ? more : 0,
+              moreComputers: isNext ? more : 0,
             });
+            const onSizes = cloudHoursOnSizesLine(column.facts.includedMilli, tiers);
             return (
               <article
                 key={column.id}
@@ -324,27 +318,31 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                   <span>{column.facts.priceUsd ? "a month" : "forever"}</span>
                 </div>
                 <ul className="adecd-plancard-facts">
+                  {computers != null ? (
+                    <li title="Cloud computers your account may have, asleep or not: one per lane"><Desktop size={13} /><span><b className="kit-num" data-face="ui">{computers}</b> cloud {computers === 1 ? "computer" : "computers"} <span className="adecd-nowrap">(asleep or not)</span></span></li>
+                  ) : null}
+                  <li title={CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span><b>Unlimited</b> Small computers</span></li>
                   {isCurrent && oldTerms?.hoursMilli != null ? (
-                    <li title={`${formatCloudHours(column.facts.includedMilli)} hours from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(oldTerms.hoursMilli)}</b> computer hours until {until}</span></li>
+                    <li title={`${formatCloudHours(column.facts.includedMilli)} hours from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(oldTerms.hoursMilli)}</b> hours for bigger computers until {until}</span></li>
                   ) : (
-                    <li title={`${formatCloudHours(column.facts.includedMilli)} hours a month on Linux computers in the cloud, as many computers as you like`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(column.facts.includedMilli)}</b> computer hours</span></li>
-                  )}
-                  {isCurrent && oldTerms?.diskGb != null ? (
-                    <li title={`${column.facts.diskGb} GB from ${until}`}><HardDrives size={13} /><span><b className="kit-num" data-face="ui">{oldTerms.diskGb} GB</b> disk until {until}</span></li>
-                  ) : (
-                    <li><HardDrives size={13} /><span><b className="kit-num" data-face="ui">{column.facts.diskGb} GB</b> disk</span></li>
+                    <li title={onSizes || undefined}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(column.facts.includedMilli)}</b> hours for bigger computers{onSizes ? <small className="adecd-plancard-sizes">{onSizes}</small> : null}</span></li>
                   )}
                   {showPhoneMinutes ? (
-                    <li title={`Time on an iPhone simulator in the cloud, for agents to test your app.${phoneSoon ? " Coming soon." : ""}`}><DeviceMobile size={13} /><span><b className="kit-num" data-face="ui">{column.facts.phoneMinutes ?? "–"}</b> iOS Simulator <span className="adecd-nowrap">minutes{phoneSoon ? <> <em>soon</em></> : null}</span></span></li>
+                    <li title="Time on an iPhone simulator in the cloud, for agents to test your app."><DeviceMobile size={13} /><span><b className="kit-num" data-face="ui">{column.facts.phoneMinutes ?? "–"}</b> iOS Simulator <span className="adecd-nowrap">minutes</span></span></li>
                   ) : null}
-                  {column.facts.extraPhoneMinuteCents != null && !phoneSoon ? (
+                  {column.facts.extraPhoneMinuteCents != null && showPhoneMinutes ? (
                     <li title="Only if you turn extra iPhone minutes on"><DeviceMobile size={13} /><span><b className="kit-num" data-face="ui">{formatCloudCentsPerMinute(column.facts.extraPhoneMinuteCents)}</b> an extra iPhone minute</span></li>
                   ) : null}
                   {cents == null ? (
-                    <li data-quiet="true" title="Work stops until your hours reset"><Lightning size={13} /><span>Work stops at the limit</span></li>
+                    <li data-quiet="true" title="Bigger computers stop until your hours reset; Small computers keep working"><Lightning size={13} /><span>No extra hours</span></li>
                   ) : (
-                    <li title="Only if you turn extra Linux hours on"><Lightning size={13} /><span><b className="kit-num" data-face="ui">{formatCloudCentsPerHour(cents)}</b> an extra Linux hour</span></li>
+                    <li title="Only if you turn extra hours on"><Lightning size={13} /><span><b className="kit-num" data-face="ui">{formatCloudCentsPerHour(cents)}</b> an extra hour</span></li>
                   )}
+                  {column.facts.outsideAgents === false ? (
+                    <li data-quiet="true" title="Outside agents (through ADE MCP) can't start ADE Cloud work on this plan"><Robot size={13} /><span>No outside agents</span></li>
+                  ) : column.facts.outsideAgents === true ? (
+                    <li title="Outside agents (through ADE MCP) may start ADE Cloud work"><Robot size={13} /><span>Outside agents may use ADE Cloud</span></li>
+                  ) : null}
                 </ul>
                 <footer className="adecd-plancard-foot">
                   {action ? (
@@ -370,12 +368,15 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
         <div className="kit-panel adecd-howto" aria-label="What every plan includes">
           <div className="adecd-howto-items">
             <div className="adecd-howto-item">
+              <span className="adecd-howto-icon"><Sparkle size={14} /></span>
+              <p><b>{CLOUD_SMALL_UNLIMITED_SENTENCE}</b> Bigger computers use hours, and each plan has a number of cloud computers, asleep or not: one per lane.</p>
+            </div>
+            <div className="adecd-howto-item">
               <span className="adecd-howto-icon"><Clock size={14} /></span>
               <p>
-                <b>Hours run your cloud computers</b> and renew every month: Linux computers your agents work on, one per lane, as many as you like.
-                An hour is one hour of a Small computer; bigger sizes use hours faster (2× uses two).
+                <b>Hours run the bigger computers</b> and renew every month. {CLOUD_HOUR_UNIT_SENTENCE}
                 {extraHours.available && currentExtraCents != null
-                  ? ` With extra Linux hours on, an hour past your plan costs ${formatCloudCentsPerHour(currentExtraCents)} times the size's rate.`
+                  ? ` With extra hours on, an hour past your plan costs ${formatCloudCentsPerHour(currentExtraCents)}.`
                   : null}
               </p>
             </div>
@@ -383,14 +384,10 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
               <span className="adecd-howto-icon"><MoonStars size={14} /></span>
               <p><b>Computers sleep on their own</b> a few minutes after work stops, so your hours only go to real work.</p>
             </div>
-            <div className="adecd-howto-item">
-              <span className="adecd-howto-icon"><HardDrives size={14} /></span>
-              <p><b>Disk</b> is what all your computers hold at one time, shared between them.</p>
-            </div>
             {showPhoneMinutes ? (
               <div className="adecd-howto-item">
                 <span className="adecd-howto-icon"><DeviceMobile size={14} /></span>
-                <p><b>iOS Simulator minutes</b>{phoneSoon ? <> <em className="adecd-howto-soon">soon</em></> : null}: time on an iPhone simulator in the cloud, for agents to test your app.</p>
+                <p><b>iOS Simulator minutes</b>: time on an iPhone simulator in the cloud, for agents to test your app.</p>
               </div>
             ) : null}
           </div>
@@ -399,66 +396,31 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
               {notes.map((note) => <li key={note}><Info size={12} />{note}</li>)}
             </ul>
           ) : null}
+          <p className="adecd-howto-fineprint">{CLOUD_SMALL_FAIR_USE_SENTENCE}</p>
         </div>
 
-        {extraHours.available || extraDisk || phoneExtra ? (
+        {extraHours.available || phoneExtra ? (
           <div className="adecd-addons">
             {extraHours.available ? (
               <div className="kit-panel adecd-addon" data-on={extraHours.enabled || undefined}>
                 <div className="adecd-addon-top">
                   <span className="adecd-addon-icon"><Lightning size={15} weight="duotone" /></span>
-                  <b>Extra Linux hours</b>
+                  <b>Extra hours</b>
                   <SettingsToggle
                     checked={extraHours.enabled}
                     disabled={busy}
-                    label="Extra Linux hours"
+                    label="Extra hours"
                     onChange={(enabled) => void run(() => bridge?.setExtraHours?.(enabled) ?? Promise.resolve(null))}
                   />
                 </div>
                 <div className="adecd-addon-price">
                   <b className="kit-num" data-face="ui">{formatCloudCentsPerHour(currentExtraCents ?? catalog.extraHourCents)}</b>
-                  <span>a Linux hour past your plan, billed after use</span>
+                  <span>an hour past your plan, billed after use</span>
                 </div>
                 <small className="adecd-addon-state">
                   {extraHours.enabled
-                    ? `On.${extraHours.usedMilli > 0 ? ` ${formatCloudHours(extraHours.usedMilli)} Linux hours used this month.` : " Linux work keeps going when your hours run out."}`
-                    : "Off. Linux work stops when your hours run out."}
-                </small>
-              </div>
-            ) : null}
-            {extraDisk ? (
-              <div className="kit-panel adecd-addon" data-on={extraDiskOn || undefined}>
-                <div className="adecd-addon-top">
-                  <span className="adecd-addon-icon"><HardDrives size={15} weight="duotone" /></span>
-                  <b>Extra Linux disk</b>
-                  <SettingsSelect
-                    value={shownDiskLimit}
-                    disabled={busy}
-                    ariaLabel="Monthly limit for extra Linux disk"
-                    style={{ minWidth: 0 }}
-                    options={diskLimitOptions}
-                    onChange={(value) => {
-                      setDiskLimit(value);
-                      if (extraDiskOn) void run(() => bridge?.setExtraDisk?.({ enabled: true, monthlyLimitUsd: Number(value) }) ?? Promise.resolve(null));
-                    }}
-                  />
-                  <SettingsToggle
-                    checked={extraDiskOn}
-                    disabled={busy}
-                    label="Extra Linux disk"
-                    onChange={(enabled) => void run(() => bridge?.setExtraDisk?.(
-                      enabled ? { enabled: true, monthlyLimitUsd: Number(shownDiskLimit) } : { enabled: false },
-                    ) ?? Promise.resolve(null))}
-                  />
-                </div>
-                <div className="adecd-addon-price">
-                  <b className="kit-num" data-face="ui">{formatCloudCents(extraDisk.centsPer10Gb)}</b>
-                  <span>per 10 GB of Linux disk a month past {extraDisk.planGb} GB, counted by the day</span>
-                </div>
-                <small className="adecd-addon-state">
-                  {extraDiskOn
-                    ? `On. ${formatCloudCents(extraDisk.usedCents)} so far this month.`
-                    : "Off. Linux computers stop growing at your plan's disk."}
+                    ? `On.${extraHours.usedMilli > 0 ? ` ${formatCloudHours(extraHours.usedMilli)} extra hours used this month.` : " Bigger computers keep going when your hours run out."}`
+                    : "Off. Bigger computers stop when your hours run out; Small computers keep working."}
                 </small>
               </div>
             ) : null}

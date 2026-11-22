@@ -13,7 +13,7 @@ import SwiftUI
 /// - `duo-provider-signin`: the sign-in sheet at its approve step.
 enum CloudPreviews {
   static let names: Set<String> = [
-    "duo-cloud", "duo-cloud-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
+    "duo-cloud", "duo-cloud-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
   ]
 
   @MainActor static func view(_ name: String) -> AnyView? {
@@ -47,6 +47,20 @@ enum CloudPreviews {
     switch name {
     case "duo-cloud-limits":
       return AnyView(NavigationStack { CloudLimitsScreen(store: store) })
+    case "duo-cloud-computer-limit":
+      // A new lane refused at Plus's 3 computers (sample data, as a refusal sends it).
+      return AnyView(CloudComputerLimitSheet(limit: CloudComputerLimit(
+        message: CloudComputerLimit.headline(limit: 3),
+        planId: "plus",
+        limit: 3,
+        total: 3,
+        lanes: [
+          .init(instanceId: "q1w2e3r4t5", laneName: "supabase-stack", awake: false, lastAwakeAt: nowMs - 21 * 86_400_000),
+          .init(instanceId: "k2p8a1b2c3", laneName: "android-emulator-suite", awake: false, lastAwakeAt: nowMs - 3 * 3_600_000),
+          .init(instanceId: "zodqsue74s", laneName: "fix-login-redirect", awake: true, lastAwakeAt: nowMs - 0.2 * 3_600_000),
+        ],
+        nextPlan: .init(planId: "pro", computerLimit: 10)
+      )))
     case "duo-cloud-machine":
       return AnyView(NavigationStack { CloudMachineScreen(store: store, instanceId: "k2p8a1b2c3") })
     case "duo-cloud-invite":
@@ -65,7 +79,7 @@ enum CloudPreviews {
         ScrollView {
           VStack(spacing: 16) {
             if let account = store.account {
-              CloudPlansCard(account: account)
+              CloudPlansCard(account: account, tiers: store.tiers)
               CloudSizesCard(account: account, tiers: store.tiers)
             }
           }
@@ -124,11 +138,12 @@ enum CloudPreviews {
        "resources":{"cpu":2,"memoryGb":4,"diskGb":4.0},"shapeId":"2x4","hoursRate":1,"sleep":{"state":"auto"},"pastDue":false,
        "lastActiveAtMs":\(nowMs - 21 * day),"createdAtMs":\(nowMs - 40 * day)}
     ],
-    "account":{"plan":"paid","planId":"plus","rules":"paid",
-      "hours":{"includedMilli":500000,"usedMilli":117500,"leftMilli":382500,"percentUsed":23.5,"state":"none"},
+    "account":{"plan":"paid","planId":"pro","rules":"paid",
+      "hours":{"includedMilli":600000,"usedMilli":117500,"leftMilli":482500,"percentUsed":19.6,"state":"none"},
       "extraHours":{"available":true,"enabled":false,"usedMilli":0},
-      "disk":{"usedGb":17.6,"limitGb":30},
-      "computers":{"total":4,"awake":1,"limit":25},
+      "disk":{"usedGb":17.6,"limitGb":null},
+      "computers":{"total":4,"awake":1,"limit":10},
+      "phone":{"access":"off","minutes":null,"state":"ok"},
       "recentUse":{"days":7,"usedMilli":63000},
       "billing":{"periodStart":1793491200000,"periodEnd":1796083200000,"cancelAtPeriodEnd":false,"nextPlanId":null,"notice":null},
       "earnedHours":{"leftMilli":40000,"usedThisPeriodMilli":0,"grantedMilli":40000},
@@ -139,17 +154,17 @@ enum CloudPreviews {
       "dueForDeletion":[],"deletedInstanceIds":[],
       "catalog":{
         "plans":{
-          "free":{"includedMilli":100000,"diskGb":12,"priceUsd":0,"phoneMinutes":20,"extraHourCents":null},
-          "paid":{"includedMilli":300000,"diskGb":30,"priceUsd":5,"phoneMinutes":30,"extraHourCents":2},
-          "plus":{"includedMilli":300000,"diskGb":30,"priceUsd":5,"phoneMinutes":30,"extraHourCents":2},
-          "pro":{"includedMilli":1600000,"diskGb":80,"priceUsd":20,"phoneMinutes":160,"extraHourCents":1.5},
-          "max":{"includedMilli":5000000,"diskGb":175,"priceUsd":50,"phoneMinutes":500,"extraHourCents":1.2}},
+          "free":{"includedMilli":50000,"diskGb":24,"priceUsd":0,"phoneMinutes":60,"extraHourCents":null,"computerLimit":2,"outsideAgents":false},
+          "paid":{"includedMilli":100000,"diskGb":36,"priceUsd":5,"phoneMinutes":80,"extraHourCents":2,"computerLimit":3,"outsideAgents":true},
+          "plus":{"includedMilli":100000,"diskGb":36,"priceUsd":5,"phoneMinutes":80,"extraHourCents":2,"computerLimit":3,"outsideAgents":true},
+          "pro":{"includedMilli":600000,"diskGb":120,"priceUsd":20,"phoneMinutes":300,"extraHourCents":2,"computerLimit":10,"outsideAgents":true},
+          "max":{"includedMilli":1500000,"diskGb":240,"priceUsd":50,"phoneMinutes":800,"extraHourCents":2,"computerLimit":20,"outsideAgents":true}},
         "sizes":[
-          {"type":"default","cpu":2,"memoryGb":4,"multiplierMilli":1000,"tier":"small","label":"Small","diskMaxGb":20},
-          {"type":"default","cpu":4,"memoryGb":8,"multiplierMilli":2000,"tier":"medium","label":"Medium","diskMaxGb":40},
-          {"type":"vm","cpu":4,"memoryGb":8,"multiplierMilli":5000,"tier":"large","label":"Large","diskMaxGb":60},
-          {"type":"vm","cpu":4,"memoryGb":16,"multiplierMilli":7000,"tier":"xlarge","label":"X-Large","diskMaxGb":100}],
-        "diskStepGb":10,"paidPriceUsd":5,"extraHourCents":2}}}
+          {"type":"default","cpu":2,"memoryGb":4,"multiplierMilli":0,"tier":"small","label":"Small","diskMaxGb":12},
+          {"type":"default","cpu":4,"memoryGb":8,"multiplierMilli":1000,"tier":"medium","label":"Medium","diskMaxGb":20},
+          {"type":"vm","cpu":4,"memoryGb":8,"multiplierMilli":2500,"tier":"large","label":"Large","diskMaxGb":50},
+          {"type":"vm","cpu":4,"memoryGb":16,"multiplierMilli":4000,"tier":"xlarge","label":"X-Large","diskMaxGb":100}],
+        "hourUnit":"medium","diskStepGb":10,"paidPriceUsd":5,"extraHourCents":2}}}
     """
   }
 

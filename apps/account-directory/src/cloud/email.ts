@@ -97,7 +97,13 @@ function warnEmailSkipped(meta: { target: string; email: string; reason: "no_res
 }
 
 /** What ADE reads about an account from Clerk's Backend API. The email is never logged. */
-export type ClerkUserFacts = { email: string | null; createdAt: number | null; firstName: string | null };
+export type ClerkUserFacts = {
+  email: string | null;
+  /** Every verified address on the account, the primary one included. */
+  emails: string[];
+  createdAt: number | null;
+  firstName: string | null;
+};
 
 /** The account's Clerk user, or null without a Clerk key or when Clerk refuses. Throws when Clerk can't be reached. */
 export async function readClerkUser(env: Pick<CloudEmailEnv, "CLERK_SECRET_KEY">, userId: string): Promise<ClerkUserFacts | null> {
@@ -113,6 +119,9 @@ export async function readClerkUser(env: Pick<CloudEmailEnv, "CLERK_SECRET_KEY">
   const primary = addresses.find((address) => address.id === user.primary_email_address_id) ?? addresses[0];
   return {
     email: typeof primary?.email_address === "string" ? primary.email_address : null,
+    // Verified only: an address someone added but never proved is not theirs.
+    emails: addresses.flatMap((address) => (typeof address.email_address === "string"
+      && (address.verification as { status?: unknown } | null | undefined)?.status === "verified" ? [address.email_address] : [])),
     createdAt: typeof user.created_at === "number" ? user.created_at : null,
     firstName: typeof user.first_name === "string" ? user.first_name.trim().split(/\s+/)[0]?.slice(0, 40) || null : null,
   };

@@ -1,15 +1,14 @@
 import { pruneSignupIps, signupBurstAlarms, sustainedCpuAlarms } from "./abuseSignals";
 import { captureCloudSafety, type CloudSafetyStep, type CloudWaitUntil } from "./analytics";
-import type { ExtraDiskOverLimit } from "./billing";
 import { blockCommand, sendOwnerAlert } from "./blocks";
-import { formatCloudCents, type CloudPlanId } from "./contract";
+import type { CloudPlanId } from "./contract";
 import { sendCloudEmail } from "./email";
 import { idleCleanupReportLine } from "./idleCleanup";
 import {
   CLOUD_PLANS,
   DISK_COST_MICROS_PER_GB_DAY,
-  extraDiskMicrosPerGbDayOf,
   computeCostMicrosFor,
+  cloudSizeForTier,
   extraHoursIncomeMicros,
   utcDay,
 } from "./plans";
@@ -17,9 +16,7 @@ import {
   PAID_RULES_SQL,
   accountDiskSql,
   accountRules,
-  freePlanOverDisk,
   logCloud,
-  planDiskGbOf,
   planIdOf,
   readSetting,
   reportCloudFailure,
@@ -35,8 +32,9 @@ import {
  *
  * Cost is the provider's public price for the awake time of each computer-day
  * (`cloud_computer_days.cost_micros`) plus each day's peak disk
- * (`cloud_disk_days`). Income is the plan's price spread over the month, the
- * extra hours reported to Stripe and the extra disk billed. Both are estimates:
+ * (`cloud_disk_days`). Income is the plan's price spread over the month and
+ * the extra hours reported to Stripe (no extra disk is sold since Pricing v2).
+ * Both are estimates:
  * Stripe's fees and taxes are not in them, and a day the provider's meter has
  * not reported yet is corrected by the reconcile a day or two later.
  *
@@ -68,6 +66,10 @@ const OWNER_COST_STEP_KEY = "owner_cost_step_alert";
 const STEP_ALERT_TOP_ACCOUNTS = 3;
 /** A free account costing more than this in a month is worth a look. */
 const FREE_ACCOUNT_ALARM_MICROS = 3_000_000;
+/** Small's disk maximum. */
+const SMALL_DISK_MAX_GB = cloudSizeForTier("small")!.diskMaxGb;
+/** A free account holding more disk than its computers at Small's maximum is listed (owner only). */
+const FREE_DISK_ALARM_GB = CLOUD_PLANS.free.computerLimit * SMALL_DISK_MAX_GB;
 /** A day whose cost passes this many times the 7-day mean, and this floor, is a jump. */
 const DAY_JUMP_FACTOR = 2;
 const DAY_JUMP_FLOOR_MICROS = 5_000_000;
@@ -294,18 +296,15 @@ type DayAccount = {
  * The owner's daily report for `day` (a finished UTC day): one row per
  * account in `cloud_account_days`, then one email with the totals, the
  * margin, the worst accounts and the alarms. Runs after the reconcile, which
- * corrects that day; extra disk is billed from the owner check, so a day
- * still being sent counts its income on a later report.
- * `extraDiskOverLimit` lists accounts whose extra disk, kept a month, passes
- * the limit they set (`checkExtraDiskLimits`).
+ * corrects that day.
  */
-export async function runDailyCostReport(env: CloudEnv, day: string, extraDiskOverLimit: ExtraDiskOverLimit[] = []): Promise<void> {
+export async function runDailyCostReport(env: CloudEnv, day: string): Promise<void> {
   const previousDay = utcDay(Date.parse(`${day}T00:00:00Z`) - 86_400_000);
   const [computeRows, diskRows, accountRows, previousRows] = await Promise.all([
     env.DB.prepare("select user_id, coalesce(sum(cost_micros), 0) as cost from cloud_computer_days where day = ? group by user_id")
       .bind(day).all<{ user_id: string; cost: number }>(),
-    env.DB.prepare("select user_id, peak_gb, coalesce(billed_gb, 0) as billed_gb from cloud_disk_days where day = ?")
-      .bind(day).all<{ user_id: string; peak_gb: number; billed_gb: number }>(),
+    env.DB.prepare("select user_id, peak_gb from cloud_disk_days where day = ?")
+      .bind(day).all<{ user_id: string; peak_gb: number }>(),
     env.DB.prepare(`
       select * from cloud_accounts where deleted_at is null and (plan = 'paid'
         or user_id in (select user_id from cloud_computer_days where day = ?)
@@ -314,14 +313,14 @@ export async function runDailyCostReport(env: CloudEnv, day: string, extraDiskOv
     env.DB.prepare("select user_id, extra_reported_milli, period_start from cloud_account_days where day = ?")
       .bind(previousDay).all<{ user_id: string; extra_reported_milli: number; period_start: number | null }>(),
   ]);
-  // Disk nobody pays for: the free plan (a cancelled plan included) above its disk,
-  // or a paid plan above its disk with extra disk off (a move that left its source).
-  const overDiskRows = await env.DB.prepare(`
+  // Unusual disk on the free plan: no account-wide disk limits it since Pricing v2
+  // (each size has its own maximum), and disk bills asleep too. Owner-only.
+  const bigFreeDiskRows = await env.DB.prepare(`
     select * from (
       select a.*, ${accountDiskSql("a.user_id")} as disk_gb
-      from cloud_accounts a where a.deleted_at is null
+      from cloud_accounts a where a.deleted_at is null and not ${PAID_RULES_SQL}
     ) where disk_gb > ?
-  `).bind(CLOUD_PLANS.free.diskGb).all<AccountRow & { disk_gb: number }>();
+  `).bind(FREE_DISK_ALARM_GB).all<AccountRow & { disk_gb: number }>();
   const compute = new Map((computeRows.results ?? []).map((row) => [row.user_id, row.cost]));
   const disk = new Map((diskRows.results ?? []).map((row) => [row.user_id, row]));
   const previous = new Map((previousRows.results ?? []).map((row) => [row.user_id, row]));
@@ -344,7 +343,6 @@ export async function runDailyCostReport(env: CloudEnv, day: string, extraDiskOv
     } else if (planId !== "free" && !before && account.period_start >= dayStart) {
       income += extraHoursIncomeMicros(planId, 0, account.extra_reported_milli);
     }
-    income += (diskRow?.billed_gb ?? 0) * extraDiskMicrosPerGbDayOf(account);
     rows.push({ userId: account.user_id, planId, costMicros: cost, incomeMicros: income, extraReportedMilli: account.extra_reported_milli, periodStart: account.period_start });
   }
   if (rows.length) {
@@ -387,16 +385,8 @@ export async function runDailyCostReport(env: CloudEnv, day: string, extraDiskOv
   if (week.length && dayCost > DAY_JUMP_FLOOR_MICROS && dayCost > weekMean * DAY_JUMP_FACTOR) {
     alarms.push(`${day} cost ${usd(dayCost)}, over ${DAY_JUMP_FACTOR}x the 7-day mean of ${usd(weekMean)}.`);
   }
-  for (const row of extraDiskOverLimit) {
-    alarms.push(`Account ${row.userId} holds ${row.extraGb} GB of extra disk, about ${formatCloudCents(row.monthCents)} a month, over its ${formatCloudCents(row.limitCents)} limit. Billing stops at the limit; the person was told.`);
-  }
-  for (const row of overDiskRows.results ?? []) {
-    const planId = planIdOf(row);
-    if (planId !== "free" && row.extra_disk_state !== "on" && row.disk_gb > planDiskGbOf(row, planId)) {
-      alarms.push(`Account ${row.user_id} holds ${row.disk_gb} GB on the ${planId} plan, over its ${planDiskGbOf(row, planId)} GB, with extra disk off: a downgrade (freed by the plan cleanup after its grace days) or a move that left its old computer. Nothing bills the difference.`);
-    }
-    if (!freePlanOverDisk(row, row.disk_gb)) continue;
-    alarms.push(`Account ${row.user_id} is on the free plan with ${row.disk_gb} GB of disk, over the free ${CLOUD_PLANS.free.diskGb} GB. Its computers stay stopped until it deletes some or buys a plan; the plan cleanup pushes and frees the oldest after its grace days.`);
+  for (const row of bigFreeDiskRows.results ?? []) {
+    alarms.push(`Free account ${row.user_id} holds ${row.disk_gb} GB of disk, more than its ${CLOUD_PLANS.free.computerLimit} computers would at Small's ${SMALL_DISK_MAX_GB} GB each (${FREE_DISK_ALARM_GB} GB), about ${usd(row.disk_gb * DISK_COST_MICROS_PER_GB_DAY * 30)} a month asleep. Nothing limits it but each size's own disk and the idle cleanup.`);
   }
   // Abuse signals (`abuseSignals.ts`): best effort, a failed read never costs the report its email.
   const abuse = async (kind: string, read: () => Promise<string[]>): Promise<string[]> => read().catch((error: unknown) => {

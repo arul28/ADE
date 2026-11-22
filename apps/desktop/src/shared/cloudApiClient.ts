@@ -127,6 +127,8 @@ export class CloudApiError extends Error {
     readonly status: number,
     /** A refusal's own reason when the server gives one (a disk refusal's `CloudDiskRefusalReason`). */
     readonly reason: string | null = null,
+    /** The server's whole `error` object, for a refusal that carries more (`computer_limit`'s `CloudComputerLimitDetail`). */
+    readonly detail: Record<string, unknown> | null = null,
   ) {
     super(message);
     this.name = "CloudApiError";
@@ -214,6 +216,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
         typeof error?.code === "string" ? error.code : "http_error",
         response.status,
         typeof error?.reason === "string" ? error.reason : null,
+        error && typeof error === "object" ? error as Record<string, unknown> : null,
       );
     }
     return parsed as T;

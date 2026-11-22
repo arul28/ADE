@@ -172,3 +172,14 @@
 .adecl-tier-cards { margin-bottom: 12px; }
 .adecl-tier-now-check { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--kit-text-2); margin-right: auto; }
 
+
+/* The computer limit card (CloudComputerLimitCard): three ways out, the computers to free up or delete. */
+.adecl-limit-ways { margin: 0; padding: 0 0 0 18px; display: grid; gap: 12px; font-size: 12.5px; line-height: 1.45; }
+.adecl-limit-ways > li > b { display: block; font-weight: 600; color: var(--color-fg); }
+.adecl-limit-why { display: block; color: var(--kit-text-3); font-size: 12px; }
+.adecl-limit-empty { margin: 6px 0 0; font-size: 12px; color: var(--kit-text-3); }
+.adecl-limit-lanes { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; max-height: 220px; overflow-y: auto; }
+.adecl-limit-lane { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 6px; border: 1px solid var(--kit-rule); border-radius: 8px; }
+.adecl-limit-lane > svg { flex: none; color: var(--kit-text-3); }
+.adecl-limit-lane-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adecl-limit-lane-actions { flex: none; display: flex; gap: 4px; }

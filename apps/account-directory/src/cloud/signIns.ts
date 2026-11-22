@@ -59,7 +59,7 @@ function statusOf(result: Record<string, unknown>, jobId: string): CloudRemoteSi
 
 export type SignInDeps = {
   provider: CloudProvider;
-  /** Why the account's computers may not wake now (0 hours, the free plan's disk), or null. */
+  /** Why this computer may not wake now (0 hours on a size that uses them), or null. */
   wakeBlocked: () => Promise<Response | null>;
   isAwake: boolean;
   /**

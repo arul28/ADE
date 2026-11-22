@@ -5,25 +5,25 @@ import { freePlanOf } from "./freePlan";
 import { freePlanGithubOf } from "./freePlanGithub";
 import { idleCleanupEntries } from "./idleCleanup";
 import { planCleanupState } from "./planCleanup";
-import { AWAKE_COMPUTER_CAP, CENT_MICROS, cloudCatalog, isMeteredStatus } from "./plans";
+import { cloudCatalog, isMeteredStatus } from "./plans";
 import { readSummaryRow, referralSummary } from "./referrals";
 import { phoneAccountState } from "./phones";
 import {
   accountRules,
   boughtPlanIdOf,
   cloudOffers,
+  computerLimitOf,
+  countedComputers,
   countedDiskGb,
   earnedDrawMilli,
   earnedLeftMilli,
   extraActive,
-  extraDiskMicrosThisPeriod,
   extraUsedMilli,
   hoursState,
   listComputers,
   liveUsedMilli,
   loadAccount,
   percentUsed,
-  planDiskGb,
   reportCloudFailure,
   type AccountRow,
   type CloudEnv,
@@ -85,7 +85,6 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
   // The same total the wake rule and the limits use: a move's source stays out while the move runs.
   const diskUsed = countedDiskGb(computers);
   const offers = cloudOffers(env);
-  const extraDiskMicros = offers.extraDisk && rules === "paid" && account.extra_disk_state === "on" ? await extraDiskMicrosThisPeriod(env, account) : 0;
   // The idle cleanup's warnings, and computers it kept because their work couldn't be saved.
   const due = idleCleanupEntries(account, computers, live, now);
   return {
@@ -111,31 +110,23 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     },
     freePlan: { ...freePlanOf(account, growth?.has_claim === 1), ...(freeGithub ? { github: freeGithub } : {}) },
     ...(referral ? { referral } : {}),
-    ...(offers.extraDisk ? {
-      extraDisk: {
-        available: rules === "paid",
-        state: account.extra_disk_state,
-        monthlyLimitCents: account.extra_disk_limit_cents,
-        usedCents: Math.floor(extraDiskMicros / CENT_MICROS),
-      },
-    } : {}),
     // D1 only: the account read is polled, and never asks NoMac.
     phone: await phoneAccountState(env, account, now).catch((error: unknown) => {
       reportCloudFailure("cloud.phone_account_state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
       return undefined;
     }),
-    disk: { usedGb: diskUsed, limitGb: planDiskGb(account) },
+    // No account-wide disk since Pricing v2: each size has its own maximum.
+    disk: { usedGb: diskUsed, limitGb: null },
     computers: {
-      total: computers.length,
+      // What the computer limit counts (`accountComputerCountSql`), so the count and a refusal agree.
+      total: countedComputers(computers, now),
       awake: computers.filter((computer) => isMeteredStatus(computer.status)).length,
-      // No limit on how many. Older builds show a count against this and stop a new
-      // lane at it, so it is the awake cap and always room for one more.
-      limit: Math.max(AWAKE_COMPUTER_CAP, computers.length + 1),
+      limit: computerLimitOf(account),
     },
     recentUse: { days: RECENT_USE_DAYS, usedMilli: recentMilli },
     dueForDeletion: due,
     deletedInstanceIds,
-    catalog: cloudCatalog(offers, boughtPlanIdOf(account), account),
+    catalog: cloudCatalog(offers, boughtPlanIdOf(account)),
     billing: {
       periodStart: account.period_start,
       periodEnd: account.period_end,

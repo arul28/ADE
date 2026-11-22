@@ -21,13 +21,12 @@ export type CloudRefusal =
   | "out_of_hours"
   /** Past the hidden cap on computers awake at once (never a plan limit). */
   | "awake_cap"
-  | "plan_disk"
-  | "needs_approval"
-  | "extra_off"
-  | "monthly_limit"
+  /** Past the plan's computer limit (Pricing v2, `computer_limit`). */
+  | "computer_limit"
+  /** An outside agent (ADE MCP) starting ADE Cloud work on the free plan (`outside_agent_free_plan`). */
+  | "outside_agent_free"
   | "tier_limit"
   | "owner_limit"
-  | "over_plan_disk"
   | "over_plan_limits";
 
 export type CloudActionEvent = {

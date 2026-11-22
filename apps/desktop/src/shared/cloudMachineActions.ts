@@ -8,7 +8,7 @@
  */
 
 import type { CloudInstance } from "../../../account-directory/src/cloud/contract";
-import { cloudShape, type CloudMachineActionArgs, type CloudMachineActionResult } from "./adeCloud";
+import { cloudShape, readCloudComputerLimitDetail, type CloudMachineActionArgs, type CloudMachineActionResult } from "./adeCloud";
 import { cloudResourcesOfInstance } from "./cloudMachineOfInstance";
 
 /** The calls each side makes for an action. `wake` and `resize` return the computer's status after the call. */
@@ -22,8 +22,12 @@ export type CloudMachineLifecycleOps = {
   update(instanceId: string): Promise<unknown>;
 };
 
-/** A refusal from the server: its sentence, its error code, and a disk refusal's reason. */
-export type CloudMachineRefusal = { message: string; code: string | null; reason: string | null };
+/**
+ * A refusal from the server: its sentence, its error code, a disk refusal's
+ * reason, and the rest of the server's `error` (a `computer_limit` refusal's
+ * `CloudComputerLimitDetail` sits flat on it).
+ */
+export type CloudMachineRefusal = { message: string; code: string | null; reason: string | null; detail?: unknown };
 
 /** The sentence and the way out for a refused action: plans and hours, the backup window, a disk refusal's reason. */
 export function cloudMachineRefusal(
@@ -38,10 +42,14 @@ export function cloudMachineRefusal(
       message: "ADE Cloud takes one backup of a computer every 15 minutes. Try again in a few minutes. It also keeps the last seven nights on its own.",
     };
   }
-  if (code === "out_of_hours" || code === "over_plan_disk" || code === "over_plan_limits") {
+  if (code === "out_of_hours" || code === "over_plan_limits") {
     return { ok: false, blocker: code, message };
   }
-  // A disk refusal keeps its reason, so a notice can offer the way out (extra disk, a bigger size).
+  // All the plan's computers in use: the card offers the three ways out (free one up, delete a lane, a bigger plan).
+  if (code === "computer_limit") {
+    return { ok: false, blocker: "computer_limit", message, computerLimit: readCloudComputerLimitDetail(refused.detail) };
+  }
+  // A disk refusal keeps its reason, so a notice can offer the way out (a bigger size).
   const reason = code === "disk_limit" || code === "needs_paid_plan"
     ? refused.reason ?? (code === "needs_paid_plan" ? "plan_disk" : null)
     : null;

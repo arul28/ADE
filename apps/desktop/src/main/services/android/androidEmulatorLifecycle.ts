@@ -431,9 +431,8 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
   /**
    * The disk guard on an ADE Cloud computer: a first start the disk can't
    * hold asks the computer's grower for the room (`cloudDiskGrowHost.ts`)
-   * before it refuses. Inside the plan's disk the grow needs no yes; paid
-   * extra disk is never used from here (the agent asks with `ade cloud
-   * resize --free`, which can ask the person). The grow restarts the
+   * before it refuses. Up to the size's disk maximum the grow needs no yes
+   * (Pricing v2: no plan disk). The grow restarts the
    * computer and this call waits for it, so the asking chat's turn is cut
    * there and continued after it (restart cause `disk_grow`). Anything else
    * is the guard's own refusal, with what the grower said.

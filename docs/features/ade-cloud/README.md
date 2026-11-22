@@ -152,13 +152,13 @@ that stops (see Sleep and busy rules).
 
 - **Settings › ADE Cloud** (its own tab under General, `CloudSection.tsx`,
   `settings/cloudDashboard/CloudDashboard.tsx`, entries `integrations.ade-cloud*`):
-  - The hero: hours, disk and computers against the plan; the 80% / 95% /
+  - The hero: hours and computers against the plan, and the disk used; the 80% / 95% /
     out-of-hours banners; computers due for deletion.
   - Every cloud lane as a city or a list. Each row's ⋯ menu: What uses the
     disk, Change size, Keep the lane and free its computer, Delete.
   - Plans (`CloudPlans.tsx`): one card per plan, the next one up with the main
-    button, one "how hours and disk work" panel, extra hours and extra disk as
-    two tiles, and Manage billing (Stripe's portal).
+    button, one "how hours work" panel, extra hours, and Manage billing
+    (Stripe's portal).
   - Sizes (`CloudSizeCards.tsx`, also the change-size dialog): how long the
     hours left last at each size.
   - Invite friends, Sign-ins, and what agents may do alone.
@@ -336,87 +336,108 @@ them in `catalog`, so no client keeps its own copy (`cloudCatalogOf` in
 `shared/adeCloud.ts` fills gaps from an older server). The design is in
 [docs/plans/ade-cloud-plans-and-disk.md](../../plans/ade-cloud-plans-and-disk.md).
 
-| Plan | Price | Hours a month | Disk at one time | iOS Simulator minutes (soon) | Extra hours |
-|---|---|---|---|---|---|
-| Free | $0 | 100 | 12 GB | 20 | none: work stops |
-| Plus | $5 | 300 | 30 GB | 30 | 2¢ an hour |
-| Pro | $20 | 1,600 | 80 GB | 160 | 1.5¢ an hour |
-| Max | $50 | 5,000 | 175 GB | 500 | 1.2¢ an hour |
+Pricing v2 (owner, 2026-11-21; [docs/plans/pricing-v2-and-gravity.md](../../plans/pricing-v2-and-gravity.md)):
 
-- Hours are Small-computer hours. Disk is what the account's computers hold
-  at one time. No plan limits how many computers an account has.
+| Plan | Price | Hours a month | Cloud computers | ADE Cloud iPhone minutes | Extra hours | Outside agents (ADE MCP) |
+|---|---|---|---|---|---|---|
+| Free | $0 | 50 | 2 | 60 | none: work stops | no |
+| Plus | $5 | 100 | 3 | 80 | 2¢ an hour | yes |
+| Pro | $20 | 600 | 10 | 300 | 2¢ an hour | yes |
+| Max | $50 | 1,500 | 20 | 800 | 2¢ an hour | yes |
+
+- **Hours are Medium-hours** (`catalog.hourUnit: "medium"`; integer
+  thousandths in the API). Small computers never use hours, on every plan:
+  Small is unlimited. Each size's rate is in `catalog.sizes[].multiplierMilli`.
+- **Sizes:** Small (standard 2/4, 0, disk up to 12 GB), Medium (standard 4/8,
+  1x, 20 GB), Large (full 4/8, 2.5x, 50 GB), X-Large (full 4/16, 4x, 100 GB).
+  The other four shapes stay valid at rates in proportion to their cost
+  (standard 4/16 1.65x, standard 4/32 2.9x, full 2/4 1.25x, full 4/32 7.25x)
+  with the provider's disk limit (`catalog.sizes[].tier`, `label`,
+  `diskMaxGb`).
+- **No account-wide disk.** Each computer's disk grows to its size's
+  `diskMaxGb` and no further (`disk_limit`, reason `tier_limit`). No extra
+  disk is sold; `catalog.extraDiskCentsPer10GbMonth` and
+  `CloudAccountState.extraDisk` are never sent, `disk.limitGb` is null, and
+  `POST /cloud/billing/extra-disk` is a 404. Older builds still read
+  `plans[].diskGb`, sent as the plan's computers at Small's 12 GB, never
+  enforced. The owner's daily report alarms on a free account holding more
+  than 24 GB (`costReport.ts`).
+- **The computer limit.** Every computer the account has counts, asleep,
+  stopped or failed; a lane without a computer doesn't. A create, copy,
+  new-lane launch or move into a new lane at the limit answers 403
+  `computer_limit` with `CloudComputerLimitDetail` on the error (`planId`,
+  `limit`, `total`, `lanes` least recently used first, `nextPlan`) and
+  `message` = `computerLimitSentence` (`cloud.computer_limit_reached`). The
+  count is part of `reserveComputer`'s one conditional insert, so concurrent
+  creates can't pass it together. A reservation that never finished counts
+  until it times out (15 minutes). A move's two computers count once, and a
+  move is never refused by the limit. `past_due` keeps the bought plan's
+  limit; a downgrade waiting for the period end applies the lower limit at
+  once. `computers.limit` on the account is the plan's limit.
+- **Out of hours.** At 0 hours only sizes that use hours are refused (402
+  `out_of_hours`) or stopped by the cron; Small keeps working, and its timed
+  wake-ups stay. An account with no free plan (`free_refused_at` or
+  `free_github_hold`) and no hours left runs nothing, Small included.
+- **Outside agents on Free.** An ADE MCP request to start ADE Cloud work on
+  the free plan (`past_due` included) answers 403 `outside_agent_free_plan`
+  (`CLOUD_OUTSIDE_AGENT_FREE_MESSAGE`). It is read from lane metadata
+  `ade_made_by_agent: "mcp"`, a launch's `madeBy: { kind: "agent", agent:
+  "mcp" }`, or `origin: "mcp"` on a server copy, a move, a start or a sent
+  message. The refusal is recorded (`refusal: "outside_agent_free"`).
 - The account sends `plan: "free" | "paid"` for older builds and
   `planId: "free" | "plus" | "pro" | "max"`. A `past_due` account follows the
-  free rules but keeps what it has.
-- iOS Simulator minutes (`phoneMinutes`) show on the plan table only, marked
-  "soon". Nothing meters them.
+  free rules for hours and outside agents but keeps its computers.
+- **ADE Cloud iPhone:** behind `CLOUD_PHONE_ACCESS`. With `beta`, only the
+  accounts the owner added read `on`; everyone else reads `off` (never
+  `soon`), and ADE shows no iPhone. The owner can add a tester by email
+  before they sign up: the email waits in `cloud_phone_beta_pending`, and the
+  account that first appears with it as a verified Clerk address takes it.
 - Computers sleep a few minutes after work stops (`CLOUD_IDLE_SLEEP_AFTER_MS`),
   so hours go only to real work.
-- **Sizes:** Small (standard 2/4, 1x, disk up to 12 GB), Medium (standard 4/8,
-  2x, 20 GB), Large (full 4/8, 5x, 50 GB), X-Large (full 4/16, 8x, 100 GB).
-  The other four shapes stay valid with the provider's disk limit
-  (`catalog.sizes[].tier`, `label`, `diskMaxGb`).
-- **Period terms** (migration 0033, `old_plan_terms`): hours are stored per
-  period (`included_milli`), and older terms (Plus 40 GB, Pro 120 GB) hold
-  until the next period. A free period that began on fewer hours than the
-  free plan has now is raised on the next read (`raiseFreeHours`), except for
-  an account refused the free plan or held by the GitHub rules.
-  `ade cloud status` names both numbers when they differ.
+- **Migration 0052** (`0052_pricing_v2.sql`) moves stored hours to
+  Medium-hours: this period's Small use comes off `used_milli`, then
+  every account, day and computer number halves (Small's become 0). Apply it
+  right before the Worker that reads it. Earned hours (referrals) stay as
+  they are, now Medium-hours.
+- **Period terms** (migration 0033): hours are stored per period
+  (`included_milli`). A free period that began on fewer hours than the free
+  plan has now is raised on the next read (`raiseFreeHours`), except for an
+  account refused the free plan or held by the GitHub rules.
 - **Extra hours:** one flat Stripe metered price per plan
-  (`STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID`) on one meter. Checkout sells
-  only the plan. The extra-hours item joins the subscription when the person
-  first turns extra hours on (`ensureExtraHoursItem`), before the switch goes
-  on, so no hour is reported with nothing to bill it. Extra disk joins the
-  same way (`ensureExtraDiskItem`). An upgrade moves the metered items to the
-  new plan's prices at once; a downgrade or an older price moves at the next
+  (`STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID`) on one meter, 2¢ a
+  Medium-hour on each. Checkout sells only the plan. The extra-hours item
+  joins the subscription when the person first turns extra hours on
+  (`ensureExtraHoursItem`), before the switch goes on, so no hour is
+  reported with nothing to bill it. An upgrade moves the item to the new
+  plan's price at once; a downgrade or an older price moves at the next
   renewal (`moveMeteredItems`, `cloud.metered_price_moved`).
 - **Awake cap (hidden):** about 25 computers awake at once per account
   (`AWAKE_COMPUTER_CAP`), never shown as a plan limit. A wake waits up to 12 s
   for room, then answers 429 `too_many_awake`. A create, copy, resize wake or
   sign-in wake past it is refused at once (`cloud.awake_cap_reached`). The
-  owner check reports `cloud.awake_cap_passed`. Older builds read
-  `computers.limit`, which the server sends as `max(25, computers + 1)`.
+  owner check reports `cloud.awake_cap_passed`.
 - **"You're on Plus":** when the account moves to a higher paid plan, ADE says
-  so once: a toast with the plan's hours, disk and renewal date, and a banner
-  and a one-time glow on the ADE Cloud page. From Free it also names the free
-  hours the paid period replaced. `cloudPlanMoment.ts` (localStorage per
-  account; UserDefaults on the phone) keeps what this device last saw. It
+  so once: a toast with the plan's hours, computers and renewal date, and a
+  banner and a one-time glow on the ADE Cloud page. From Free it also names
+  the free hours the paid period replaced. `cloudPlanMoment.ts` (localStorage
+  per account; UserDefaults on the phone) keeps what this device last saw. It
   records `ade_feature_used` `cloud_plan`/`completed`.
 - **Changing plans:** a move up applies now, charges the difference and keeps
   the hours used. A move down applies at the period end
-  (`billing.nextPlanId`) and is never refused; over the cheaper plan's disk,
-  the answer carries `cleanup`. Both go through
+  (`billing.nextPlanId`) and is never refused; over the cheaper plan's
+  computers, the answer carries `cleanup`. Both go through
   `POST /cloud/billing/checkout {plan}`. The billing portal can not switch
   plans (`subscription_update` off), so ADE's switch always checks the
   cheaper plan's limits.
-- **Not set up yet:** Pro and extra disk show only once their Stripe prices
-  are set. Until then their catalog fields are absent, a Pro checkout is a
-  400 and the extra-disk route is a 404.
-- **Extra disk** (paid plans): $2 for each 10 GB a month, billed by the day on
-  the day's peak (`cloud_disk_days`, its own meter).
-  - It starts undecided. The first grow past the plan is refused with reason
-    `needs_approval`, and ADE asks once.
-  - On, a grow passes only when a full month of the new extra disk fits the
-    person's monthly limit (`POST /cloud/billing/extra-disk`).
-  - Each day's row records whether the day is billable when it is written,
-    and the 10-minute owner check bills from the row. The day extra disk goes
-    on is never billed.
-  - A failed send is retried inside Stripe's one-day dedupe window. One never
-    confirmed goes to the owner (`cloud.disk_meter_unconfirmed`).
-  - The daily run emails a person once when a month of their extra disk
-    passes the limit.
-- **Free plan over its disk:** a free account (a cancelled plan rolls to it;
-  `past_due` does not) with more than 12 GB keeps its computers, stopped. A
-  wake, command, update or new timed wake answers 402 `over_plan_disk`; no
-  wake is free. The lanes' work reads from their backups with no wake
-  ("Get this lane's work"). Booked timed wakes are deleted. A delete always works.
+- **Not set up yet:** Pro and Max show only once their Stripe prices are
+  set. Until then their catalog fields are absent and a checkout for them is
+  a 400.
 - **Timed wake-ups cancelled:** when the server deletes an account's timed
-  wakes (0 hours, or the free plan over its disk), the person gets one email
-  a period, and the account carries `timedWakesCancelled`.
-- **Disk refusals:** a create, copy, move or grow past a limit answers
-  `disk_limit` (or `needs_paid_plan` on Free) with `reason`
-  (`CloudDiskRefusalReason`) and `message`. At the limit it also carries
-  `lanes: [{ laneName, diskGb }]`.
+  wakes (0 hours: those of computers that use hours, or all of them on an
+  account with no free plan), the person gets one email a period, and the
+  account carries `timedWakesCancelled`.
+- **Disk refusals:** a create, copy, move or grow past the size's disk
+  answers `disk_limit` with `reason: "tier_limit"` and `message`.
 - **A deleted computer leaves the machine list** (`forgetMachineStatements`):
   every close of a computer revokes its machine key and removes its machine
   row and project copies, unless another live computer carries the same key.
@@ -430,10 +451,11 @@ At 0 hours the server refuses, and its sentence is what the person sees.
 ### A cheaper plan's limits
 
 `planCleanup.ts`, migrations 0027 and 0032. ADE never removes a computer on
-its own, and there is no grace period. Extra disk counts as fitting. A
-`past_due` account is never cleaned.
+its own, and there is no grace period. Only the number of computers counts
+(a move's two computers once, a reservation not at all). A `past_due`
+account is never cleaned.
 
-- **In ADE:** a move down that leaves too much disk
+- **In ADE:** a move down that leaves too many computers
   (`downgradePreviews.plus` / `.pro`) opens `CloudPlanLimitsDialog.tsx`: "I'll
   clean up myself" (lists the oldest computers that would be enough), or "Let
   ADE handle it" (a "Save each lane's work first" switch, on by default, and
@@ -588,7 +610,7 @@ with no wake.
   sweep), and each part must fit the size the upload declared for its kind.
 - **Get this lane's work** (`CloudLaneSavedWork.tsx`, iPhone
   `CloudSavedWorkRow`): on a lane without a computer and on a computer that
-  can't wake (0 hours, over the plan's disk). Download patch everywhere; on
+  can't wake (0 hours on a size that uses hours). Download patch everywhere; on
   the desktop, "Open in a new lane here" puts the work on a new
   `ade-saved/...` branch of a clone on this computer (the uncommitted part as
   its last commit) and makes a lane of it, with no push. Settings › ADE
@@ -625,8 +647,9 @@ move keeps the old disk.
   - Into extra disk, a watched chat gets an approval card. An unwatched caller
     is answered by the agent limits' paid extra disk (`extraDiskMonthCents`);
     unread limits refuse. The hours check does not apply.
-  - The server's extra-disk switch and monthly limit always apply.
-    `growToFit` reads the fit again before each resize and retry, at most 3
+  - Since Pricing v2 the server sells no extra disk: a grow passes inside
+    the size's `diskMaxGb` and is refused past it (`tier_limit`), so the
+    extra-disk card and limit no longer come into play. `growToFit` reads the fit again before each resize and retry, at most 3
     rounds.
 - **The restart:** the grow waits for idle. Chats and ADE's own agent CLIs do
   not hold it; they continue after the restart whatever "Continue chats after
@@ -1598,7 +1621,7 @@ One busy list, `decideCloudBusy` in
   button. Every wake for use logs its cause (`remote.cloud_woken_for_use`:
   target, `via`, action). A tool panel (`CloudToolGate`, `terminals/cloudToolGate.tsx`) wakes
   the computer on a person's click through `cloud.machineAction`; a restored
-  tab shows Wake; at 0 hours or over the plan's disk it shows the lane's
+  tab shows Wake; at 0 hours (a size that uses hours) it shows the lane's
   saved work instead (`CloudLaneSavedWork`, no wake). A connect from ADE Web to an asleep computer wakes
   it first, then retries the connect for up to two minutes.
 - **A send caught by a sleep** is retried once after the wake: chat
@@ -1662,11 +1685,10 @@ One busy list, `decideCloudBusy` in
     computer is still setting up (its agent stage pending;
     `rememberLaunchSetupDisk`, best effort). For 90 days
     (`CLOUD_AUTO_SIZE_MEMORY_MS`) a new launch of that repository starts at
-    that disk (`setupStartDiskGb` in `plans.ts`): in whole 4 GB steps, inside
-    the size's limit and only inside the plan's included disk the other
-    computers leave, never extra disk; what doesn't fit starts at the most
-    that does, down to 4 GB. A reservation that loses the room to another
-    create starts at 4 GB, as before. A move keeps its source's disk.
+    that disk (`setupStartDiskGb` in `plans.ts`): in whole 4 GB steps,
+    inside the size's limit (there is no account-wide disk since Pricing
+    v2); what doesn't fit starts at the most that does, down to 4 GB. A
+    move keeps its source's disk.
 - **Memory** (`lanes/laneSetupMemoryGuard.ts`): a cloud computer has no swap,
   and out of memory the provider restarts the whole computer.
   - Every setup script and dependency install runs beside a small `sh` guard

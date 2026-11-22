@@ -6,7 +6,20 @@
  * `ade_request_id`, which is the launch id.
  */
 
-import { CLOUD_OUT_OF_HOURS_MESSAGE, cloudFreePlanOf, cloudOutOfHours, type CloudAccountState, type CloudAgentMaker, type CloudMachine } from "./adeCloud";
+import {
+  CLOUD_OUT_OF_HOURS_MESSAGE,
+  cloudCatalogIsPricingV2,
+  cloudCatalogOf,
+  cloudComputerLimitDetailOf,
+  cloudComputerLimitReached,
+  cloudFreePlanOf,
+  cloudOutOfHours,
+  computerLimitSentence,
+  type CloudAccountState,
+  type CloudAgentMaker,
+  type CloudMachine,
+} from "./adeCloud";
+import { cloudTier } from "./cloudTiers";
 import { normalizeGitRemoteIdentity } from "./crossMachineHandoff";
 import type { ChatLaunchArgs, ChatLaunchLaneConfig, ChatLaunchSnapshot } from "./types/chatLaunch";
 import type { AgentChatFileRef } from "./types/chat";
@@ -91,17 +104,22 @@ export function cloudLaunchAppArgs(launch: Omit<ChatLaunchArgs, "cloud" | "prior
 
 /**
  * Why the account can't start a new ADE Cloud lane now, from facts of the
- * account (hours, computers, disk), or null. One wording for every caller:
- * the composer's label above the prompt box, `cloud.status`'s
- * `canStartLane`, and the early refusal of `cloud.lane_launch` and
- * `cloud.create`. `newLane: false` (a send to a lane that exists) checks
- * hours only: a sleeping lane wakes on hours too.
+ * account (hours, computers), or null. One wording for every caller: the
+ * composer's label above the prompt box, `cloud.status`'s `canStartLane`,
+ * and the early refusal of `cloud.lane_launch` and `cloud.create`.
+ * `newLane: false` (a send to a lane that exists) checks hours only: a
+ * sleeping lane wakes on hours too.
+ *
+ * Pricing v2: Small computers never use hours, so out of hours stops only a
+ * size known to use them (`sizeId`); a caller that doesn't know the size gets
+ * no hours block and the server decides. A new lane past the plan's computers
+ * is `computer_limit` (the limit card's three ways out).
  *
  * Unknown (no account read) is never a block here: the server still refuses,
  * and each caller says what it does with unknown.
  */
 export type CloudLaneStartBlock = {
-  code: "out_of_hours" | "disk_full";
+  code: "out_of_hours" | "computer_limit";
   message: string;
   /** One short line for a narrow prompt box, so a label never wraps there. */
   short: string;
@@ -109,25 +127,30 @@ export type CloudLaneStartBlock = {
 
 export function cloudLaneStartBlock(
   account: CloudAccountState | null | undefined,
-  options: { newLane: boolean } = { newLane: true },
+  options: { newLane: boolean; sizeId?: string | null } = { newLane: true },
 ): CloudLaneStartBlock | null {
   if (!account) return null;
   // A partial answer (an older server) can lack a part: that check is skipped, never thrown.
-  const { extraHours, disk } = account as Partial<CloudAccountState>;
-  if (cloudOutOfHours(account) && !extraHours?.enabled) {
+  const { extraHours } = account as Partial<CloudAccountState>;
+  const catalog = cloudCatalogOf(account);
+  // Before Pricing v2 every size used hours; since, only a size the catalog rates above 0.
+  const size = options.sizeId ? cloudTier(catalog, options.sizeId) : null;
+  const usesHours = cloudCatalogIsPricingV2(catalog) ? size != null && size.multiplierMilli > 0 : true;
+  // A held free plan (GitHub rules, refused) stops every size, Small too.
+  const github = (account as Partial<CloudAccountState>).rules === "free" ? cloudFreePlanOf(account).github : undefined;
+  const why = github && github.state !== "ok" ? github.sentence : null;
+  if (cloudOutOfHours(account) && !extraHours?.enabled && (usesHours || why)) {
     // The free plan's GitHub rules hold its hours: their sentence says why and what to do.
-    const github = (account as Partial<CloudAccountState>).rules === "free" ? cloudFreePlanOf(account).github : undefined;
-    const why = github && github.state !== "ok" ? github.sentence : null;
-    return { code: "out_of_hours", message: why ?? CLOUD_OUT_OF_HOURS_MESSAGE, short: why ? "Free hours wait on GitHub." : "Out of ADE Cloud hours." };
+    return {
+      code: "out_of_hours",
+      message: why ?? (cloudCatalogIsPricingV2(catalog) ? `${CLOUD_OUT_OF_HOURS_MESSAGE} Small computers keep working.` : CLOUD_OUT_OF_HOURS_MESSAGE),
+      short: why ? "Free hours wait on GitHub." : "Out of hours for this size.",
+    };
   }
   if (!options.newLane) return null;
-  // No plan limits how many computers an account has; only the disk can be full.
-  if (disk && disk.limitGb != null && disk.usedGb >= disk.limitGb) {
-    return {
-      code: "disk_full",
-      message: "Your ADE Cloud computers use all your plan's disk. Delete a lane you no longer use in Settings › ADE Cloud, then try again.",
-      short: "ADE Cloud disk full.",
-    };
+  const detail = cloudComputerLimitReached(account) ? cloudComputerLimitDetailOf(account) : null;
+  if (detail) {
+    return { code: "computer_limit", message: computerLimitSentence(detail), short: `All ${detail.limit} cloud computers in use.` };
   }
   return null;
 }

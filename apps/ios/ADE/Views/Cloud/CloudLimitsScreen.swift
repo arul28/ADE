@@ -69,6 +69,8 @@ struct CloudLimitsScreen: View {
             ForEach(cloudShapes, id: \.id) { Text($0.label).tag($0.id) }
           }
           .disabled(!limits.unattendedSpend || !store.canWriteLimits)
+          // Pricing v2 sells no extra disk: an older server's limit only.
+          if !extraDiskGone {
           Picker("Paid extra disk a month", selection: Binding(
             get: { limits.extraDiskMonthCents ?? Self.yourLimit },
             set: { value in
@@ -83,8 +85,11 @@ struct CloudLimitsScreen: View {
             Text("Your limit").tag(Self.yourLimit)
           }
           .disabled(!limits.unattendedSpend || !store.canWriteLimits)
+          }
         } header: { CloudSectionLabel("Limits") } footer: {
-          Text("Paid extra disk: what agents nobody watches may add past your plan's disk. Your limit: up to the monthly limit you set for extra disk.")
+          if !extraDiskGone {
+            Text("Paid extra disk: what agents nobody watches may add past your plan's disk. Your limit: up to the monthly limit you set for extra disk.")
+          }
         }
       } else {
         Section { ProgressView().frame(maxWidth: .infinity) }
@@ -111,6 +116,9 @@ extension CloudLimitsScreen {
   static let yourLimit = -1
 
   /// The desktop's choices (`CLOUD_AGENT_EXTRA_DISK_CHOICES`), plus a value set elsewhere.
+  /// A Pricing v2 server has no extra disk to limit.
+  private var extraDiskGone: Bool { store.account?.isPricingV2 == true }
+
   static func extraDiskChoices(_ current: Int?) -> [Int] {
     let choices = [0, 500, 1000, 2500]
     guard let current, !choices.contains(current) else { return choices }

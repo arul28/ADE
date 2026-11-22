@@ -78,7 +78,7 @@ export function RuleCloudField({
                 <option value="">Your default{defaultTier ? ` (${defaultTier.label})` : ""}</option>
                 {cloud.tiers.map((tier) => (
                   <option key={tier.id} value={tier.id}>
-                    {tier.label}: {tier.cpu} CPU, {tier.memoryGb} GB, {cloudTierRateLabel(tier)}
+                    {tier.label}: {tier.cpu} CPU, {tier.memoryGb} GB, {cloudTierRateLabel(tier).toLowerCase()}
                   </option>
                 ))}
               </select>

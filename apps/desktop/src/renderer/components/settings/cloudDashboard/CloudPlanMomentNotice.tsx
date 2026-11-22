@@ -1,4 +1,4 @@
-import { formatCloudDate, formatCloudGb, formatCloudHours } from "../../../../shared/adeCloud";
+import { formatCloudDate, formatCloudHours } from "../../../../shared/adeCloud";
 import { navigateToAppTarget } from "../../../lib/openExternal";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStore";
 import { CloudLogo } from "../../remoteTargets/cloudBrand";
@@ -9,8 +9,8 @@ import { CLOUD_PLAN_MOMENT_TOAST_ID, cloudPlanMomentWords, cloudPlanReplacedSent
 export function CloudPlanMomentFacts({ moment }: { moment: CloudPlanMoment }) {
   return (
     <span className="adecd-moment-facts">
+      {moment.computers != null ? <span><b className="kit-num" data-face="ui">{moment.computers}</b> cloud computers</span> : null}
       <span><b className="kit-num" data-face="ui">{formatCloudHours(moment.includedMilli)}</b> hours</span>
-      <span><b className="kit-num" data-face="ui">{formatCloudGb(moment.diskGb)}</b> disk</span>
       <span>Renews <b>{formatCloudDate(moment.renewsAt)}</b></span>
     </span>
   );

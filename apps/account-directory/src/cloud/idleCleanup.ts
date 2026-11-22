@@ -19,7 +19,7 @@ import { CloudProviderError, type CloudProvider } from "./provider";
 import {
   deleteComputer,
   groupByUser,
-  isOutOfHours,
+  isOutOfHoursFor,
   isPendingId,
   liveUsedMilli,
   logCloud,
@@ -116,7 +116,7 @@ const SAVES_PER_TICK = 3;
 const MIN_IDLE_TO_WARN_MS = Math.min(...Object.values(IDLE_CLEANUP).map((rule) => rule.afterMs - rule.leadMs));
 
 type IdleColumns = Pick<ComputerRow,
-  | "last_awake_at" | "created_at" | "awake_since" | "status" | "instance_id"
+  | "last_awake_at" | "created_at" | "awake_since" | "status" | "instance_id" | "multiplier_milli"
   | "idle_warned_at" | "idle_deletes_at" | "idle_emailed_at" | "idle_kept_at" | "idle_held_at" | "idle_held_reason" | "idle_held_count"
   | "idle_failed_at" | "idle_failed_count">;
 
@@ -151,10 +151,11 @@ export type IdleState = {
 /**
  * Where a computer stands in the idle cleanup, or null when it isn't idle:
  * awake or on its way there, a timed wake-up booked (`scheduled`), or the
- * account is out of hours (nobody loses a computer just for running out).
+ * account is out of hours for it (nobody loses a computer just for running
+ * out; a Small computer never uses hours, so it keeps its idle clock).
  */
 export function idleStateOf(computer: IdleColumns, account: AccountRow, liveUsed: number, now: number, scheduled = false): IdleState | null {
-  if (scheduled || isPendingId(computer.instance_id) || computer.awake_since != null || !isRestingStatus(computer.status) || isOutOfHours(account, liveUsed)) return null;
+  if (scheduled || isPendingId(computer.instance_id) || computer.awake_since != null || !isRestingStatus(computer.status) || isOutOfHoursFor(account, liveUsed, computer.multiplier_milli)) return null;
   const rule = idleRuleOf(account);
   const since = idleSinceOf(computer, account);
   const ruleDue = since + rule.afterMs;

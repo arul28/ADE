@@ -8,7 +8,7 @@
  * `cloudAccess.ts`.
  */
 
-import type { CloudAccountState, CloudComputerStatus, CloudDiskLaneUse, CloudDiskUsageReport, CloudFreeUnlockResult, CloudSustainedCpuReport } from "../../../shared/adeCloud";
+import type { CloudAccountState, CloudComputerLimitDetail, CloudComputerStatus, CloudDiskLaneUse, CloudDiskUsageReport, CloudFreeUnlockResult, CloudSustainedCpuReport } from "../../../shared/adeCloud";
 import type {
   CloudSavedChatDeleteArgs,
   CloudSavedChatList,
@@ -74,7 +74,7 @@ export class CloudProviderError extends Error {
      * A disk refusal's `error.reason` (`CloudDiskRefusalReason`) and, at the
      * account's limit, the computers that hold its disk (servers before it send none).
      */
-    readonly detail: { reason: string | null; lanes?: CloudDiskLaneUse[] } = { reason: null },
+    readonly detail: { reason: string | null; lanes?: CloudDiskLaneUse[]; computerLimit?: CloudComputerLimitDetail } = { reason: null },
   ) {
     super(message);
     this.name = "CloudProviderError";

@@ -171,6 +171,7 @@ async function webMachineAction(api: CloudApiClient, args: CloudMachineActionArg
       message,
       code: error instanceof CloudApiError ? error.code : null,
       reason: error instanceof CloudApiError ? error.reason : null,
+      detail: error instanceof CloudApiError ? error.detail : null,
     });
   }
 }

@@ -337,7 +337,8 @@ async function phoneAccess(env: CloudEnv, userId: string): Promise<CloudPhoneAcc
   if (setting === "off") return "off";
   if (setting === "all") return "on";
   const row = await env.DB.prepare("select 1 as on_list from cloud_phone_beta where user_id = ?").bind(userId).first<{ on_list: number }>();
-  return row ? "on" : "soon";
+  // Not on the list: hidden everywhere (Pricing v2). `soon` is never sent any more.
+  return row ? "on" : "off";
 }
 
 /** The plan's minutes: none on a free plan the free-plan checks hold, as with free hours. */
@@ -630,8 +631,12 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
     return json({ ok: true, stopped: true });
   }
 
-  if (access === "off") return fail("phone_unavailable", "The ADE Cloud iPhone isn't available right now.", 503);
-  if (access === "soon") return fail("phone_not_on_account", "The ADE Cloud iPhone is coming soon. It isn't on this account yet.", 403);
+  if (access !== "on") {
+    // Set up, but this account isn't on the beta list: the one answer that isn't "try again".
+    return env.NOMAC_API_KEY?.trim() && phoneAccessSetting(env) === "beta"
+      ? fail("phone_not_on_account", "The ADE Cloud iPhone isn't on this account.", 403)
+      : fail("phone_unavailable", "The ADE Cloud iPhone isn't available right now.", 503);
+  }
   // A start is use of the free plan: one free plan per computer and per GitHub account, as a computer's start
   // settles them (`routes.ts`), only once the account may use the phone at all.
   if (path === CLOUD_PATHS.phone && request.method === "POST") {
@@ -936,18 +941,22 @@ async function clerkUserIdsFor(env: Pick<CloudEnv, "CLERK_SECRET_KEY">, email: s
 
 /**
  * `POST /cloud/owner/phone-beta` `{ email? | userId?, enabled? }` adds (or with
- * `enabled: false` removes) an account; `{}` lists the list. `safety.ts`
- * checked the owner's token before this runs. An email is looked up in Clerk
- * once; the list keeps the user id (and the address the owner typed, for the
- * owner's own reading). With `CLOUD_PHONE_ACCESS=all` the list no longer
- * matters.
+ * `enabled: false` removes) an account; `{}` lists the list and the emails
+ * still waiting. `safety.ts` checked the owner's token before this runs. An
+ * email is looked up in Clerk once; the list keeps the user id (and the
+ * address the owner typed, for the owner's own reading). An email no ADE
+ * account has yet waits (`pending: true`, `cloud_phone_beta_pending`) until
+ * an account with it first appears (`claimPhoneBetaInvite` in `store.ts`).
+ * Removing an email removes a waiting one too. With `CLOUD_PHONE_ACCESS=all`
+ * the list no longer matters.
  */
 export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, unknown>, now: number): Promise<Response> {
   const typedEmail = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   const typedUserId = typeof body.userId === "string" ? body.userId.trim() : "";
   if (!typedEmail && !typedUserId) {
     const rows = await env.DB.prepare("select user_id, email, added_at from cloud_phone_beta order by added_at").all<{ user_id: string; email: string | null; added_at: number }>();
-    return json({ ok: true, access: phoneAccessSetting(env), users: rows.results ?? [] });
+    const pending = await env.DB.prepare("select email, added_at from cloud_phone_beta_pending order by added_at").all<{ email: string; added_at: number }>();
+    return json({ ok: true, access: phoneAccessSetting(env), users: rows.results ?? [], pending: pending.results ?? [] });
   }
   if (typedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail)) return fail("bad_request", "That email isn't valid.", 400);
   if (typedUserId && !/^[A-Za-z0-9_-]{1,100}$/.test(typedUserId)) return fail("bad_request", "That userId isn't valid.", 400);
@@ -955,9 +964,22 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
   if (!userIds.length) {
     const found = await clerkUserIdsFor(env, typedEmail);
     if (found == null) return fail("unavailable", "Clerk could not be asked for that email. Try again, or pass userId.", 503);
-    if (!found.length) return fail("not_found", "No ADE account has that email.", 404);
+    if (!found.length) {
+      // No ADE account has it yet: the email waits for the account that signs up with it.
+      if (body.enabled === false) {
+        const removed = await env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(typedEmail).run();
+        if ((removed.meta?.changes ?? 0) === 0) return fail("not_found", "No ADE account or waiting tester has that email.", 404);
+        logCloud("cloud.phone_beta_pending_removed");
+        return json({ ok: true, removed: [], pending: true });
+      }
+      await env.DB.prepare("insert into cloud_phone_beta_pending (email, added_at) values (?, ?) on conflict(email) do nothing").bind(typedEmail, now).run();
+      logCloud("cloud.phone_beta_pending_added");
+      return json({ ok: true, added: [], pending: true });
+    }
     userIds = found;
   }
+  // The account exists now: no email of it needs to wait.
+  if (typedEmail) await env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(typedEmail).run();
   if (body.enabled === false) {
     for (const userId of userIds) {
       await env.DB.prepare("delete from cloud_phone_beta where user_id = ?").bind(userId).run();

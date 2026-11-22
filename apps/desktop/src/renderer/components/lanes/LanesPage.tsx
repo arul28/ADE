@@ -94,7 +94,7 @@ import { deleteCloudLaneWithCheck, useCloudLaneDelete } from "../cloudLane/delet
 import { RestingCloudLaneDetail } from "./RestingCloudLaneDetail";
 import { RemoteMachineUpdateGate } from "../remoteTargets/RemoteMachineUpdateGate";
 import { CloudLaneWithoutComputerDetail } from "../cloudLane/CloudLaneComputerDeletedBanner";
-import { adeCloudTrayActionRoute, type AdeCloudTrayAction } from "../chat/useAdeCloudDraft";
+import { runAdeCloudTrayAction, type AdeCloudTrayAction } from "../chat/useAdeCloudDraft";
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
@@ -1173,7 +1173,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const openDeletedLaneChat = useCallback((sessionId: string) => {
     navigate(`/work?${new URLSearchParams({ sessionId }).toString()}`);
   }, [navigate]);
-  const openAdeCloudFix = useCallback((action: AdeCloudTrayAction) => navigate(adeCloudTrayActionRoute(action)), [navigate]);
+  const openAdeCloudFix = useCallback((action: AdeCloudTrayAction) => runAdeCloudTrayAction(action, navigate), [navigate]);
   const cloudDefaultTier = useRootAppStore((state) => state.cloudDefaultTier);
 
   // Plain click selects. Cmd/Ctrl-click toggles a row in the multi-selection;

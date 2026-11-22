@@ -2,11 +2,11 @@
  * Grows a cloud computer's disk before ADE's storage guard has to stop work
  * on it. A grow restarts the computer, so it runs only when nothing runs
  * there: at the idle point once the disk is near full, and at once (the next
- * keep-awake check) once the guard would soon stop turns. The server enforces
- * the plan's disk at one time, extra disk and each size's limit; what it
- * refuses turns into a plain sentence on the computer's card and in the
- * chat's refusal. The card reads the exact reason; builds before plans read
- * the older key.
+ * keep-awake check) once the guard would soon stop turns. Since Pricing v2
+ * there is no plan or account disk and no extra disk: the server holds a disk
+ * only to its size's own maximum (`tier_limit`); what it refuses turns into a
+ * plain sentence on the computer's card and in the chat's refusal. The card
+ * reads the exact reason; builds before plans read the older key.
  *
  * A lane launch's setup that fills the disk (every size starts with the same
  * small disk, and a big repository's install outgrows it) asks for a step at
@@ -15,11 +15,10 @@
  * size's limit, inside every rule the server checks.
  *
  * An agent (`ade cloud resize --free`) and the Android emulator's first start
- * ask for room through `growToFit` (`cloudDiskGrowHost.ts`): inside the
- * plan's disk it grows with nothing to ask, past it into extra disk only with
- * a yes (the person's, or the agent limits' for a caller nobody watches), and
- * at the account's limit or the agents' it names the computers that hold the
- * disk. Its chat hears of the grow before the restart and again once
+ * ask for room through `growToFit` (`cloudDiskGrowHost.ts`): up to the size's
+ * maximum it grows with nothing to ask; past it the answer is `limit`
+ * (`tier_limit`: move the lane to a bigger size). Its chat hears of the grow
+ * before the restart and again once
  * the computer is back (`afterRestart`).
  *
  * The lines come from this computer's own disk (`diskPressureThresholdsForSize`):
@@ -81,7 +80,7 @@ import {
  * this (its line is a fixed number of bytes), and the grow still comes here.
  */
 const NEAR_FULL = 0.85;
-/** A refused grow is asked again only this often: a plan, extra disk or the account's disk changes rarely. */
+/** A refused grow is asked again only this often: a computer's size changes rarely. */
 const REFUSED_RETRY_MS = 60 * 60_000;
 /** A grow that failed for another reason (out of hours, the server or network) waits this long before the next try. */
 const FAILED_RETRY_MS = 5 * 60_000;
@@ -419,10 +418,10 @@ export function createCloudDiskGrower(deps: {
       }
       if (error.code === "needs_paid_plan" || error.code === "disk_limit") {
         refusedAt = now();
-        // A server before plans sends no reason: its two codes map onto the nearest exact one.
+        // The server names its reason (since Pricing v2 only the size's maximum, `tier_limit`); an older one may not.
         // A reason this build doesn't know still reads as a refusal (the way out says "It can't grow right now").
-        const reason = (error.detail.reason ?? (error.code === "needs_paid_plan" ? "plan_disk" : "account_limit")) as CloudDiskLimitReason;
-        const wayOut = cloudDiskGrowRefusedWayOut(null, catalog, reason) ?? "It can't grow right now.";
+        const reason = (error.detail.reason ?? (error.code === "needs_paid_plan" ? "plan_disk" : "tier_limit")) as CloudDiskLimitReason;
+        const wayOut = cloudDiskGrowRefusedWayOut(null, reason) ?? "It can't grow right now.";
         writeState({ v: 1, state: "refused", reason, wayOut, at: now(), instanceId: deps.instanceId });
         // The card says "full" once the guard stops heavy work; the chat's refusal says it at once.
         if (isUrgentDiskPressure(disk.pressure)) await setNotice(client, reason);
@@ -591,11 +590,10 @@ export function createCloudDiskGrower(deps: {
     /**
      * Room asked for by an agent (`cloud.grow_disk`) or the Android
      * emulator's first start: grows to the smallest step that frees
-     * `needFreeBytes` (or to `toGb`). Inside the plan's disk it grows with
-     * nothing to ask; past it, into extra disk the person turned on, only
-     * after `approveExtra` says yes; at the account's limit, or past what the
-     * agent limits let an unattended agent use, it answers `limit` with the
-     * computers that hold the disk. A running chat turn
+     * `needFreeBytes` (or to `toGb`). Up to the size's own disk maximum it
+     * grows with nothing to ask; past it, it answers `limit` (`tier_limit`).
+     * `approveExtra` is asked only by servers before Pricing v2, which sold
+     * paid extra disk. A running chat turn
      * doesn't hold it back (ADE continues it after the restart); what
      * `stillIdle` says would be cut does. Once asked for, it waits for the
      * restart, which ends this brain: the asking turn is cut there and

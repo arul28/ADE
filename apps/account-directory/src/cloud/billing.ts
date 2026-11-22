@@ -1,22 +1,18 @@
 import { readBoundedBody } from "../sinkUtils";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { captureCloudAction, captureCloudFreePlan, type CloudWaitUntil } from "./analytics";
-import { CLOUD_WEB_BILLING_RETURN_PARAM, formatCloudCents, type CloudBillingReturnOutcome, type CloudCheckoutResult, type CloudFreeUnlockResult, type CloudPlanCleanupPick } from "./contract";
+import { CLOUD_WEB_BILLING_RETURN_PARAM, type CloudBillingReturnOutcome, type CloudCheckoutResult, type CloudFreeUnlockResult, type CloudPlanCleanupPick } from "./contract";
 import { unlockFreePlanWithCard } from "./freePlanGithub";
 import { claimCardForFreeUnlock, isCloudBlocked } from "./blocks";
 import { accountEmail, sendCloudEmail } from "./email";
 import { json } from "./http";
 import { cloudReturnPageHtml } from "./returnPage";
 import { checkPlanCleanupPick, planCleanupFor, planCleanupTargetOf, recordPlanCleanupPick, waitingPlanOf, warnPlanCleanupAhead } from "./planCleanup";
-import { CENT_MICROS, EXTRA_DISK_MONTH_DAYS, extraDiskGbDaysIn, extraDiskMonthFits, extraDiskMonthMicros, utcDay, type CloudPaidPlanId } from "./plans";
+import type { CloudPaidPlanId } from "./plans";
 import {
-  accountDiskGb,
-  accountDiskSql,
   accountRules,
   applyCloudPlanChange,
   boughtPlanIdOf,
-  countedPlanDiskGb,
-  diskDayStatement,
   groupByUser,
   isPaidDowngrade,
   paidPlanOf,
@@ -257,8 +253,8 @@ export async function createCheckoutUrl(
       customer,
       client_reference_id: userId,
       "managed_payments[enabled]": "true",
-      // Only the plan: extra hours and extra disk join the subscription when the person turns
-      // them on (`setExtraHours`, `setExtraDisk`), so Checkout and the portal show one price.
+      // Only the plan: extra hours join the subscription when the person turns
+      // them on (`setExtraHours`), so Checkout and the portal show one price.
       "line_items[0][price]": planPrice,
       "line_items[0][quantity]": "1",
       "metadata[ade_user_id]": userId,
@@ -443,33 +439,18 @@ export async function subscriptionItems(env: CloudEnv, subscriptionId: string): 
 }
 
 /**
- * Whether the subscription already bills extra disk: the configured price, or
- * an older extra-disk price on the same meter (a price that moved to its own
- * product keeps billing the subscriptions that hold it). A second item on the
- * same meter would bill each GB-day twice.
+ * Moves the subscription's extra-hours item to the price `plan` bills with
+ * now, uncharged. Each price is on the same meter as the one it replaces, so
+ * what was reported keeps counting. An upgrade moves it at once; a renewal
+ * moves it too, which is how a downgrade's price and an older extra-hours
+ * price move: at the start of a period, never mid-period. Extra disk is no
+ * longer sold (Pricing v2), so a disk item is left as it is: nothing reports
+ * to its meter any more.
  */
-async function diskItemOf(env: CloudEnv, items: SubscriptionItem[], diskPrice: string): Promise<"current" | "older" | null> {
-  if (items.some((item) => item.price === diskPrice)) return "current";
-  const metered = items.filter((item) => item.meter != null);
-  if (metered.length === 0) return null;
-  const diskMeter = meterOfPrice(await stripeRequest(env, "GET", `/prices/${encodeURIComponent(diskPrice)}`));
-  return diskMeter != null && metered.some((item) => item.meter === diskMeter) ? "older" : null;
-}
-
-/**
- * Moves the subscription's metered items to the prices `plan` bills with now,
- * uncharged: extra hours to the plan's own price and, with `disk`, extra disk
- * to the current disk price. Each price is on the same meter as the one it
- * replaces, so what was reported keeps counting. An upgrade moves extra hours
- * at once (the cheaper hour); a renewal moves both, which is how a downgrade's
- * price and a subscription bought before Cloud 7 (the first extra-hours
- * price, the $1 disk price) move: at the start of a period, never mid-period.
- * `diskCurrent` is true when, with `disk`, no item is left on an older disk price.
- */
-async function moveMeteredItems(env: CloudEnv, subscriptionId: string, plan: CloudPaidPlanId, now: number, options: { disk: boolean }): Promise<{ diskCurrent: boolean }> {
+async function moveMeteredItems(env: CloudEnv, subscriptionId: string, plan: CloudPaidPlanId, now: number): Promise<void> {
   const items = await subscriptionItems(env, subscriptionId);
   const hoursPrices = extraHoursPrices(env);
-  const move = async (item: SubscriptionItem, price: string, what: "extra_hours" | "extra_disk") => {
+  const move = async (item: SubscriptionItem, price: string, what: "extra_hours") => {
     await stripeRequest(env, "POST", `/subscription_items/${encodeURIComponent(item.id)}`, { price, proration_behavior: "none" },
       `ade-metered:${item.id}:${price}:${Math.floor(now / PLAN_CHANGE_RETRY_WINDOW_MS)}`);
     logCloud("cloud.metered_price_moved", { subscriptionId, what, plan, from: item.price, to: price });
@@ -478,29 +459,20 @@ async function moveMeteredItems(env: CloudEnv, subscriptionId: string, plan: Clo
   // None until the person turns extra hours on (Checkout sells only the plan); that adds it at the plan's price.
   const hoursItem = items.find((item) => item.price != null && hoursPrices.has(item.price));
   if (hoursItem && hoursPrice && hoursItem.price !== hoursPrice) await move(hoursItem, hoursPrice, "extra_hours");
-  const diskPrice = env.STRIPE_DISK_PRICE_ID?.trim();
-  if (!options.disk || !diskPrice) return { diskCurrent: false };
-  // An older disk price is a metered item that is neither the plan nor extra hours, on the disk price's meter.
-  const others = items.filter((item) => item.meter != null && item.price !== diskPrice && !(item.price && hoursPrices.has(item.price)) && paidPlanOfPrice(env, item.price) == null);
-  if (others.length === 0) return { diskCurrent: true };
-  const diskMeter = meterOfPrice(await stripeRequest(env, "GET", `/prices/${encodeURIComponent(diskPrice)}`));
-  const oldDisk = diskMeter ? others.find((item) => item.meter === diskMeter) : undefined;
-  if (oldDisk) await move(oldDisk, diskPrice, "extra_disk");
-  return { diskCurrent: diskMeter != null };
 }
 
 /**
  * A move between paid plans (Plus, Pro, Max) on the subscription itself, never
  * the billing portal: Stripe refuses a portal plan switch on a subscription
- * with more than one item (one with extra hours or extra disk on), and ADE's
+ * with more than one item (one with extra hours on), and ADE's
  * own switch is the one that checks a downgrade's cleanup pick.
  * - Upgrade: charged now for the rest of the period; a declined card changes
  *   nothing. The higher plan's hours apply at once, the hours used stay, and
  *   extra hours move to its cheaper price.
  * - Downgrade: no refund and no charge; the next invoice is the cheaper plan.
- *   The higher plan's hours, disk and extra-hour price stay until the period
- *   ends (`applyCloudPlanChange`; the renewal moves the price). Over the
- *   cheaper plan's disk, the person's pick (`cleanup`) is checked before
+ *   The higher plan's hours, computer limit and extra-hour price stay until
+ *   the period ends (`applyCloudPlanChange`; the renewal moves the price).
+ *   Over the cheaper plan's computer limit, the person's pick (`cleanup`) is checked before
  *   Stripe is asked, so a pick that doesn't fit changes nothing; once the plan
  *   changed, the pick is recorded and the minute cron frees exactly those
  *   computers.
@@ -652,7 +624,7 @@ async function changePaidPlan(
   if (!downgrade) {
     // The cheaper extra hour of the higher plan starts now. A failure leaves the old price until the renewal moves it.
     try {
-      await moveMeteredItems(env, subscriptionId, to, now, { disk: false });
+      await moveMeteredItems(env, subscriptionId, to, now);
     } catch (error) {
       reportCloudFailure("cloud.extra_hours_price_move_failed", { userId: account.user_id, to, status: error instanceof StripeRequestError ? error.status : 0 });
     }
@@ -784,100 +756,6 @@ export async function setExtraHours(env: CloudEnv, userId: string, enabled: bool
 }
 
 /**
- * Makes sure the subscription bills extra disk, and says at which price: 1
- * for an item still on the price from before Cloud 7, else 0. The same
- * retry as `ensureExtraHoursItem`: after a 5xx the subscription is read
- * again, and with no item the create is tried once more under a key of its
- * own, since Stripe keeps a key's first answer (a 500 too) for a day.
- */
-async function ensureExtraDiskItem(env: CloudEnv, subscriptionId: string, diskPrice: string, now: number): Promise<0 | 1> {
-  const held = await diskItemOf(env, await subscriptionItems(env, subscriptionId), diskPrice);
-  if (held) return held === "older" ? 1 : 0;
-  const key = `ade-cloud-disk-item-${subscriptionId}`;
-  const create = (idempotencyKey: string) => stripeRequest(env, "POST", "/subscription_items", { subscription: subscriptionId, price: diskPrice }, idempotencyKey);
-  // A reread finds the item another turn-on (or the create whose answer was
-  // lost) added: its price is the one billed, older or current.
-  const reread = async () => await diskItemOf(env, await subscriptionItems(env, subscriptionId), diskPrice);
-  try {
-    try {
-      await create(key);
-    } catch (error) {
-      if (!(error instanceof StripeRequestError) || error.status < 500) throw error;
-      const found = await reread();
-      if (found) return found === "older" ? 1 : 0;
-      await create(`${key}-${now}`);
-    }
-  } catch (error) {
-    // A 409 is usually a second turn-on racing this one: the item it added is all that's needed.
-    if (error instanceof StripeRequestError && error.status === 409) {
-      const found = await reread();
-      if (found) return found === "older" ? 1 : 0;
-    }
-    throw error;
-  }
-  return 0;
-}
-
-/**
- * Extra disk: on with a monthly limit, or off. Turning it on makes sure the
- * subscription has the extra-disk price (subscriptions bought before it
- * existed don't). Turning it off while the computers hold more than the
- * plan's disk is refused: that disk would still be there, unpaid.
- *
- * The day it goes on is never billed. Stripe bills a meter event to an item
- * only from the item's start, and a day's event is stamped at its midday, so
- * a day billed whole would be dropped unbilled whenever the item came later
- * that day. Today's disk-day is written as it stands before the switch
- * (not billable), in the same batch, even when nothing wrote one yet today
- * (no computers at the daily run).
- */
-export async function setExtraDisk(
-  env: CloudEnv,
-  userId: string,
-  choice: { enabled: true; monthlyLimitCents: number } | { enabled: false },
-  now: number,
-): Promise<void> {
-  const account = await loadAccount(env, userId, now);
-  if (choice.enabled) {
-    if (accountRules(account) !== "paid") throw new CloudBillingError("needs_paid_plan", "Extra disk needs a paid plan.", 403);
-    const diskPrice = env.STRIPE_DISK_PRICE_ID?.trim();
-    if (!diskPrice || !env.STRIPE_DISK_METER_EVENT?.trim() || !account.stripe_subscription_id) {
-      reportCloudFailure("cloud.extra_disk_not_configured", { userId });
-      throw unavailable();
-    }
-    // The limit is priced at what the item Stripe bills from charges: an item still on the
-    // price from before Cloud 7 pays that price, a new item the current one.
-    let oldPrice: 0 | 1;
-    try {
-      oldPrice = await ensureExtraDiskItem(env, account.stripe_subscription_id, diskPrice, now);
-    } catch (error) {
-      if (error instanceof StripeRequestError) {
-        reportCloudFailure("cloud.extra_disk_item_failed", { status: error.status, message: error.stripeMessage });
-        throw unavailable();
-      }
-      throw error;
-    }
-    const turnOn = env.DB.prepare("update cloud_accounts set extra_disk_state = 'on', extra_disk_limit_cents = ?, extra_disk_old_price = ?, extra_disk_asked_at = coalesce(extra_disk_asked_at, ?), updated_at = ? where user_id = ?")
-      .bind(choice.monthlyLimitCents, oldPrice, now, now, userId);
-    // A new limit on extra disk already on changes nothing about today.
-    await env.DB.batch(account.extra_disk_state === "on" ? [turnOn] : [diskDayStatement(env, account, now), turnOn]);
-    return;
-  }
-  // A downgrade waiting for the period end counts already: the next plan's disk is what stays paid.
-  const planGb = countedPlanDiskGb(account);
-  const usedGb = await accountDiskGb(env, userId);
-  if (account.extra_disk_state === "on" && usedGb > planGb) {
-    throw new CloudBillingError(
-      "disk_over_plan",
-      `Your computers hold ${usedGb} GB, more than your plan's ${planGb} GB at one time. Delete a computer you no longer use, then turn extra disk off.`,
-      409,
-    );
-  }
-  await env.DB.prepare("update cloud_accounts set extra_disk_state = 'asked', extra_disk_asked_at = coalesce(extra_disk_asked_at, ?), updated_at = ? where user_id = ?")
-    .bind(now, now, userId).run();
-}
-
-/**
  * Ends the account's subscription now, for a deleted or blocked account:
  * no proration credit and no refund (`prorate=false`), and no final invoice
  * for usage not yet billed (`invoice_now=false`). Already gone counts as done.
@@ -950,7 +828,7 @@ type SubscriptionFacts = {
 async function readSubscription(env: CloudEnv, id: string): Promise<SubscriptionFacts> {
   const subscription = await stripeRequest(env, "GET", `/subscriptions/${encodeURIComponent(id)}`);
   const items = (objectOf(subscription.items)?.data as StripeObject[] | undefined) ?? [];
-  // Never `items[0]`: the metered items (extra hours, extra disk) carry their own periods.
+  // Never `items[0]`: the metered items (extra hours, an old extra-disk item) carry their own periods.
   const planItem = items.find((item) => paidPlanOfPrice(env, idOf(item.price)) != null);
   if (!planItem) reportCloudFailure("cloud.plan_item_missing", { subscriptionId: id });
   const metadata = objectOf(subscription.metadata);
@@ -1108,14 +986,10 @@ async function syncSubscription(env: CloudEnv, subscriptionId: string | null, no
   }, now, waitUntil);
   // On every active event, so a threshold that failed after the plan was saved still gets set.
   if (starting || account.plan === "paid") await ensureThreshold(env, subscription);
-  // A new period bills extra hours and disk at the plan's prices now: a downgrade's
-  // and an older subscription's move here. A failure throws, so Stripe's retry moves them.
+  // A new period bills extra hours at the plan's price now: a downgrade's move happens here.
+  // A failure throws, so Stripe's retry moves it.
   if (isRenewal && subscription.paidPlan) {
-    const moved = await moveMeteredItems(env, subscription.id, subscription.paidPlan, now, { disk: true });
-    if (moved.diskCurrent) {
-      // The disk item bills the current price from here, so the limit is priced at it too.
-      await env.DB.prepare("update cloud_accounts set extra_disk_old_price = 0 where user_id = ? and extra_disk_old_price = 1").bind(userId).run();
-    }
+    await moveMeteredItems(env, subscription.id, subscription.paidPlan, now);
     return;
   }
   // Any other active event: an extra-hours item an upgrade failed to move goes to the plan's price now.
@@ -1292,7 +1166,7 @@ export const isDuplicateReport = (error: unknown): boolean =>
   error instanceof StripeRequestError && error.status === 400 && /identifier/i.test(error.stripeMessage) && /(already|duplicate|exists)/i.test(error.stripeMessage);
 
 /**
- * Each whole extra Small-hour is one report whose identifier is its place in
+ * Each whole extra hour (a Medium-hour since Pricing v2) is one report whose identifier is its place in
  * the period, so a retry after a crash can never count an hour twice. The part
  * of an hour left over waits for the next tick. A tick with no account on
  * extra hours is one indexed read.
@@ -1347,165 +1221,4 @@ export async function reportExtraHours(env: CloudEnv, now = Date.now()): Promise
         .bind(now, account.user_id, account.extra_owed_milli).run();
     }
   }
-}
-
-/* ---- Extra disk to its meter ---- */
-
-/** A meter event's timestamp: midday of its day, never in the future. */
-const meterTimestamp = (day: string, now: number): string =>
-  String(Math.floor(Math.min(Date.parse(`${day}T12:00:00Z`), now) / 1000));
-
-type DiskDayRow = {
-  user_id: string;
-  day: string;
-  peak_gb: number;
-  plan_gb: number;
-  billable: number;
-  send_started_at: number | null;
-  billed_gb: number | null;
-  stripe_customer_id: string | null;
-  stripe_subscription_id: string | null;
-  extra_disk_limit_cents: number | null;
-  period_start: number;
-  extra_disk_old_price: number | null;
-};
-
-/** Stripe keeps a meter event's identifier for about a day; a send is retried only well inside that. */
-const DISK_REPORT_SAFE_WINDOW_MS = 20 * 60 * 60_000;
-const DISK_REPORTS_PER_RUN = 200;
-
-/**
- * Each finished UTC day's extra disk, once, from the day's own row: the GB
- * its peak passed the bought plan's disk by, billed only when the row says
- * the day was billable all day (a paid plan in good standing with extra disk
- * on). From the ten-minute owner check, so a failed send is retried soon.
- *
- * - One meter event per day, identified by the subscription and the day.
- *   Stripe drops a repeat of that identifier for about a day, so a send that
- *   timed out is resent only inside that window, with the same value
- *   (`billed_gb` is written before the first send). A day still unconfirmed
- *   after it is never resent blindly: it goes to the owner as a billing
- *   mismatch (`unconfirmed_at`).
- * - A period's extra disk never passes the monthly limit the person set:
- *   a day that would is billed only up to it.
- * - Each row is marked right after its own send succeeds.
- */
-export async function reportExtraDiskDays(env: CloudEnv, now = Date.now()): Promise<void> {
-  const rows = await env.DB.prepare(`
-    select d.user_id, d.day, d.peak_gb, d.plan_gb, d.billable, d.send_started_at, d.billed_gb,
-      a.stripe_customer_id, a.stripe_subscription_id, a.extra_disk_limit_cents, a.period_start, a.extra_disk_old_price
-    from cloud_disk_days d join cloud_accounts a on a.user_id = d.user_id
-    where d.reported_at is null and d.unconfirmed_at is null and d.day < ?
-    order by d.day limit ?
-  `).bind(utcDay(now), DISK_REPORTS_PER_RUN).all<DiskDayRow>();
-  const mark = (row: DiskDayRow, billedGb: number) =>
-    env.DB.prepare("update cloud_disk_days set billed_gb = ?, reported_at = ? where user_id = ? and day = ? and reported_at is null")
-      .bind(billedGb, now, row.user_id, row.day).run();
-  for (const row of rows.results ?? []) {
-    const extraGb = Math.max(0, row.peak_gb - row.plan_gb);
-    if (row.billable !== 1 || extraGb === 0) {
-      await mark(row, 0);
-      continue;
-    }
-    const customer = row.stripe_customer_id;
-    const subscription = row.stripe_subscription_id;
-    if (!customer || !subscription) {
-      // Billable when written, but the subscription is gone now: nothing to bill it to.
-      reportCloudFailure("cloud.disk_day_without_subscription", { userId: row.user_id, day: row.day });
-      await mark(row, 0);
-      continue;
-    }
-    const eventName = env.STRIPE_DISK_METER_EVENT?.trim();
-    // Not set up yet: the day waits, unmarked and never sent, so it is billed once it is.
-    if (!eventName || !env.STRIPE_SECRET_KEY?.trim()) continue;
-    if (row.send_started_at != null && now - row.send_started_at > DISK_REPORT_SAFE_WINDOW_MS) {
-      await env.DB.prepare("update cloud_disk_days set unconfirmed_at = ? where user_id = ? and day = ?").bind(now, row.user_id, row.day).run();
-      reportCloudFailure("cloud.disk_meter_unconfirmed", { userId: row.user_id, day: row.day, billedGb: row.billed_gb });
-      continue;
-    }
-    let billGb = row.billed_gb;
-    if (row.send_started_at == null || billGb == null) {
-      billGb = Math.min(extraGb, await diskRoomUnderLimit(env, row));
-      if (billGb === 0) {
-        logCloud("cloud.extra_disk_capped", { userId: row.user_id, day: row.day, extraGb });
-        await mark(row, 0);
-        continue;
-      }
-      const claimed = await env.DB.prepare("update cloud_disk_days set send_started_at = ?, billed_gb = ? where user_id = ? and day = ? and send_started_at is null")
-        .bind(now, billGb, row.user_id, row.day).run();
-      // Another owner check claimed this day first: it sends, this run skips it.
-      if ((claimed.meta?.changes ?? 0) === 0) continue;
-    }
-    try {
-      await stripeRequest(env, "POST", "/billing/meter_events", {
-        event_name: eventName,
-        identifier: `ade-disk:${subscription}:${row.day}`,
-        timestamp: meterTimestamp(row.day, now),
-        "payload[stripe_customer_id]": customer,
-        "payload[value]": String(billGb),
-      });
-    } catch (error) {
-      if (!isDuplicateReport(error)) {
-        // Retried on the next owner check, inside Stripe's window.
-        reportCloudFailure("cloud.disk_meter_report_failed", { userId: row.user_id, status: error instanceof StripeRequestError ? error.status : null });
-        continue;
-      }
-    }
-    await mark(row, billGb);
-  }
-}
-
-/** GB-days of extra disk this row's period may still bill before passing the person's monthly limit. */
-async function diskRoomUnderLimit(env: CloudEnv, row: DiskDayRow): Promise<number> {
-  if (row.extra_disk_limit_cents == null) return 0;
-  const periodStartDay = utcDay(row.period_start);
-  // A day from before the current period is held to the 30 days before it.
-  const from = row.day >= periodStartDay ? periodStartDay : utcDay(Date.parse(`${row.day}T00:00:00Z`) - (EXTRA_DISK_MONTH_DAYS - 1) * 86_400_000);
-  const billed = await env.DB.prepare(`
-    select coalesce(sum(billed_gb), 0) as gb from cloud_disk_days
-    where user_id = ? and day >= ? and day < ? and billed_gb is not null
-  `).bind(row.user_id, from, row.day).first<{ gb: number }>();
-  const limitGbDays = extraDiskGbDaysIn(row.extra_disk_limit_cents, row);
-  return Math.max(0, limitGbDays - (billed?.gb ?? 0));
-}
-
-/** An account whose extra disk, kept a full month, passes its limit (`checkExtraDiskLimits`). */
-export type ExtraDiskOverLimit = { userId: string; extraGb: number; monthCents: number; limitCents: number };
-
-/**
- * The daily check that the promise "up to $X a month" still holds for what
- * the computers hold now (a lowered limit, a plan change). Over it, the
- * person is told once, and the owner's report lists the account; billing
- * itself stays inside the limit (`reportExtraDiskDays`) and growth is refused.
- */
-export async function checkExtraDiskLimits(env: CloudEnv, now: number): Promise<ExtraDiskOverLimit[]> {
-  const rows = await env.DB.prepare(`
-    select a.*, ${accountDiskSql("a.user_id")} as disk_gb
-    from cloud_accounts a
-    where a.deleted_at is null and ((a.plan = 'paid' and a.extra_disk_state = 'on') or a.extra_disk_over_limit_at is not null)
-  `).all<AccountRow & { disk_gb: number }>();
-  const over: ExtraDiskOverLimit[] = [];
-  for (const account of rows.results ?? []) {
-    // Kept a month: a downgrade waiting for the period end counts already.
-    const planGb = countedPlanDiskGb(account, boughtPlanIdOf(account));
-    const extraGb = Math.max(0, account.disk_gb - planGb);
-    const limitCents = account.extra_disk_limit_cents ?? 0;
-    const monthCents = Math.ceil(extraDiskMonthMicros(extraGb, account) / CENT_MICROS);
-    const isOver = account.plan === "paid" && account.extra_disk_state === "on" && !extraDiskMonthFits(extraGb, limitCents, account);
-    if (!isOver) {
-      if (account.extra_disk_over_limit_at != null) {
-        await env.DB.prepare("update cloud_accounts set extra_disk_over_limit_at = null where user_id = ?").bind(account.user_id).run();
-      }
-      continue;
-    }
-    over.push({ userId: account.user_id, extraGb, monthCents, limitCents });
-    if (account.extra_disk_over_limit_at != null) continue;
-    await env.DB.prepare("update cloud_accounts set extra_disk_over_limit_at = ? where user_id = ?").bind(now, account.user_id).run();
-    await sendCloudEmail(env, {
-      userId: account.user_id,
-      subject: "Your ADE Cloud extra disk is over your limit",
-      text: `Your computers hold ${extraGb} GB more than your plan's ${planGb} GB at one time. For a month that is about ${formatCloudCents(monthCents)}, more than the ${formatCloudCents(limitCents)} limit you set. ADE Cloud bills no more than your limit, and your disks can't grow until it fits. Delete a computer you no longer use, or raise the limit in Settings.`,
-    });
-  }
-  return over;
 }

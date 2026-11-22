@@ -420,6 +420,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
         message: getErrorMessage(error),
         code: error instanceof CloudProviderError ? error.code : null,
         reason: error instanceof CloudProviderError ? error.detail.reason : null,
+        detail: error instanceof CloudProviderError ? error.detail.computerLimit ?? null : null,
       });
     }
   }

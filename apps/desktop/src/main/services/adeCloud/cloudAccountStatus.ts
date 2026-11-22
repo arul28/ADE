@@ -1,6 +1,10 @@
 import {
+  CLOUD_HOUR_UNIT_SENTENCE,
   CLOUD_PLAN_LABELS,
+  CLOUD_SMALL_UNLIMITED_SENTENCE,
+  cloudAccountComputers,
   cloudCatalogOf,
+  cloudPlanComputerLimitOf,
   cloudExtraHourCentsOf,
   cloudLimitsPresetOf,
   cloudPlanFactsOf,
@@ -19,14 +23,16 @@ import {
   type CloudPlanId,
 } from "../../../shared/adeCloud";
 import { cloudLaneStartBlock, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
-import { cloudTierOfMachine, cloudTiers, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudHoursOnSizesLine, cloudTierOfMachine, cloudTierUsesHours, cloudTiers, type CloudTierId } from "../../../shared/cloudTiers";
 import { NO_PROVIDER_SENTENCE } from "./cloudAccess";
 
 /**
- * `cloud.status`: the whole ADE Cloud account in one read (plan, hours, disk,
+ * `cloud.status`: the whole ADE Cloud account in one read (plan, hours,
  * computers, each lane, the sizes, what agents may do, and whether a new lane
  * can start). The action (`cloudAgentActions.ts`) makes the reads; this
- * shapes the answer.
+ * shapes the answer. Pricing v2: each plan has a number of cloud computers,
+ * Small computers never use hours, and hours are Medium-hours. There is no
+ * plan or account disk; each computer's own disk is in `lanes[].disk`.
  */
 
 /** Where a person changes how many new computers agents may start a day (Settings, the ADE Cloud card). */
@@ -41,7 +47,7 @@ const milliToHours = (milli: number): number => Math.round(Math.max(0, milli)) /
 /** Why `cloud.status` says a new lane can't start: an account fact, or something ADE couldn't read. */
 export type CloudCanStartLaneCode =
   | "out_of_hours"
-  | "disk_full"
+  | "computer_limit"
   | "signed_out"
   | "not_available"
   | "unreadable"
@@ -94,12 +100,12 @@ export type CloudAccountStatus = {
     rulesId: "free" | "paid";
     pastDue: boolean;
     /**
-     * `diskShared` is always true now: every plan's disk is one total its
-     * computers share. Kept in the agent-facing answer (`ade cloud status
-     * --json`, the action contract) so a reader of the older shape still works.
-     * No plan limits how many computers an account has.
+     * What the plan includes: cloud computers (asleep or not; null from a
+     * server before Pricing v2), unlimited Small computers, a month's hours
+     * for the bigger sizes, and whether outside agents (ADE MCP) may start
+     * ADE Cloud work.
      */
-    includes: { hours: number; diskGb: number; diskShared: true };
+    includes: { computers: number | null; smallComputers: "unlimited"; hours: number; outsideAgents: boolean };
   } | null;
   hours: {
     left: number;
@@ -109,16 +115,17 @@ export type CloudAccountStatus = {
     state: CloudAccountState["hours"]["state"];
     resetsAt: string;
     extraHours: { available: boolean; enabled: boolean };
+    /** What one hour is ("One hour is one hour on a Medium computer. …"), and that Small never uses them. */
+    unit: string;
   } | null;
-  disk: { usedGb: number; limitGb: number | null } | null;
   /**
-   * The ADE Cloud iPhone (`ade devices use ios@cloud`): `access` on, soon (not on
-   * this account yet) or off; this period's minutes (null unless on), when they
-   * reset, and extra minutes past the plan (paid plans; the free plan stops).
-   * Null from a server before the iPhone.
+   * The ADE Cloud iPhone (`ade devices use ios@cloud`), only for an account
+   * that has it (`access` on): this period's minutes, when they reset, and
+   * extra minutes past the plan (paid plans; the free plan stops). Null for
+   * every other account, and from a server before the iPhone.
    */
   iphone: {
-    access: "on" | "soon" | "off";
+    access: "on";
     minutes: { left: number; included: number; used: number } | null;
     resetsAt: string | null;
     extraMinutes: { available: boolean; enabled: boolean; centsPerMinute: number | null; monthlyLimitCents: number | null; usedMinutes: number; usedCents: number };
@@ -128,19 +135,26 @@ export type CloudAccountStatus = {
     id: CloudPlanId;
     label: string;
     priceUsdMonth: number;
+    /** Cloud computers the plan allows, asleep or not (null from a server before Pricing v2). */
+    computers: number | null;
+    /** A month's hours for the sizes bigger than Small (Medium-hours). */
     hours: number;
-    diskGb: number;
+    /** The same hours as time on each size: "50 hours on a Medium · 20 on a Large · 12 on an X-Large". */
+    hoursOnSizes: string;
+    /** Whether outside agents (ADE MCP) may start ADE Cloud work on it. */
+    outsideAgents: boolean;
+    /** Null unless the account has the ADE Cloud iPhone. */
     iphoneMinutes: number | null;
-    /** Cents a Small-hour past the plan, null where work stops (Free). */
+    /** Cents an hour past the plan, null where the bigger sizes stop (Free). */
     extraHourCents: number | null;
     /** Cents an iPhone minute past the plan, null where the phone stops (Free). */
     extraIphoneMinuteCents: number | null;
     current: boolean;
   }>;
-  /** Cents for 10 GB of disk past the plan for a month (paid plans), or null when not sold. */
-  extraDiskCentsPer10GbMonth: number | null;
-  /** How many computers the account has and how many are awake: there is no limit on how many. */
-  computers: { inUse: number; awake: number } | null;
+  /** "Unlimited Small computers. They never use your hours." */
+  smallComputers: string;
+  /** How many computers the account has (asleep or not), how many are awake, and the plan's limit (null before Pricing v2). */
+  computers: { inUse: number; awake: number; limit: number | null } | null;
   /** Every computer of the account, lanes first. */
   lanes: CloudStatusComputer[];
   /**
@@ -152,8 +166,11 @@ export type CloudAccountStatus = {
   lanesComputerDeleted?: CloudStatusDeletedLane[] | null;
   /** True when `lanesComputerDeleted` came from only the newest saved chats: a lane known only from older ones can be missing. */
   lanesComputerDeletedPartial?: boolean;
-  /** The lane sizes ADE Cloud offers now, Small first; rates are the catalog's. */
-  sizes: Array<{ id: CloudTierId; label: string; kind: "standard" | "full"; cpu: number; memoryGb: number; hoursRate: number; isDefault: boolean }>;
+  /**
+   * The lane sizes ADE Cloud offers now, Small first; rates are the catalog's
+   * (hours of the plan per hour awake: 0 for Small, which never uses hours).
+   */
+  sizes: Array<{ id: CloudTierId; label: string; kind: "standard" | "full"; cpu: number; memoryGb: number; hoursRate: number; usesHours: boolean; isDefault: boolean }>;
   /** The size a new lane starts with when none is named; null when this ADE can't read the person's saved choice. */
   defaultSize: CloudTierId | null;
   agents: {
@@ -164,13 +181,6 @@ export type CloudAccountStatus = {
     newComputersLeftToday: number;
     /** The lane sizes agents nobody watches may pick on their own. */
     sizesAllowed: CloudTierId[];
-    /**
-     * Paid extra disk agents nobody watches may grow a disk into: the most
-     * the account's extra disk may cost a month (cents), 0 for none, or null
-     * for up to the account's own monthly extra-disk limit (the default).
-     * Optional: an older ADE sends none.
-     */
-    extraDiskMonthCents?: number | null;
     preset: CloudLimitsPreset | "custom";
     /** Where the person changes these. */
     setting: string;
@@ -182,7 +192,8 @@ export type CloudAccountStatus = {
 const PLAN_ORDER: readonly CloudPlanId[] = ["free", "plus", "pro", "max"];
 
 /** The plans the server sells, from its catalog (`plus` is `paid` on a server before Pro). */
-function plansOf(catalog: CloudCatalog, current: CloudPlanId | null): CloudAccountStatus["plans"] {
+function plansOf(catalog: CloudCatalog, current: CloudPlanId | null, iphone: boolean): CloudAccountStatus["plans"] {
+  const tiers = cloudTiers(catalog);
   return PLAN_ORDER.flatMap((id) => {
     const facts = id === "plus" ? catalog.plans.plus ?? catalog.plans.paid : catalog.plans[id];
     if (!facts) return [];
@@ -190,11 +201,13 @@ function plansOf(catalog: CloudCatalog, current: CloudPlanId | null): CloudAccou
       id,
       label: CLOUD_PLAN_LABELS[id],
       priceUsdMonth: facts.priceUsd,
+      computers: cloudPlanComputerLimitOf(facts, catalog),
       hours: milliToHours(facts.includedMilli),
-      diskGb: facts.diskGb,
-      iphoneMinutes: facts.phoneMinutes ?? null,
+      hoursOnSizes: cloudHoursOnSizesLine(facts.includedMilli, tiers),
+      outsideAgents: facts.outsideAgents !== false,
+      iphoneMinutes: iphone ? facts.phoneMinutes ?? null : null,
       extraHourCents: cloudExtraHourCentsOf(id, catalog),
-      extraIphoneMinuteCents: id === "free" ? null : facts.extraPhoneMinuteCents ?? null,
+      extraIphoneMinuteCents: !iphone || id === "free" ? null : facts.extraPhoneMinuteCents ?? null,
       current: id === current,
     }];
   });
@@ -259,6 +272,8 @@ export function buildCloudAccountStatus(input: {
   const plan = account ? (account.rules === "free" ? catalog.plans.free : cloudPlanFactsOf(account, catalog)) : null;
   // A partial answer (an older server) leaves that part null, never a throw.
   const part = (account ?? {}) as Partial<CloudAccountState>;
+  // The ADE Cloud iPhone shows only to an account that has it.
+  const phone = part.phone?.access === "on" ? part.phone : null;
   return {
     canStartLane,
     plan: account && plan
@@ -267,8 +282,12 @@ export function buildCloudAccountStatus(input: {
           label: cloudPlanLabelOf(account, catalog),
           rulesId: account.rules,
           pastDue: part.billing?.notice === "past_due",
-          // Every plan's disk is one total its computers share at one time (server `plans.ts`).
-          includes: { hours: milliToHours(plan.includedMilli), diskGb: plan.diskGb, diskShared: true },
+          includes: {
+            computers: cloudPlanComputerLimitOf(plan, catalog),
+            smallComputers: "unlimited",
+            hours: milliToHours(plan.includedMilli),
+            outsideAgents: plan.outsideAgents !== false,
+          },
         }
       : null,
     hours: account && part.hours && part.billing
@@ -280,20 +299,20 @@ export function buildCloudAccountStatus(input: {
           state: account.hours.state,
           resetsAt: new Date(account.billing.periodEnd).toISOString(),
           extraHours: { available: part.extraHours?.available === true, enabled: part.extraHours?.enabled === true },
+          unit: `${CLOUD_HOUR_UNIT_SENTENCE} Small computers never use hours.`,
         }
       : null,
-    disk: part.disk ? { usedGb: part.disk.usedGb, limitGb: part.disk.limitGb } : null,
-    iphone: part.phone
+    iphone: phone
       ? {
-          access: part.phone.access,
-          minutes: part.phone.minutes ? { left: part.phone.minutes.left, included: part.phone.minutes.included, used: part.phone.minutes.used } : null,
+          access: "on",
+          minutes: phone.minutes ? { left: phone.minutes.left, included: phone.minutes.included, used: phone.minutes.used } : null,
           resetsAt: part.billing ? new Date(part.billing.periodEnd).toISOString() : null,
-          extraMinutes: { ...part.phone.extra },
+          extraMinutes: { ...phone.extra },
         }
       : null,
-    plans: plansOf(catalog, account ? cloudPlanIdOf(account) : null),
-    extraDiskCentsPer10GbMonth: catalog.extraDiskCentsPer10GbMonth ?? null,
-    computers: part.computers ? { inUse: part.computers.total, awake: part.computers.awake } : null,
+    plans: plansOf(catalog, account ? cloudPlanIdOf(account) : null, phone != null),
+    smallComputers: CLOUD_SMALL_UNLIMITED_SENTENCE,
+    computers: part.computers ? { inUse: part.computers.total, awake: part.computers.awake, limit: cloudAccountComputers(account)?.limit ?? null } : null,
     lanes,
     sizes: tiers.map((tier) => ({
       id: tier.id,
@@ -302,6 +321,7 @@ export function buildCloudAccountStatus(input: {
       cpu: tier.cpu,
       memoryGb: tier.memoryGb,
       hoursRate: tier.multiplierMilli / 1000,
+      usesHours: cloudTierUsesHours(tier),
       isDefault: tier.id === defaultSize,
     })),
     defaultSize,
@@ -316,7 +336,6 @@ export function buildCloudAccountStatus(input: {
             const shape = cloudShapeFor({ cpu: tier.cpu, memoryGb: tier.memoryGb });
             return shape != null && cloudShapeWithin(shape.id, limits.maxShape);
           }).map((tier) => tier.id),
-          extraDiskMonthCents: limits.unattendedSpend ? limits.extraDiskMonthCents ?? null : 0,
           preset: cloudLimitsPresetOf(limits) ?? "custom",
           setting: CLOUD_DAILY_LIMIT_SETTING,
         }

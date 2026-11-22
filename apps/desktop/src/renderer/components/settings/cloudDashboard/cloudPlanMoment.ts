@@ -4,9 +4,9 @@ import {
   CLOUD_PLAN_RANK,
   cloudCatalogOf,
   cloudPlanFactsOf,
+  cloudPlanComputerLimitOf,
   cloudPlanIdOf,
   formatCloudDate,
-  formatCloudGb,
   formatCloudHours,
   type CloudAccountState,
   type CloudPlanId,
@@ -45,8 +45,10 @@ export type CloudPlanMoment = {
   key: string;
   planId: Exclude<CloudPlanId, "free">;
   label: string;
+  /** The plan's hours for computers bigger than Small (Medium-hours). */
   includedMilli: number;
-  diskGb: number;
+  /** How many cloud computers the plan allows; null from a server before Pricing v2. */
+  computers: number | null;
   renewsAt: number;
   /** Free hours left before the upgrade that the new plan's fresh period replaced; null when none were. */
   replacedFreeMilli: number | null;
@@ -64,7 +66,7 @@ export function cloudPlanMomentWords(moment: CloudPlanMoment): { title: string; 
   const replaced = cloudPlanReplacedSentence(moment);
   return {
     title: `You're on ${moment.label}`,
-    detail: `${formatCloudHours(moment.includedMilli)} hours and ${formatCloudGb(moment.diskGb)} of disk a month. Renews ${formatCloudDate(moment.renewsAt)}.${replaced ? ` ${replaced}` : ""}`,
+    detail: `${moment.computers != null ? `${moment.computers} cloud computers, unlimited Small ones and ` : "Unlimited Small computers and "}${formatCloudHours(moment.includedMilli)} hours a month for bigger ones. Renews ${formatCloudDate(moment.renewsAt)}.${replaced ? ` ${replaced}` : ""}`,
   };
 }
 
@@ -82,7 +84,8 @@ export function nextCloudPlanSeen(previous: CloudPlanSeen | null, account: Cloud
   if (!previous || !landed || previous.celebrated === key || CLOUD_PLAN_RANK[planId] <= CLOUD_PLAN_RANK[previous.planId]) {
     return { seen, moment: null };
   }
-  const facts = cloudPlanFactsOf(account, cloudCatalogOf(account));
+  const catalog = cloudCatalogOf(account);
+  const facts = cloudPlanFactsOf(account, catalog);
   // From Free, the checkout starts a fresh period: the free hours left then are gone.
   const replaced = previous.planId === "free" && previous.periodStart !== periodStart && previous.leftMilli > 0 ? previous.leftMilli : null;
   return {
@@ -93,7 +96,7 @@ export function nextCloudPlanSeen(previous: CloudPlanSeen | null, account: Cloud
       label: CLOUD_PLAN_LABELS[planId],
       // The period's own numbers when the server sent them (an older period keeps its terms), else the plan's.
       includedMilli: account.hours.includedMilli > 0 ? account.hours.includedMilli : facts.includedMilli,
-      diskGb: account.disk.limitGb ?? facts.diskGb,
+      computers: cloudPlanComputerLimitOf(facts, catalog),
       renewsAt: account.billing.periodEnd,
       replacedFreeMilli: replaced,
     },

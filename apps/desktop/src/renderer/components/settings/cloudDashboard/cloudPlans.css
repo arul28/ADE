@@ -92,6 +92,8 @@
 .adecd-plancard-facts li b { font-weight: 600; color: var(--color-fg); }
 .adecd-plancard-facts li em { margin-left: 2px; font-style: normal; font-size: 10.5px; color: var(--kit-text-3); }
 .adecd-plancard-facts li[data-quiet] { color: var(--kit-text-3); }
+.adecd-plancard-sizes { display: block; margin-top: 1px; font-size: 10.5px; line-height: 1.4; color: var(--kit-text-3); }
+.adecd-plancard[data-current] .adecd-plancard-sizes { color: var(--adecd-fg-2); }
 .adecd-plancard[data-current] .adecd-plancard-facts li { color: var(--adecd-fg-2); }
 .adecd-plancard[data-current] .adecd-plancard-facts li b { color: var(--adecd-fg); }
 .adecd-plancard[data-current] .adecd-plancard-facts li em { color: var(--adecd-fg-2); }
@@ -133,7 +135,7 @@
 .adecd-howto-item { display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 12px 14px; }
 .adecd-howto-item:nth-child(2n) { border-left: 1px solid var(--kit-rule); }
 .adecd-howto-item:nth-child(n + 3) { border-top: 1px solid var(--kit-rule); }
-.adecd-howto-soon { margin-left: 2px; font-style: normal; font-size: 10.5px; color: var(--kit-text-3); }
+.adecd-howto-fineprint { margin: 0; padding: 8px 14px 10px; border-top: 1px solid var(--kit-rule); font-size: 10.5px; line-height: 1.45; color: var(--kit-text-3); }
 .adecd-howto-icon {
   display: grid;
   place-items: center;

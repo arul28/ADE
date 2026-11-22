@@ -1,7 +1,7 @@
 import { captureCloudAction } from "./analytics";
 import {
   CLOUD_PLAN_SENTENCE_NAMES,
-  formatCloudCents,
+  cloudComputersPhrase,
   planCleanupDoneSentence,
   planCleanupSentence,
   type CloudPlanCleanup,
@@ -15,11 +15,10 @@ import { backupNotSavedReason } from "./laneBackups";
 import { sendCloudEmail } from "./email";
 import { isCloudBlocked, notBlockedSql } from "./blocks";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
-import { AWAKE_COMPUTER_CAP, CLOUD_PLANS, EXTRA_DISK_CENTS_PER_10GB_MONTH, cloudSizeFor, extraDiskMonthMaxGb, isMeteredStatus, tierOf } from "./plans";
+import { CLOUD_PLANS, cloudSizeFor, isMeteredStatus, tierOf } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import {
   boughtPlanIdOf,
-  cloudOffers,
   countedDiskGb,
   deleteComputer,
   groupByUser,
@@ -27,7 +26,6 @@ import {
   isProduction,
   listComputers,
   logCloud,
-  planDiskGbOf,
   powerLogStatement,
   reportCloudFailure,
   statusChangeStatements,
@@ -38,12 +36,14 @@ import {
 
 /**
  * A cheaper plan's limits, by the owner's rules of 2026-11-13 (they replace
- * Cloud 5's grace period): ADE never removes a computer on its own, and
- * there is no grace period. A move from Pro to Plus, a cancel, or a plan that
- * ends after failed payments is still never refused.
+ * Cloud 5's grace period), counted in computers since Pricing v2: ADE never
+ * removes a computer on its own, and there is no grace period. A move from
+ * Pro to Plus, a cancel, or a plan that ends after failed payments is still
+ * never refused.
  *
- * - In ADE, a downgrade that would leave more disk than the new plan allows
- *   asks first. Only disk counts: there is no limit on how many computers. The person cleans up themselves (the downgrade is
+ * - In ADE, a downgrade that would leave more computers than the new plan
+ *   allows (`computerLimit`) asks first. Disk no longer counts: each size has
+ *   its own disk maximum. The person cleans up themselves (the downgrade is
  *   not made), or picks the computers ADE frees and whether each lane's work
  *   must be saved first (`CloudPlanCleanupPick.push`). The server checks the
  *   pick names only the account's computers and makes the account fit
@@ -120,35 +120,37 @@ export function waitingPlanOf(account: Pick<AccountRow, "plan" | "stripe_status"
   return account.paid_plan_next ?? null;
 }
 
-type PlanRoom = { planId: CloudPlanId; diskCapGb: number };
+type PlanRoom = { planId: CloudPlanId; computerLimit: number };
 
-/** What a cleanup reads of the account: its plan, its terms and its extra disk. */
-type CleanupAccount = Pick<AccountRow, "plan" | "paid_plan" | "stripe_status" | "old_plan_terms" | "extra_disk_old_price" | "extra_disk_state" | "extra_disk_limit_cents">;
+/** What a cleanup reads of the account: its plan. */
+type CleanupAccount = Pick<AccountRow, "plan" | "paid_plan" | "stripe_status">;
 
 /**
- * What `planId` lets an account hold: disk only (no plan limits how many
- * computers). The plan in force keeps the account's terms (a period that
- * began before Cloud 7 keeps the old disk, and a disk item still on the old
- * price keeps that price); any other plan starts with a new period, on the
- * new terms: the new disk and the current extra-disk price (the renewal moves
- * the item). On a paid plan with extra disk on and set up, the cap grows by
- * the most extra disk its monthly limit keeps for a full month. The cap is
- * the same for any set of computers, so a pick is checked against what is
- * left, not against the overage before it.
+ * What `planId` lets an account hold: its computer limit, asleep or not. The
+ * limit is the same for any set of computers, so a pick is checked against
+ * what is left, not against the overage before it.
  */
-function roomOf(env: CloudEnv, account: CleanupAccount, planId: CloudPlanId): PlanRoom {
-  const inForce = planId === cleanupPlanOf(account);
-  const diskGb = inForce ? planDiskGbOf(account, planId) : CLOUD_PLANS[planId].diskGb;
-  const extraGb = planId !== "free" && cloudOffers(env).extraDisk && account.extra_disk_state === "on" && account.extra_disk_limit_cents != null
-    ? extraDiskMonthMaxGb(account.extra_disk_limit_cents, inForce ? account : null)
-    : 0;
-  return { planId, diskCapGb: diskGb + extraGb };
+function roomOf(planId: CloudPlanId): PlanRoom {
+  return { planId, computerLimit: CLOUD_PLANS[planId].computerLimit };
 }
 
-const fitsRoom = (room: PlanRoom, computers: ComputerRow[]): boolean => countedDiskGb(computers) <= room.diskCapGb;
+/**
+ * The computers a cheaper plan counts: every one made, asleep or not, a move's
+ * source and its new computer once. A reservation not made yet has nothing to
+ * free; the create's own check counts it (`accountComputerCountSql`).
+ */
+function cleanupCount(computers: ComputerRow[]): number {
+  const moving = new Set(computers.map((computer) => computer.moving_from).filter((id) => id != null));
+  return computers.filter((computer) => !isPendingId(computer.instance_id) && !moving.has(computer.instance_id)).length;
+}
 
-/** What older builds read beside the disk: the count, and a limit never below it (only disk counts). */
-const oldBuildCounts = (computers: ComputerRow[]) => ({ computerCount: computers.length, computerLimit: Math.max(AWAKE_COMPUTER_CAP, computers.length) });
+const fitsRoom = (room: PlanRoom, computers: ComputerRow[]): boolean => cleanupCount(computers) <= room.computerLimit;
+
+/** The facts every cleanup carries: the count and the limit, and for older builds (which compared disk) the disk with a limit the same number. */
+function cleanupFacts(room: PlanRoom, computers: ComputerRow[]) {
+  const usedGb = countedDiskGb(computers);
+  return { planId: room.planId, computerCount: cleanupCount(computers), computerLimit: room.computerLimit, usedGb, limitGb: usedGb };
+}
 
 /** The computers a pick may name: made (not a reservation), not in a move. Oldest first. */
 function pickable(computers: ComputerRow[]): ComputerRow[] {
@@ -171,8 +173,7 @@ const pickOf = (computer: ComputerRow): CloudPlanCleanupComputer => ({
 /**
  * What goes over `planId` with `computers`, or null when they fit: the facts,
  * the sentence, every computer a pick may name, and the oldest that make it
- * fit (what a pick starts with). Extra disk that covers the overage makes the
- * plan's disk not what must be freed to.
+ * fit (what a pick starts with).
  */
 export function planCleanupFor(
   env: CloudEnv,
@@ -180,7 +181,7 @@ export function planCleanupFor(
   computers: ComputerRow[],
   planId: CloudPlanId,
 ): Omit<CloudPlanCleanup, "startsAt" | "freeing"> | null {
-  const room = roomOf(env, account, planId);
+  const room = roomOf(planId);
   if (fitsRoom(room, computers)) return null;
   const choices = pickable(computers);
   const left = new Set(computers.map((computer) => computer.instance_id));
@@ -191,10 +192,8 @@ export function planCleanupFor(
     suggested.push(pickOf(computer));
     left.delete(computer.instance_id);
   }
-  const usedGb = countedDiskGb(computers);
-  // What fits, extra disk included: the dialog checks a pick against it.
-  const facts = { planId, usedGb, limitGb: room.diskCapGb };
-  return { ...facts, ...oldBuildCounts(computers), computers: suggested, choices: choices.map(pickOf), sentence: planCleanupSentence(facts) };
+  const facts = cleanupFacts(room, computers);
+  return { ...facts, computers: suggested, choices: choices.map(pickOf), sentence: planCleanupSentence(facts) };
 }
 
 /** The computers the account's running pick will free (none when no pick runs). */
@@ -269,14 +268,10 @@ export function planCleanupState(env: CloudEnv, account: AccountRow, computers: 
   }
   // A pick still running after the account already fits (it named more than it had to): say it runs.
   if (!planCleanup && choice && choiceApplies(account, choice)) {
-    const room = roomOf(env, account, choice.planId);
     planCleanup = {
-      planId: choice.planId,
+      ...cleanupFacts(roomOf(choice.planId), computers),
       computers: [],
       choices: [],
-      usedGb: countedDiskGb(computers),
-      limitGb: room.diskCapGb,
-      ...oldBuildCounts(computers),
       startsAt: choice.planId === inForce ? null : account.period_end,
       freeing: freeingFor(choice.planId),
       sentence: "",
@@ -348,9 +343,9 @@ export function checkPlanCleanupPick(env: CloudEnv, account: AccountRow, compute
   }
   const picked = new Set(pick.instanceIds);
   const rest = computers.filter((computer) => !picked.has(computer.instance_id));
-  const room = roomOf(env, account, planId);
+  const room = roomOf(planId);
   if (!fitsRoom(room, rest)) {
-    const still = planCleanupSentence({ planId, usedGb: countedDiskGb(rest), limitGb: room.diskCapGb });
+    const still = planCleanupSentence(cleanupFacts(room, rest));
     return { ok: false, code: "cleanup_does_not_fit", message: `Without those, ${still.charAt(0).toLowerCase()}${still.slice(1)} Pick more computers.` };
   }
   return { ok: true, instanceIds: pick.instanceIds };
@@ -391,14 +386,14 @@ export async function warnPlanCleanupAhead(env: CloudEnv, account: AccountRow, c
   if (!cleanup) return;
   const starts = utcDate(account.period_end);
   const planName = CLOUD_PLAN_SENTENCE_NAMES[toPlan];
-  logCloud("cloud.plan_cleanup_warned_ahead", { userId: account.user_id, to: toPlan, usedGb: cleanup.usedGb, limitGb: cleanup.limitGb });
+  logCloud("cloud.plan_cleanup_warned_ahead", { userId: account.user_id, to: toPlan, computers: cleanup.computerCount, limit: cleanup.computerLimit });
   await sendCloudEmail(env, {
     userId: account.user_id,
-    subject: `Your ADE Cloud computers hold more disk than ${planName} has from ${starts}`,
+    subject: `You have more ADE Cloud computers than ${planName} allows from ${starts}`,
     text: [
       `You move to ${planName} on ${starts}.`,
       cleanup.sentence,
-      `From then, ADE can't make a new computer until your computers fit in ${planName}'s disk.`,
+      `From then, ADE can't make a new computer until you have no more than ${cloudComputersPhrase(cleanup.computerLimit ?? 0)}.`,
       WAYS_OUT,
     ].join("\n"),
   });
@@ -421,67 +416,6 @@ async function tellPlanCleanupDone(env: CloudEnv, userId: string, done: CloudPla
   });
 }
 
-/** How long before a renewal an account leaving the old terms hears that its plan's disk shrinks. */
-const OLD_TERMS_NOTICE_MS = 7 * 86_400_000;
-
-/**
- * An account on the terms from before Cloud 7 is told once, in the week
- * before its renewal, when the new terms change what it gets: its computers
- * hold more than its plan's new disk (Plus 40 → 30 GB, Pro 120 → 80 GB), or
- * they still fit with extra disk on but the renewal makes more of their disk
- * billable extra disk, or bills it at the current extra-disk price instead of
- * the old one. Without it the renewal would refuse new computers, or bill
- * more, with no warning. Nothing is freed. A downgrade or cancel waiting for
- * the period end has its own warning. The claim is given back when the email
- * didn't go out, so the next check tries again.
- */
-async function warnOldTermsEnding(env: CloudEnv, account: AccountRow, computers: ComputerRow[], now: number): Promise<void> {
-  if (account.old_plan_terms !== 1 || account.old_terms_told_at != null) return;
-  if (account.plan !== "paid" || account.stripe_status === "past_due" || account.cancel_at_period_end === 1 || account.paid_plan_next != null) return;
-  if (account.period_end - now > OLD_TERMS_NOTICE_MS || account.period_end <= now) return;
-  const planId = boughtPlanIdOf(account);
-  // After the renewal: the new disk, and the disk item moved to the current price.
-  const cleanup = planCleanupFor(env, { ...account, old_plan_terms: 0, extra_disk_old_price: 0 }, computers, planId);
-  const usedGb = countedDiskGb(computers);
-  const newDiskGb = CLOUD_PLANS[planId].diskGb;
-  const extraNowGb = Math.max(0, usedGb - planDiskGbOf(account, planId));
-  const extraThenGb = Math.max(0, usedGb - newDiskGb);
-  const extraCostsMore = !cleanup && cloudOffers(env).extraDisk && account.extra_disk_state === "on"
-    && (extraThenGb > extraNowGb || (extraThenGb > 0 && account.extra_disk_old_price === 1));
-  if (!cleanup && !extraCostsMore) return;
-  // Claimed first, so overlapping checks send one email.
-  const claimed = await env.DB.prepare("update cloud_accounts set old_terms_told_at = ? where user_id = ? and old_terms_told_at is null and old_plan_terms = 1")
-    .bind(now, account.user_id).run();
-  if (!claimed.meta.changes) return;
-  const planName = CLOUD_PLAN_SENTENCE_NAMES[planId];
-  const starts = utcDate(account.period_end);
-  logCloud("cloud.old_terms_warned", { userId: account.user_id, plan: planId, usedGb, limitGb: cleanup?.limitGb ?? newDiskGb, extraDisk: extraCostsMore });
-  const result = cleanup
-    ? await sendCloudEmail(env, {
-      userId: account.user_id,
-      subject: `Your ADE Cloud ${planName} plan has ${cleanup.limitGb} GB of disk from ${starts}`,
-      text: [
-        `${planName}'s disk changes to ${cleanup.limitGb} GB when your plan renews on ${starts}. Until then you keep what you have now.`,
-        cleanup.sentence,
-        `From then, ADE can't make a new computer until your computers fit${account.extra_disk_state === "on" ? ", and the disk past it counts as extra disk" : ""}.`,
-        WAYS_OUT,
-      ].join("\n"),
-    })
-    : await sendCloudEmail(env, {
-      userId: account.user_id,
-      subject: `Your ADE Cloud ${planName} plan has ${newDiskGb} GB of disk from ${starts}`,
-      text: [
-        `${planName}'s disk changes to ${newDiskGb} GB when your plan renews on ${starts}. Until then you keep what you have now.`,
-        `Your computers hold ${usedGb} GB, so from then ${extraThenGb} GB of it counts as extra disk, at ${formatCloudCents(EXTRA_DISK_CENTS_PER_10GB_MONTH)} for each 10 GB a month, never more than the monthly limit you set.`,
-        "Delete computers you no longer use to keep it inside your plan's disk. Your computers and their work stay as they are.",
-      ].join("\n"),
-    });
-  if (result === "sent" || (result === "skipped" && !isProduction(env))) return;
-  // Not told: give the claim back (only this run's), so the next check tries again.
-  await env.DB.prepare("update cloud_accounts set old_terms_told_at = null where user_id = ? and old_terms_told_at = ?").bind(account.user_id, now).run();
-  reportCloudFailure("cloud.old_terms_warn_email_failed", { userId: account.user_id, email: result });
-}
-
 /* ---- Over the plan in force: told once, nothing freed ---- */
 
 /**
@@ -500,7 +434,6 @@ export async function runPlanLimitChecks(env: CloudEnv, computers: ComputerRow[]
     .bind(JSON.stringify([...byUser.keys()])).all<AccountRow>();
   for (const account of accounts.results ?? []) {
     try {
-      await warnOldTermsEnding(env, account, byUser.get(account.user_id) ?? [], now);
       const over = overPlanInForce(env, account, byUser.get(account.user_id) ?? []);
       if (!over) {
         if (account.plan_over_told_at != null) {
@@ -524,11 +457,11 @@ async function tellOver(env: CloudEnv, account: AccountRow, over: Omit<CloudPlan
   if ((claim.meta?.changes ?? 0) !== 1) return;
   const sent = await sendCloudEmail(env, {
     userId: account.user_id,
-    subject: `Your ADE Cloud computers hold more disk than ${CLOUD_PLAN_SENTENCE_NAMES[over.planId]} has`,
+    subject: `You have more ADE Cloud computers than ${CLOUD_PLAN_SENTENCE_NAMES[over.planId]} allows`,
     text: [
-      `Your account is on ${CLOUD_PLAN_SENTENCE_NAMES[over.planId]} now and your computers hold more disk than it has.`,
+      `Your account is on ${CLOUD_PLAN_SENTENCE_NAMES[over.planId]} now and you have more cloud computers than it allows.`,
       over.sentence,
-      "ADE can't make a new computer until your computers fit. Your computers and their work stay as they are.",
+      "ADE can't make a new computer until you have fewer. Your computers and their work stay as they are.",
       WAYS_OUT,
     ].join("\n"),
   });

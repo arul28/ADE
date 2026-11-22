@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Check, Question, X } from "@phosphor-icons/react";
-import { formatCloudGb, type CloudAccountState } from "../../../../shared/adeCloud";
+import { cloudAccountComputers, formatCloudGb, type CloudAccountState } from "../../../../shared/adeCloud";
 import { ipcErrorMessage } from "../../../lib/format";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStore";
 import { CloudMark, CloudSizeIcon } from "../../remoteTargets/cloudBrand";
@@ -11,12 +11,21 @@ import { refreshCloudLanesWithoutComputer } from "../../cloudLane/cloudLaneStore
 
 type Choice = "keep" | "free" | "delete";
 
+/** "3 of 3 cloud computers in use. ": the plan's computers (Pricing v2); a count before it. */
+function computersLine(account: CloudAccountState): string {
+  const computers = cloudAccountComputers(account);
+  if (computers) return `${computers.total} of ${computers.limit} cloud computers in use. `;
+  const total = account.computers.total;
+  return `${total} cloud ${total === 1 ? "computer" : "computers"}. `;
+}
+
 /**
  * "Free up space": the cloud lanes biggest first, then the longest unused,
  * each with what its computer last said about its work (Safe to delete:
  * pull request merged, nothing unpushed). The person picks per lane; ADE
  * deletes nothing they did not pick, and asks again before a delete that
- * isn't marked safe.
+ * isn't marked safe. Since Pricing v2 no plan limits disk: the sheet frees
+ * computers (each counts toward the plan's computers) and the disk on them.
  */
 export function CloudFreeUpSpace({
   account,
@@ -85,7 +94,7 @@ export function CloudFreeUpSpace({
     }
     showToast(chatsLeft.length
       ? { tone: "warning", title: `Freed ${formatCloudGb(freedGb)}`, message: `ADE couldn't delete all the chats of ${chatsLeft.join(", ")}. Remove the rest in Work.`, durationMs: READABLE_TOAST_DURATION_MS }
-      : { tone: "success", title: `Freed ${formatCloudGb(freedGb)}`, message: "The dashboard shows the new disk." });
+      : { tone: "success", title: `Freed ${formatCloudGb(freedGb)}`, message: "The dashboard shows what's left." });
     onClose();
   };
 
@@ -97,7 +106,7 @@ export function CloudFreeUpSpace({
       onOpenChange={(open) => { if (!open && !busy) onClose(); }}
       dismissible={!busy}
       title="Free up space"
-      description={`${formatCloudGb(account.disk.usedGb)} of ${formatCloudGb(account.disk.limitGb ?? 0)} used. Biggest lanes first.`}
+      description={`${computersLine(account)}Biggest lanes first.`}
       footerStart={<span className="adecd-sheet-total">{picked.length ? `Frees ${formatCloudGb(freedGb)}` : "Pick what to free"}</span>}
       actions={[
         { label: busy ? "Working…" : "Free up space", onClick: () => void apply(), disabled: busy || !picked.length || !canAct, variant: "solid" },

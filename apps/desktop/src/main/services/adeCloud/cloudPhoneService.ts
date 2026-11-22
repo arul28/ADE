@@ -724,7 +724,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         else await settleEnd(tracked, Boolean(state.phone));
       }
       const reason = state.access === "on" ? null
-        : state.access === "soon" ? "The ADE Cloud iPhone is coming soon. It isn't on this account yet."
+        : state.access === "soon" ? "The ADE Cloud iPhone isn't on this account."
           : "The ADE Cloud iPhone isn't available right now.";
       const lastActivityAt = liveRun && state.phone?.id === liveRun.phoneId && state.phone.state !== "ended" ? liveRun.lastActivityAt : null;
       return { ...state, capabilities: state.access === "on" ? CLOUD_PHONE_AGENT_ACTIONS : [], supported: state.access === "on", reason, lastActivityAt };

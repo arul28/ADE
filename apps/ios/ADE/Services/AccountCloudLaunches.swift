@@ -354,6 +354,7 @@ func cloudServerFailureMessage(_ error: Error) -> String {
   case .noAccess: return "ADE Cloud isn't open for this account."
   case .unauthorized: return "Sign in to ADE again, then try again."
   case .refused(_, let message): return message
+  case .computerLimit(let limit): return limit.headline
   case .server(_, let message?): return message
   case .server(let status, nil): return "ADE Cloud answered with an error (\(status)). Try again soon."
   case .transport: return "ADE Cloud didn't answer. Check the connection, then try again."
@@ -834,6 +835,10 @@ final class AccountCloudLaunchStore: ObservableObject {
         $0.startError = message
         $0.startNeverReached = neverReached
       }
+      // Every cloud computer of the plan is taken: the card with the ways out.
+      if case .computerLimit(let limit)? = error as? CloudServerClient.Failure {
+        CloudLaneActions.shared.showComputerLimit(limit)
+      }
     }
   }
 
@@ -841,7 +846,7 @@ final class AccountCloudLaunchStore: ObservableObject {
   /// answer, an unreadable one or a server error: those may have gone through.
   private static func isClearRefusal(_ error: Error) -> Bool {
     switch error as? CloudServerClient.Failure {
-    case .refused?, .noAccess?, .unauthorized?: return true
+    case .refused?, .computerLimit?, .noAccess?, .unauthorized?: return true
     case .server(let status, _)?: return (400..<500).contains(status)
     default: return false
     }

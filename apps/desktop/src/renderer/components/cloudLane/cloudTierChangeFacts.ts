@@ -1,9 +1,5 @@
 import {
-  CLOUD_PLAN_LABELS,
-  CLOUD_PLAN_RANK,
-  cloudCatalogHasPro,
   cloudCatalogOf,
-  cloudPlanIdOf,
   type CloudAccountState,
   type CloudMachine,
 } from "../../../shared/adeCloud";
@@ -12,9 +8,10 @@ import { cloudTierFacts, cloudTiers, type CloudTier } from "../../../shared/clou
 
 /**
  * What a size change means for the lane's disk, in plain words, from data
- * only: the computer's disk and its last measure, the size's disk cap, the
- * plan's disk and what the account's computers use. Nothing here knows a
- * provider, an OS or a plan by name; the catalog says what each one allows.
+ * only: the computer's disk and its last measure and the size's disk cap.
+ * Since Pricing v2 no plan limits disk: each computer's disk is its own, up
+ * to its size's cap. Nothing here knows a provider, an OS or a plan by name;
+ * the catalog says what each size allows.
  */
 
 /** The lane's computer as the change card needs it. */
@@ -38,14 +35,6 @@ export function tierChangeComputerOf(machine: Pick<CloudMachine, "resources" | "
 
 const roundGb = (gb: number) => Math.max(0, Math.floor(gb * 10) / 10);
 
-/** Room on the plan's disk for this one computer: the plan's disk, less what the others use. Null with no plan limit. */
-function planRoomForComputerGb(account: CloudAccountState | null, currentGb: number): number | null {
-  const limitGb = account?.disk?.limitGb;
-  if (limitGb == null || !account) return null;
-  const othersGb = Math.max(0, account.disk.usedGb - currentGb);
-  return limitGb - othersGb;
-}
-
 /**
  * One line on the disk at the new size: a size change keeps the disk as it is
  * ("Disk stays 4 GB; Medium lets it grow to 20 GB."); a move gets a new computer.
@@ -61,9 +50,7 @@ export function tierChangeDiskLine(input: { to: CloudTier; move: boolean; curren
 
 /**
  * The disk sizes a resize can grow to in the same restart: whole steps above
- * the disk now, up to the size's cap and what the plan's disk has room for
- * (never past it, so a grow here never adds a charge for extra disk). Empty
- * with a reason when none fits.
+ * the disk now, up to the size's cap. Empty when the size holds no more.
  */
 export function tierChangeDiskChoices(input: {
   account: CloudAccountState | null;
@@ -76,41 +63,15 @@ export function tierChangeDiskChoices(input: {
   const step = catalog.diskStepGb > 0 ? catalog.diskStepGb : 4;
   const capGb = to.diskMaxGb ?? Number.POSITIVE_INFINITY;
   if (capGb <= currentGb) return { choices: [], why: null };
-  const roomGb = planRoomForComputerGb(account, currentGb);
-  const maxGb = Math.min(capGb, roomGb ?? capGb);
   const choices: number[] = [];
-  for (let gb = currentGb + step; gb <= maxGb && Number.isFinite(gb); gb += step) choices.push(gb);
-  if (choices.length) return { choices, why: null };
-  // The size could hold more, but the plan's disk is in use.
-  const limitGb = account?.disk.limitGb ?? null;
-  if (limitGb == null) return { choices: [], why: null };
-  const better = planWithDisk(account, limitGb + step);
-  return {
-    choices: [],
-    why: `Your computers use your plan's ${limitGb} GB of disk. Delete a computer you no longer use${better ? `, or get ${better.label}` : ""}, to grow it.`,
-  };
-}
-
-/** The cheapest plan above the account's that has at least `needGb` of disk, from the catalog. */
-function planWithDisk(account: CloudAccountState | null, needGb: number): { label: string; diskGb: number } | null {
-  if (!account) return null;
-  const catalog = cloudCatalogOf(account);
-  const rank = CLOUD_PLAN_RANK[cloudPlanIdOf(account)];
-  const plans = cloudCatalogHasPro(catalog)
-    ? ([["plus", catalog.plans.plus], ["pro", catalog.plans.pro]] as const)
-    : ([["plus", catalog.plans.paid]] as const);
-  for (const [id, facts] of plans) {
-    if (CLOUD_PLAN_RANK[id] <= rank) continue;
-    if (facts.diskGb >= needGb) return { label: cloudCatalogHasPro(catalog) ? CLOUD_PLAN_LABELS[id] : "a paid plan", diskGb: facts.diskGb };
-  }
-  return null;
+  for (let gb = currentGb + step; gb <= capGb && Number.isFinite(gb); gb += step) choices.push(gb);
+  return { choices, why: null };
 }
 
 /**
  * Before a change to a size that runs Android: whether the lane's computer
  * will have the room an Android device needs on its first start (about
- * 7.2 GB free, `androidDisk.ts`), and if not, which size, cleanup or plan
- * gives it. Null for a size that doesn't run Android.
+ * 7.2 GB free, `androidDisk.ts`), and if not, which size gives it. Null for a size that doesn't run Android.
  */
 export function tierChangeAndroidNote(input: {
   account: CloudAccountState | null;
@@ -127,8 +88,7 @@ export function tierChangeAndroidNote(input: {
   if (usedGb == null || currentGb == null) {
     return { fits: true, sentence: `Android needs about ${need} free on the disk for its first start.` };
   }
-  const roomGb = planRoomForComputerGb(account, currentGb);
-  const maxDiskGb = Math.min(to.diskMaxGb ?? Number.POSITIVE_INFINITY, roomGb ?? Number.POSITIVE_INFINITY);
+  const maxDiskGb = to.diskMaxGb ?? Number.POSITIVE_INFINITY;
   const freeGb = maxDiskGb - usedGb;
   if (!Number.isFinite(freeGb) || freeGb >= needGb) {
     return {
@@ -145,19 +105,9 @@ export function tierChangeAndroidNote(input: {
     const bigger = cloudTiers(cloudCatalogOf(account)).find((tier) => cloudTierFacts(tier).full && (tier.diskMaxGb ?? 0) >= needDiskGb);
     if (bigger) ways.push(`pick ${bigger.label}`);
   }
-  const limitGb = account?.disk.limitGb ?? null;
-  if (limitGb != null) {
-    const othersGb = Math.max(0, (account?.disk.usedGb ?? 0) - currentGb);
-    if (othersGb > 0 && limitGb >= needDiskGb) ways.push(`delete other computers first (they use ${roundGb(othersGb)} GB)`);
-    const plan = planWithDisk(account, othersGb + needDiskGb);
-    if (plan) ways.push(`get ${plan.label} (${plan.diskGb} GB of disk)`);
-  }
-  const shared = limitGb != null && account
-    ? ` Your plan's ${limitGb} GB of disk is shared by all your computers.`
-    : "";
-  const way = ways.length ? ` To run Android, ${ways.join(", or ")}.` : "";
+  const way = ways.length ? ` To run Android, ${ways.join(", or ")}.` : " To run Android, free up space on it first.";
   return {
     fits: false,
-    sentence: `Android needs about ${need} free for its first start, and this lane's computer could have only about ${roundGb(Math.max(0, freeGb))} GB free.${shared}${way}`,
+    sentence: `Android needs about ${need} free for its first start, and this lane's computer could have only about ${roundGb(Math.max(0, freeGb))} GB free.${way}`,
   };
 }
