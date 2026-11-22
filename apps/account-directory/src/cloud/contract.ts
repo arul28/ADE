@@ -238,6 +238,15 @@ export const CLOUD_PATHS = {
    */
   phone: "/cloud/phone",
   phoneView: "/cloud/phone/view",
+  /**
+   * `POST { action, body?, query? }`: one call to the account's live phone at
+   * a provider that has no per-phone token (Revyl). The server holds the key,
+   * names the phone, and passes the provider's answer back as it is (JSON or
+   * bytes). `phoneCallActions` in `phoneRevyl.ts` lists the actions.
+   */
+  phoneCall: "/cloud/phone/call",
+  /** `GET`: ADE's own page that shows a phone streamed over WebRTC (WHEP), for a view link's `#` part. Not an account route. */
+  phoneViewer: "/cloud/phone/viewer",
   /** `POST { enabled, monthlyLimitUsd? }`: extra iPhone minutes on a paid plan (`CloudAccountState.phone.extra`). */
   billingExtraPhone: "/cloud/billing/extra-phone",
   /** NoMac's signed webhook (`phones.ts`): phone ready and ended, credit low. Not an account route. */
@@ -2960,7 +2969,16 @@ export type CloudEventWakeInternalResult = { subscribed: boolean; woken: number 
 
 /* ---- The ADE Cloud iPhone (`phones.ts`) ---- */
 
-/** The phone models a cloud iPhone can be (NoMac's device names). */
+/**
+ * Who runs the phones: NoMac or Revyl. Every ADE surface drives either the
+ * same way; the server picks one per account (`CLOUD_PHONE_PROVIDER`, the
+ * owner's per-account choice on the beta list) and every phone keeps its own.
+ */
+export const CLOUD_PHONE_PROVIDERS = ["nomac", "revyl"] as const;
+export type CloudPhoneProvider = (typeof CLOUD_PHONE_PROVIDERS)[number];
+export const isCloudPhoneProvider = (value: unknown): value is CloudPhoneProvider => (CLOUD_PHONE_PROVIDERS as readonly unknown[]).includes(value);
+
+/** The phone models a cloud iPhone can be (ADE's names; each provider maps them to its own). */
 export const CLOUD_PHONE_DEVICES = ["iphone", "iphone-pro-max", "ipad"] as const;
 export type CloudPhoneDevice = (typeof CLOUD_PHONE_DEVICES)[number];
 export const isCloudPhoneDevice = (value: unknown): value is CloudPhoneDevice => (CLOUD_PHONE_DEVICES as readonly unknown[]).includes(value);
@@ -2992,6 +3010,8 @@ export type CloudPhoneSummary = {
   endReason: string | null;
   /** A sentence about its coming stop (its last 15 minutes), or null. */
   stopNotice: string | null;
+  /** Who runs it. Absent from a server before Revyl: NoMac. */
+  provider?: CloudPhoneProvider;
 };
 
 /** `GET /cloud/phone`. */
@@ -3001,6 +3021,31 @@ export type CloudPhoneState = {
   minutes: CloudPhoneMinutes | null;
   /** The account's live phone, or null. */
   phone: CloudPhoneSummary | null;
+  /**
+   * This period's phones, newest first (at most `CLOUD_PHONE_RECENT_SHOWN`),
+   * so a person can see where the minutes went. Absent from an older server.
+   */
+  recent?: CloudPhoneUse[];
+};
+
+/** How many of the period's phones `CloudPhoneState.recent` lists. */
+export const CLOUD_PHONE_RECENT_SHOWN = 10;
+
+/** One phone of this period, as the minutes count it. */
+export type CloudPhoneUse = {
+  /** When it was asked for (ms). */
+  startedAt: number;
+  /** When it ended (ms), or null while it runs. */
+  endedAt: number | null;
+  /** The minutes it counted (whole minutes, up), so far for one that runs. */
+  minutes: number;
+  device: string | null;
+  /**
+   * How it ended: `stopped` (a stop), `stop_at` (the minutes ran out), a
+   * provider's reason (`idle`, `time_limit`, …), or `on_its_own` when it ended
+   * with no reason given (NoMac's idle stop or time limit). Null while it runs.
+   */
+  ended: string | null;
 };
 
 /** A token for one phone, for the brain that drives it. It cannot start, list or stop phones. */
@@ -3013,12 +3058,32 @@ export type CloudPhoneStart = {
   reused: boolean;
   token: CloudPhoneToken;
   minutes: CloudPhoneMinutes;
-  /** NoMac's REST base for the phone's tools (`…/api/v1/simulator`). */
+  /** NoMac's REST base for the phone's tools (`…/api/v1/simulator`). Empty for Revyl, whose calls go through `phoneCall`. */
   apiBase: string;
+  /**
+   * Who runs it. Absent from a server before Revyl: NoMac. For `revyl` the
+   * token is empty: the brain calls the phone through `CLOUD_PATHS.phoneCall`
+   * with its own account token, and the server holds Revyl's key.
+   */
+  provider?: CloudPhoneProvider;
+  /** The phone's screen in points, when the provider says (Revyl does). */
+  points?: { width: number; height: number } | null;
 };
 
-/** `POST /cloud/phone/view` `{ control? }`: a link that shows the live phone, for this account only. */
-export type CloudPhoneView = { url: string; expiresAt: number; control: boolean };
+/** `POST /cloud/phone/call`. */
+export type CloudPhoneCallRequest = {
+  action: string;
+  body?: Record<string, unknown>;
+  query?: Record<string, string>;
+};
+
+/**
+ * `POST /cloud/phone/view` `{ control? }`: a link that shows the live phone,
+ * for this account only. NoMac's own page, or for Revyl ADE's viewer page
+ * (`CLOUD_PATHS.phoneViewer`) with the stream and input links after `#`.
+ * Every surface opens it the same way, as a page.
+ */
+export type CloudPhoneView = { url: string; expiresAt: number; control: boolean; provider?: CloudPhoneProvider };
 
 /** Where an account's iPhone minutes stand this period, for the warnings and the meter. */
 export type CloudPhoneMinutesState = "none" | "warn80" | "zero";

@@ -2413,7 +2413,8 @@ function deviceStartNote(device: AppleLaneDevice, action: AppleDeviceStartDevice
     return `Made a new simulator for this lane: ${device.name} (${device.udid}), booted. It is deleted with the lane.`;
   }
   if (action === "attached") {
-    return `Attached an installed simulator to this lane: ${device.name} (${device.udid}); ADE did not make it, and never deletes it. Booted.`;
+    return `Attached one of this Mac's installed simulators to this lane: ${device.name} (${device.udid}), booted. ADE did not make it and never deletes it, `
+      + "and someone at this Mac may use it outside ADE too. For a new one of this lane's own instead: ade apple device-detach, then ade apple device-create.";
   }
   return `This lane's simulator ${device.name} (${device.udid}) is booted.`;
 }

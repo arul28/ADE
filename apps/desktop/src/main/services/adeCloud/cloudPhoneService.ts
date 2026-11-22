@@ -3,13 +3,15 @@
  * iPhone is `ios@cloud`, from any machine (Windows, Linux, a Mac, an ADE
  * Cloud computer).
  *
- * ADE's server starts the phone and hands this brain a token for that phone
- * only (`/cloud/phone`, `phones.ts`); the account key that starts and stops
- * phones never leaves the server. With the token this service calls the
- * phone's own tools at NoMac directly: read the screen as text, act on it,
- * screenshots, logs, recordings, and a build of the lane's code (packed here,
- * uploaded, unpacked into the account's workspace there, built with Xcode) or
- * an app built elsewhere, installed as-is.
+ * ADE's server starts the phone and picks who runs it (NoMac or Revyl,
+ * `phones.ts`); the provider's key never leaves the server. This service owns
+ * what every provider shares: the account's one phone, waiting for it, the
+ * chat's start and end lines, argument checks, packing the lane's code or an
+ * app built elsewhere, screenshots and recordings saved here and filed to the
+ * proof drawer. A driver drives the phone itself, in the same words for both
+ * (`cloudPhoneDriver.ts`): NoMac's with a token for that phone only
+ * (`cloudPhoneNomacDriver.ts`), Revyl's through the server
+ * (`cloudPhoneRevylDriver.ts`). A phone keeps the driver it started with.
  *
  * One phone per account: every chat on this brain that chose `ios@cloud`
  * drives the same phone, as every lane of an account shares its plan's
@@ -21,10 +23,10 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Readable } from "node:stream";
 import type {
   CloudPhoneDevice,
   CloudPhoneMinutes,
+  CloudPhoneProvider,
   CloudPhoneStart,
   CloudPhoneSummary,
   CloudPhoneView,
@@ -52,6 +54,19 @@ import {
   type CloudPhoneRunEnd,
 } from "./cloudPhoneRun";
 import { isPathEscapeError, resolvePathWithinRoot } from "../shared/utils";
+import {
+  CloudPhoneError,
+  CloudPhoneGoneError,
+  sleep,
+  type CloudPhoneDriver,
+  type CloudPhoneHeld,
+  type CloudPhonePacked,
+  type CloudPhoneToolAnswer,
+} from "./cloudPhoneDriver";
+import { createNomacDriver } from "./cloudPhoneNomacDriver";
+import { createRevylDriver } from "./cloudPhoneRevylDriver";
+
+export { CloudPhoneError, type CloudPhoneToolAnswer };
 
 export type CloudPhoneServiceDeps = {
   /** The account's ADE Cloud client, or null signed out. */
@@ -76,21 +91,9 @@ export type CloudPhoneProofTarget = {
 /** Who a capture belongs to in the proof drawer: the chat that asked, and its lane. */
 type ProofOwners = { chatSessionId?: unknown; laneId?: unknown; caption?: unknown };
 
-export type CloudPhoneToolAnswer = {
-  text: string;
-  /** The tool ran and reported a failure (a failed build, a failed step). */
-  failed: boolean;
-  /** Download links the answer named (screenshots, recordings): 7 days for those. */
-  links: string[];
-  /** Inline images (a `look` with a screenshot), base64. */
-  images: Array<{ mimeType: string; data: string }>;
-  /** A sentence about the phone's coming stop, when it is near. */
-  stopNotice: string | null;
-};
 
 
-/** The phone this brain drives, and the account it was started for (a phone and its token belong to one account). */
-type Held = { phoneId: string; token: string; expiresAt: number; apiBase: string; device: string; minutes: CloudPhoneMinutes; checkedAt: number; account: string | null };
+type Held = CloudPhoneHeld;
 
 /** Phone ids whose start or end a chat was told, kept this many. */
 const ANNOUNCED_LIMIT = 200;
@@ -99,15 +102,10 @@ const READY_WAIT_MS = 6 * 60_000;
 const BLANK_SCREENSHOT_WAIT_MS = 1_500;
 const BLANK_SCREENSHOT_TRIES = 3;
 const CALL_POLL_MS = 1_000;
-/** A tool call or a build job is given this long before ADE stops waiting. */
-const TOOL_WAIT_MS = 15 * 60_000;
 const UPLOAD_LIMIT_BYTES = 2 * 1024 ** 3;
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000;
 /** A held phone read ready this recently is used without reading it again. */
 const READY_TRUST_MS = 20_000;
-const JOB_PATTERN = /Next: job_status \{job_id: "([^"]+)"\}/;
-const STILL_RUNNING = /Next: job_status again, or job_cancel\./;
-const FILE_LINK = /https:\/\/nomac\.app\/api\/v1\/simulator\/files\/[A-Za-z0-9_.-]+/g;
 /** NoMac's own list of what never goes up (`simulator-use` sync): build output, dependencies, version control, keys. */
 const SKIP_DIRS = new Set([".git", ".hg", ".svn", "DerivedData", "build", ".build", "node_modules", "Pods", "xcuserdata", ".swiftpm", ".expo", ".gradle", ".ade"]);
 const isSecretFile = (name: string): boolean =>
@@ -123,14 +121,6 @@ function cloudPhoneSkipsPath(relative: string): boolean {
   return parts.slice(0, -1).some((part) => SKIP_DIRS.has(part)) || SKIP_DIRS.has(name) || skipFile(name);
 }
 
-export class CloudPhoneError extends Error {
-  constructor(message: string, readonly code: string) {
-    super(message);
-    this.name = "CloudPhoneError";
-  }
-}
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function run(command: string, args: string[], options: { cwd: string; input?: Buffer }): Promise<{ code: number; stdout: Buffer; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -172,7 +162,7 @@ async function projectFiles(root: string, prefix = ""): Promise<string[]> {
   return files;
 }
 
-type Packed = { file: string; size: number; sha256: string };
+type Packed = CloudPhonePacked;
 
 /**
  * Packs with the system's tar into a temp `.tar.gz`, then reads its size and
@@ -334,15 +324,6 @@ function screenshotTarget(requested: string | undefined, projectRoot: string | n
   return target;
 }
 
-/** The bundle id an install answer names, when it names one. */
-function bundleIdOf(text: string): string | null {
-  const named = /bundle(?:\s*id)?\s*[:=]?\s*([A-Za-z][\w-]*(?:\.[\w-]+)+)/i.exec(text)?.[1];
-  if (named) return named;
-  // NoMac's own wording elsewhere: "installed dev.example.App." (app_run).
-  const installed = /\binstalled\s+([A-Za-z][\w-]*(?:\.[\w-]+){2,})/i.exec(text)?.[1];
-  if (installed) return installed.replace(/\.$/, "");
-  return /\(([A-Za-z][\w-]*(?:\.[\w-]+){2,})\)/.exec(text)?.[1] ?? null;
-}
 
 /** The workspace folder a project unpacks into: the same one each time, so builds stay incremental. */
 function cloudPhoneProjectName(root: string): string {
@@ -350,22 +331,6 @@ function cloudPhoneProjectName(root: string): string {
   return `${base}-${createHash("sha256").update(path.resolve(root).toLowerCase()).digest("hex").slice(0, 12)}`;
 }
 
-function answerOf(body: Record<string, unknown> | null): CloudPhoneToolAnswer {
-  const result = body?.result as { content?: unknown; isError?: unknown } | undefined;
-  const content = Array.isArray(result?.content) ? result.content as Array<Record<string, unknown>> : [];
-  const text = content.filter((block) => block.type === "text" && typeof block.text === "string").map((block) => block.text as string).join("\n");
-  const images = content.flatMap((block) => block.type === "image" && typeof block.data === "string"
-    ? [{ mimeType: typeof block.mimeType === "string" ? block.mimeType : "image/jpeg", data: block.data }]
-    : []);
-  const notice = body?.stop_notice as { message?: unknown } | null | undefined;
-  return {
-    text,
-    failed: result?.isError === true,
-    links: [...new Set(text.match(FILE_LINK) ?? [])],
-    images,
-    stopNotice: typeof notice?.message === "string" ? notice.message : null,
-  };
-}
 
 export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
   const fetcher = deps.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
@@ -383,6 +348,18 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     if (!client?.phoneState) throw new CloudPhoneError(await deps.whyNoProvider() ?? "Sign in to ADE to use the ADE Cloud iPhone.", "no_account");
     return client;
   }
+
+  /** A call reached the run's phone: the provider's idle clock starts again. */
+  function touched(phone: Held): void {
+    if (liveRun?.phoneId === phone.phoneId && liveRun.account === phone.account) liveRun.lastActivityAt = Date.now();
+  }
+
+  const driverContext = { fetcher, logger: deps.logger, touched, client: provider };
+  const drivers: Record<CloudPhoneProvider, CloudPhoneDriver> = {
+    nomac: createNomacDriver(driverContext),
+    revyl: createRevylDriver(driverContext),
+  };
+  const driverOf = (phone: Held): CloudPhoneDriver => drivers[phone.provider];
 
   /**
    * The account signed in now. After a sign-out or a switch to another account
@@ -431,12 +408,12 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
    * the session read adds when.
    */
   async function settleEnd(ended: CloudPhoneRun<Held>, replaced: boolean, known?: CloudPhoneRunEnd): Promise<void> {
-    const answer = await nomac(ended.phone, "GET", "").catch((error: unknown) => {
+    const answer = await driverOf(ended.phone).read(ended.phone).catch((error: unknown) => {
       // Unread: the run stays open, and a later read settles it.
       deps.logger?.warn?.("cloud_phone.end_read_failed", { error: error instanceof Error ? error.message : String(error) });
       return null;
     });
-    const session = answer?.body?.session as Record<string, unknown> | undefined;
+    const session = answer?.session ?? undefined;
     if (answer?.status === 200 && typeof session?.state === "string") {
       if (known || !CLOUD_PHONE_LIVE_STATES.has(session.state)) {
         const end = cloudPhoneEndOf(session);
@@ -449,10 +426,6 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     if (replaced || answer?.status === 401 || answer?.status === 404 || answer?.status === 410) announceEnd(ended, { why: null, at: null });
   }
 
-  /** A tool call reached the run's phone: NoMac's idle clock starts again. */
-  function touched(phone: Held): void {
-    if (liveRun?.phoneId === phone.phoneId && liveRun.account === phone.account) liveRun.lastActivityAt = Date.now();
-  }
 
   function hold(start: CloudPhoneStart, client: CloudProvider, chatSessionId: string | null): Held {
     held = {
@@ -464,6 +437,9 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       device: String(start.phone.device),
       minutes: start.minutes,
       checkedAt: 0,
+      // A server from before Revyl names none: NoMac.
+      provider: start.provider === "revyl" ? "revyl" : "nomac",
+      points: start.points ?? null,
     };
     if (liveRun?.phoneId === held.phoneId && liveRun.account === held.account) liveRun.phone = held;
     // A reused phone was started by someone else: nobody is told of it.
@@ -471,42 +447,15 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     return held;
   }
 
-  /** One call to the phone's NoMac session. A POST that must run once passes an `idempotencyKey` (`newKey()`, or one its retries share). */
-  async function nomac(phone: Held, method: string, route: string, body?: unknown, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> | null }> {
-    const response = await fetcher(`${phone.apiBase}/sessions/${encodeURIComponent(phone.phoneId)}${route}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${phone.token}`,
-        accept: "application/json",
-        ...(body !== undefined ? { "content-type": "application/json" } : {}),
-        ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
-      },
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(90_000),
-      redirect: "error",
-    });
-    const parsed = await response.json().catch(() => null) as unknown;
-    return { status: response.status, body: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null };
-  }
 
-  const newKey = (): string => `ade-${randomUUID()}`;
-
-  function failureOf(answer: { status: number; body: Record<string, unknown> | null }, doing: string): CloudPhoneError {
-    const error = answer.body?.error as { code?: unknown; message?: unknown } | string | undefined;
-    const code = typeof error === "string" ? error : typeof error?.code === "string" ? error.code : `http_${answer.status}`;
-    const message = typeof answer.body?.message === "string"
-      ? answer.body.message
-      : typeof error === "object" && typeof error?.message === "string" ? error.message : null;
-    // The answer's keys (never its values): a 200 with no result says what NoMac sent instead.
-    deps.logger?.warn?.("cloud_phone.call_failed", { doing, status: answer.status, code, bodyKeys: answer.body ? Object.keys(answer.body).slice(0, 12) : null });
-    return new CloudPhoneError(message ? `${doing}: ${message}` : `${doing} failed (${code}).`, code);
-  }
-
-  /** The phone's state read with its own token. */
+  /** The phone's state, read from its provider. */
   async function readSession(phone: Held): Promise<{ state: string; session: Record<string, unknown> | null }> {
-    const answer = await nomac(phone, "GET", "");
-    const session = answer.body?.session as Record<string, unknown> | undefined;
-    if (answer.status !== 200 || typeof session?.state !== "string") throw failureOf(answer, "Reading the cloud iPhone");
+    const answer = await driverOf(phone).read(phone);
+    const session = answer.session;
+    if (answer.status !== 200 || typeof session?.state !== "string") {
+      deps.logger?.warn?.("cloud_phone.call_failed", { doing: "Reading the cloud iPhone", status: answer.status, provider: phone.provider });
+      throw new CloudPhoneError(`Reading the cloud iPhone failed (http_${answer.status}).`, `http_${answer.status}`);
+    }
     return { state: session.state, session };
   }
 
@@ -574,90 +523,22 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     return phone;
   }
 
-  /** A tool call NoMac held past 45 s answers `running` with its id: read it back until it ends, within `by`. */
-  async function calledThrough(phone: Held, first: Awaited<ReturnType<typeof nomac>>, doing: string, by: number): Promise<Awaited<ReturnType<typeof nomac>>> {
-    let answer = first;
-    while (answer.status === 200 && answer.body?.state === "running" && typeof answer.body.id === "string") {
-      if (Date.now() >= by) throw new CloudPhoneError(`${doing} is still running after 15 minutes.`, "tool_timeout");
-      await sleep(CALL_POLL_MS);
-      answer = await nomac(phone, "GET", `/calls/${encodeURIComponent(answer.body.id)}`);
-    }
-    return answer;
-  }
 
-  /** Runs one of the phone's tools to its end: a call past 45 s is read back, a build past 40 s is followed as a job. */
-  async function tool(name: string, args: Record<string, unknown>, doing: string, chatSessionId: string | null): Promise<CloudPhoneToolAnswer> {
-    let phone = await ensure({ chatSessionId });
-    const by = Date.now() + TOOL_WAIT_MS;
-    let answer = await nomac(phone, "POST", `/tools/${name}`, args, newKey());
-    // The phone ended between the check and the call (idle, its limit): once more on a fresh one.
-    if (cloudPhoneGone(answer.status)) {
-      held = null;
-      phone = await ensure({ chatSessionId });
-      answer = await nomac(phone, "POST", `/tools/${name}`, args, newKey());
-    }
-    if (answer.status === 200) touched(phone);
-    answer = await calledThrough(phone, answer, doing, by);
-    if (answer.status !== 200 || !answer.body?.result) throw failureOf(answer, doing);
-    let result = answerOf(answer.body);
-    // A long build answers with a job; job_status waits up to 40 s a call.
-    let job = JOB_PATTERN.exec(result.text)?.[1] ?? null;
-    while (job) {
-      if (Date.now() >= by) throw new CloudPhoneError(`${doing} is still running after 15 minutes.`, "tool_timeout");
-      // job_status is a tool call too: one that runs past 45 s is read back like any other.
-      const next = await calledThrough(phone, await nomac(phone, "POST", "/tools/job_status", { job_id: job }, newKey()), doing, by);
-      if (next.status !== 200 || !next.body?.result) throw failureOf(next, doing);
-      touched(phone);
-      result = answerOf(next.body);
-      job = STILL_RUNNING.test(result.text) ? job : null;
-    }
-    return result;
-  }
-
-  /** Uploads a packed archive with the closed link, then has the phone unpack it under `name`. */
-  async function uploadPacked(phone: Held, packed: Packed, name: string, what: string): Promise<{ root: string; app: string | null }> {
-    const link = await nomac(phone, "POST", "/sync/upload", { size: packed.size, sha256: packed.sha256 });
-    const uploadUrl = link.body?.upload_url;
-    if (link.status !== 200 || typeof uploadUrl !== "string" || !uploadUrl.startsWith("https://")) throw failureOf(link, `Uploading ${what}`);
-    // Streamed from disk with its length: up to 2 GB is never held in memory.
-    const put = await fetcher(uploadUrl, {
-      method: "PUT",
-      headers: { "content-length": String(packed.size) },
-      body: Readable.toWeb(fs.createReadStream(packed.file)) as unknown as BodyInit,
-      duplex: "half",
-      signal: AbortSignal.timeout(30 * 60_000),
-    } as RequestInit);
-    if (!put.ok) throw new CloudPhoneError(`Uploading ${what} failed (${put.status}).`, "upload_failed");
-    const key = `ade-fetch-${packed.sha256.slice(0, 32)}`;
-    for (let attempt = 0; attempt < 600; attempt += 1) {
-      const response = await nomac(phone, "POST", "/sync/fetch", { sha256: packed.sha256, name }, key);
-      const body = response.body;
-      if (response.status !== 200) throw failureOf(response, `Unpacking ${what}`);
-      if (body?.state === "failed") throw new CloudPhoneError(`Unpacking ${what} failed: ${String(body.error ?? "unknown")}.`, "fetch_failed");
-      if (body?.state !== "running" && typeof body?.root === "string") {
-        return { root: body.root, app: typeof body.app === "string" ? body.app : null };
-      }
-      await sleep(CALL_POLL_MS);
-    }
-    throw new CloudPhoneError(`Unpacking ${what} took over 10 minutes.`, "fetch_timeout");
-  }
-
-  async function uploadProject(root: string, chatSessionId: string | null): Promise<{ root: string; files: number; bytes: number }> {
+  /**
+   * Runs one command on the account's ready phone with its own driver. The
+   * phone ended between the check and the command's first call (idle, its
+   * limit): once more on a fresh one.
+   */
+  async function withPhone<T>(chatSessionId: string | null, run: (phone: Held, driver: CloudPhoneDriver) => Promise<T>): Promise<T> {
     const phone = await ensure({ chatSessionId });
-    const packed = await packProject(root);
     try {
-      const placed = await uploadPacked(phone, packed, cloudPhoneProjectName(root), "the project");
-      return { root: placed.root, files: packed.count, bytes: packed.size };
-    } finally {
-      fs.rmSync(packed.file, { force: true });
+      return await run(phone, driverOf(phone));
+    } catch (error) {
+      if (!(error instanceof CloudPhoneGoneError)) throw error;
+      if (held === phone) held = null;
+      const fresh = await ensure({ chatSessionId });
+      return await run(fresh, driverOf(fresh));
     }
-  }
-
-  /** Downloads a file link the phone answered (7 days for screenshots and recordings). */
-  async function download(link: string, what: string): Promise<Buffer> {
-    const response = await fetcher(link, { signal: AbortSignal.timeout(5 * 60_000) });
-    if (!response.ok) throw new CloudPhoneError(`Downloading the ${what} failed (${response.status}).`, "download_failed");
-    return Buffer.from(await response.arrayBuffer());
   }
 
   /** Files a capture to the calling project's proof drawer, owned by its chat and lane. Null when there is no drawer. */
@@ -701,8 +582,6 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     if (sub && (path.isAbsolute(sub) || sub.split(/[\\/]/).includes(".."))) throw new CloudPhoneError("path is a folder inside the project.", "bad_request");
     return { root, sub };
   };
-  /** That folder in the phone's unpacked copy. */
-  const onPhone = (uploadedRoot: string, sub: string | undefined): string => (sub ? `${uploadedRoot}/${sub.replace(/\\/g, "/")}` : uploadedRoot);
 
   return {
     async getStatus(): Promise<CloudPhoneStatusView> {
@@ -790,13 +669,12 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         phone = hold(start, client, null);
         phone.checkedAt = Date.now();
       }
-      const answer = await nomac(phone, "POST", "/tools/ui_look", {}, newKey());
+      const status = await driverOf(phone).keepAlive(phone);
       // Gone, or only this token (the next status read settles whether it ended).
-      if (cloudPhoneGone(answer.status)) {
+      if (cloudPhoneGone(status)) {
         if (held === phone) held = null;
         return { ok: false };
       }
-      if (answer.status !== 200) throw failureOf(answer, "Keeping the cloud iPhone awake");
       touched(phone);
       return { ok: true };
     },
@@ -804,14 +682,14 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     /** The screen as text: one element per line, with its label and center in points. */
     async look(args: { find?: unknown; screenshot?: unknown } | null | undefined): Promise<CloudPhoneToolAnswer> {
       const find = textArg(args?.find, "find", 200);
-      return tool("ui_look", { ...(find ? { find } : {}), ...(args?.screenshot === true ? { screenshot: true } : {}) }, "Reading the screen", cloudPhoneCallerChat(args));
+      return withPhone(cloudPhoneCallerChat(args), (phone, driver) => driver.look(phone, { ...(find ? { find } : {}), screenshot: args?.screenshot === true }));
     },
 
     /** Steps in `look`'s words: `tap "Sign In"`, `fill #email a@b.c`, `swipe up`, `wait "Welcome" 10`, `home`. */
     async act(args: { steps?: unknown } | null | undefined): Promise<CloudPhoneToolAnswer> {
       const steps = Array.isArray(args?.steps) ? args.steps.filter((step): step is string => typeof step === "string" && step.trim().length > 0) : [];
       if (!steps.length || steps.length > 50) throw new CloudPhoneError("steps is a list of 1 to 50 steps, e.g. [\"tap \\\"Sign In\\\"\"].", "bad_request");
-      return tool("ui_act", { steps }, "Acting on the screen", cloudPhoneCallerChat(args));
+      return withPhone(cloudPhoneCallerChat(args), (phone, driver) => driver.act(phone, steps));
     },
 
     /**
@@ -832,11 +710,9 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       let bytes: Buffer = Buffer.alloc(0);
       for (let attempt = 0; attempt < BLANK_SCREENSHOT_TRIES; attempt += 1) {
         if (attempt > 0) await sleep(BLANK_SCREENSHOT_WAIT_MS);
-        const answer = await tool("ui_look", { screenshot_file: true }, "Taking a screenshot", cloudPhoneCallerChat(args));
-        const found = answer.links.find((candidate) => /\.png/i.test(Buffer.from(candidate.split("/files/")[1]?.split(".")[0] ?? "", "base64url").toString("utf8"))) ?? answer.links[0];
-        if (!found) throw new CloudPhoneError("The cloud iPhone did not answer with a screenshot.", "no_screenshot");
-        link = found;
-        bytes = await download(found, "screenshot");
+        const shot = await withPhone(cloudPhoneCallerChat(args), (phone, driver) => driver.screenshot(phone));
+        link = shot.link;
+        bytes = shot.bytes;
         if (!pngLooksBlank(bytes)) break;
         deps.logger?.info?.("cloud_phone.screenshot_blank", { attempt });
       }
@@ -864,18 +740,23 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       const configuration = args?.configuration === undefined ? undefined : args.configuration === "Release" ? "Release" : args.configuration === "Debug" ? "Debug" : null;
       if (configuration === null) throw new CloudPhoneError("configuration is Debug or Release.", "bad_request");
       const chatSessionId = cloudPhoneCallerChat(args);
-      const uploaded = await uploadProject(root, chatSessionId);
-      const target = onPhone(uploaded.root, sub);
       const scheme = textArg(args?.scheme, "scheme", 200);
       const env = textArg(args?.env, "env", 8_000);
-      const answer = await tool("app_run", {
-        path: target,
-        ...(scheme ? { scheme } : {}),
-        ...(configuration ? { configuration } : {}),
-        ...(env ? { env } : {}),
-        ...(args?.clean === true ? { clean: true } : {}),
-      }, "Building and running the app", chatSessionId);
-      return { ...answer, files: uploaded.files, bytes: uploaded.bytes };
+      const packed = await packProject(root);
+      try {
+        const answer = await withPhone(chatSessionId, (phone, driver) => driver.run(phone, {
+          project: packed,
+          name: cloudPhoneProjectName(root),
+          ...(sub ? { sub } : {}),
+          ...(scheme ? { scheme } : {}),
+          ...(configuration ? { configuration } : {}),
+          ...(env ? { env } : {}),
+          ...(args?.clean === true ? { clean: true } : {}),
+        }));
+        return { ...answer, files: packed.count, bytes: packed.size };
+      } finally {
+        fs.rmSync(packed.file, { force: true });
+      }
     },
 
     /**
@@ -905,27 +786,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       const packed = await packApp(appPath);
       const chatSessionId = cloudPhoneCallerChat(args);
       try {
-        const phone = await ensure({ chatSessionId });
-        const placed = await uploadPacked(phone, packed, "app", "the app");
-        if (!placed.app) throw new CloudPhoneError("The phone did not find a .app in what was uploaded.", "fetch_failed");
-        const installed = await tool("app_control", { action: "install", app: placed.app }, "Installing the app", chatSessionId);
-        const installedId = plistId ?? bundleIdOf(installed.text);
-        const wantsLaunch = args?.launch !== false && !installed.failed;
-        // Launched only by name: unnamed, NoMac launches the app launched LAST, which may be an earlier build's.
-        const answers = wantsLaunch && installedId
-          ? [installed, await tool("app_control", { action: "launch", app: installedId }, "Launching the app", chatSessionId)]
-          : [installed];
-        const skipped = wantsLaunch && !installedId
-          ? "Installed, but not launched: ADE could not tell the app's bundle id. Launch it with ade apple relaunch --bundle-id <id>."
-          : null;
-        return {
-          text: [...answers.map((answer) => answer.text.trim()), skipped ?? ""].filter(Boolean).join("\n"),
-          failed: answers.some((answer) => answer.failed),
-          links: [...new Set(answers.flatMap((answer) => answer.links))],
-          images: answers.flatMap((answer) => answer.images),
-          stopNotice: [...answers].reverse().find((answer) => answer.stopNotice)?.stopNotice ?? null,
-          bundleId: installedId,
-        };
+        return await withPhone(chatSessionId, (phone, driver) => driver.install(phone, { app: packed, bundleId: plistId, launch: args?.launch !== false }));
       } finally {
         fs.rmSync(packed.file, { force: true });
       }
@@ -937,7 +798,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       if (!action) throw new CloudPhoneError("action is required (launch, terminate, open_url, location, push, appearance, …).", "bad_request");
       const value = textArg(args?.value, "value");
       const app = textArg(args?.app, "app", 300);
-      return tool("app_control", { action, ...(value !== undefined ? { value } : {}), ...(app ? { app } : {}) }, `The phone's ${action}`, cloudPhoneCallerChat(args));
+      return withPhone(cloudPhoneCallerChat(args), (phone, driver) => driver.control(phone, { action, ...(value !== undefined ? { value } : {}), ...(app ? { app } : {}) }));
     },
 
     async logs(args: { app?: unknown; since?: unknown; grep?: unknown; waitFor?: unknown; crashes?: unknown } | null | undefined): Promise<CloudPhoneToolAnswer> {
@@ -945,13 +806,13 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       const since = textArg(args?.since, "since", 20);
       const grep = textArg(args?.grep, "grep", 300);
       const waitFor = textArg(args?.waitFor, "waitFor", 300);
-      return tool("app_logs", {
+      return withPhone(cloudPhoneCallerChat(args), (phone, driver) => driver.logs(phone, {
         ...(app ? { app } : {}),
         ...(since ? { since } : {}),
         ...(grep ? { grep } : {}),
-        ...(waitFor ? { wait_for: waitFor } : {}),
+        ...(waitFor ? { waitFor } : {}),
         ...(args?.crashes === true ? { crashes: true } : {}),
-      }, "Reading the app's logs", cloudPhoneCallerChat(args));
+      }));
     },
 
     /**
@@ -964,28 +825,32 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     ): Promise<CloudPhoneToolAnswer & { path: string | null; artifactId: string | null }> {
       const action = args?.action === "start" || args?.action === "stop" ? args.action : null;
       if (!action) throw new CloudPhoneError("action is start or stop.", "bad_request");
-      const answer = await tool("screen_record", { action }, action === "start" ? "Starting a recording" : "Stopping the recording", cloudPhoneCallerChat(args));
-      const link = action === "stop" ? answer.links[0] ?? null : null;
-      if (!link || answer.failed) return { ...answer, path: null, artifactId: null };
-      const bytes = await download(link, "recording");
-      const target = path.join(os.tmpdir(), `ade-cloud-iphone-${Date.now()}.mp4`);
-      fs.writeFileSync(target, bytes);
+      const { answer, video } = await withPhone(cloudPhoneCallerChat(args), (phone, driver) => driver.record(phone, action));
+      if (!video || answer.failed) return { ...answer, path: null, artifactId: null };
+      const target = path.join(os.tmpdir(), `ade-cloud-iphone-${Date.now()}.${video.extension}`);
+      fs.writeFileSync(target, video.bytes);
       const caption = textArg(args?.caption, "caption", 300) ?? "ADE Cloud iPhone recording";
-      const artifactId = args?.noProof === true ? null : fileProof(proof, args ?? {}, { kind: "video_recording", path: target, mimeType: "video/mp4", title: caption });
+      const artifactId = args?.noProof === true ? null : fileProof(proof, args ?? {}, { kind: "video_recording", path: target, mimeType: video.extension === "mov" ? "video/quicktime" : "video/mp4", title: caption });
       return { ...answer, path: target, artifactId };
     },
 
     async runTests(args: { root?: unknown; path?: unknown; scheme?: unknown; only?: unknown } | null | undefined): Promise<CloudPhoneToolAnswer> {
       const { root, sub } = projectArgs(args);
       const chatSessionId = cloudPhoneCallerChat(args);
-      const uploaded = await uploadProject(root, chatSessionId);
       const scheme = textArg(args?.scheme, "scheme", 200);
       const only = textArg(args?.only, "only", 2_000);
-      return tool("tests_run", {
-        path: onPhone(uploaded.root, sub),
-        ...(scheme ? { scheme } : {}),
-        ...(only ? { only } : {}),
-      }, "Running the tests", chatSessionId);
+      const packed = await packProject(root);
+      try {
+        return await withPhone(chatSessionId, (phone, driver) => driver.test(phone, {
+          project: packed,
+          name: cloudPhoneProjectName(root),
+          ...(sub ? { sub } : {}),
+          ...(scheme ? { scheme } : {}),
+          ...(only ? { only } : {}),
+        }));
+      } finally {
+        fs.rmSync(packed.file, { force: true });
+      }
     },
 
     /** A link that shows the live phone (a control link by default), signed for this account. */

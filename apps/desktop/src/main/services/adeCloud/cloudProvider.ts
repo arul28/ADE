@@ -28,6 +28,7 @@ import type {
   CloudMoveRecord,
   CloudMoveRequest,
   CloudPaidPlanId,
+  CloudPhoneCallRequest,
   CloudPhoneDevice,
   CloudPhoneStart,
   CloudPhoneState,
@@ -245,6 +246,13 @@ export type CloudProvider = {
   /** A link that shows the live phone to this account alone. */
   phoneView?(input: { control: boolean }): Promise<CloudPhoneView>;
   phoneStop?(): Promise<{ stopped: boolean }>;
+  /**
+   * One call to the live phone through the server (`/cloud/phone/call`), for
+   * a provider with no per-phone token (Revyl). The provider's answer comes
+   * back as it is: its status, content type and bytes. Never throws on a
+   * provider's refusal; only when the server can't be reached.
+   */
+  phoneCall?(input: CloudPhoneCallRequest, options?: { timeoutMs?: number }): Promise<{ status: number; type: string | null; body: Buffer }>;
   /**
    * The account this client acts for (`cloudAccessKey`), when it knows it. A
    * client is made per call, so this, not the object, says two are the same

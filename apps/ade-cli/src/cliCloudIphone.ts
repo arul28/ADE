@@ -169,6 +169,8 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
     const find = flag(args, "--find");
     return { action: "look", args: { ...(find ? { find } : {}) }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "read the screen" };
   },
+  // Which app is in front: the screen text's first line names it.
+  foreground: () => ({ action: "look", args: {}, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: FOREGROUND_LABEL }),
   "tap-element": (args, verb) => {
     const hold = Number(flag(args, "--hold-ms"));
     return act([Number.isFinite(hold) && hold > 0 ? `hold ${target(args, verb)} ${Math.min(10, Math.max(0.1, hold / 1000))}` : `tap ${target(args, verb)}`], "tap");
@@ -276,8 +278,34 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
   },
 };
 
-/** `show` answers here, with no call: the phone shows in the chat's tools pane. */
+/** `show` never gets here: `runCli` opens the chat's tools pane on this machine, which shows the chat's device. */
 const SHOW_VERB = "show";
+
+const FOREGROUND_LABEL = "the app in front";
+
+/** How a phone of `recent` ended, as a person reads it. */
+const ENDED_WORDS: Readonly<Record<string, string>> = {
+  stopped: "stopped",
+  stop_at: "stopped: the minutes ran out",
+  idle: "stopped by itself: no input for 5 minutes",
+  on_its_own: "stopped by itself (no input for 5 minutes, or its time limit)",
+  time_limit: "stopped by itself: its time limit",
+  gone: "ended",
+};
+
+const clock = (ms: unknown): string => (typeof ms === "number" ? new Date(ms).toISOString().slice(0, 16).replace("T", " ") : "?");
+
+/** `recent` of a status: one line per phone this period, newest first. */
+function recentLines(recent: unknown): string {
+  if (!Array.isArray(recent) || !recent.length) return "";
+  const lines = recent.filter(isRecord).map((use) => {
+    const ended = asString(use.ended);
+    const how = ended ? (ENDED_WORDS[ended] ?? `ended (${ended})`) : "running now";
+    const span = `${clock(use.startedAt)}${typeof use.endedAt === "number" ? ` to ${clock(use.endedAt).slice(11)}` : ""} UTC`;
+    return `  ${span} · ${use.minutes} min · ${how}`;
+  });
+  return `This period's phones (newest first; a phone counts until it stops, its last idle minutes too):\n${lines.join("\n")}\n`;
+}
 
 /** One `ade apple` verb as a `cloud_phone` call. */
 function callFor(verb: string, tokens: string[], root: () => string): Call {
@@ -291,13 +319,22 @@ function callFor(verb: string, tokens: string[], root: () => string): Call {
   return handler(readArgs(tokens, VALUE_FLAG_SET, root), verb);
 }
 
-function textOf(action: string, value: unknown): string {
+function textOf(call: Call, value: unknown): string {
+  const action = call.action;
   if (!isRecord(value)) return `${String(value ?? "")}\n`;
+  if (call.label === FOREGROUND_LABEL) {
+    const first = (asString(value.text) ?? "").split("\n").find((line) => line.trim()) ?? "";
+    const app = /^app "([^"]+)"/.exec(first)?.[1] ?? null;
+    return app ? `${app} is in front.\n` : `In front: ${first || "nothing could be read"}\n`;
+  }
   if (action === "getStatus") {
     const minutes = isRecord(value.minutes) ? ` · ${value.minutes.left} of ${value.minutes.included} min left this period` : "";
-    const phone = isRecord(value.phone) ? `phone: ${asString(value.phone.state)} (${asString(value.phone.device)})` : "phone: off (ade apple start, or any command, starts it)";
+    const idle = `${CLOUD_PHONE_IDLE_SECONDS / 60} minutes`;
+    const phone = isRecord(value.phone)
+      ? `phone: ${asString(value.phone.state)} (${asString(value.phone.device)}). It counts minutes until it stops: ade apple stop when done, or it stops by itself after ${idle} with no input (those ${idle} count too).`
+      : "phone: off. Any ade apple command starts it, reads like snapshot too, and it counts minutes from then until it stops.";
     return value.access === "on"
-      ? `ADE Cloud iPhone · on${minutes}\n${phone}\ncapabilities: ${Array.isArray(value.capabilities) ? value.capabilities.join(", ") : ""}\n`
+      ? `ADE Cloud iPhone · on${minutes}\n${phone}\n${recentLines(value.recent)}capabilities: ${Array.isArray(value.capabilities) ? value.capabilities.join(", ") : ""}\n`
       : `ADE Cloud iPhone · ${asString(value.reason) ?? "not available"}\n`;
   }
   if (action === "screenshot") return `Saved ${asString(value.path)} (${value.bytes} bytes). Link for 7 days: ${asString(value.link)}\n`;
@@ -305,7 +342,7 @@ function textOf(action: string, value: unknown): string {
     const phone = isRecord(value.phone) ? value.phone : null;
     const minutes = isRecord(value.minutes) ? ` · ${value.minutes.left} of ${value.minutes.included} min left` : "";
     return `ADE Cloud iPhone ${asString(phone?.state) ?? "ready"} (${asString(phone?.device) ?? "iphone"})${minutes}\n`
-      + `It stops by itself after ${CLOUD_PHONE_IDLE_SECONDS / 60} minutes with no command or input, and after ${CLOUD_PHONE_MAX_MINUTES / 60} hours at most; the next command starts a new one.\n`;
+      + `It counts minutes until it stops. Run ade apple stop when you are done: by itself it stops only after ${CLOUD_PHONE_IDLE_SECONDS / 60} minutes with no command or input (those minutes count too), or after ${CLOUD_PHONE_MAX_MINUTES / 60} hours. The next command starts a new one.\n`;
   }
   if (action === "stop") return value.stopped ? "Stopped the ADE Cloud iPhone.\n" : "The ADE Cloud iPhone was not running.\n";
   const text = asString(value.text) ?? "";
@@ -337,10 +374,6 @@ function buildRoot(options: GlobalOptions): string {
 export async function runCloudIphoneCommand(parsed: ParsedCli, command: string[]): Promise<{ output: string; exitCode: number }> {
   const options: GlobalOptions = { ...parsed.options, machine: null, allMachines: false, machineProject: null, machineWorkCopy: null };
   const verb = (command[0] ?? "status").toLowerCase();
-  if (verb === SHOW_VERB) {
-    const text = "The ADE Cloud iPhone shows in this chat's tools pane: open the iPhone tool there and pick ADE Cloud.\n";
-    return { output: options.text ? text : formatOutput({ ok: true, note: text.trim() }, options, undefined), exitCode: 0 };
-  }
   const call = callFor(verb, command.slice(1), () => buildRoot(parsed.options));
   const plan: CliPlan & { kind: "execute" } = {
     kind: "execute",
@@ -356,7 +389,7 @@ export async function runCloudIphoneCommand(parsed: ParsedCli, command: string[]
     : null;
   const failed = isRecord(value) && value.failed === true;
   if (!options.text) return { output: formatOutput(value, options, undefined), exitCode: failed ? 1 : 0 };
-  return { output: `${textOf(call.action, value)}${filed ? `${filed}\n` : ""}`, exitCode: failed ? 1 : 0 };
+  return { output: `${textOf(call, value)}${filed ? `${filed}\n` : ""}`, exitCode: failed ? 1 : 0 };
 }
 
 /**

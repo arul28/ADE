@@ -16687,10 +16687,13 @@ function readIosSimulatorOutPath(args: string[]): JsonObject {
  */
 function copyAppleScreenshotTo(outPath: string, value: unknown): unknown {
   const record = unwrapActionEnvelope(value);
-  const shot = isRecord(record) ? record : {};
+  if (!isRecord(record)) return value;
+  const shot = record;
   const source = asString(shot.filePath);
-  if (!source) return value;
-  if (path.resolve(source) === outPath) return value;
+  // The record, not the call's envelope: the text output reads its path and cite from it.
+  if (!source) return shot;
+  // A shot from another machine was already brought here to --out.
+  if (path.resolve(source) === outPath) return shot;
   if (!fs.existsSync(source)) {
     throw new CliToolError(
       `apple screenshot: the shot was saved on the machine that runs the device, at ${source}, `
@@ -38485,7 +38488,8 @@ function iosSnapshotLabelCell(element: JsonObject): string {
 }
 
 function formatIosSimSnapshot(value: unknown): string {
-  const snapshot = isRecord(value) ? value : {};
+  const unwrapped = unwrapActionEnvelope(value);
+  const snapshot = isRecord(unwrapped) ? unwrapped : {};
   const screenshot = isRecord(snapshot.screenshot)
     ? snapshot.screenshot
     : snapshot;
@@ -43500,12 +43504,45 @@ function isChatLocateCommand(command: string[]): boolean {
   return (CLI_COMMAND_ALIASES[typed] ?? typed) === "chat" && command[1]?.toLowerCase() === "locate";
 }
 
+/**
+ * `ade apple|android show|reveal`, without its `--machine`, or null for any
+ * other command. The pane opens on this chat's own screen, and it shows the
+ * chat's device wherever that runs, so `show` never goes to the device's
+ * machine: that machine's ADE does not know this chat and refused it.
+ */
+export function deviceShowCommandHere(command: readonly string[]): string[] | null {
+  const primary = (command[0] ?? "").toLowerCase();
+  const kind = CLI_COMMAND_ALIASES[primary] ?? primary;
+  if (kind !== "apple" && kind !== "android") return null;
+  const sub = firstStandalonePositional(command.slice(1))?.toLowerCase() ?? "";
+  if (sub !== "show" && sub !== "reveal") return null;
+  const kept: string[] = [];
+  for (let index = 0; index < command.length; index += 1) {
+    const token = command[index]!;
+    if (token === "--") {
+      kept.push(...command.slice(index));
+      break;
+    }
+    if (token === "--machine") {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--machine=")) continue;
+    kept.push(token);
+  }
+  return kept;
+}
+
 async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
+  const typed = parseCliArgs(argv);
+  const showHere = deviceShowCommandHere(typed.command);
   // A device command with no --machine and no --lane follows the chat's
-  // device choice (`ade devices use`), exactly as --machine would.
-  const { parsed: chosen, cloudIphone } = await withChatDeviceChoice(parseCliArgs(argv));
+  // device choice (`ade devices use`), exactly as --machine would; `show` stays here.
+  const { parsed: chosen, cloudIphone } = showHere
+    ? { parsed: { ...typed, command: showHere, options: { ...typed.options, machine: null, allMachines: false } }, cloudIphone: false }
+    : await withChatDeviceChoice(typed);
   // The ADE Cloud iPhone: the chat's `ios@cloud` choice, or `--machine cloud` on one `ade apple` command.
   // Read before machine targeting, which knows no machine "cloud"; the
   // selected project (`--project-root`, an account project) applies as for

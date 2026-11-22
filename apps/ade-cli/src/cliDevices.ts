@@ -636,10 +636,9 @@ async function useDevice(options: GlobalOptions, typed: string): Promise<{ value
     if (status.access !== "on") throw new CliToolError(status.reason ?? ADE_CLOUD_IPHONE_UNAVAILABLE, { id });
     const sources = await chatDeviceAction(single, "setDeviceSource", { kind, source: { kind: "cloud" } });
     const minutes = status.minutes ? ` ${status.minutes.left} of your plan's ${status.minutes.included} minutes are left this period.` : "";
-    return {
-      value: { ok: true, id, sources },
-      text: `This chat's iPhone is the ADE Cloud iPhone from now on: ade apple … drives it with no other flag.${minutes} ade devices use ios@here brings it back.`,
-    };
+    const text = `This chat's iPhone is the ADE Cloud iPhone from now on: every later ade apple command drives it with no other flag, and spends iPhone minutes while it runs.${minutes} ade devices use ios@here brings it back.`;
+    // The JSON answer says it too: an agent reading JSON switched every later command without a word.
+    return { value: { ok: true, id, sources, note: text }, text };
   }
   let target: RosterMachine | null = null;
   if (source.kind === "machine") {
@@ -662,7 +661,7 @@ async function useDevice(options: GlobalOptions, typed: string): Promise<{ value
       + `${target.online ? "" : ` ${target.name} is offline right now.`} ade devices use ${kind}@here brings it back.`
     : `This chat's ${noun} is on this machine.`;
   const id = formatDeviceId({ kind, source: target ? { kind: "machine", machine: deviceIdMachineSource(target) } : { kind: "here" } });
-  return { value: { ok: true, id, sources }, text };
+  return { value: { ok: true, id, sources, note: text }, text };
 }
 
 async function currentDevices(options: GlobalOptions): Promise<{ value: JsonObject; text: string }> {

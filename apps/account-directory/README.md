@@ -533,9 +533,16 @@ variant only.
 
 ### The ADE Cloud iPhone
 
-An iOS Simulator at NoMac, one per account, driven from any machine with
-`ade apple` (`src/cloud/phones.ts`, migrations `0047_cloud_phone_beta.sql` and
-`0048_cloud_phone_usage.sql`, shapes in `contract.ts`). Who may use it is the
+An iOS Simulator in the cloud, one per account, run by NoMac or Revyl and
+driven from any machine with `ade apple` (`src/cloud/phones.ts`,
+`src/cloud/phoneRevyl.ts`, migrations `0047_cloud_phone_beta.sql`,
+`0048_cloud_phone_usage.sql` and `0054_cloud_phone_provider.sql`, shapes in
+`contract.ts`). Revyl starts phones only with the owner's switch
+`CLOUD_PHONE_REVYL=on` (off by default: every new phone is NoMac's). With it
+on, the provider per account is the beta row's `provider`, else the var
+`CLOUD_PHONE_PROVIDER` (`nomac` or `revyl`), else NoMac; each phone row keeps
+the provider it started on, and a Revyl phone is still read and stopped with
+the switch off. Who may use it is the
 var `CLOUD_PHONE_ACCESS`: `beta` (the default: only accounts the owner adds;
 everyone else reads `off`, and a start answers 403 `phone_not_on_account`),
 `all`, or `off`. `CLOUD_PHONES_PAUSED=1` refuses
@@ -548,8 +555,15 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   `{ device? }` starts the account's phone (or answers its live one) and mints
   a token for that phone (sent again, it answers the live phone with a fresh
   token); `DELETE /cloud/phone` stops it.
-- `POST /cloud/phone/view` `{ control? }` answers a view link for it, signed for
-  the account when `NOMAC_EMBED_SECRET` is set.
+- `POST /cloud/phone/view` `{ control? }` answers a view link for it: NoMac's
+  page (signed for the account when `NOMAC_EMBED_SECRET` is set), or for a
+  Revyl phone `GET /cloud/phone/viewer` (no sign-in; the page is static) with
+  the stream and input links after `#`.
+- `POST /cloud/phone/call` `{ action, body?, query? }` (Revyl phones only, which
+  have no per-phone token): one call to the account's live phone, Revyl's answer
+  passed back as it is. `proxy.<name>` is an allowlisted device call;
+  `build.upload_url|start|status|logs|install` build the brain's packed source
+  (or a prebuilt `.app`) on Revyl's runners into the workspace's app.
 - The plan's `phoneMinutes` are the period's (`plans.ts`: Free 60, Plus 80,
   Pro 300, Max 800; none on a free plan held by the free-plan checks, 402
   `phone_free_held`). Each phone is a `cloud_phones` row (label
@@ -589,15 +603,19 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   `NOMAC_WEBHOOK_SECRET` (`nomac-signature`, refused past 5 minutes), each id
   taken once. `phone.*` settle a phone; `credit.low` emails the owner.
   Make the webhook at NoMac with `phone.ready`, `phone.ended` and `credit.low`.
-- Secrets: `NOMAC_API_KEY` (`nmk_…`, required; unset, the read answers `off` and
-  the other phone routes 503), `NOMAC_WEBHOOK_SECRET`, and optional
-  `NOMAC_EMBED_SECRET` (`nme_…`). Vars `STRIPE_PHONE_MINUTE_PRICE_ID` and
+- Secrets: `NOMAC_API_KEY` (`nmk_…`), `NOMAC_WEBHOOK_SECRET`, and optional
+  `NOMAC_EMBED_SECRET` (`nme_…`) for NoMac; `REVYL_PARTNER_API_KEY` for Revyl,
+  which makes one workspace per account (`ade-<userId>`, a synthetic
+  `revyl+<hash>@ade-app.dev` owner, `cloud_phone_revyl`) and mints short
+  session credentials kept in memory only; deleting the account disconnects
+  it. With neither key set the read answers `off` and the other phone routes
+  503. Vars `STRIPE_PHONE_MINUTE_PRICE_ID` and
   `STRIPE_PHONE_METER_EVENT` (from `scripts/stripe-setup.mjs`) sell extra
   minutes; unset, the switch isn't offered. The
   account key stays in this Worker; a brain gets a token for one phone (2 hours)
   that cannot start, list or stop phones. Apply
-  `0047_cloud_phone_beta.sql` and `0048_cloud_phone_usage.sql` before the
-  Worker that reads them deploys.
+  `0047_cloud_phone_beta.sql`, `0048_cloud_phone_usage.sql` and
+  `0054_cloud_phone_provider.sql` before the Worker that reads them deploys.
 - The owner adds accounts with `POST /cloud/owner/phone-beta`, below.
 
 ### Payments
@@ -670,7 +688,9 @@ least 30 days old, one free plan per GitHub account).
   `pending: true`); the account that first appears with it as a verified
   address takes it (`claimPhoneBetaInvite`, `cloud.phone_beta_claimed`).
   `{ …, "enabled": false }` removes it (a waiting email too), and `{}` lists
-  the rows and the waiting emails (`pending`). See "The ADE Cloud iPhone".
+  the rows (with the server's provider and each row's) and the waiting emails
+  (`pending`). `"provider": "nomac" | "revyl" | null` with an add sets that
+  tester's provider (null: the server's). See "The ADE Cloud iPhone".
 - **One card, one free unlock** (`cloud_free_card_claims`, unique on the
   fingerprint). The free-unlock Checkout takes cards only, asks for 3D Secure
   (`request_three_d_secure=any`), and the webhook reads the fingerprint from

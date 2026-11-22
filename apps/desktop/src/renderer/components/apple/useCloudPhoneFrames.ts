@@ -25,7 +25,7 @@ export type CloudPhoneFrameFeed = { subscribe: (listener: () => void) => () => v
 export type CloudPhoneViewStateName = CloudPhoneViewState | "idle";
 
 export type UseCloudPhoneFramesArgs = {
-  /** The NoMac control-view link. Null closes the view. */
+  /** The control-view link (NoMac's page or ADE's viewer page). Null closes the view. */
   url: string | null;
   family: CloudPhoneViewDeviceFamily;
   /** The phone's screen in points: what `input` and `scroll` coordinates are in. */

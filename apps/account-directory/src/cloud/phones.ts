@@ -1,9 +1,17 @@
 /**
- * The ADE Cloud iPhone: an iOS Simulator on NoMac, one per ADE account.
+ * The ADE Cloud iPhone: an iOS Simulator on NoMac or on Revyl, one per ADE
+ * account.
+ *
+ * Which provider: `CLOUD_PHONE_PROVIDER` (`nomac`, the default, or `revyl`),
+ * or the owner's per-account choice on the beta list (testers). A provider
+ * with no key set is never picked. Every phone keeps the provider it started
+ * on (`cloud_phones.provider`), so a change of setting reaches only new phones.
+ * Revyl's side is `phoneRevyl.ts`; the rest of this file is the same for both.
  *
  * NoMac's account key (`NOMAC_API_KEY`) lives only here. A brain gets a token
  * for one phone (it can drive that phone, never start, list or stop one) and a
- * person's window gets a view link signed for their account alone. See
+ * person's window gets a view link signed for their account alone. Revyl has
+ * no per-phone token, so its calls go through `POST /cloud/phone/call`. See
  * docs/features/apple-device/ade-cloud-iphone.md and
  * docs/plans/ade-cloud-iphone-launch.md.
  *
@@ -37,18 +45,34 @@ import {
   CLOUD_DELETED_ACCOUNT_PREFIX,
   CLOUD_PATHS,
   CLOUD_PHONE_DEVICES,
+  CLOUD_PHONE_PROVIDERS,
+  CLOUD_PHONE_RECENT_SHOWN,
   isCloudPhoneDevice,
+  isCloudPhoneProvider,
   type CloudAccountPhone,
   type CloudPhoneAccess,
   type CloudPhoneDevice,
   type CloudPhoneMinutes,
   type CloudPhoneMinutesState,
+  type CloudPhoneProvider,
   type CloudPhoneStart,
   type CloudPhoneState,
   type CloudPhoneSummary,
+  type CloudPhoneUse,
   type CloudPhoneView,
 } from "./contract";
 import { readBoundedBody } from "../sinkUtils";
+import {
+  forgetRevylAccount,
+  readRevylPhone,
+  revylConfigured,
+  revylEnabled,
+  revylViewUrl,
+  revylViewerPage,
+  routeRevylCall,
+  startRevylPhone,
+  stopRevylPhone,
+} from "./phoneRevyl";
 import { CLOUD_PHONE_IDLE_SECONDS, CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
 import { sendCloudEmail } from "./email";
 import { fail, json, readJson } from "./http";
@@ -90,6 +114,9 @@ type NomacSession = {
   failure_code?: string | null;
   ended?: { reason?: string | null; at?: string | null } | null;
   cost?: { billed_seconds?: number; accrued_microunits?: string };
+  /** Who runs it (absent: NoMac), and the provider's own second id for it (Revyl's workflow run). */
+  provider?: CloudPhoneProvider;
+  ref?: string | null;
 };
 
 type NomacAnswer = { status: number; body: Record<string, unknown> | null };
@@ -110,6 +137,10 @@ export type PhoneRow = {
   /** When the account stops paying for this live phone (ms), or null: its NoMac limits are the stop. */
   stop_at: number | null;
   updated_at: number;
+  /** Who runs it (migration 0054): `nomac` for every phone before then. */
+  provider: CloudPhoneProvider;
+  /** Revyl's workflow run for the phone, which its device calls name; null for NoMac. */
+  provider_ref: string | null;
 };
 
 /* ---- NoMac ---- */
@@ -194,6 +225,22 @@ async function readSession(env: Pick<CloudEnv, "NOMAC_API_KEY">, phoneId: string
   return answer.status === 200 && session ? { session, stopNotice: answer.body?.stop_notice } : null;
 }
 
+/** Where a known phone runs: its row's provider, its second id and its model. */
+type PhoneWhere = { provider: CloudPhoneProvider; ref: string | null; device: string | null };
+
+/** One phone as its provider answers it now, or null when it can't be read. */
+async function readPhone(env: CloudEnv, userId: string, phoneId: string, where: PhoneWhere): Promise<{ session: NomacSession; stopNotice: unknown } | null> {
+  if (where.provider !== "revyl") return readSession(env, phoneId);
+  const session = await readRevylPhone(env, userId, phoneId, where.device).catch(() => null);
+  return session ? { session: { ...session, provider: "revyl", ref: session.ref ?? where.ref }, stopNotice: null } : null;
+}
+
+/** Where a phone this Worker keeps runs, from its row. */
+async function phoneWhere(env: Pick<CloudEnv, "DB">, phoneId: string): Promise<PhoneWhere> {
+  const row = await env.DB.prepare("select provider, provider_ref, device from cloud_phones where phone_id = ?").bind(phoneId).first<{ provider: string | null; provider_ref: string | null; device: string | null }>();
+  return { provider: row?.provider === "revyl" ? "revyl" : "nomac", ref: row?.provider_ref ?? null, device: row?.device ?? null };
+}
+
 /* ---- The phones an account started (`cloud_phones`) ---- */
 
 /** The columns NoMac's answer fills, in `savePhone`'s and `updatePhone`'s order. */
@@ -221,6 +268,7 @@ const PHONE_MERGE_SQL = `
   cost_micros = max(cloud_phones.cost_micros, excluded.cost_micros),
   end_reason = coalesce(cloud_phones.end_reason, excluded.end_reason),
   free = max(cloud_phones.free, excluded.free),
+  provider_ref = coalesce(cloud_phones.provider_ref, excluded.provider_ref),
   updated_at = excluded.updated_at`;
 
 /**
@@ -233,13 +281,13 @@ async function savePhone(env: Pick<CloudEnv, "DB">, userId: string, session: Nom
   // `onlyLiveAccount`: a new row only while the account exists, checked in this write, so a deletion
   // that re-keyed its phones meanwhile never gets a row under the person's id back.
   const saved = await env.DB.prepare(`
-    insert into cloud_phones (phone_id, user_id, device, state, created_at, ready_at, ended_at, billed_seconds, cost_micros, end_reason, free, updated_at)
-    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    insert into cloud_phones (phone_id, user_id, device, state, created_at, ready_at, ended_at, billed_seconds, cost_micros, end_reason, free, updated_at, provider, provider_ref)
+    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     where ? = 0 or exists (select 1 from cloud_accounts where user_id = ? and deleted_at is null)
     on conflict(phone_id) do update set ${PHONE_MERGE_SQL}
   `).bind(
     session.id, userId, facts.device, facts.state, isoMs(session.created_at) ?? now, facts.readyAt, facts.endedAt,
-    facts.billedSeconds, facts.costMicros, facts.endReason, free ? 1 : 0, now,
+    facts.billedSeconds, facts.costMicros, facts.endReason, free ? 1 : 0, now, session.provider ?? "nomac", session.ref ?? null,
     onlyLiveAccount ? 1 : 0, userId,
   ).run();
   return (saved.meta.changes ?? 0) > 0;
@@ -285,26 +333,48 @@ export async function periodPhones(env: Pick<CloudEnv, "DB">, userId: string, si
  */
 function phoneMinutesUsed(rows: readonly PhoneRow[], now: number, settledOnly: boolean): number {
   let minutes = 0;
-  for (const row of rows) {
-    const billed = Math.ceil(row.billed_seconds / 60);
-    const running = row.state === "live" && row.ready_at != null && !settledOnly
-      ? Math.min(CLOUD_PHONE_MAX_MINUTES, Math.ceil(Math.max(0, now - row.ready_at) / 60_000))
-      : 0;
-    minutes += Math.max(billed, running);
-  }
+  for (const row of rows) minutes += rowMinutes(row, now, settledOnly);
   return minutes;
 }
 
-/** Stops one phone at NoMac and saves its end. Answers false when NoMac refused (it is tried again later). */
+/** One phone's minutes: its provider's billed minutes, or for one running now its time so far. */
+function rowMinutes(row: PhoneRow, now: number, settledOnly: boolean): number {
+  const billed = Math.ceil(row.billed_seconds / 60);
+  const running = row.state === "live" && row.ready_at != null && !settledOnly
+    ? Math.min(CLOUD_PHONE_MAX_MINUTES, Math.ceil(Math.max(0, now - row.ready_at) / 60_000))
+    : 0;
+  return Math.max(billed, running);
+}
+
+/** The period's phones as a person reads where the minutes went (rows are newest first). */
+function recentPhonesOf(rows: readonly PhoneRow[], now: number): CloudPhoneUse[] {
+  return rows.slice(0, CLOUD_PHONE_RECENT_SHOWN).map((row) => ({
+    startedAt: row.created_at,
+    endedAt: row.state === "live" ? null : row.ended_at,
+    minutes: rowMinutes(row, now, false),
+    device: row.device,
+    ended: row.state === "live" ? null : row.end_reason ?? "on_its_own",
+  }));
+}
+
+/** Stops one phone at its provider and saves its end. Answers false when the provider refused (it is tried again later). */
 async function stopPhone(env: CloudEnv, userId: string, phoneId: string, now: number, why: string): Promise<boolean> {
-  const answer = await nomac(env, "DELETE", `/api/v1/simulator/sessions/${encodeURIComponent(phoneId)}`).catch((): NomacAnswer => ({ status: 504, body: null }));
+  const where = await phoneWhere(env, phoneId);
+  const answer = where.provider === "revyl"
+    ? { status: await stopRevylPhone(env, userId, phoneId).catch(() => 504), body: null }
+    : await nomac(env, "DELETE", `/api/v1/simulator/sessions/${encodeURIComponent(phoneId)}`).catch((): NomacAnswer => ({ status: 504, body: null }));
   if (answer.status >= 400 && answer.status !== 404) {
-    // A phone that won't stop keeps costing: Sentry hears of it, per NoMac's code.
+    // A phone that won't stop keeps costing: Sentry hears of it, per the provider's code.
     const { code } = errorOf(answer);
-    reportCloudFailure(`cloud.phone_stop_failed.${sentryCode(code)}`, { userId, phoneId, why, status: answer.status, code }, "cloud-phone");
+    reportCloudFailure(`cloud.phone_stop_failed.${where.provider === "revyl" ? "revyl_" : ""}${sentryCode(code)}`, { userId, phoneId, why, status: answer.status, code }, "cloud-phone");
     return false;
   }
-  const after = await readSession(env, phoneId);
+  const after = await readPhone(env, userId, phoneId, where);
+  // Revyl reads a phone it just took a stop for as running a few seconds more: it is stopping (ended here).
+  if (after && where.provider === "revyl" && answer.status < 300 && LIVE_STATES.has(after.session.state)) {
+    after.session.state = "stopping";
+    after.session.ended = { reason: "stopped", at: null };
+  }
   if (after) await savePhone(env, userId, after.session, now);
   else if (answer.status === 404) {
     await env.DB.prepare("update cloud_phones set state = 'ended', ended_at = coalesce(ended_at, ?), end_reason = coalesce(end_reason, 'gone'), updated_at = ? where phone_id = ?")
@@ -331,8 +401,32 @@ function phoneAccessSetting(env: Pick<CloudEnv, "CLOUD_PHONE_ACCESS">): "beta" |
   return value === "all" || value === "off" ? value : "beta";
 }
 
+/** A provider that may start new phones: its key set (and for Revyl, its switch on: `revylEnabled`). */
+const providerConfigured = (env: CloudEnv, provider: CloudPhoneProvider): boolean =>
+  provider === "revyl" ? revylEnabled(env) : Boolean(env.NOMAC_API_KEY?.trim());
+
+/** Some provider can start phones here. */
+const anyProviderConfigured = (env: CloudEnv): boolean => providerConfigured(env, "nomac") || providerConfigured(env, "revyl");
+
+/** Some provider's key is set: phones already running there are still read, held to their minutes and stopped. */
+const anyProviderKey = (env: CloudEnv): boolean => Boolean(env.NOMAC_API_KEY?.trim()) || revylConfigured(env);
+
+/**
+ * Who runs the account's next phone: the owner's choice for this tester,
+ * else `CLOUD_PHONE_PROVIDER`, else NoMac; a choice that can't start phones
+ * (no key, or Revyl's switch off) falls to NoMac, and to Revyl only when
+ * Revyl is switched on.
+ */
+async function providerFor(env: CloudEnv, userId: string): Promise<CloudPhoneProvider> {
+  const row = await env.DB.prepare("select provider from cloud_phone_beta where user_id = ?").bind(userId).first<{ provider: string | null }>();
+  const setting = env.CLOUD_PHONE_PROVIDER?.trim().toLowerCase();
+  const wanted: CloudPhoneProvider = row?.provider === "revyl" || row?.provider === "nomac" ? row.provider : setting === "revyl" ? "revyl" : "nomac";
+  if (providerConfigured(env, wanted)) return wanted;
+  return wanted === "nomac" && providerConfigured(env, "revyl") ? "revyl" : "nomac";
+}
+
 async function phoneAccess(env: CloudEnv, userId: string): Promise<CloudPhoneAccess> {
-  if (!env.NOMAC_API_KEY?.trim()) return "off";
+  if (!anyProviderConfigured(env)) return "off";
   const setting = phoneAccessSetting(env);
   if (setting === "off") return "off";
   if (setting === "all") return "on";
@@ -438,6 +532,7 @@ function summaryOfSession(session: NomacSession, stopNotice: unknown): CloudPhon
   const live = LIVE_STATES.has(session.state);
   const notice = stopNotice as { message?: unknown } | null | undefined;
   return {
+    provider: session.provider ?? "nomac",
     id: session.id,
     state: session.state === "ready" ? "ready" : live ? "starting" : "ended",
     device: session.device ?? "iphone",
@@ -452,12 +547,14 @@ type PhoneContext = {
   account: AccountRow;
   label: string;
   usage: PhoneUsage;
-  /** The account's live phone as NoMac answers it now, or null. */
-  live: { session: NomacSession; stopNotice: unknown; createdAt: number } | null;
+  /** The account's live phone as its provider answers it now, or null. */
+  live: { session: NomacSession; stopNotice: unknown; createdAt: number; where: PhoneWhere } | null;
   /** The account's newest phone, live or not: a new start's idempotency key names it. */
   lastPhoneId: string | null;
   /** The live row's phone when NoMac couldn't be read now: a stop still reaches it. */
   liveRowId: string | null;
+  /** This period's phone rows, newest first. */
+  rows: PhoneRow[];
 };
 
 /** The account, its usage and its live phone: one NoMac read, and only when a phone is live. */
@@ -475,16 +572,17 @@ async function phoneContext(env: CloudEnv, userId: string, now: number): Promise
     ?? await env.DB.prepare("select * from cloud_phones where user_id = ? and state = 'live' order by created_at desc limit 1").bind(userId).first<PhoneRow>();
   let unreadLiveRowId: string | null = null;
   if (liveRow) {
-    const read = await readSession(env, liveRow.phone_id);
+    const where: PhoneWhere = { provider: liveRow.provider === "revyl" ? "revyl" : "nomac", ref: liveRow.provider_ref ?? null, device: liveRow.device };
+    const read = await readPhone(env, userId, liveRow.phone_id, where);
     if (!read) unreadLiveRowId = liveRow.phone_id;
     if (read) {
       await savePhone(env, userId, read.session, now);
-      if (LIVE_STATES.has(read.session.state)) live = { ...read, createdAt: liveRow.created_at };
+      if (LIVE_STATES.has(read.session.state)) live = { ...read, createdAt: liveRow.created_at, where: { ...where, ref: read.session.ref ?? where.ref } };
       rows = await periodPhones(env, userId, account.period_start);
     }
   }
   const newest = await env.DB.prepare("select phone_id from cloud_phones where user_id = ? order by created_at desc limit 1").bind(userId).first<{ phone_id: string }>();
-  return { account, label, usage: phoneUsageOf(env, account, rows, now), live, lastPhoneId: newest?.phone_id ?? null, liveRowId: unreadLiveRowId };
+  return { account, label, usage: phoneUsageOf(env, account, rows, now), live, lastPhoneId: newest?.phone_id ?? null, liveRowId: unreadLiveRowId, rows };
 }
 
 /** A live phone from an earlier period ran under that period's terms. */
@@ -519,14 +617,15 @@ export async function enforcePhoneAllowance(env: CloudEnv, userId: string, now: 
     await env.DB.prepare("update cloud_phones set stop_at = ?, updated_at = ? where phone_id = ? and state = 'live'").bind(now, now, live.session.id).run();
     return (await stopPhone(env, userId, live.session.id, now, why)) ? "stopped" : "stop_failed";
   }
+  // Never past one phone's longest: Revyl's phone has no time limit of its own, so this is its limit.
   await env.DB.prepare("update cloud_phones set stop_at = ?, updated_at = ? where phone_id = ? and state = 'live'")
-    .bind(now + allowedMinutes(context.usage) * 60_000, now, live.session.id).run();
+    .bind(Math.min(now + allowedMinutes(context.usage) * 60_000, live.createdAt + CLOUD_PHONE_MAX_MINUTES * 60_000), now, live.session.id).run();
   return "running";
 }
 
 /** The minute tick: live phones whose `stop_at` passed stop now. Rows only until one is due. */
 export async function stopPhonesDue(env: CloudEnv, now: number): Promise<void> {
-  if (!env.NOMAC_API_KEY?.trim()) return;
+  if (!anyProviderKey(env)) return;
   const due = await env.DB.prepare("select phone_id, user_id from cloud_phones where state = 'live' and stop_at is not null and stop_at <= ? limit ?")
     .bind(now, STOPS_PER_TICK).all<{ phone_id: string; user_id: string }>();
   for (const row of due.results ?? []) {
@@ -604,7 +703,7 @@ function startRefusal(context: PhoneContext): { code: string; message: string } 
  * checked the sign-in and the owner's block first).
  */
 export async function routePhone(request: Request, path: string, env: CloudEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
-  if (path !== CLOUD_PATHS.phone && path !== CLOUD_PATHS.phoneView) return null;
+  if (path !== CLOUD_PATHS.phone && path !== CLOUD_PATHS.phoneView && path !== CLOUD_PATHS.phoneCall) return null;
   const access = await phoneAccess(env, userId);
 
   if (path === CLOUD_PATHS.phone && request.method === "GET") {
@@ -615,12 +714,13 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
       access,
       minutes: minutesOf(context.usage),
       phone: context.live ? summaryOfSession(context.live.session, context.live.stopNotice) : null,
+      recent: recentPhonesOf(context.rows, now),
     } satisfies CloudPhoneState);
   }
 
   // Stopping your own phone is always allowed, whatever the access says now.
   if (path === CLOUD_PATHS.phone && request.method === "DELETE") {
-    if (!env.NOMAC_API_KEY?.trim()) return json({ ok: true, stopped: false });
+    if (!anyProviderKey(env)) return json({ ok: true, stopped: false });
     const context = await phoneContext(env, userId, now);
     if (context instanceof Response) return context;
     const phoneId = context.live?.session.id ?? context.liveRowId;
@@ -684,22 +784,34 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
       }
       // What this phone may use: the plan's minutes left, then extra minutes, and never more than one phone's longest.
       const minutes = Math.min(CLOUD_PHONE_MAX_MINUTES, allowedMinutes(context.usage));
-      const answer = await nomac(env, "POST", "/api/v1/simulator/sessions", {
-        label: context.label,
-        reuse: true,
-        ...(device ? { device } : {}),
-        limits: {
-          max_duration_seconds: minutes * 60,
-          idle_timeout_seconds: CLOUD_PHONE_IDLE_SECONDS,
-          spend_cap_microunits: String(minutes * NOMAC_MICROS_PER_MINUTE),
-        },
-        // A retry of this start reaches the same phone; a start after that phone (a stop, then start) is a new one.
-      }, `ade-phone-${userId}-${context.lastPhoneId ?? "first"}-${Math.floor(now / 10_000)}`);
-      session = sessionOf(answer.body?.session);
-      if (answer.status >= 400 || !session) return providerFailure("cloud.phone_start_failed", answer, userId);
-      reused = answer.body?.reused === true;
+      const provider = await providerFor(env, userId);
+      if (provider === "revyl") {
+        const started = await startRevylPhone(env, userId, device, CLOUD_PHONE_IDLE_SECONDS, now);
+        if (started instanceof Response) return started;
+        session = { ...started.session, provider: "revyl" };
+        reused = started.reused;
+      } else {
+        const answer = await nomac(env, "POST", "/api/v1/simulator/sessions", {
+          label: context.label,
+          reuse: true,
+          ...(device ? { device } : {}),
+          limits: {
+            max_duration_seconds: minutes * 60,
+            idle_timeout_seconds: CLOUD_PHONE_IDLE_SECONDS,
+            spend_cap_microunits: String(minutes * NOMAC_MICROS_PER_MINUTE),
+          },
+          // A retry of this start reaches the same phone; a start after that phone (a stop, then start) is a new one.
+        }, `ade-phone-${userId}-${context.lastPhoneId ?? "first"}-${Math.floor(now / 10_000)}`);
+        session = sessionOf(answer.body?.session);
+        if (answer.status >= 400 || !session) return providerFailure("cloud.phone_start_failed", answer, userId);
+        reused = answer.body?.reused === true;
+      }
       await savePhone(env, userId, session, now, accountRules(context.account) === "free");
-      logCloud("cloud.phone_started", { userId, phoneId: session.id, reused, device: session.device ?? "iphone", minutes, extra: context.usage.left === 0 });
+      // Revyl's phone has no limits of its own: its stop_at is the limit from the start.
+      if (provider === "revyl") {
+        await env.DB.prepare("update cloud_phones set stop_at = coalesce(stop_at, ?), updated_at = ? where phone_id = ? and state = 'live'").bind(now + minutes * 60_000, now, session.id).run();
+      }
+      logCloud("cloud.phone_started", { userId, phoneId: session.id, reused, device: session.device ?? "iphone", minutes, extra: context.usage.left === 0, provider });
       if (!reused) {
         captureCloudPhone(env, waitUntil, userId, {
           step: "started",
@@ -710,18 +822,45 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
         }, session.id, now);
       }
     }
+    if (session.provider === "revyl") {
+      // No per-phone token at Revyl: the brain calls the phone through `/cloud/phone/call`, as itself.
+      return json({
+        phone: summaryOfSession(session, null),
+        reused,
+        token: { token: "", expiresAt: now + TOKEN_MINUTES * 60_000 },
+        minutes: minutesOf(context.usage),
+        apiBase: "",
+        provider: "revyl",
+      } satisfies CloudPhoneStart);
+    }
     const token = await phoneToken(env, session.id, userId);
     if (token instanceof Response) return token;
-    return json({ phone: summaryOfSession(session, null), reused, token, minutes: minutesOf(context.usage), apiBase: NOMAC_SIMULATOR_BASE } satisfies CloudPhoneStart);
+    return json({ phone: summaryOfSession(session, null), reused, token, minutes: minutesOf(context.usage), apiBase: NOMAC_SIMULATOR_BASE, provider: "nomac" } satisfies CloudPhoneStart);
   }
 
   if (request.method !== "POST") return fail("not_found", "ADE Cloud has no such route.", 404);
   const live = context.live?.session ?? null;
   if (!live) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running. Start it first.", 409);
+  const where = context.live!.where;
+  const body = await readJson(request);
+
+  // A call to the live phone at a provider with no per-phone token.
+  if (path === CLOUD_PATHS.phoneCall) {
+    if (!body) return fail("bad_request", "That request could not be read.", 400);
+    if (where.provider !== "revyl") return fail("bad_request", "This phone takes its calls directly.", 400);
+    if (live.state !== "ready") return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
+    return routeRevylCall(env, userId, { id: live.id, ref: where.ref }, body, now);
+  }
 
   // The view: a control link by default (the person uses the phone in the pane).
-  const body = await readJson(request);
   const control = body?.control !== false;
+  if (where.provider === "revyl") {
+    if (!where.ref) return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
+    const view = await revylViewUrl(env, userId, where.ref, new URL(request.url).origin, control);
+    if (view instanceof Response) return view;
+    // The stream link lasts the phone's life; the pane asks again before this.
+    return json({ url: view.url, expiresAt: now + VIEW_MINUTES * 60_000, control, provider: "revyl" } satisfies CloudPhoneView);
+  }
   const secret = env.NOMAC_EMBED_SECRET?.trim() || null;
   const answer = await nomac(env, "POST", `/api/v1/simulator/sessions/${encodeURIComponent(live.id)}/view`, {
     control,
@@ -736,8 +875,12 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
   // Signed for this account alone: a copied link opens nothing. Without a secret
   // set up, the link itself is the permission (2 hours, this phone only).
   const signed = secret ? `${url}#visitor=${await signPhoneVisitor(secret, live.id, context.label, now)}` : url;
-  return json({ url: signed, expiresAt, control } satisfies CloudPhoneView);
+  return json({ url: signed, expiresAt, control, provider: "nomac" } satisfies CloudPhoneView);
 }
+
+/** `GET /cloud/phone/viewer`: ADE's page for a phone streamed over WebRTC (Revyl's). Static; the link's `#` part names the phone. */
+export const isPhoneViewerRequest = (path: string, method: string): boolean => path === CLOUD_PATHS.phoneViewer && method === "GET";
+export const handlePhoneViewer = (): Response => revylViewerPage();
 
 /* ---- NoMac's webhook ---- */
 
@@ -881,15 +1024,15 @@ const isDeletedAccount = (userId: string): boolean => userId.startsWith(CLOUD_DE
  * go to Stripe from `phoneBilling.ts`.
  */
 export async function runPhoneChecks(env: CloudEnv, now: number): Promise<void> {
-  if (!env.NOMAC_API_KEY?.trim()) return;
-  const live = await env.DB.prepare("select phone_id, user_id, created_at, updated_at from cloud_phones where state = 'live' order by updated_at limit ?")
-    .bind(CHECK_BATCH).all<Pick<PhoneRow, "phone_id" | "user_id" | "created_at" | "updated_at">>();
+  if (!anyProviderKey(env)) return;
+  const live = await env.DB.prepare("select phone_id, user_id, created_at, updated_at, provider, provider_ref, device from cloud_phones where state = 'live' order by updated_at limit ?")
+    .bind(CHECK_BATCH).all<Pick<PhoneRow, "phone_id" | "user_id" | "created_at" | "updated_at" | "provider" | "provider_ref" | "device">>();
   for (const row of live.results ?? []) {
     if (isDeletedAccount(row.user_id)) continue;
     // A phone read in the last few minutes (a pane open, a webhook) is fresh enough.
     if (now - row.updated_at < 5 * 60_000 && now - row.created_at < LIVE_STALE_MS) continue;
     try {
-      const read = await readSession(env, row.phone_id);
+      const read = await readPhone(env, row.user_id, row.phone_id, { provider: row.provider === "revyl" ? "revyl" : "nomac", ref: row.provider_ref, device: row.device });
       if (read) await savePhone(env, row.user_id, read.session, now);
     } catch (error) {
       reportCloudFailure("cloud.phone_check_read_failed", { message: error instanceof Error ? error.message : "unknown" });
@@ -1010,10 +1153,13 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
   const typedEmail = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   const typedUserId = typeof body.userId === "string" ? body.userId.trim() : "";
   if (!typedEmail && !typedUserId) {
-    const rows = await env.DB.prepare("select user_id, email, added_at from cloud_phone_beta order by added_at").all<{ user_id: string; email: string | null; added_at: number }>();
+    const rows = await env.DB.prepare("select user_id, email, added_at, provider from cloud_phone_beta order by added_at").all<{ user_id: string; email: string | null; added_at: number; provider: string | null }>();
     const pending = await env.DB.prepare("select email, added_at from cloud_phone_beta_pending order by added_at").all<{ email: string; added_at: number }>();
-    return json({ ok: true, access: phoneAccessSetting(env), users: rows.results ?? [], pending: pending.results ?? [] });
+    return json({ ok: true, access: phoneAccessSetting(env), provider: env.CLOUD_PHONE_PROVIDER?.trim().toLowerCase() === "revyl" ? "revyl" : "nomac", users: rows.results ?? [], pending: pending.results ?? [] });
   }
+  // `provider`: this tester's phones run there (`nomac`, `revyl`); `null` goes back to the server's setting.
+  const provider = body.provider === null ? null : body.provider === undefined ? undefined : isCloudPhoneProvider(body.provider) ? body.provider : false;
+  if (provider === false) return fail("bad_request", `provider is ${CLOUD_PHONE_PROVIDERS.join(" or ")}, or null.`, 400);
   if (typedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail)) return fail("bad_request", "That email isn't valid.", 400);
   if (typedUserId && !/^[A-Za-z0-9_-]{1,100}$/.test(typedUserId)) return fail("bad_request", "That userId isn't valid.", 400);
   let userIds = typedUserId ? [typedUserId] : [];
@@ -1047,9 +1193,11 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
   }
   for (const userId of userIds) {
     await phoneBetaAddStatement(env.DB, userId, typedEmail || null, now).run();
+    // A provider change reaches the next phone; the live one keeps its own.
+    if (provider !== undefined) await env.DB.prepare("update cloud_phone_beta set provider = ? where user_id = ?").bind(provider, userId).run();
   }
-  logCloud("cloud.phone_beta_added", { count: userIds.length });
-  return json({ ok: true, added: userIds });
+  logCloud("cloud.phone_beta_added", { count: userIds.length, ...(provider !== undefined ? { provider } : {}) });
+  return json({ ok: true, added: userIds, ...(provider !== undefined ? { provider } : {}) });
 }
 
 /**
@@ -1060,8 +1208,10 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
  * email). Throws while NoMac still saves the last phone's replay, so the
  * deletion is retried.
  */
-export async function deleteAccountPhone(env: Pick<CloudEnv, "DB" | "NOMAC_API_KEY" | "CLOUD_PHONE_ACCESS">, userId: string): Promise<void> {
-  const hadPhone = await env.DB.prepare("select 1 from cloud_phones where user_id = ? limit 1").bind(userId).first();
+export async function deleteAccountPhone(env: Pick<CloudEnv, "DB" | "NOMAC_API_KEY" | "REVYL_PARTNER_API_KEY" | "CLOUD_PHONE_ACCESS">, userId: string): Promise<void> {
+  // Revyl first: disconnecting the workspace stops its phones and revokes its credentials.
+  await forgetRevylAccount(env, userId);
+  const hadPhone = await env.DB.prepare("select 1 from cloud_phones where user_id = ? and provider = 'nomac' limit 1").bind(userId).first();
   const inBeta = await env.DB.prepare("select 1 from cloud_phone_beta where user_id = ?").bind(userId).first();
   await env.DB.prepare("delete from cloud_phone_beta where user_id = ?").bind(userId).run();
   const label = phoneLabelFor(userId);

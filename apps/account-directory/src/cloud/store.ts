@@ -43,6 +43,12 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   NOMAC_EMBED_SECRET?: string;
   /** Secret. Signs NoMac's webhook deliveries (`/cloud/nomac/webhook`). Unset: the webhook answers 503 and the ten-minute check settles phones alone. */
   NOMAC_WEBHOOK_SECRET?: string;
+  /** Secret. ADE's Revyl partner key for the ADE Cloud iPhone on Revyl (`phoneRevyl.ts`). Unset: no phone starts on Revyl. */
+  REVYL_PARTNER_API_KEY?: string;
+  /** Who runs new phones: `nomac` (default) or `revyl`; the owner's per-account choice on the beta list wins (`phones.ts`). */
+  CLOUD_PHONE_PROVIDER?: string;
+  /** The owner's switch for Revyl: `on` lets new phones start there (with the key set). Unset or anything else: NoMac only (`revylEnabled`). */
+  CLOUD_PHONE_REVYL?: string;
   /** Who may use the ADE Cloud iPhone: `beta` (default, the owner's list), `all`, or `off` (`phones.ts`). */
   CLOUD_PHONE_ACCESS?: string;
   /** `1`: no new ADE Cloud iPhones (running ones finish). */

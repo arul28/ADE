@@ -499,8 +499,9 @@ final class CloudIphoneModel: ObservableObject {
 
 // MARK: - The page
 
-/// NoMac's control page in a web view that can go nowhere else: no new
-/// windows, no link previews, no page it did not come from.
+/// The phone's control page (NoMac's, or ADE's viewer page for a Revyl phone)
+/// in a web view that can go nowhere else: no new windows, no link previews,
+/// no page it did not come from.
 private struct CloudIphoneWebView: UIViewRepresentable {
   let url: URL
   @Binding var loadError: String?
@@ -602,16 +603,27 @@ func cloudIphonePointSize(_ device: String?) -> CGSize {
 /// NoMac's viewer page, and nothing else.
 func cloudIphoneViewURL(_ raw: String) -> URL? {
   guard let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-        url.scheme?.lowercased() == "https",
-        url.host?.lowercased() == "nomac.app",
-        url.path.hasPrefix("/simulator-use/view/")
+        url.scheme?.lowercased() == "https"
   else { return nil }
+  if cloudIphoneIsAdeViewer(url) { return url }
+  guard url.host?.lowercased() == "nomac.app", url.path.hasPrefix("/simulator-use/view/") else { return nil }
   return url
 }
 
-/// A page the viewer may navigate to: NoMac's own site only.
+/// ADE's own viewer page (a Revyl phone): `/cloud/phone/viewer` on ADE's account server.
+private func cloudIphoneIsAdeViewer(_ url: URL) -> Bool {
+  guard url.scheme?.lowercased() == "https", url.path == "/cloud/phone/viewer", let host = url.host?.lowercased() else { return false }
+  var hosts: Set<String> = [
+    "ade-account-directory-production.arulsharma1028.workers.dev",
+    "ade-account-directory.arulsharma1028.workers.dev",
+  ]
+  if let own = AccountConfig.directoryBaseURL?.host?.lowercased() { hosts.insert(own) }
+  return hosts.contains(host)
+}
+
+/// A page the viewer may navigate to: NoMac's own site, or ADE's viewer page.
 func cloudIphoneAllowsNavigation(_ url: URL) -> Bool {
-  url.scheme?.lowercased() == "https" && url.host?.lowercased() == "nomac.app"
+  (url.scheme?.lowercased() == "https" && url.host?.lowercased() == "nomac.app") || cloudIphoneIsAdeViewer(url)
 }
 
 /// Why the phone ended, in the phone's words.

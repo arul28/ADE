@@ -137,6 +137,17 @@ export function adeWithheldAgentSkills(): readonly string[] {
   ];
 }
 
+/**
+ * The skills an agent may not read even when it asks for one by name
+ * (`ade skill show`): the access rules only. A skill this host merely can't
+ * run here (`ade-apple` on Windows) still reads by name, because a chat
+ * here drives a Mac's simulator (`--machine`) or the ADE Cloud iPhone with it.
+ */
+export function adeAccessWithheldAgentSkills(): readonly string[] {
+  agentSkillAccessRefresh?.();
+  return [...ALWAYS_WITHHELD_AGENT_SKILLS, ...(adeCloudSkillVisible ? [] : ["ade-cloud"])];
+}
+
 /** Whether the account has the ADE Cloud iPhone (`access: "on"`), from whoever just asked the server. */
 export function setAdeCloudIphoneSkillVisible(visible: boolean): void {
   adeCloudIphoneVisible = visible;

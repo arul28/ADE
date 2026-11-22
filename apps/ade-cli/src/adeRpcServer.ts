@@ -7582,11 +7582,12 @@ async function runTool(args: {
         // The caller's machine learns which lane here is its work copy, so its
         // views can show this simulator.
         transformScopedResult = remote.withWorkCopy;
-      } else if (action === "getStatus" && !asOptionalTrimmedString(appleArgs.laneId)) {
-        // A status read from a chat on another machine (it sends no
-        // `remoteWork`: a read makes no copy) is about that chat's lane here,
-        // its work copy's, when there is one: its own device, not whichever
-        // simulator this Mac has booted. With no copy it stays the machine's.
+      } else if ((action === "getStatus" || action === "deviceList") && !asOptionalTrimmedString(appleArgs.laneId)) {
+        // A status read or a device list from a chat on another machine (it
+        // sends no `remoteWork`: a read makes no copy) is about that chat's
+        // lane here, its work copy's, when there is one: its own device, not
+        // whichever simulator this Mac has booted, and `mine` on the device it
+        // made. With no copy it stays the machine's.
         const owner = asOptionalTrimmedString(session.identity.chatSessionId);
         const copyLaneId = owner && parseForeignCallerSessionId(owner) ? remoteWorkLaneIdFor(owner) : null;
         if (copyLaneId && findRemoteWorkCopyForLane(runtime.projectRoot, copyLaneId)) {

@@ -20,6 +20,7 @@ import {
   type CloudCopyRecord,
   type CloudFreeRecord,
   type CloudMoveRecord,
+  type CloudPhoneCallRequest,
   type CloudPhoneStart,
   type CloudPhoneState,
   type CloudPhoneView,
@@ -558,6 +559,30 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     async phoneStop(): Promise<{ stopped: boolean }> {
       const answer = record(await request("DELETE", CLOUD_PATHS.phone));
       return { stopped: answer?.stopped === true };
+    },
+
+    async phoneCall(input: CloudPhoneCallRequest, options?: { timeoutMs?: number }): Promise<{ status: number; type: string | null; body: Buffer }> {
+      const base = deps.baseUrl()?.replace(/\/+$/, "");
+      if (!base) throw new CloudProviderError("ADE's account service isn't set up on this computer.", "network", 0);
+      const token = await deps.accessToken();
+      if (!token) throw markExpected(new CloudProviderError("Sign in to ADE to use ADE Cloud.", CLOUD_ACCESS_REFUSED, 401), "user");
+      let response: Response;
+      try {
+        response = await fetcher(`${base}${CLOUD_PATHS.phoneCall}`, {
+          method: "POST",
+          headers: { accept: "*/*", authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify(input),
+          signal: AbortSignal.timeout(options?.timeoutMs ?? 150_000),
+          redirect: "error",
+        });
+        // Bytes as they are: a screenshot's PNG, a recording's video, or JSON.
+        return { status: response.status, type: response.headers.get("content-type"), body: Buffer.from(await response.arrayBuffer()) };
+      } catch (error) {
+        throw markExpected(
+          new CloudProviderError(`Could not reach ADE Cloud: ${error instanceof Error ? error.message : String(error)}`, "network", 0),
+          "network",
+        );
+      }
     },
   };
 }
