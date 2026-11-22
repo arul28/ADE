@@ -1174,6 +1174,8 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
         logCloud("cloud.phone_beta_pending_removed");
         return json({ ok: true, removed: [], pending: true });
       }
+      // A waiting email keeps no provider: set it once the account exists, not silently drop it.
+      if (provider !== undefined) return fail("bad_request", "No ADE account has that email yet, so it can't get a provider. Add it without one, then set the provider once the account exists.", 400);
       await env.DB.prepare("insert into cloud_phone_beta_pending (email, added_at) values (?, ?) on conflict(email) do nothing").bind(typedEmail, now).run();
       logCloud("cloud.phone_beta_pending_added");
       return json({ ok: true, added: [], pending: true });
