@@ -751,8 +751,10 @@ reaches no computer that exists. Another value, a list, `--all-machines`,
 access; a read-only connection can follow a launch. An app is an unattended
 agent there: held to the agent limits, and a size change, a delete and a
 cancel are declined. A disk grow on the computer the brain runs on
-(`cloud.grow_disk`, `ade cloud resize --free`) is answered by the agent limits'
-paid extra disk; inside the plan's disk it needs no yes. See
+(`cloud.grow_disk`, `ade cloud resize --free`) needs no yes inside its size's
+disk maximum. On the Free plan the server refuses an app's create, start,
+resize, copy, move and message with 403 `outside_agent_free_plan` and a
+sentence the app passes on ("move to a paid plan"); reads stay open. See
 [Guidance for agents](../ade-cloud/README.md#guidance-for-agents).
 
 ## Chat turns from an app

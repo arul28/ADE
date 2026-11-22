@@ -663,14 +663,11 @@ move keeps the old disk.
   `growToFit` of the computer's own grower (`cloudDiskGrowHost.ts`). It grows
   only the computer it runs on. The fit is `cloudDiskGrowFit`
   (`shared/cloudDiskGrowRules.ts`):
-  - Inside the plan's disk, it grows with no card.
-  - Into extra disk, a watched chat gets an approval card. An unwatched caller
-    is answered by the agent limits' paid extra disk (`extraDiskMonthCents`);
-    unread limits refuse. The hours check does not apply.
-  - Since Pricing v2 the server sells no extra disk: a grow passes inside
-    the size's `diskMaxGb` and is refused past it (`tier_limit`), so the
-    extra-disk card and limit no longer come into play. `growToFit` reads the fit again before each resize and retry, at most 3
-    rounds.
+  - Inside the size's disk maximum (`diskMaxGb`), it grows with no card. The
+    hours check does not apply.
+  - Past it, the server refuses (`tier_limit`): ADE Cloud sells no extra
+    disk, so the way out is a bigger size. `growToFit` reads the fit again
+    before each resize and retry, at most 3 rounds.
 - **The restart:** the grow waits for idle. Chats and ADE's own agent CLIs do
   not hold it; they continue after the restart whatever "Continue chats after
   restarts" says (cause `disk_grow`, `brainUnplannedRestart.ts`). A terminal
@@ -678,7 +675,7 @@ move keeps the old disk.
   command that asked for it (`disk_grow_command`) does not. A Devin CLI can't
   be reopened.
 - **The chat cards** (`shared/cloudDiskGrowCard.ts`, posted by the brain):
-  "growing" before the restart, with the extra disk's cost, and the new disk
+  "growing" before the restart, and the new disk
   after it. `$ADE_HOME/cloud/disk-grow.json` keeps what was told. After the
   restart, the cards are retried after 10 s, then up to 5 times every 30 s.
 
@@ -1043,9 +1040,6 @@ the phone (`cloud.read`) and a brain with no project can read it.
 - **The daily limit:** past the day's new computers for agents, the refusal
   names the limit and Settings › Integrations › ADE Cloud › What agents may do
   › New computers a day. A person is never counted.
-- **Paid extra disk for agents:** None, $5, $10, $25 or Your limit (default),
-  in `CloudAgentLimitsCard.tsx`, `ade cloud limits --extra-disk`, or the
-  iPhone. A higher value needs the person.
 
 **How it runs.**
 

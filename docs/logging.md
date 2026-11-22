@@ -883,7 +883,7 @@ client version and for work nobody watches
   `cloud.phone_beta_claim_failed` (a new account's tester-email claim
   failed; the email keeps waiting), `cloud.phone_beta_pending_check_failed`
   (the owner check's hourly Clerk lookup of waiting tester emails got no
-  answer: count only).
+  answer: the count waiting and the fetch error, no email).
 - **`ade_cloud_safety`** (`blocks.ts`, `safety.ts`, `costReport.ts`,
   `chats.ts`): `step` is `first_chat` (the account's first saved cloud chat,
   once), `free_cap_50`, `free_cap_80`, `free_cap_100` (free use passed that

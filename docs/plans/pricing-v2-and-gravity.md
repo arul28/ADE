@@ -4,7 +4,8 @@ The owner decided this plan between 2026-11-19 and 2026-11-21. It is the base
 every lane in this work builds from. Today's plan rules are in
 [ade-cloud-plans-and-disk.md](./ade-cloud-plans-and-disk.md) and
 `apps/account-directory/src/cloud/plans.ts`; this plan replaces their numbers
-and keeps their principles. Nobody pays yet, so there is no migration.
+and keeps their principles. Migration `0052_pricing_v2.sql` converts live usage
+to the new hour unit.
 
 Everything here is account-wide, so it follows **Account-wide features live
 on the account server** in `AGENTS.md`: the server decides, counts and holds

@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { reportExtraPhoneMinutes, setExtraPhoneMinutes } from "../src/cloud/phoneBilling";
-import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
 import { runIdleCleanup } from "../src/cloud/idleCleanup";
@@ -599,6 +599,19 @@ describe("ADE Cloud account", () => {
       expect(providerCalls(harness, /POST .*\/subscription_items\//).map((call) => [call.url.split("/").pop(), call.body?.price, call.body?.proration_behavior]))
         .toEqual([["si_extra", "price_extra_plus", "none"]]);
     }],
+    ["a renewal moves a price a plan no longer sells to the plan's new one, and adds no second hours item", async () => {
+      Object.assign(harness.env, { STRIPE_EXTRA_HOURS_PLUS_PRICE_ID: "price_extra_plus_v2", STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS: "price_extra_pro_v1, price_extra_plus_v1" });
+      harness.net.subscriptions.set("sub_1", { ...activeSubscription, items: { data: [
+        { ...activeSubscription.items.data[0], id: "si_plan" },
+        { id: "si_extra", price: { id: "price_extra_plus_v1", recurring: { meter: "mtr_hours" } } },
+      ] } });
+
+      expect((await webhook(renewalInvoice)).status).toBe(200);
+
+      expect(providerCalls(harness, /POST .*\/subscription_items\//).map((call) => [call.url.split("/").pop(), call.body?.price, call.body?.proration_behavior]))
+        .toEqual([["si_extra", "price_extra_plus_v2", "none"]]);
+      expect(providerCalls(harness, /POST .*\/subscription_items$/)).toHaveLength(0);
+    }],
   ])("Stripe: %s", async (_label, run) => {
     seedAccount(harness, OWNER, paidAccount);
     harness.net.subscriptions.set("sub_1", activeSubscription);
@@ -797,7 +810,7 @@ describe("ADE Cloud account", () => {
   });
 
   // Money: extra disk, plan changes and the owner's limit (docs/plans/ade-cloud-plans-and-disk.md).
-  const MONEY_ENV = { STRIPE_PRO_PRICE_ID: "price_pro", STRIPE_DISK_PRICE_ID: "price_disk", STRIPE_DISK_METER_EVENT: "ade_cloud_extra_disk_gb_days" };
+  const MONEY_ENV = { STRIPE_PRO_PRICE_ID: "price_pro" };
   /** Each plan's own extra-hours price (Cloud 7); `price_extra` stays the first, graduated one older subscriptions hold. */
   const EXTRA_PRICES = { STRIPE_MAX_PRICE_ID: "price_max", STRIPE_EXTRA_HOURS_PLUS_PRICE_ID: "price_extra_plus", STRIPE_EXTRA_HOURS_PRO_PRICE_ID: "price_extra_pro", STRIPE_EXTRA_HOURS_MAX_PRICE_ID: "price_extra_max" };
   const plusAccount = { plan: "paid", paid_plan: "plus", included_milli: 300_000, stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1", stripe_status: "active" };
@@ -1151,6 +1164,41 @@ describe("ADE Cloud account", () => {
       expect(error.lanes).toHaveLength(count + outcomes.filter((outcome) => outcome === 201).length);
       expect(error.lanes[0]?.instanceId).toBe(idOf(count - 1));
     }
+  });
+
+  // Outside agents (ADE MCP) may use ADE Cloud only on a paid plan; each route that makes or wakes a computer checks it.
+  it.each<[string, "free" | "plus", "create" | "start" | "resize", boolean]>([
+    ["a create on the free plan is refused", "free", "create", true],
+    ["a start on the free plan is refused", "free", "start", true],
+    ["a resize on the free plan is refused (it may wake the computer)", "free", "resize", true],
+    ["a create on Plus goes", "plus", "create", false],
+    ["a start on Plus goes", "plus", "start", false],
+    ["a resize on Plus goes", "plus", "resize", false],
+  ])("an outside agent: %s", async (_label, plan, action, refusedExpected) => {
+    seedAccount(harness, OWNER, plan === "plus"
+      ? { plan: "paid", paid_plan: "plus", included_milli: 100_000, stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1", stripe_status: "active" }
+      : {});
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    seedComputer(harness, { status: "stopped", awake_since: null });
+    provide(harness, INSTANCE, "stopped");
+
+    const response = action === "create"
+      ? await harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, metadata: { ade_made_by_agent: "mcp" } })
+      : action === "start"
+        ? await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/start`, { origin: "mcp" })
+        : await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 4, memory: 8, origin: "mcp" });
+
+    const code = response.ok ? null : ((await response.clone().json()) as { error?: { code?: string; message?: string } }).error;
+    const providerPath = action === "create" ? /POST .*\/instances$/ : action === "start" ? /POST .*\/start$/ : /POST .*\/resize$/;
+    if (refusedExpected) {
+      expect(response.status).toBe(403);
+      expect(code).toMatchObject({ code: "outside_agent_free_plan", message: CLOUD_OUTSIDE_AGENT_FREE_MESSAGE });
+      expect(providerCalls(harness, providerPath)).toHaveLength(0);
+    } else {
+      expect([response.status, code?.code ?? null]).toEqual([action === "create" ? 201 : 200, null]);
+      expect(providerCalls(harness, providerPath)).toHaveLength(1);
+    }
+    expect(harness.rows("select instance_id from cloud_computers where deleted_at is null")).toHaveLength(refusedExpected || action !== "create" ? 1 : 2);
   });
 
   // The owner's alert emails (steps and the limit): every email but the daily report (the day's run is marked done, so only a new day sends one).
