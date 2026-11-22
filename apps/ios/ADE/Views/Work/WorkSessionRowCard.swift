@@ -754,7 +754,10 @@ struct WorkSessionRow: View, Equatable {
           .fixedSize()
       }
 
-      if boardCard, showsLaneIdentity, let pullRequest {
+      // Only when nothing else claims this line: a board column is too narrow
+      // for the PR beside Pending sync, ARCHIVED or an EXIT code.
+      if boardCard, showsLaneIdentity, !isPendingSyncCreation, !isArchived,
+         failedExitCode == nil, let pullRequest {
         WorkLanePrIndicator(tag: pullRequest)
           .fixedSize()
       }

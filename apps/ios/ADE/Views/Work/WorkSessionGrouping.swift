@@ -361,6 +361,7 @@ func buildWorkRootSessionPresentation(
     machineFilter: machineFilter,
     searchText: searchText,
     outputSearchBySessionId: outputSearchBySessionId,
+    laneDisplayNameByLaneId: searchText.isEmpty ? [:] : laneById.mapValues(\.displayName),
     laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
     busySubagentParentIds: busySubagentParentIds,
     now: now
