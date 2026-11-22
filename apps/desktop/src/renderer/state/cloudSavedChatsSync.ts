@@ -293,6 +293,9 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     // A list whose computers the server did not give (`computersUnread`) says nothing about them.
     const cloudBoxes = cloud?.state === "ok" && !cloud.computersUnread ? cloud.machines : null;
     const machineFacts = new Map<string, { connection: RemoteRuntimeConnectionStatus | null; gone: boolean; name: string | null; laneComputer: boolean }>();
+    // Machines whose copies moved there with their lane (lowercase keys): no
+    // ADE Cloud computer, so their saved CLI copies list nowhere either.
+    const notCloudMachineKeys = new Set<string>();
     for (const [machineKey, rows] of byMachine) {
       const connection = connectionFor(context.connections, machineKey, rows[0]!.instanceId);
       const box = cloudBoxes ? cloudBoxForMachine(cloudBoxes, { machineKey, hostname: rows[0]!.instanceId }) : null;
@@ -304,6 +307,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       // server sends no field (undefined) and decides nothing here.
       if (!box && !laneComputer && rows.every((row) => !row.savedOnMachineKey && row.computer === null)) {
         byMachine.delete(machineKey);
+        notCloudMachineKeys.add(machineKey.toLowerCase());
         continue;
       }
       // Gone only when the account says so: the list's own answer for the
@@ -550,6 +554,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     const terminalsByMachine = new Map<string, NonNullable<CloudProjectOverview["sessions"]>>();
     for (const row of overview?.sessions ?? []) {
       if (!row.machineKey || deletedAfter(startTick, row.laneId)) continue;
+      // A copy that moved with its lane has no instance id; an ADE Cloud computer's copy always has one.
+      if (!row.instanceId && notCloudMachineKeys.has(row.machineKey.toLowerCase())) continue;
       const rows = terminalsByMachine.get(row.machineKey);
       if (rows) rows.push(row);
       else terminalsByMachine.set(row.machineKey, [row]);

@@ -185,6 +185,10 @@ struct CloudSavedChatRow: Decodable, Equatable {
   let updatedAt: Double
   /// Nil from an older server, or when the server has no row for the computer.
   let computer: CloudSavedChatComputer?
+  /// The server sent `computer: null`: no ADE Cloud computer saved this copy
+  /// (it moved with its lane to one of the person's own machines). False when
+  /// an older server sends no field.
+  let savedByNoCloudComputer: Bool
   /// The chat a subagent chat belongs to, and how it was made (newer servers).
   let parentChatId: String?
   let spawnKind: String?
@@ -213,6 +217,7 @@ struct CloudSavedChatRow: Decodable, Equatable {
     lastSeq = c.lenient(Int.self, forKey: .lastSeq) ?? 0
     updatedAt = c.lenient(Double.self, forKey: .updatedAt) ?? 0
     computer = c.lenient(CloudSavedChatComputer.self, forKey: .computer)
+    savedByNoCloudComputer = c.contains(.computer) && ((try? c.decodeNil(forKey: .computer)) ?? false)
     parentChatId = c.lenient(String.self, forKey: .parentChatId)
     spawnKind = c.lenient(String.self, forKey: .spawnKind)
   }

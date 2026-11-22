@@ -955,10 +955,12 @@ extension SyncService {
     for machineKey in Set(byMachine.keys).union(laneOnly.keys).sorted() {
       // Only an ADE Cloud computer, live or deleted. A copy that moved to one
       // of the person's own machines (a lane moved off a sleeping computer)
-      // has no computer on the server: its machine lists its own lanes, and a
-      // machine removed from the account is not a deleted ADE Cloud computer.
+      // has no computer on the server (`computer: null`): its machine lists
+      // its own lanes, and a machine removed from the account is not a
+      // deleted ADE Cloud computer. An older server sends no field and
+      // decides nothing here.
       guard cloudKeys.contains(machineKey.lowercased())
-        || byMachine[machineKey]?.contains(where: { $0.computer != nil }) == true
+        || byMachine[machineKey]?.allSatisfy(\.savedByNoCloudComputer) != true
       else { continue }
       let fleetKey: String
       if let machine = accountByKey[machineKey], let deviceId = nonEmptyTrimmed(machine.deviceId) {
