@@ -1414,7 +1414,8 @@ struct WorkSessionDestinationView: View {
     if let machine = sessionDestinationNavigationSubtitle { parts.append(machine) }
     // The CTO's lane is a stand-in named "CTO": the title already says it.
     if duoCtoSettings == nil,
-       let lane = current?.laneName.trimmingCharacters(in: .whitespacesAndNewlines), !lane.isEmpty {
+       let current,
+       let lane = nonEmptyTrimmed(lanes.first(where: { $0.id == current.laneId })?.displayName ?? current.laneName) {
       parts.append(lane)
     }
     let model = shortModelLabel(composerChatSummary?.model)

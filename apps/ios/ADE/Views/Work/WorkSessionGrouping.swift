@@ -1135,7 +1135,7 @@ func workSessionGroupsByLane(
     guard let list = byLaneId[lane.id], !list.isEmpty else { continue }
     groups.append(WorkSessionGroup(
       id: "lane:\(lane.id)",
-      label: lane.name,
+      label: lane.displayName,
       icon: .laneBranch,
       tint: LaneColorPalette.displayColor(forHex: lane.color),
       sessions: list,
