@@ -1461,7 +1461,8 @@ final class AccountService: ObservableObject {
       authenticationOutcome = emailVerificationKind == .signUp ? .newAccount : .returningUser
       finishInteractiveSignIn()
       ProductAnalytics.shared.captureSignInOutcome(
-        authenticationOutcome == .newAccount ? .newAccount : .returningUser
+        authenticationOutcome == .newAccount ? .newAccount : .returningUser,
+        provider: ADEAnalyticsSignInProvider.email.rawValue
       )
     } catch {
       recordSignInFailure(provider: .email, error: error)
@@ -1478,7 +1479,8 @@ final class AccountService: ObservableObject {
       authenticationOutcome = Self.outcome(from: result)
       finishInteractiveSignIn()
       ProductAnalytics.shared.captureSignInOutcome(
-        authenticationOutcome == .newAccount ? .newAccount : .returningUser
+        authenticationOutcome == .newAccount ? .newAccount : .returningUser,
+        provider: analyticsProvider(provider).rawValue
       )
     } catch {
       recordSignInFailure(provider: analyticsProvider(provider), error: error)
@@ -1496,7 +1498,8 @@ final class AccountService: ObservableObject {
       authenticationOutcome = Self.outcome(from: result)
       finishInteractiveSignIn()
       ProductAnalytics.shared.captureSignInOutcome(
-        authenticationOutcome == .newAccount ? .newAccount : .returningUser
+        authenticationOutcome == .newAccount ? .newAccount : .returningUser,
+        provider: ADEAnalyticsSignInProvider.apple.rawValue
       )
     } catch {
       recordSignInFailure(provider: .apple, error: error)

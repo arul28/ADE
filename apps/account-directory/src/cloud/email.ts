@@ -4,13 +4,13 @@
  * line and carries on. A failed send never fails the work that asked for it.
  */
 
-const RESEND_URL = "https://api.resend.com/emails";
+export const RESEND_URL = "https://api.resend.com/emails";
 const CLERK_USERS_URL = "https://api.clerk.com/v1/users";
-const FROM_ADDRESS = "ADE <notifications@ade-app.dev>";
-const REQUEST_TIMEOUT_MS = 10_000;
-const LOGO_URL = "https://ade-app.dev/logo.png";
-const SITE_URL = "https://ade-app.dev";
-const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+export const FROM_ADDRESS = "ADE <notifications@ade-app.dev>";
+export const REQUEST_TIMEOUT_MS = 10_000;
+export const LOGO_URL = "https://ade-app.dev/logo.png";
+export const SITE_URL = "https://ade-app.dev";
+export const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 
 export type CloudEmailEnv = {
   RESEND_API_KEY?: string;
@@ -27,7 +27,7 @@ export type CloudEmail =
   | { userId: string; subject: string; text: string; percentUsed?: number; kind?: string }
   | { owner: true; subject: string; text: string; kind?: string };
 
-const escapeHtml = (value: string): string => value
+export const escapeHtml = (value: string): string => value
   .replace(/&/g, "&amp;")
   .replace(/</g, "&lt;")
   .replace(/>/g, "&gt;")
@@ -103,6 +103,8 @@ export type ClerkUserFacts = {
   emails: string[];
   createdAt: number | null;
   firstName: string | null;
+  /** `ade_internal: true` in Clerk's private or public metadata: ADE's own account (`isInternalAccount`). */
+  internal: boolean;
 };
 
 /** The account's Clerk user, or null without a Clerk key or when Clerk refuses. Throws when Clerk can't be reached. */
@@ -114,7 +116,16 @@ export async function readClerkUser(env: Pick<CloudEmailEnv, "CLERK_SECRET_KEY">
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) return null;
-  const user = await response.json() as { primary_email_address_id?: unknown; email_addresses?: unknown; created_at?: unknown; first_name?: unknown };
+  const user = await response.json() as {
+    primary_email_address_id?: unknown;
+    email_addresses?: unknown;
+    created_at?: unknown;
+    first_name?: unknown;
+    private_metadata?: unknown;
+    public_metadata?: unknown;
+  };
+  const flagged = (metadata: unknown): boolean =>
+    typeof metadata === "object" && metadata !== null && (metadata as Record<string, unknown>).ade_internal === true;
   const addresses = Array.isArray(user.email_addresses) ? user.email_addresses as Array<Record<string, unknown>> : [];
   const primary = addresses.find((address) => address.id === user.primary_email_address_id) ?? addresses[0];
   return {
@@ -124,6 +135,7 @@ export async function readClerkUser(env: Pick<CloudEmailEnv, "CLERK_SECRET_KEY">
       && (address.verification as { status?: unknown } | null | undefined)?.status === "verified" ? [address.email_address] : [])),
     createdAt: typeof user.created_at === "number" ? user.created_at : null,
     firstName: typeof user.first_name === "string" ? user.first_name.trim().split(/\s+/)[0]?.slice(0, 40) || null : null,
+    internal: flagged(user.private_metadata) || flagged(user.public_metadata),
   };
 }
 

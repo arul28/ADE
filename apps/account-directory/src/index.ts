@@ -48,6 +48,7 @@ import { handleLatestReleasesRequest, isLatestReleasesRequest, type LatestReleas
 import { handleClientMinimumRequest, isClientMinimumRequest } from "./clientMinimum";
 import { handleAccountSelfDeleteRequest, isAccountSelfDeleteRequest } from "./accountSelfDelete";
 import { runGithubAppCron } from "./githubApp/grants";
+import { handleUnsubscribeRequest, isUnsubscribeRequest, runWelcomeEmails, type WelcomeEmailEnv } from "./welcomeEmail";
 import {
   cleanupUsageResearch,
   handleUsageResearchRequest,
@@ -57,7 +58,7 @@ import {
 
 type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv
   & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv & LaneShareEnv & AccountProjectEnv & GithubAppEnv
-  & LatestReleasesEnv;
+  & LatestReleasesEnv & WelcomeEmailEnv;
 
 const WORKER_NAME = "ade-account-directory";
 
@@ -116,6 +117,9 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // Clerk's sign-up webhook: Svix-signed, POST only, no CORS (Clerk is the
   // only caller). It records one `ade_signed_up` per account.
   if (isSignupAnalyticsRequest(url)) return handleSignupAnalyticsRequest(request, env);
+  // The getting-started email's unsubscribe link (`welcomeEmail.ts`): signed,
+  // no bearer, no CORS. GET shows a button; only POST records the opt-out.
+  if (isUnsubscribeRequest(url)) return handleUnsubscribeRequest(request, env);
   // The website's invite page: public and rate-limited, it answers only the
   // inviter's first name, and never for an inviter the owner blocked.
   if (isInviteLookupRequest(url)) return handleInviteLookup(request, env);
@@ -222,6 +226,9 @@ export default Sentry.withSentry(sentryOptions, {
         // limit windows; 03:17 UTC also renews up to 50 grants whose refresh
         // token ends within 30 days. Every other tick makes no query.
         settle("github_app", () => runGithubAppCron(env, event.scheduledTime)),
+        // The day-2 getting-started email: minute 4 of every ten, up to 20
+        // due rows. One indexed read when none is due; nothing on other ticks.
+        settle("welcome_emails", () => runWelcomeEmails(env, event.scheduledTime)),
         // The server launcher's records past their week (and a draft's day),
         // with their files. One indexed read when none is due.
         settle("cloud_launches", () => expireCloudLaunches(env)),

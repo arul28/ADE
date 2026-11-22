@@ -30,7 +30,10 @@ const SOURCES = {
   desktopRoots: [["apps", "desktop", "src"], ["apps", "ade-cli", "src"]],
   ios: ["apps", "ios", "ADE", "Services", "ProductAnalytics.swift"],
   marketing: ["apps", "web", "src", "lib", "marketingAnalytics.ts"],
-  server: ["apps", "account-directory", "src", "signupAnalytics.ts"],
+  server: [
+    ["apps", "account-directory", "src", "signupAnalytics.ts"],
+    ["apps", "account-directory", "src", "welcomeEmail.ts"],
+  ],
   identify: [
     ["apps", "desktop", "src", "main", "services", "analytics", "productAnalyticsService.ts"],
     ["apps", "ios", "ADE", "Services", "ProductAnalytics.swift"],
@@ -117,7 +120,9 @@ export async function checkTrackingPlan() {
   for (const name of desktopDeclaredEvents(read(...SOURCES.desktopEvents))) fired.set(name, "desktop_policy");
   for (const name of iosEvents(read(...SOURCES.ios))) fired.set(name, "ios");
   for (const name of marketingEvents(read(...SOURCES.marketing))) fired.set(name, "marketing");
-  for (const name of capturedEventLiterals(read(...SOURCES.server))) fired.set(name, "server");
+  for (const source of SOURCES.server) {
+    for (const name of capturedEventLiterals(read(...source))) fired.set(name, "server");
+  }
   if (SOURCES.identify.some((parts) => read(...parts).includes('"$identify"'))) fired.set("$identify", "system");
 
   // A declared desktop/brain event must have a real capture site.

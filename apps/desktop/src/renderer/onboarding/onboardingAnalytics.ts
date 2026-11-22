@@ -9,6 +9,7 @@ export type OnboardingAction =
   | "onboarding_welcome_shown"
   | "onboarding_sign_in_shown"
   | "onboarding_agents_shown"
+  | "onboarding_agents_done"
   | "onboarding_projects_shown"
   | "onboarding_completed"
   | "onboarding_skipped"
@@ -16,16 +17,23 @@ export type OnboardingAction =
   | "onboarding_tour_skipped";
 
 function onboardingOutcome(action: OnboardingAction): "opened" | "completed" | "cancelled" {
-  if (action === "onboarding_completed" || action === "onboarding_tour_completed") return "completed";
+  if (action === "onboarding_completed" || action === "onboarding_tour_completed" || action === "onboarding_agents_done") return "completed";
   return action === "onboarding_skipped" || action === "onboarding_tour_skipped" ? "cancelled" : "opened";
 }
 
-export function captureOnboarding(action: OnboardingAction): void {
+/** How many agents were connected, bucketed like every other count. */
+export function onboardingCountBucket(count: number): "0" | "1" | "2_5" | "6_plus" {
+  if (count <= 0) return "0";
+  if (count === 1) return "1";
+  return count <= 5 ? "2_5" : "6_plus";
+}
+
+export function captureOnboarding(action: OnboardingAction, extra?: { count_bucket?: ReturnType<typeof onboardingCountBucket> }): void {
   const reportFailed = () => console.warn("[onboarding] step could not be reported", action);
   try {
     void window.ade?.analytics?.capture({
       event: "ade_feature_used",
-      properties: { feature: "onboarding", action, outcome: onboardingOutcome(action), source: "renderer_route" },
+      properties: { feature: "onboarding", action, outcome: onboardingOutcome(action), source: "renderer_route", ...extra },
       dedupeKey: `onboarding:${action}`,
       minimumIntervalMs: 24 * 60 * 60_000,
     }).catch(reportFailed);
