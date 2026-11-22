@@ -550,6 +550,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "onboarding_welcome_shown",
   "onboarding_sign_in_shown",
   "onboarding_agents_shown",
+  // Leaving "Connect your agents" (Continue or Skip), with how many agents
+  // were connected as `count_bucket` ("0" means no chat can start yet).
+  "onboarding_agents_done",
   "onboarding_projects_shown",
   "onboarding_completed",
   "onboarding_skipped",
@@ -879,7 +882,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   duration_bucket: new Set(["under_10s", "under_1m", "under_5m", "under_30m", "under_2h", "over_2h"]),
   // Bucketed, never a raw count: a fleet that fails to stop must not become a
   // high-cardinality dimension.
-  count_bucket: new Set(["1", "2_5", "6_plus"]),
+  count_bucket: new Set(["0", "1", "2_5", "6_plus"]),
   heap_mb_bucket: bucketLabels(HEAP_MB_BUCKETS, UNKNOWN_BUCKET),
   chat_pane_bucket: bucketLabels(CHAT_PANE_BUCKETS),
   heap_pct_bucket: bucketLabels(HEAP_PCT_BUCKETS, UNKNOWN_BUCKET),

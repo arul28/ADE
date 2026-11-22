@@ -124,7 +124,7 @@ export function signupEventUuid(userId) {
   return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 }
 
-// Copies of `signupMethod` and `isInternalAccount` in signupAnalytics.ts.
+// Copies of `signupMethod` in signupAnalytics.ts and `hasInternalFlag` in cloud/email.ts.
 export function signupMethod(user) {
   const provider = user?.external_accounts?.[0]?.provider;
   if (typeof provider === "string") {

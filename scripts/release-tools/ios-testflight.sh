@@ -5,7 +5,11 @@
 #
 # Run from the repo root with <release-sha> checked out, on macOS. Uploads the
 # archive's dSYMs to Sentry and PostHog (upload-ios-dsyms.sh says where the tokens come
-# from). Safe to rerun:
+# from). The app's PostHog project token (public, phc_) is
+# ADE_POSTHOG_PROJECT_TOKEN from the environment, else the ADE secret of that
+# name; ADE_POSTHOG_HOST likewise, optional. A build without it sends no
+# product analytics at all, so the archive stops without one
+# (ADE_IOS_ALLOW_NO_ANALYTICS=1 builds anyway). Safe to rerun:
 # an IPA already exported for this build is reused, and a build already in App
 # Store Connect is not uploaded again. App Store Connect often answers with 5xx
 # errors and timeouts; every ASC call is retried, so do not wrap this in
@@ -70,12 +74,37 @@ if [ -z "$existing" ]; then
     exit 1
   fi
   if [ ! -s "$OUT/ADE.ipa" ]; then
+    # PostHog, the same scheme as ios-testflight-ci.sh: the values stay in
+    # environment variables and the xcconfig only names them.
+    ade_secret() { command -v ade > /dev/null 2>&1 && ade secrets get "$1" --text 2> /dev/null || true; }
+    [ -n "${ADE_POSTHOG_PROJECT_TOKEN:-}" ] || ADE_POSTHOG_PROJECT_TOKEN="$(ade_secret ADE_POSTHOG_PROJECT_TOKEN)"
+    [ -n "${ADE_POSTHOG_HOST:-}" ] || ADE_POSTHOG_HOST="$(ade_secret ADE_POSTHOG_HOST)"
+    if [ -z "${ADE_POSTHOG_PROJECT_TOKEN:-}" ]; then
+      if [ "${ADE_IOS_ALLOW_NO_ANALYTICS:-}" != 1 ]; then
+        echo "no ADE_POSTHOG_PROJECT_TOKEN (environment or ADE secret): this build would send no product analytics. Set it, or ADE_IOS_ALLOW_NO_ANALYTICS=1 to build anyway"
+        exit 1
+      fi
+      # The validator refuses a host with no token.
+      ADE_POSTHOG_HOST=""
+    fi
+    printf '%s\n%s\n' "${ADE_POSTHOG_PROJECT_TOKEN:-}" "${ADE_POSTHOG_HOST:-}" \
+      | /bin/sh apps/ios/Scripts/validate-posthog-project-token.sh --stdin
+    export ADE_POSTHOG_PROJECT_TOKEN_SECRET="${ADE_POSTHOG_PROJECT_TOKEN:-}" ADE_POSTHOG_HOST_SECRET="${ADE_POSTHOG_HOST:-}"
+    POSTHOG_XCCONFIG="$OUT/posthog.xcconfig"
+    # shellcheck disable=SC2016 # Xcode expands these, not the shell.
+    {
+      printf '%s\n' 'ADE_POSTHOG_PROJECT_TOKEN = $(ADE_POSTHOG_PROJECT_TOKEN_SECRET)'
+      printf '%s\n' 'ADE_POSTHOG_HOST = $(ADE_POSTHOG_HOST_SECRET)'
+    } > "$POSTHOG_XCCONFIG"
     log "archiving (logs: $OUT/archive.log)"
     asc xcode archive --project apps/ios/ADE.xcodeproj --scheme ADE --configuration Release --clean \
       --archive-path "$OUT/ADE.xcarchive" --overwrite --output json \
       --xcodebuild-flag=-destination --xcodebuild-flag=generic/platform=iOS "${AUTH[@]}" \
+      --xcodebuild-flag=-xcconfig "--xcodebuild-flag=$POSTHOG_XCCONFIG" \
       "--xcodebuild-flag=CURRENT_PROJECT_VERSION=$BN" "--xcodebuild-flag=MARKETING_VERSION=$MV" \
       > "$OUT/archive.log" 2>&1
+    rm -f "$POSTHOG_XCCONFIG"
+    unset ADE_POSTHOG_PROJECT_TOKEN_SECRET ADE_POSTHOG_HOST_SECRET
     log "exporting (logs: $OUT/export.log)"
     asc xcode export --archive-path "$OUT/ADE.xcarchive" --export-options apps/ios/ExportOptions.auto.plist \
       --ipa-path "$OUT/ADE.ipa" --overwrite --output json "${AUTH[@]}" > "$OUT/export.log" 2>&1
@@ -88,6 +117,11 @@ if [ -z "$existing" ]; then
     got="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$T/$p/Info.plist") $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$T/$p/Info.plist")"
     [ "$got" = "$MV $BN" ] || { echo "$p is $got, expected $MV $BN"; exit 1; }
   done
+  # The App Store app shipped for weeks with an empty token and sent nothing.
+  if [ "${ADE_IOS_ALLOW_NO_ANALYTICS:-}" != 1 ]; then
+    ph_token="$(/usr/libexec/PlistBuddy -c 'Print :ADEPostHogProjectToken' "$T/Payload/ADE.app/Info.plist" 2> /dev/null || true)"
+    [[ "$ph_token" == phc_* ]] || { echo "the IPA's ADEPostHogProjectToken is not a phc_ token: it would send no product analytics (delete $OUT/ADE.ipa and rerun with the token set)"; exit 1; }
+  fi
   rm -rf "$T"
 
   log "validating with Apple"

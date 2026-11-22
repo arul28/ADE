@@ -51,6 +51,11 @@
   // Sends hours warnings, deletion warnings and owner alerts. Unset, those log
   // `cloud.email_skipped` (reason `no_resend_key`) and carry on. Recipients
   // come from CLERK_SECRET_KEY above; owner alerts go to CLOUD_ALERT_EMAIL.
+  // It also sends the day-2 getting-started email (src/welcomeEmail.ts, a
+  // day after each sign-up, migration 0053), which also needs
+  // CLERK_SECRET_KEY, BILLING_RETURN_ORIGIN (the unsubscribe link's host) and
+  // CLOUD_CHAT_MASTER_KEY (signs that link). The var WELCOME_EMAILS="0" stops
+  // those sends without a deploy (`wrangler secret put` or the dashboard).
   //
   // OPTIONAL SECRET — CLOUD_EVENT_WAKE_SECRET (ADE Cloud)
   // Proves that a call to `/cloud/internal/event-wake` comes from the webhook

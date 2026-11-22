@@ -14,6 +14,7 @@ import {
   type FirstRunAgent,
   type FirstRunAgentStatus,
 } from "./firstRunAgentModel";
+import { captureOnboarding, onboardingCountBucket } from "../../onboarding/onboardingAnalytics";
 import "./firstRun.css";
 
 /**
@@ -171,6 +172,14 @@ export function FirstRunAgents({
 
   const connectedCount = tiles.filter((tile) => tile.status.state === "connected").length;
   const checking = !settled;
+  // Continue or Skip: how many agents this computer had. Zero is a person who
+  // cannot start a chat yet; the card reports it, setup still goes on. Only
+  // after a status read that answered: a failed read is not "no agents".
+  const statusRead = status != null && !failed;
+  const leave = useCallback(() => {
+    if (statusRead) captureOnboarding("onboarding_agents_done", { count_bucket: onboardingCountBucket(connectedCount) });
+    onDone();
+  }, [connectedCount, onDone, statusRead]);
 
   return (
     <div className="ade-glass-card ade-fr-projects ade-fr-agents" data-testid="first-run-agents">
@@ -186,13 +195,13 @@ export function FirstRunAgents({
       </section>
 
       <footer className="ade-fr-foot">
-        <button type="button" className="ade-glass-link" onClick={onDone}>
+        <button type="button" className="ade-glass-link" onClick={leave}>
           Skip
         </button>
         <span className="ade-fr-summary" aria-live="polite">
           {checking ? null : connectedCount ? null : "Connect one to start a chat"}
         </span>
-        <button type="button" className="ade-glass-primary ade-fr-cta" onClick={onDone} disabled={checking}>
+        <button type="button" className="ade-glass-primary ade-fr-cta" onClick={leave} disabled={checking}>
           {checking ? <CircleNotch size={15} weight="bold" className="animate-spin" /> : null}
           Continue
           {checking ? null : <ArrowRight size={16} weight="bold" className="ade-glass-primary-arrow" />}

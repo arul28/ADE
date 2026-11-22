@@ -32,6 +32,7 @@ export const EVENTS = Object.freeze({
   // Recorded server-side by the account-directory Worker's Clerk webhook.
   SIGNED_UP: "ade_signed_up",
   ACCOUNT_DELETED: "ade_account_deleted",
+  WELCOME_EMAIL_SENT: "ade_welcome_email_sent",
   MARKETING_APP_OPENED: "ade_marketing_app_opened",
   MARKETING_SCREEN_VIEWED: "ade_marketing_screen_viewed",
   MARKETING_CTA_CLICKED: "ade_marketing_cta_clicked",
@@ -128,6 +129,10 @@ export const PROPERTIES = Object.freeze({
   MACHINE_ID: "machine_id",
   ERROR_CODE: "error_code",
   CODE: "code",
+  // A closed bucket of a count: "0", "1", "2_5", "6_plus".
+  COUNT_BUCKET: "count_bucket",
+  // The welcome email's form: `start` (no computer yet) or `first_chat`.
+  VARIANT: "variant",
   ACTION_DOMAIN: "action_domain",
   BRAIN_ACTION: "brain_action",
   EXPECTED_KIND: "expected_kind",
@@ -1091,6 +1096,20 @@ export const dashboardSpec = Object.freeze({
           }),
         ),
         insight(
+          "desktop-onboarding-agents-connected",
+          "Agents connected when leaving first-run setup",
+          "How many coding agents were connected when a new computer left the \"Connect your agents\" card (Continue or Skip), by `count_bucket`. \"0\" is a person who cannot start a chat yet: the drop between sign-in and a first chat. Sent from the first desktop release after 2026-11-22.",
+          trends({
+            series: [eventNode(EVENTS.FEATURE_USED, "Left the agents card", {
+              properties: [
+                eventProperty(PROPERTIES.FEATURE, "onboarding"),
+                eventProperty(PROPERTIES.ACTION, "onboarding_agents_done"),
+              ],
+            })],
+            breakdown: PROPERTIES.COUNT_BUCKET,
+          }),
+        ),
+        insight(
           "onboarding-tour-outcomes",
           "In-project tour outcomes",
           "How the guided tour inside a project ended each day: finished (its last card closed) or skipped (`ade_feature_used`, feature `onboarding`). Sent from the first release after 2026-11-18.",
@@ -1152,6 +1171,17 @@ export const dashboardSpec = Object.freeze({
           trends({
             series: [eventNode(EVENTS.APP_OPENED, "Active installs", MACHINES)],
             interval: "week",
+          }),
+        ),
+        insight(
+          "welcome-emails-sent",
+          "Day-2 welcome emails sent",
+          "The getting-started email a new account gets a day after sign-up (account directory, `welcomeEmail.ts`), by `variant`: `start` had no computer yet (it offers ADE in the browser on ADE Cloud, or the desktop app), `first_chat` had one of its own or in ADE Cloud. Clicks land on the site with `utm_campaign=welcome_day2`. Sent from 2026-11-22.",
+          trends({
+            series: [eventNode(EVENTS.WELCOME_EMAIL_SENT, "Welcome emails sent")],
+            interval: "day",
+            dateFrom: "-30d",
+            breakdown: PROPERTIES.VARIANT,
           }),
         ),
         insight(

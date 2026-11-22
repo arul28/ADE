@@ -604,7 +604,7 @@
       ],
       "owner": "apps/ios/ADE/Services/ProductAnalytics.swift",
       "source": "ios",
-      "purpose": "How an iOS account sign-in ended. A failure also carries provider, reason, and error_code; a success carries outcome only.",
+      "purpose": "How an iOS account sign-in ended. A failure also carries provider, reason, and error_code; a success carries outcome and provider.",
       "properties": [
         "outcome",
         "provider",
@@ -770,6 +770,20 @@
         "client",
         "interactive",
         "is_internal"
+      ]
+    },
+    {
+      "name": "ade_welcome_email_sent",
+      "platforms": [
+        "server"
+      ],
+      "owner": "apps/account-directory/src/welcomeEmail.ts",
+      "source": "server",
+      "purpose": "The day-2 getting-started email went to a new account (once per account), on the account's distinct id. variant: start (no computer yet: offers the browser on ADE Cloud or the desktop app) or first_chat (a computer of its own or in ADE Cloud).",
+      "properties": [
+        "variant",
+        "client",
+        "interactive"
       ]
     },
     {

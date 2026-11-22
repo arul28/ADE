@@ -142,13 +142,34 @@ enum ADEAnalyticsSignInFailureReason: String, CaseIterable {
 /// missing classic receipt on current iOS made these look like App Store
 /// installs (`distribution: app_store`). Real TestFlight testers keep a
 /// sandbox receipt and a real model, so they stay countable.
+///
+/// Some farm devices report a real model. The ADE Beta app is never on the
+/// App Store (TestFlight only), so an ADE Beta install with no sandbox
+/// receipt is one of them too.
 enum ADEAnalyticsReviewContext: String {
   case appReview = "app_review"
 
   static var current: ADEAnalyticsReviewContext? {
-    hardwareMachine().range(of: #"^(iPhone|iPad|iPod)99,"#, options: .regularExpression) != nil
-      ? .appReview
-      : nil
+    from(hardwareMachine: hardwareMachine(), isBetaApp: isBetaApp, distribution: .current)
+  }
+
+  static func from(
+    hardwareMachine: String,
+    isBetaApp: Bool,
+    distribution: ADEAnalyticsDistribution
+  ) -> ADEAnalyticsReviewContext? {
+    if hardwareMachine.range(of: #"^(iPhone|iPad|iPod)99,"#, options: .regularExpression) != nil {
+      return .appReview
+    }
+    return isBetaApp && distribution == .appStore ? .appReview : nil
+  }
+
+  private static var isBetaApp: Bool {
+    #if ADE_BETA_APP
+    return true
+    #else
+    return false
+    #endif
   }
 
   static func hardwareMachine() -> String {
@@ -618,6 +639,12 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       }
       var sanitized: [String: Any] = ["outcome": outcome]
       guard outcome == ADEAnalyticsSignInOutcome.failed.rawValue else {
+        // A success names how the person signed in, so each provider's
+        // failures have a success count beside them.
+        if properties["provider"] != nil {
+          guard let provider = enumString("provider", as: ADEAnalyticsSignInProvider.self) else { return nil }
+          sanitized["provider"] = provider
+        }
         return sanitized
       }
       guard let provider = enumString("provider", as: ADEAnalyticsSignInProvider.self),
@@ -878,9 +905,11 @@ final class ProductAnalytics {
     clerkCode: String?
   ) -> (provider: ADEAnalyticsSignInProvider, reason: ADEAnalyticsSignInFailureReason, errorCode: String) {
     let nsError = error as NSError
+    // Apple's sheet code goes with it (`authorization_error_1000` is "unknown",
+    // often a phone with no Apple ID; `_1004` "failed"): a closed small integer.
     let code = sanitizedErrorCode(clerkCode)
       ?? (nsError.domain == NSURLErrorDomain ? "url_error" : nil)
-      ?? (nsError.domain == ASAuthorizationError.errorDomain ? "authorization_error" : nil)
+      ?? (nsError.domain == ASAuthorizationError.errorDomain ? "authorization_error_\(nsError.code)" : nil)
       ?? "unknown"
     if error is CancellationError {
       return (provider, .cancelled, code == "unknown" ? "cancelled" : code)

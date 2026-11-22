@@ -305,6 +305,11 @@ export function logCloud(event: string, meta: Record<string, unknown> = {}): voi
   console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-account-directory", kind: event, ...meta }));
 }
 
+/** `logCloud` at warn: something an owner should see in the Worker's logs. */
+export function warnCloud(event: string, meta: Record<string, unknown> = {}): void {
+  console.warn(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-account-directory", kind: event, level: "warn", ...meta }));
+}
+
 /** Requests one account may make in a minute, per bucket (`takeRequest`). */
 const REQUESTS_PER_MINUTE = {
   /** Linear and Jira, with the account's own credentials (`integrations.ts`). */

@@ -811,6 +811,31 @@ Worker and a Clerk webhook subscribed to `user.created` and `user.deleted`;
 until then the route answers 503 and records nothing. Volume is one event per
 new or deleted account.
 
+#### The day-2 getting-started email (server-side)
+
+`apps/account-directory/src/welcomeEmail.ts` (README "The day-2
+getting-started email") sends each new account one email a day after
+sign-up. A sent email is one `ade_welcome_email_sent` on the account's
+`ade_user_…` distinct id, uuid from the user id (so at most one per account
+ever), `client: "account"`, `interactive: false`, no person profile, and
+`variant`: `start` (no computer of its own and no ADE Cloud computer yet) or
+`first_chat`. Its links carry `utm_source=email&utm_medium=lifecycle&utm_campaign=welcome_day2`,
+so a click lands on the site's attribution. Volume is at most one event per
+new account.
+
+Failures go to Sentry through `reportCloudFailure`, tagged `area:
+welcome_email` with a closed `code` only (`clerk_unreachable`,
+`clerk_unavailable`, `resend_unreachable`, `resend_<status>`):
+`welcome_email.retrying` when a try will be repeated and
+`welcome_email.failed` when the email is given up, each at most once a
+minute per name. `welcome_email.schedule_failed` (`area: signup`) is a
+`user.created` whose row could not be written; the webhook answers 502 so
+Clerk delivers again. Every outcome is one Workers log line
+(`welcome_email.sent`, `.failed`, `.skipped_*`, `.unsubscribed`, and the warn
+lines `.waiting` with the missing setting, `.refused` with Resend's status,
+`.capture_failed`) carrying the outcome and the variant only: never the
+address, the name or the account id.
+
 #### ADE Cloud (server-side)
 
 The account-directory Worker records ADE Cloud's product facts itself,
@@ -1096,7 +1121,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `lanes` | `space_freed` | `completed`, `failed` (Free up space on an archived lane in Settings › Archive) | omitted; never the lane, its size, the machine, or the error |
 | `lanes` | `deleted_lane_restored` | `completed`, `failed` (Restore from the notice after a delete, or from Recently deleted; `failed` includes files that did not apply) | omitted; never the lane, branch, machine, or the error |
 | `star_prompt` | `star_prompt_shown`, `star_prompt_clicked`, `star_prompt_dismissed`, `repo_starred` | `prompt_first`, `prompt_second` (which showing of the pill) | omitted; never the GitHub account, a message count, or the machine |
-| `onboarding` | `onboarding_welcome_shown`, `onboarding_sign_in_shown`, `onboarding_agents_shown`, `onboarding_projects_shown`, `onboarding_completed`, `onboarding_skipped`, `onboarding_tour_completed`, `onboarding_tour_skipped` | `opened` (a first-run card came on screen), `completed` (setup, or the in-project tour's finish card), `cancelled` (skipped) | omitted; at most one of each a day per install; never the account, a provider, or a project |
+| `onboarding` | `onboarding_welcome_shown`, `onboarding_sign_in_shown`, `onboarding_agents_shown`, `onboarding_agents_done`, `onboarding_projects_shown`, `onboarding_completed`, `onboarding_skipped`, `onboarding_tour_completed`, `onboarding_tour_skipped` | `opened` (a first-run card came on screen), `completed` (setup, the in-project tour's finish card, or leaving the agents card by Continue or Skip), `cancelled` (skipped) | omitted, except `onboarding_agents_done`, which carries `count_bucket` (`0`, `1`, `2_5`, `6_plus`: agents connected on this computer; `0` cannot start a chat yet); at most one of each a day per install; never the account, a provider, or a project |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -2609,9 +2634,9 @@ the dashboard spec is untouched.
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate installation identity and `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention. After sign-in, it sends the same one-way account hash used by desktop in a quota-counted `$identify` event; the raw account ID is never sent, and sign-out rotates the anonymous installation identity.
 
-Every native event carries `client: "ios"`, `interactive` (`false` only for `ade_mobile_analytics_budget`), `app_version` (`CFBundleShortVersionString`), `build_number` (`CFBundleVersion`), `distribution` (`testflight`, `app_store`, or `development`, read from the App Store receipt name), `release_channel` (`beta` in the ADE Beta app, `stable` in the normal app whether it came from TestFlight or the App Store, `development`) and `environment` (`production` for stable, otherwise the channel). A phone has no team-install marker. Apple's review and TestFlight processing farm is the exception: `hw.machine` matching `iPhone99,*`, `iPad99,*` or `iPod99,*` adds `review_context: app_review` and `is_internal: true`. Those devices often have no classic sandbox receipt, so `distribution` stays `app_store`. A real TestFlight tester is not marked. The first open of a new install also carries `first_open: true`, once; an install that already has a stored budget from an earlier build reports none. Both are properties of the existing `ade_mobile_app_opened` and add no event.
+Every native event carries `client: "ios"`, `interactive` (`false` only for `ade_mobile_analytics_budget`), `app_version` (`CFBundleShortVersionString`), `build_number` (`CFBundleVersion`), `distribution` (`testflight`, `app_store`, or `development`, read from the App Store receipt name), `release_channel` (`beta` in the ADE Beta app, `stable` in the normal app whether it came from TestFlight or the App Store, `development`) and `environment` (`production` for stable, otherwise the channel). A phone has no team-install marker. Apple's review and TestFlight processing farm is the exception: `hw.machine` matching `iPhone99,*`, `iPad99,*` or `iPod99,*` adds `review_context: app_review` and `is_internal: true`. Those devices often have no classic sandbox receipt, so `distribution` stays `app_store`. Some farm devices report a real model; since the ADE Beta app is never on the App Store, an ADE Beta install that reads `distribution: app_store` is marked the same way (builds after 2026-11-22). For older ADE Beta builds, leave out `release_channel = 'beta' AND distribution = 'app_store'`. A real TestFlight tester is not marked. The first open of a new install also carries `first_open: true`, once; an install that already has a stored budget from an earlier build reports none. Both are properties of the existing `ade_mobile_app_opened` and add no event.
 
-`ade_mobile_sign_in_outcome` with `outcome: failure` also carries `provider` (`email`, `apple`, `google`, `github`, `oauth`), `reason` (`cancelled`, `network`, `invalid_code`, `expired`, `not_started`, `unavailable`, `oauth_failed`, `other`) and `error_code` (Clerk's snake_case code, `url_error`, `url_canceled`, `web_auth_canceled`, `authorization_canceled`, `missing_attempt`, or `unknown`). A success carries `outcome` only. Nothing in those fields is an email, a name, a token, or Clerk's message.
+`ade_mobile_sign_in_outcome` with `outcome: failure` also carries `provider` (`email`, `apple`, `google`, `github`, `oauth`), `reason` (`cancelled`, `network`, `invalid_code`, `expired`, `not_started`, `unavailable`, `oauth_failed`, `other`) and `error_code` (Clerk's snake_case code, `url_error`, `url_canceled`, `web_auth_canceled`, `authorization_canceled`, `authorization_error_<n>` with Apple's sign-in sheet code (`1000` unknown, often no Apple ID on the phone; `1004` failed; before 2026-11-22 builds sent a bare `authorization_error`), `missing_attempt`, or `unknown`). A success carries `outcome` and, from builds after 2026-11-22, the same `provider`, so each provider's failures have a success count beside them. Nothing in those fields is an email, a name, a token, or Clerk's message.
 
 iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in, its consent prompt, and its Settings opt-out have been removed. A stored `ade.analytics.enabled` false from an earlier build is ignored. `DO_NOT_TRACK=1` turns it off, and so does a Debug or simulator run, unless the process is XCTest or `ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT=1`. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
 

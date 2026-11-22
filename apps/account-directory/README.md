@@ -502,6 +502,35 @@ address from Clerk (`CLERK_SECRET_KEY`); owner alerts go to
 `no_resend_key`, `no_clerk_key`, `no_recipient` or `no_alert_address`. No
 email log line has the subject or a lane name.
 
+**The day-2 getting-started email** (`src/welcomeEmail.ts`, migration
+`0053_welcome_emails.sql`). Clerk's `user.created` webhook writes one
+`welcome_emails` row per new account (none for an internal one), due a day
+after sign-up. At minute 4 of every ten the cron sends up to 20 due rows:
+`start` when the account has no machine in the directory and no ADE Cloud
+computer (two ways in: ADE in the browser on ADE Cloud, free with unlimited
+Small computers, or the desktop app), `first_chat` (steps 1 and 2
+shown done) when it has either. A row ends once, as `sent`,
+`failed`, or `skipped_*`. A Clerk or Resend answer a later try can change
+(Clerk unreachable or not 404; Resend 401, 403, 429 or 5xx) frees the claim
+for the next run, up to three tries; another Resend 4xx fails at once, and
+Resend's 409 (the same idempotency key after a lost answer) counts as sent.
+Each retry and each `failed` is a Sentry warning (`welcome_email.retrying`,
+`welcome_email.failed`, closed code only). The skips are `opted_out`,
+`no_account` (Clerk's 404), `internal` (flagged since sign-up), `no_address`, or
+`stale` (more than two days past due, so a late webhook never says
+"yesterday" a week later). A claim keeps overlapping ticks from both sending,
+and Resend's `Idempotency-Key` is the row's. A sent email is one
+`ade_welcome_email_sent` PostHog event; its links carry
+`utm_campaign=welcome_day2`. Every email has an unsubscribe link and the
+RFC 8058 one-click headers: `GET /email/unsubscribe?u=&t=` shows a button and
+only `POST` writes `email_opt_outs`; `t` is an HMAC of the user id under a key
+derived from `CLOUD_CHAT_MASTER_KEY`. `user.deleted` removes both rows. It
+needs `RESEND_API_KEY`, `CLERK_SECRET_KEY`, `CLOUD_CHAT_MASTER_KEY` (without
+it a link could be forged from the development constant, so the unsubscribe
+route answers 503 too) and `BILLING_RETURN_ORIGIN`; without one, due rows
+wait (`welcome_email.waiting`, warn) and later end as stale. `WELCOME_EMAILS=0` stops sends. Log lines carry the outcome and the
+variant only.
+
 ### The ADE Cloud iPhone
 
 An iOS Simulator at NoMac, one per account, driven from any machine with
