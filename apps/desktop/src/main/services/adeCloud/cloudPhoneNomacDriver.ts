@@ -18,9 +18,10 @@ import {
   type CloudPhoneDriverContext,
   type CloudPhoneHeld,
   type CloudPhonePacked,
+  type CloudPhoneRead,
   type CloudPhoneToolAnswer,
 } from "./cloudPhoneDriver";
-import { cloudPhoneGone } from "./cloudPhoneRun";
+import type { CloudPhoneRunEnd } from "./cloudPhoneRun";
 
 const CALL_POLL_MS = 1_000;
 /** A tool call or a build job is given this long before ADE stops waiting. */
@@ -30,6 +31,33 @@ const STILL_RUNNING = /Next: job_status again, or job_cancel\./;
 const FILE_LINK = /https:\/\/nomac\.app\/api\/v1\/simulator\/files\/[A-Za-z0-9_.-]+/g;
 
 type NomacAnswer = { status: number; body: Record<string, unknown> | null };
+
+/** NoMac's states of a phone that still runs. */
+const LIVE_STATES = new Set(["queued", "provisioning", "ready"]);
+
+/** Answers to a phone tool call that mean the phone is gone (ended, its token no longer good). */
+const PHONE_GONE = new Set([401, 404, 409, 410]);
+const isGone = (status: number): boolean => PHONE_GONE.has(status);
+
+/** Why and when a NoMac session ended, as it answers it. */
+function endOf(session: Record<string, unknown>): CloudPhoneRunEnd {
+  const ended = session.ended as { reason?: unknown; at?: unknown } | null | undefined;
+  const why = [ended?.reason, session.end_reason, session.failure_code].find((value): value is string => typeof value === "string" && value.length > 0) ?? null;
+  const at = [ended?.at, session.shutdown_at].map((value) => (typeof value === "string" ? Date.parse(value) : Number.NaN)).find(Number.isFinite) ?? null;
+  return { why, at };
+}
+
+/** A session read in the driver's words. 409 (busy with another call) still runs: unreadable, never gone. */
+function readOf(answer: NomacAnswer): CloudPhoneRead {
+  const session = answer.body?.session as Record<string, unknown> | undefined;
+  const state = session && typeof session === "object" ? session.state : undefined;
+  if (answer.status === 200 && typeof state === "string") {
+    if (state === "ready") return { state: "ready" };
+    return LIVE_STATES.has(state) ? { state: "starting" } : { state: "ended", end: endOf(session!) };
+  }
+  const code = `http_${answer.status}`;
+  return answer.status === 401 || answer.status === 404 || answer.status === 410 ? { state: "gone", code } : { state: "unreadable", code };
+}
 
 /**
  * NoMac's hints name its own tools ("use ui_look with screenshot"), which an
@@ -47,7 +75,7 @@ const NOMAC_TOOL_WORDS: ReadonlyArray<readonly [RegExp, string]> = [
 ];
 
 /** A NoMac answer's text in ADE's words. */
-export function inAdeWords(text: string): string {
+function inAdeWords(text: string): string {
   let out = text;
   for (const [pattern, words] of NOMAC_TOOL_WORDS) out = out.replace(pattern, words);
   return out;
@@ -71,7 +99,7 @@ function answerOf(body: Record<string, unknown> | null): CloudPhoneToolAnswer {
 }
 
 /** The bundle id an install answer names, when it names one. */
-export function bundleIdOf(text: string): string | null {
+function bundleIdOf(text: string): string | null {
   const named = /bundle(?:\s*id)?\s*[:=]?\s*([A-Za-z][\w-]*(?:\.[\w-]+)+)/i.exec(text)?.[1];
   if (named) return named;
   // NoMac's own wording elsewhere: "installed dev.example.App." (app_run).
@@ -88,6 +116,7 @@ export function createNomacDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
 
   /** One call to the phone's NoMac session. A POST that must run once passes an `idempotencyKey` (`newKey()`, or one its retries share). */
   async function nomac(phone: CloudPhoneHeld, method: string, route: string, body?: unknown, idempotencyKey?: string): Promise<NomacAnswer> {
+    if (phone.provider !== "nomac") throw new CloudPhoneError("This cloud iPhone isn't on NoMac.", "wrong_provider");
     const response = await fetcher(`${phone.apiBase}/sessions/${encodeURIComponent(phone.phoneId)}${route}`, {
       method,
       headers: {
@@ -136,7 +165,7 @@ export function createNomacDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
   async function tool(phone: CloudPhoneHeld, name: string, args: Record<string, unknown>, doing: string): Promise<CloudPhoneToolAnswer> {
     const by = Date.now() + TOOL_WAIT_MS;
     let answer = await nomac(phone, "POST", `/tools/${name}`, args, newKey());
-    if (cloudPhoneGone(answer.status)) throw new CloudPhoneGoneError();
+    if (isGone(answer.status)) throw new CloudPhoneGoneError();
     if (answer.status === 200) ctx.touched(phone);
     answer = await calledThrough(phone, answer, doing, by);
     if (answer.status !== 200 || !answer.body?.result) throw failureOf(answer, doing);
@@ -191,16 +220,17 @@ export function createNomacDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
   }
 
   return {
+    unsupportedControls: {},
+
     async read(phone) {
-      const answer = await nomac(phone, "GET", "");
-      const session = answer.body?.session as Record<string, unknown> | undefined;
-      return { status: answer.status, session: session && typeof session === "object" ? session : null };
+      return readOf(await nomac(phone, "GET", ""));
     },
 
     async keepAlive(phone) {
       const answer = await nomac(phone, "POST", "/tools/ui_look", {}, newKey());
-      if (answer.status !== 200 && !cloudPhoneGone(answer.status)) throw failureOf(answer, "Keeping the cloud iPhone awake");
-      return answer.status;
+      if (answer.status === 200) return "alive";
+      if (isGone(answer.status)) return "gone";
+      throw failureOf(answer, "Keeping the cloud iPhone awake");
     },
 
     look(phone, input) {
@@ -232,24 +262,8 @@ export function createNomacDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
     async install(phone, input) {
       const placed = await uploadPacked(phone, input.app, "app", "the app");
       if (!placed.app) throw new CloudPhoneError("The phone did not find a .app in what was uploaded.", "fetch_failed");
-      const installed = await tool(phone, "app_control", { action: "install", app: placed.app }, "Installing the app");
-      const installedId = input.bundleId ?? bundleIdOf(installed.text);
-      const wantsLaunch = input.launch && !installed.failed;
-      // Launched only by name: unnamed, NoMac launches the app launched LAST, which may be an earlier build's.
-      const answers = wantsLaunch && installedId
-        ? [installed, await tool(phone, "app_control", { action: "launch", app: installedId }, "Launching the app")]
-        : [installed];
-      const skipped = wantsLaunch && !installedId
-        ? "Installed, but not launched: ADE could not tell the app's bundle id. Launch it with ade apple relaunch --bundle-id <id>."
-        : null;
-      return {
-        text: [...answers.map((answer) => answer.text.trim()), skipped ?? ""].filter(Boolean).join("\n"),
-        failed: answers.some((answer) => answer.failed),
-        links: [...new Set(answers.flatMap((answer) => answer.links))],
-        images: answers.flatMap((answer) => answer.images),
-        stopNotice: [...answers].reverse().find((answer) => answer.stopNotice)?.stopNotice ?? null,
-        bundleId: installedId,
-      };
+      const answer = await tool(phone, "app_control", { action: "install", app: placed.app }, "Installing the app");
+      return { answer, bundleId: bundleIdOf(answer.text) };
     },
 
     control(phone, input) {

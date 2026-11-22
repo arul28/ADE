@@ -9,6 +9,11 @@ alter table cloud_phones add column provider_ref text;
 -- The recording running on the phone when its provider names one only at its
 -- start (Revyl): any brain of the account can stop it.
 alter table cloud_phones add column recording_ref text;
+-- The build running for the phone on its provider's runners (Revyl bills them
+-- by the hour): one at a time, held 15 minutes at most, freed when the build
+-- finishes or the phone ends.
+alter table cloud_phones add column build_started_at integer;
+alter table cloud_phones add column build_job text;
 
 -- The owner's per-account choice of provider for a tester on the beta list
 -- (null: the server's `CLOUD_PHONE_PROVIDER`).

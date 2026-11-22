@@ -37,7 +37,7 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   CLOUD_CREATES_PAUSED?: string;
   /** Secret. The bearer of the owner's block and unblock routes (`safety.ts`). Unset: those routes answer 503. */
   CLOUD_OWNER_TOKEN?: string;
-  /** Secret. NoMac's account key (`nmk_…`) for the ADE Cloud iPhone (`phones.ts`). Unset: the phone answers `off`. */
+  /** Secret. NoMac's account key (`nmk_…`) for the ADE Cloud iPhone (`phoneNomac.ts`). Unset: the phone answers `off`. */
   NOMAC_API_KEY?: string;
   /** Secret. NoMac's embed secret (`nme_…`): signs each view link for its account alone. Unset: the link alone is the permission. */
   NOMAC_EMBED_SECRET?: string;
@@ -1269,7 +1269,7 @@ export function phoneBetaAddStatement(db: D1Database, userId: string, email: str
  * once, and only while some email waits, so an account read never asks Clerk.
  * Best effort: a failure leaves the email waiting and reports it; the owner
  * check asks Clerk again for each waiting email (`resolvePendingPhoneBeta` in
- * `phones.ts`), so a failed read or an address verified later still lands.
+ * `phoneBeta.ts`), so a failed read or an address verified later still lands.
  */
 async function claimPhoneBetaInvite(env: CloudEnv, userId: string, now: number): Promise<void> {
   try {

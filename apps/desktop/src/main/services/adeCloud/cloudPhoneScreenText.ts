@@ -123,7 +123,7 @@ export function screenOf(raw: unknown, fallback: { width: number; height: number
 }
 
 /** One element as a line: `kind "label" #id state @x,y`. */
-export function elementLine(element: ScreenElement): string {
+function elementLine(element: ScreenElement): string {
   return [
     element.kind,
     element.label ? JSON.stringify(element.label) : null,
@@ -156,7 +156,8 @@ export function stepWords(step: string): Array<{ word: string; quoted: boolean }
     if (!match[0].trim()) break;
     const [, hash, body] = match;
     if (body!.startsWith("\"")) {
-      let value = body!.slice(1, -1);
+      // An unclosed quote (`type "hello`) keeps its last letter.
+      let value = body!.length > 1 && body!.endsWith("\"") ? body!.slice(1, -1) : body!.slice(1);
       try {
         value = JSON.parse(body!) as string;
       } catch {

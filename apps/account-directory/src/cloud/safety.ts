@@ -4,7 +4,8 @@ import { blockedUsersAmong, forgetNotBlocked, isCloudBlocked } from "./blocks";
 import { constantTimeEqual } from "../githubApp/seal";
 import { sha256Hex } from "../sinkUtils";
 import { fail, json, readJson } from "./http";
-import { OWNER_PHONE_BETA_PATH, handleOwnerPhoneBeta, stopAccountPhones } from "./phones";
+import { OWNER_PHONE_BETA_PATH, handleOwnerPhoneBeta } from "./phoneBeta";
+import { stopAccountPhones } from "./phones";
 import { CloudProviderError, TRY_AGAIN_CODE, type CloudProvider } from "./provider";
 import {
   isPendingId,
@@ -36,7 +37,7 @@ import {
  * The owner routes take `Authorization: Bearer <CLOUD_OWNER_TOKEN>`:
  * - `POST /cloud/owner/block`   `{ userId?, githubUserId?, cardFingerprint?, reason }`
  * - `POST /cloud/owner/unblock` `{ userId?, githubUserId?, cardFingerprint? }`
- * - `POST /cloud/owner/phone-beta` `{ email? | userId?, enabled? }`: the ADE Cloud iPhone's beta list (`phones.ts`)
+ * - `POST /cloud/owner/phone-beta` `{ email? | userId?, enabled? }`: the ADE Cloud iPhone's beta list (`phoneBeta.ts`)
  */
 
 const OWNER_BLOCK_PATH = "/cloud/owner/block";
@@ -323,7 +324,7 @@ export async function handleCloudOwnerRequest(request: Request, env: CloudEnv, p
   }
   const body = await readJson(request);
   if (!body) return fail("bad_request", "That request could not be read.", 400);
-  // The ADE Cloud iPhone's beta list (`phones.ts`).
+  // The ADE Cloud iPhone's beta list (`phoneBeta.ts`).
   if (path === OWNER_PHONE_BETA_PATH) return handleOwnerPhoneBeta(env, body, deps.now);
   const userId = textField(body.userId, 200);
   const githubUserId = typeof body.githubUserId === "number" && Number.isSafeInteger(body.githubUserId) && body.githubUserId > 0 ? body.githubUserId : null;

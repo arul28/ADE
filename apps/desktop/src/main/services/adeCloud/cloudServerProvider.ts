@@ -14,6 +14,7 @@ import {
   CLOUD_COMPUTER_HEADER,
   CLOUD_COMPUTER_PLATFORM_HEADER,
   CLOUD_PATHS,
+  CLOUD_PHONE_PROVIDERS,
   type CloudCheckoutResult,
   type CloudInviteRedeemResult,
   type CloudLaneWithoutComputer,
@@ -549,7 +550,8 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     },
 
     async phoneStart(input): Promise<CloudPhoneStart> {
-      return await request("POST", CLOUD_PATHS.phone, { body: { ...(input.device ? { device: input.device } : {}), ...(input.attach ? { attach: true } : {}) } }) as CloudPhoneStart;
+      // `providers`: the phones this brain can drive; a server picks Revyl only for a brain that names it.
+      return await request("POST", CLOUD_PATHS.phone, { body: { ...(input.device ? { device: input.device } : {}), ...(input.attach ? { attach: true } : {}), providers: CLOUD_PHONE_PROVIDERS } }) as CloudPhoneStart;
     },
 
     async phoneView(input): Promise<CloudPhoneView> {

@@ -100,7 +100,14 @@ function point(args: Args, verb: string): string {
   return `@${x},${y}`;
 }
 
-type Call = { action: string; args: JsonObject; timeoutMs: number; label: string };
+type Call = {
+  action: string;
+  args: JsonObject;
+  timeoutMs: number;
+  label: string;
+  /** The answer as text, when this verb reads it its own way (`foreground` reads `look`'s first line). */
+  format?: (value: Record<string, unknown>) => string;
+};
 
 /** The chat and lane this command runs for, so a capture is theirs in the proof drawer. */
 function proofOwners(): JsonObject {
@@ -170,7 +177,7 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
     return { action: "look", args: { ...(find ? { find } : {}) }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "read the screen" };
   },
   // Which app is in front: the screen text's first line names it.
-  foreground: () => ({ action: "look", args: {}, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: FOREGROUND_LABEL }),
+  foreground: () => ({ action: "look", args: {}, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "the app in front", format: foregroundText }),
   "tap-element": (args, verb) => {
     const hold = Number(flag(args, "--hold-ms"));
     return act([Number.isFinite(hold) && hold > 0 ? `hold ${target(args, verb)} ${Math.min(10, Math.max(0.1, hold / 1000))}` : `tap ${target(args, verb)}`], "tap");
@@ -281,7 +288,18 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
 /** `show` never gets here: `runCli` opens the chat's tools pane on this machine, which shows the chat's device. */
 const SHOW_VERB = "show";
 
-const FOREGROUND_LABEL = "the app in front";
+/** `foreground`: the app `look`'s first line names. */
+function foregroundText(value: Record<string, unknown>): string {
+  const first = (asString(value.text) ?? "").split("\n").find((line) => line.trim()) ?? "";
+  const app = /^app "([^"]+)"/.exec(first)?.[1] ?? null;
+  return app ? `${app} is in front.\n` : `In front: ${first || "nothing could be read"}\n`;
+}
+
+/** The `control` actions this phone can't do yet, when there are any. */
+function unsupportedLine(unsupported: unknown): string {
+  const names = Array.isArray(unsupported) ? unsupported.filter((name): name is string => typeof name === "string") : [];
+  return names.length ? `not on this phone yet: ${names.join(", ")}\n` : "";
+}
 
 /** How a phone of `recent` ended, as a person reads it. */
 const ENDED_WORDS: Readonly<Record<string, string>> = {
@@ -322,11 +340,7 @@ function callFor(verb: string, tokens: string[], root: () => string): Call {
 function textOf(call: Call, value: unknown): string {
   const action = call.action;
   if (!isRecord(value)) return `${String(value ?? "")}\n`;
-  if (call.label === FOREGROUND_LABEL) {
-    const first = (asString(value.text) ?? "").split("\n").find((line) => line.trim()) ?? "";
-    const app = /^app "([^"]+)"/.exec(first)?.[1] ?? null;
-    return app ? `${app} is in front.\n` : `In front: ${first || "nothing could be read"}\n`;
-  }
+  if (call.format) return call.format(value);
   if (action === "getStatus") {
     const minutes = isRecord(value.minutes) ? ` · ${value.minutes.left} of ${value.minutes.included} min left this period` : "";
     const idle = `${CLOUD_PHONE_IDLE_SECONDS / 60} minutes`;
@@ -334,7 +348,7 @@ function textOf(call: Call, value: unknown): string {
       ? `phone: ${asString(value.phone.state)} (${asString(value.phone.device)}). It counts minutes until it stops: ade apple stop when done, or it stops by itself after ${idle} with no input (those ${idle} count too).`
       : "phone: off. Any ade apple command starts it, reads like snapshot too, and it counts minutes from then until it stops.";
     return value.access === "on"
-      ? `ADE Cloud iPhone · on${minutes}\n${phone}\n${recentLines(value.recent)}capabilities: ${Array.isArray(value.capabilities) ? value.capabilities.join(", ") : ""}\n`
+      ? `ADE Cloud iPhone · on${minutes}\n${phone}\n${recentLines(value.recent)}capabilities: ${Array.isArray(value.capabilities) ? value.capabilities.join(", ") : ""}\n${unsupportedLine(value.unsupportedControls)}`
       : `ADE Cloud iPhone · ${asString(value.reason) ?? "not available"}\n`;
   }
   if (action === "screenshot") return `Saved ${asString(value.path)} (${value.bytes} bytes). Link for 7 days: ${asString(value.link)}\n`;

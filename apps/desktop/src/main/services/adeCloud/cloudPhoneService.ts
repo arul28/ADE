@@ -44,11 +44,8 @@ import { readArtifactId } from "../ios/recording/simRecordingService";
 import { isPathInside } from "../shared/pathCompare";
 import { pngLooksBlank } from "./cloudPhoneBlankFrame";
 import {
-  CLOUD_PHONE_LIVE_STATES,
   cloudPhoneCallerChat,
   cloudPhoneEndLine,
-  cloudPhoneEndOf,
-  cloudPhoneGone,
   cloudPhoneStartLine,
   type CloudPhoneRun,
   type CloudPhoneRunEnd,
@@ -57,10 +54,13 @@ import { isPathEscapeError, resolvePathWithinRoot } from "../shared/utils";
 import {
   CloudPhoneError,
   CloudPhoneGoneError,
+  joinAnswers,
   sleep,
+  textAnswer,
   type CloudPhoneDriver,
-  type CloudPhoneHeld,
-  type CloudPhonePacked,
+  type CloudPhoneHeld as Held,
+  type CloudPhonePacked as Packed,
+  type CloudPhoneRead,
   type CloudPhoneToolAnswer,
 } from "./cloudPhoneDriver";
 import { createNomacDriver } from "./cloudPhoneNomacDriver";
@@ -91,9 +91,6 @@ export type CloudPhoneProofTarget = {
 /** Who a capture belongs to in the proof drawer: the chat that asked, and its lane. */
 type ProofOwners = { chatSessionId?: unknown; laneId?: unknown; caption?: unknown };
 
-
-
-type Held = CloudPhoneHeld;
 
 /** Phone ids whose start or end a chat was told, kept this many. */
 const ANNOUNCED_LIMIT = 200;
@@ -162,8 +159,6 @@ async function projectFiles(root: string, prefix = ""): Promise<string[]> {
   return files;
 }
 
-type Packed = CloudPhonePacked;
-
 /**
  * Packs with the system's tar into a temp `.tar.gz`, then reads its size and
  * sha256 as a stream: an archive up to 2 GB is never held in memory. The file
@@ -194,6 +189,7 @@ async function packProject(root: string): Promise<Packed & { count: number }> {
 }
 
 /** Sent for a `.ipa` or a device build: the cloud iPhone runs Simulator builds. */
+const TESTS_UNSUPPORTED = "Running an app's tests isn't on this cloud iPhone yet. Run them on a Mac (ios@<Mac>), or in CI.";
 const DEVICE_BUILD = "That is a device build (.ipa). The cloud iPhone needs a Simulator build: for Expo/EAS set \"simulator\": true; for Flutter run flutter build ios --simulator.";
 
 /** What a bundle's Info.plist says it is for: "iPhoneSimulator", "iPhoneOS", or null when it can't be told. */
@@ -408,22 +404,16 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
    * the session read adds when.
    */
   async function settleEnd(ended: CloudPhoneRun<Held>, replaced: boolean, known?: CloudPhoneRunEnd): Promise<void> {
-    const answer = await driverOf(ended.phone).read(ended.phone).catch((error: unknown) => {
+    const read = await driverOf(ended.phone).read(ended.phone).catch((error: unknown) => {
       // Unread: the run stays open, and a later read settles it.
       deps.logger?.warn?.("cloud_phone.end_read_failed", { error: error instanceof Error ? error.message : String(error) });
       return null;
     });
-    const session = answer?.session ?? undefined;
-    if (answer?.status === 200 && typeof session?.state === "string") {
-      if (known || !CLOUD_PHONE_LIVE_STATES.has(session.state)) {
-        const end = cloudPhoneEndOf(session);
-        announceEnd(ended, { why: end.why ?? known?.why ?? null, at: end.at });
-      }
-      return;
-    }
+    if (read?.state === "ended") return announceEnd(ended, { why: read.end.why ?? known?.why ?? null, at: read.end.at });
     if (known) return announceEnd(ended, known);
-    // Not 409: a phone busy with another call still runs.
-    if (replaced || answer?.status === 401 || answer?.status === 404 || answer?.status === 410) announceEnd(ended, { why: null, at: null });
+    if (read?.state === "starting" || read?.state === "ready") return;
+    // Not unreadable: a phone busy with another call still runs.
+    if (replaced || read?.state === "gone") announceEnd(ended, { why: null, at: null });
   }
 
 
@@ -431,15 +421,15 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     held = {
       account: accountOf(client),
       phoneId: start.phone.id,
-      token: start.token.token,
-      expiresAt: start.token.expiresAt,
-      apiBase: start.apiBase.replace(/\/+$/, ""),
+      renewBy: start.token.expiresAt,
       device: String(start.phone.device),
       minutes: start.minutes,
       checkedAt: 0,
-      // A server from before Revyl names none: NoMac.
-      provider: start.provider === "revyl" ? "revyl" : "nomac",
       points: start.points ?? null,
+      // A server from before Revyl names none: NoMac.
+      ...(start.provider === "revyl"
+        ? { provider: "revyl" as const }
+        : { provider: "nomac" as const, token: start.token.token, apiBase: start.apiBase.replace(/\/+$/, "") }),
     };
     if (liveRun?.phoneId === held.phoneId && liveRun.account === held.account) liveRun.phone = held;
     // A reused phone was started by someone else: nobody is told of it.
@@ -448,27 +438,25 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
   }
 
 
-  /** The phone's state, read from its provider. */
-  async function readSession(phone: Held): Promise<{ state: string; session: Record<string, unknown> | null }> {
-    const answer = await driverOf(phone).read(phone);
-    const session = answer.session;
-    if (answer.status !== 200 || typeof session?.state !== "string") {
-      deps.logger?.warn?.("cloud_phone.call_failed", { doing: "Reading the cloud iPhone", status: answer.status, provider: phone.provider });
-      throw new CloudPhoneError(`Reading the cloud iPhone failed (http_${answer.status}).`, `http_${answer.status}`);
+  /** The phone's state, read from its provider; throws when it can't be read or is gone. */
+  async function readPhone(phone: Held): Promise<Extract<CloudPhoneRead, { state: "starting" | "ready" | "ended" }>> {
+    const read = await driverOf(phone).read(phone);
+    if (read.state === "gone" || read.state === "unreadable") {
+      deps.logger?.warn?.("cloud_phone.call_failed", { doing: "Reading the cloud iPhone", code: read.code, provider: phone.provider });
+      throw new CloudPhoneError(`Reading the cloud iPhone failed (${read.code}).`, read.code);
     }
-    return { state: session.state, session };
+    return read;
   }
 
   async function waitUntilReady(phone: Held): Promise<void> {
     const by = Date.now() + READY_WAIT_MS;
     for (;;) {
-      const { state, session } = await readSession(phone);
-      if (state === "ready") return;
-      if (state === "stopping" || state === "stopped" || state === "failed") {
+      const read = await readPhone(phone);
+      if (read.state === "ready") return;
+      if (read.state === "ended") {
         held = null;
-        if (liveRun?.phoneId === phone.phoneId && session) announceEnd(liveRun, cloudPhoneEndOf(session));
-        const why = (session?.failure_code ?? (session?.ended as { reason?: unknown } | undefined)?.reason ?? state) as string;
-        throw new CloudPhoneError(`The cloud iPhone ended before it was ready (${why}).`, "phone_ended");
+        if (liveRun?.phoneId === phone.phoneId) announceEnd(liveRun, read.end);
+        throw new CloudPhoneError(`The cloud iPhone ended before it was ready (${read.end.why ?? "ended"}).`, "phone_ended");
       }
       if (Date.now() >= by) throw new CloudPhoneError("No cloud iPhone was free within 6 minutes. Try again soon.", "phone_queue_timeout");
       await sleep(CALL_POLL_MS);
@@ -478,11 +466,11 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
   /** The account's ready phone, started when there is none; `chatSessionId` is the agent chat told of a new one. */
   async function ensure({ device, chatSessionId = null }: { device?: CloudPhoneDevice; chatSessionId?: string | null } = {}): Promise<Held> {
     const account = await currentAccount();
-    if (held && held.expiresAt - Date.now() > TOKEN_REFRESH_MARGIN_MS && (!device || held.device === device)) {
+    if (held && held.renewBy - Date.now() > TOKEN_REFRESH_MARGIN_MS && (!device || held.device === device)) {
       if (Date.now() - held.checkedAt < READY_TRUST_MS) return held;
       // A held phone may have stopped on its own (idle, its time limit): read it.
       const phone = held;
-      const read = await readSession(phone).catch(() => null);
+      const read = await readPhone(phone).catch(() => null);
       // Only for the phone still held, of the account still signed in: a
       // stop, a new start or a sign-out during the read wins over its answer.
       if (read?.state === "ready" && held === phone && phone.account === (await currentAccount())) {
@@ -494,7 +482,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       }
       if (held === phone) held = null;
       // It stopped on its own: the chat told of its start is told now.
-      if (read && !CLOUD_PHONE_LIVE_STATES.has(read.state) && liveRun?.phoneId === phone.phoneId && read.session) announceEnd(liveRun, cloudPhoneEndOf(read.session));
+      if (read?.state === "ended" && liveRun?.phoneId === phone.phoneId) announceEnd(liveRun, read.end);
     }
     // A start already running for another account is not this caller's phone: wait for it to end, then start our own.
     while (starting && starting.account !== account) await starting.phone.catch(() => undefined);
@@ -605,7 +593,10 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       // Access is on or off (an older server's `soon` reads as off).
       const reason = state.access === "on" ? null : "The ADE Cloud iPhone isn't available right now.";
       const lastActivityAt = liveRun && state.phone?.id === liveRun.phoneId && state.phone.state !== "ended" ? liveRun.lastActivityAt : null;
-      return { ...state, capabilities: state.access === "on" ? CLOUD_PHONE_AGENT_ACTIONS : [], supported: state.access === "on", reason, lastActivityAt };
+      // What the live phone's provider can't do yet is left out, not discovered by a failed call.
+      const driver = state.phone ? drivers[state.phone.provider ?? "nomac"] : null;
+      const capabilities = state.access !== "on" ? [] : CLOUD_PHONE_AGENT_ACTIONS.filter((action) => action !== "runTests" || !driver || driver.test);
+      return { ...state, capabilities, unsupportedControls: driver ? Object.keys(driver.unsupportedControls) : [], supported: state.access === "on", reason, lastActivityAt };
     },
 
     async start(args: { device?: unknown } | null | undefined): Promise<{ phone: CloudPhoneSummary | null; minutes: CloudPhoneMinutes }> {
@@ -638,7 +629,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
      */
     async keepAlive(): Promise<{ ok: boolean }> {
       await currentAccount();
-      let phone = held && held.expiresAt > Date.now() ? held : null;
+      let phone = held && held.renewBy > Date.now() ? held : null;
       if (!phone) {
         // Another machine's brain (or this one before a restart) started it:
         // take a token for the account's live phone. `attach` never starts
@@ -669,9 +660,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         phone = hold(start, client, null);
         phone.checkedAt = Date.now();
       }
-      const status = await driverOf(phone).keepAlive(phone);
       // Gone, or only this token (the next status read settles whether it ended).
-      if (cloudPhoneGone(status)) {
+      if ((await driverOf(phone).keepAlive(phone)) === "gone") {
         if (held === phone) held = null;
         return { ok: false };
       }
@@ -786,7 +776,16 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       const packed = await packApp(appPath);
       const chatSessionId = cloudPhoneCallerChat(args);
       try {
-        return await withPhone(chatSessionId, (phone, driver) => driver.install(phone, { app: packed, bundleId: plistId, launch: args?.launch !== false }));
+        return await withPhone(chatSessionId, async (phone, driver) => {
+          const installed = await driver.install(phone, { app: packed });
+          const bundleId = plistId ?? installed.bundleId;
+          if (args?.launch === false || installed.answer.failed) return { ...installed.answer, bundleId };
+          // Launched only by name: unnamed, NoMac launches the app launched LAST, which may be an earlier build's.
+          if (!bundleId) {
+            return { ...joinAnswers([installed.answer, textAnswer("Installed, but not launched: ADE could not tell the app's bundle id. Launch it with ade apple relaunch --bundle-id <id>.")]), bundleId };
+          }
+          return { ...joinAnswers([installed.answer, await driver.control(phone, { action: "launch", app: bundleId })]), bundleId };
+        });
       } finally {
         fs.rmSync(packed.file, { force: true });
       }
@@ -798,7 +797,9 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       if (!action) throw new CloudPhoneError("action is required (launch, terminate, open_url, location, push, appearance, …).", "bad_request");
       const value = textArg(args?.value, "value");
       const app = textArg(args?.app, "app", 300);
-      return withPhone(cloudPhoneCallerChat(args), (phone, driver) => driver.control(phone, { action, ...(value !== undefined ? { value } : {}), ...(app ? { app } : {}) }));
+      return withPhone(cloudPhoneCallerChat(args), (phone, driver) => Object.hasOwn(driver.unsupportedControls, action)
+        ? Promise.resolve(textAnswer(`${driver.unsupportedControls[action]} isn't on this cloud iPhone yet.`, true))
+        : driver.control(phone, { action, ...(value !== undefined ? { value } : {}), ...(app ? { app } : {}) }));
     },
 
     async logs(args: { app?: unknown; since?: unknown; grep?: unknown; waitFor?: unknown; crashes?: unknown } | null | undefined): Promise<CloudPhoneToolAnswer> {
@@ -841,7 +842,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       const only = textArg(args?.only, "only", 2_000);
       const packed = await packProject(root);
       try {
-        return await withPhone(chatSessionId, (phone, driver) => driver.test(phone, {
+        return await withPhone(chatSessionId, (phone, driver) => !driver.test ? Promise.resolve(textAnswer(TESTS_UNSUPPORTED, true)) : driver.test(phone, {
           project: packed,
           name: cloudPhoneProjectName(root),
           ...(sub ? { sub } : {}),

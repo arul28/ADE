@@ -12,14 +12,17 @@
  * (`CALL_ACTIONS`), and passes Revyl's answer back as it is.
  *
  * Revyl's phone has no time limit or spend cap of its own: the phone's
- * `stop_at` (`phones.ts`) is its limit, and the minute tick stops it.
+ * `stop_at` (`phones.ts`) is its limit, and the minute tick stops it. Its view
+ * link opens ADE's own viewer page (`phoneViewerPage.ts`).
  */
 
+import { CLOUD_PHONE_IDLE_SECONDS } from "../../../desktop/src/shared/cloudPhone";
 import { CLOUD_PATHS, type CloudPhoneDevice } from "./contract";
 import { fail, json } from "./http";
+import { LIVE_STATES, TOKEN_MINUTES, VIEW_MINUTES, stopRefused, type PhoneProviderServer, type PhoneRead, type PhoneWhere } from "./phoneProvider";
 import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
 
-export const REVYL_API_BASE = "https://backend.revyl.ai/api/v1";
+const REVYL_API_BASE = "https://backend.revyl.ai/api/v1";
 const REQUEST_TIMEOUT_MS = 30_000;
 /** A build's own calls (the source upload, an install of a large app) get longer. */
 const SLOW_REQUEST_TIMEOUT_MS = 120_000;
@@ -40,10 +43,10 @@ const REVYL_DEVICES: Record<CloudPhoneDevice, { model: string; os: string }> = {
   ipad: { model: "iPad Pro 13-inch (M4)", os: "iOS 26.2" },
 };
 
-export type RevylAnswer = { status: number; body: Record<string, unknown> | null };
+type RevylAnswer = { status: number; body: Record<string, unknown> | null };
 
 /** A Revyl phone in the shape `phones.ts` keeps (NoMac's session shape). */
-export type RevylPhoneSession = {
+type RevylPhoneSession = {
   id: string;
   state: string;
   device?: string;
@@ -55,7 +58,7 @@ export type RevylPhoneSession = {
   ref: string | null;
 };
 
-export const revylConfigured = (env: Pick<CloudEnv, "REVYL_PARTNER_API_KEY">): boolean => Boolean(env.REVYL_PARTNER_API_KEY?.trim());
+const revylConfigured = (env: Pick<CloudEnv, "REVYL_PARTNER_API_KEY">): boolean => Boolean(env.REVYL_PARTNER_API_KEY?.trim());
 
 /**
  * Revyl may start new phones: its key is set AND the owner's switch
@@ -63,7 +66,7 @@ export const revylConfigured = (env: Pick<CloudEnv, "REVYL_PARTNER_API_KEY">): b
  * whatever a beta row or `CLOUD_PHONE_PROVIDER` says; a Revyl phone already
  * running is still read, billed and stopped with the key.
  */
-export const revylEnabled = (env: Pick<CloudEnv, "REVYL_PARTNER_API_KEY" | "CLOUD_PHONE_REVYL">): boolean =>
+const revylEnabled = (env: Pick<CloudEnv, "REVYL_PARTNER_API_KEY" | "CLOUD_PHONE_REVYL">): boolean =>
   revylConfigured(env) && env.CLOUD_PHONE_REVYL?.trim().toLowerCase() === "on";
 
 /** Revyl's id for an ADE account's workspace: 1 to 128 of `[A-Za-z0-9_-]`. */
@@ -99,15 +102,25 @@ async function answerOf(response: Response): Promise<RevylAnswer> {
   return { status: response.status, body: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null };
 }
 
+/** A timeout or a dropped connection: answered like a gateway timeout, and logged (the path, never a credential). */
+function unreachable(method: string, path: string, error: unknown): RevylAnswer {
+  logCloud("cloud.phone_revyl_unreachable", { method, path, message: error instanceof Error ? error.message : "unknown" });
+  return { status: 504, body: null };
+}
+
 /** A call with ADE's partner key (workspaces and their credentials only). */
 async function partner(env: Pick<CloudEnv, "REVYL_PARTNER_API_KEY">, method: string, path: string, body?: unknown): Promise<RevylAnswer> {
   const key = env.REVYL_PARTNER_API_KEY?.trim();
   if (!key) return { status: 503, body: null };
-  return await answerOf(await revylFetch(key, method, path, { body })).catch((): RevylAnswer => ({ status: 504, body: null }));
+  try {
+    return await answerOf(await revylFetch(key, method, path, { body }));
+  } catch (error) {
+    return unreachable(method, path, error);
+  }
 }
 
 /** Revyl's code and words: the partner API's `error` envelope, or the execution API's `detail`. */
-export function revylErrorOf(answer: RevylAnswer): { code: string; message: string } {
+function revylErrorOf(answer: RevylAnswer): { code: string; message: string } {
   const error = answer.body?.error as { code?: unknown; message?: unknown } | undefined;
   const detail = answer.body?.detail;
   const code = typeof error?.code === "string" ? error.code : typeof answer.body?.code === "string" ? answer.body.code : `http_${answer.status}`;
@@ -185,7 +198,11 @@ async function workspaceCall(env: CloudEnv, workspace: WorkspaceRow, method: str
 }
 
 async function workspaceJson(env: CloudEnv, workspace: WorkspaceRow, method: string, path: string, init: { body?: unknown; query?: Record<string, string>; timeoutMs?: number } = {}): Promise<RevylAnswer> {
-  return await answerOf(await workspaceCall(env, workspace, method, path, init)).catch((): RevylAnswer => ({ status: 504, body: null }));
+  try {
+    return await answerOf(await workspaceCall(env, workspace, method, path, init));
+  } catch (error) {
+    return unreachable(method, path, error);
+  }
 }
 
 /** The workspace's app that builds go to, made on the first build. */
@@ -218,7 +235,7 @@ function endReasonOf(status: string, error: unknown): string {
 }
 
 /** A Revyl device session as `phones.ts` keeps a phone. */
-export function revylSessionOf(raw: Record<string, unknown> | null, device: string | null): RevylPhoneSession | null {
+function revylSessionOf(raw: Record<string, unknown> | null, device: string | null): RevylPhoneSession | null {
   if (!raw || typeof raw.id !== "string" || typeof raw.status !== "string") return null;
   const status = raw.status.toLowerCase();
   const startedAt = isoOf(raw.started_at);
@@ -250,7 +267,7 @@ async function knownWorkspace(env: Pick<CloudEnv, "DB">, userId: string): Promis
 }
 
 /** One phone as Revyl answers it now, or null when it can't be read. */
-export async function readRevylPhone(env: CloudEnv, userId: string, phoneId: string, device: string | null): Promise<RevylPhoneSession | null> {
+async function readRevylPhone(env: CloudEnv, userId: string, phoneId: string, device: string | null): Promise<RevylPhoneSession | null> {
   const workspace = await knownWorkspace(env, userId);
   if (!workspace) return null;
   const answer = await workspaceJson(env, workspace, "GET", `/execution/device-sessions/${encodeURIComponent(phoneId)}`);
@@ -261,7 +278,7 @@ export async function readRevylPhone(env: CloudEnv, userId: string, phoneId: str
  * Starts a phone in the account's workspace, or answers one already running
  * there (a start whose answer was lost): one phone per account.
  */
-export async function startRevylPhone(env: CloudEnv, userId: string, device: CloudPhoneDevice | undefined, idleSeconds: number, now: number): Promise<{ session: RevylPhoneSession; reused: boolean } | Response> {
+async function startRevylPhone(env: CloudEnv, userId: string, device: CloudPhoneDevice | undefined, idleSeconds: number, now: number): Promise<{ session: RevylPhoneSession; reused: boolean } | Response> {
   const workspace = await workspaceOf(env, userId, now);
   if (workspace instanceof Response) return workspace;
   const named = device ?? "iphone";
@@ -270,8 +287,10 @@ export async function startRevylPhone(env: CloudEnv, userId: string, device: Clo
     ? (active.body.sessions as Array<Record<string, unknown>>).find((session) => String(session.platform ?? "").toLowerCase() === "ios")
     : undefined;
   if (running && typeof running.id === "string") {
+    // Only a phone still coming up or running: never one stopping, nor one ADE already saw end (a stop, then a start).
     const read = await readRevylPhone(env, userId, running.id, named);
-    if (read && read.state !== "stopped" && read.state !== "failed") return { session: read, reused: true };
+    const row = read ? await env.DB.prepare("select state from cloud_phones where phone_id = ?").bind(running.id).first<{ state: string }>() : null;
+    if (read && (read.state === "ready" || read.state === "provisioning") && row?.state !== "ended") return { session: read, reused: true };
   }
   const target = REVYL_DEVICES[named];
   const started = await workspaceJson(env, workspace, "POST", "/execution/start_device", {
@@ -305,7 +324,7 @@ export async function startRevylPhone(env: CloudEnv, userId: string, device: Clo
 }
 
 /** Stops one phone. Answers Revyl's status (404: already gone). */
-export async function stopRevylPhone(env: CloudEnv, userId: string, phoneId: string): Promise<number> {
+async function stopRevylPhone(env: CloudEnv, userId: string, phoneId: string): Promise<number> {
   const workspace = await knownWorkspace(env, userId);
   if (!workspace) return 404;
   const answer = await workspaceJson(env, workspace, "POST", `/execution/device/sessions/${encodeURIComponent(phoneId)}/stop`);
@@ -317,7 +336,7 @@ export async function stopRevylPhone(env: CloudEnv, userId: string, phoneId: str
  * phone's WebRTC stream and its input link after `#`, so neither reaches a
  * server log. The input link carries Revyl's token for this phone's worker.
  */
-export async function revylViewUrl(env: CloudEnv, userId: string, ref: string, origin: string, control: boolean): Promise<{ url: string; points: { width: number; height: number } | null } | Response> {
+async function revylViewUrl(env: CloudEnv, userId: string, ref: string, origin: string, control: boolean): Promise<{ url: string; points: { width: number; height: number } | null } | Response> {
   const workspace = await knownWorkspace(env, userId);
   if (!workspace) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running. Start it first.", 409);
   const answer = await workspaceJson(env, workspace, "GET", `/execution/streaming/worker-connection/${encodeURIComponent(ref)}`);
@@ -393,7 +412,8 @@ const PROXY_ACTIONS: Record<string, "GET" | "POST"> = {
   stop_screen_recording: "POST",
 };
 const BUILD_ACTIONS = new Set(["build.upload_url", "build.start", "build.status", "build.logs", "build.install"]);
-export const phoneCallActions = (): string[] => [...Object.keys(PROXY_ACTIONS).map((name) => `proxy.${name}`), ...BUILD_ACTIONS];
+/** Revyl's words for a build that finished, whichever way (`build.status`'s `status`). */
+const BUILD_ENDED = new Set(["success", "succeeded", "completed", "failed", "error", "cancelled", "canceled", "timeout"]);
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SCHEME = /^[A-Za-z0-9 _.+()-]{1,200}$/;
@@ -441,7 +461,7 @@ const stringArg = (value: unknown): string | null => (typeof value === "string" 
  * `POST /cloud/phone/call` for an account whose live phone is Revyl's.
  * `phoneId` and `ref` name that phone (`phones.ts` read it live just now).
  */
-export async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string; ref: string | null }, body: Record<string, unknown>, now: number): Promise<Response> {
+async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string; ref: string | null }, body: Record<string, unknown>, now: number): Promise<Response> {
   const action = typeof body.action === "string" ? body.action : "";
   const args = body.body && typeof body.body === "object" && !Array.isArray(body.body) ? body.body as Record<string, unknown> : {};
   const query = body.query && typeof body.query === "object" && !Array.isArray(body.query)
@@ -467,7 +487,10 @@ export async function routeRevylCall(env: CloudEnv, userId: string, phone: { id:
       ...(method === "POST" ? { body: args } : {}),
       query,
       ...(slow ? { timeoutMs: SLOW_REQUEST_TIMEOUT_MS } : {}),
-    }).catch(() => new Response(null, { status: 504 }));
+    }).catch((error: unknown) => {
+      logCloud("cloud.phone_revyl_unreachable", { method, path: `proxy.${name}`, message: error instanceof Error ? error.message : "unknown" });
+      return new Response(null, { status: 504 });
+    });
     if (name === "start_screen_recording" && response.ok) {
       const started = await response.clone().json().catch(() => null) as { recording_id?: unknown } | null;
       if (typeof started?.recording_id === "string") {
@@ -507,10 +530,21 @@ export async function routeRevylCall(env: CloudEnv, userId: string, phone: { id:
       platform: "ios",
       profile: "ade",
     };
+    // One build at a time per phone (Revyl's runners bill by the hour): claimed in this write, so two starts can't both run.
+    const claimed = await env.DB.prepare("update cloud_phones set build_started_at = ?, build_job = null where phone_id = ? and user_id = ? and (build_started_at is null or build_started_at <= ?)")
+      .bind(now, phone.id, userId, now - BUILD_TIMEOUT_SECONDS * 1000).run();
+    if ((claimed.meta?.changes ?? 0) !== 1) return fail("phone_busy", "A build is already running on your ADE Cloud iPhone. Wait for it to finish.", 409);
     const answer = await workspaceJson(env, workspace, "POST", "/apps/remote", {
       body: { build_definition_hash: await sha256Hex(JSON.stringify(recipe)), git_branch_name: "ade", recipe, source: { key, type: "archive" }, timeout_seconds: BUILD_TIMEOUT_SECONDS },
       timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
     });
+    const buildJob = typeof answer.body?.build_job_id === "string" ? answer.body.build_job_id : null;
+    // A start Revyl refused runs nothing: the claim goes back.
+    if (answer.status < 300) {
+      await env.DB.prepare("update cloud_phones set build_job = ? where phone_id = ? and user_id = ? and build_started_at = ?").bind(buildJob, phone.id, userId, now).run();
+    } else {
+      await env.DB.prepare("update cloud_phones set build_started_at = null where phone_id = ? and user_id = ? and build_started_at = ?").bind(phone.id, userId, now).run();
+    }
     logCloud("cloud.phone_revyl_build", { userId, status: answer.status });
     return json(answer.body ?? {}, answer.status);
   }
@@ -518,6 +552,10 @@ export async function routeRevylCall(env: CloudEnv, userId: string, phone: { id:
   if (action === "build.status" || action === "build.logs") {
     if (!job || !UUID.test(job)) return fail("bad_request", "job is the build's id.", 400);
     const answer = await workspaceJson(env, workspace, "GET", `/apps/remote/${encodeURIComponent(job)}/${action === "build.status" ? "status" : "logs"}`, { query });
+    // A finished build (whichever way) frees the phone for the next one.
+    if (action === "build.status" && answer.status === 200 && BUILD_ENDED.has(String(answer.body?.status ?? "").toLowerCase())) {
+      await env.DB.prepare("update cloud_phones set build_started_at = null, build_job = null where phone_id = ? and user_id = ? and (build_job is null or build_job = ?)").bind(phone.id, userId, job).run();
+    }
     return json(answer.body ?? {}, answer.status);
   }
   // build.install: the build's app, into the live phone.
@@ -526,7 +564,8 @@ export async function routeRevylCall(env: CloudEnv, userId: string, phone: { id:
   if (!phone.ref) return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
   const build = await workspaceJson(env, workspace, "GET", `/apps/builds/${encodeURIComponent(version)}`, { query: { include_download_url: "true" } });
   if (build.status !== 200 || build.body?.app_id !== app) return fail("bad_request", "That build isn't one of this account's.", 400);
-  const download = Object.values(build.body ?? {}).find((value): value is string => typeof value === "string" && value.startsWith("https://"));
+  const named = typeof build.body?.download_url === "string" && build.body.download_url.startsWith("https://") ? build.body.download_url : undefined;
+  const download = named ?? Object.values(build.body ?? {}).find((value): value is string => typeof value === "string" && value.startsWith("https://"));
   if (!download) return fail("phone_unavailable", "The build has no app to install.", 502);
   const bundleId = typeof (build.body?.metadata as { bundle_id?: unknown } | undefined)?.bundle_id === "string"
     ? (build.body!.metadata as { bundle_id: string }).bundle_id
@@ -538,139 +577,52 @@ export async function routeRevylCall(env: CloudEnv, userId: string, phone: { id:
   return json({ ...(installed.body ?? {}), ...(bundleId && !installed.body?.bundle_id ? { bundle_id: bundleId } : {}) }, installed.status);
 }
 
-/* ---- `GET /cloud/phone/viewer` ---- */
+/* ---- The provider record (`phones.ts`) ---- */
 
-/**
- * ADE's page for a phone streamed over WebRTC. It plays the `#whep=` stream in
- * a video sized to the screen, under one clear canvas that takes input (no
- * per-frame copy), and with `#ws=` sends the person's touches and keys to the
- * phone in its own points as Revyl's own player does: touch down, move, up;
- * typed text and Enter/Backspace at the field last tapped. Keys arrive through
- * a hidden input that never raises an on-screen keyboard. The desktop pane,
- * the iPhone app and the web app open it as they open NoMac's page: they find
- * the canvas, press "home", and read "not running" when the phone ends.
- */
-export function revylViewerPage(): Response {
-  return new Response(VIEWER_HTML, {
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "public, max-age=300",
-      "referrer-policy": "no-referrer",
-      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https: wss:; media-src blob: https:; img-src data: blob:",
-    },
+/** One phone as Revyl answers it now, in the shape `phones.ts` keeps, or null when it can't be read. */
+async function readKept(env: CloudEnv, userId: string, phoneId: string, where: PhoneWhere): Promise<PhoneRead | null> {
+  const session = await readRevylPhone(env, userId, phoneId, where.device).catch((error: unknown) => {
+    logCloud("cloud.phone_revyl_read_failed", { userId, phoneId, message: error instanceof Error ? error.message : "unknown" });
+    return null;
   });
+  return session ? { session: { ...session, provider: "revyl", ref: session.ref ?? where.ref }, stopNotice: null } : null;
 }
 
-const VIEWER_HTML = `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>ADE Cloud iPhone</title>
-<style>
-html,body{margin:0;height:100%;background:#000;overflow:hidden;font:14px -apple-system,system-ui,sans-serif;color:#aaa}
-#stage{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
-#frame{position:relative;background:#000}
-#frame video,#frame canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
-canvas{touch-action:none;cursor:pointer;background:transparent}
-#keys{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;font-size:16px;pointer-events:none}
-#note{position:absolute;left:0;right:0;bottom:16px;text-align:center;pointer-events:none}
-#home{position:absolute;left:-1000px;top:0}
-</style></head>
-<body><div id="stage"><div id="frame"><video id="video" muted playsinline autoplay></video><canvas id="screen" width="1" height="1"></canvas></div></div><input id="keys" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-hidden="true" tabindex="-1"><div id="note">Connecting to the phone…</div><button id="home" tabindex="-1">Home</button>
-<script>
-(function(){
-  var params = new URLSearchParams(location.hash.slice(1));
-  history.replaceState(null, "", location.pathname);
-  var whep = params.get("whep"), wsUrl = params.get("ws");
-  var W = Number(params.get("w")) || 440, H = Number(params.get("h")) || 956;
-  var ice = []; try { ice = JSON.parse(params.get("ice") || "[]"); } catch (e) {}
-  // The video shows itself; the canvas over it is clear and only takes touches (and is what hosts measure).
-  var canvas = document.getElementById("screen"), frame = document.getElementById("frame"), keys = document.getElementById("keys");
-  var video = document.getElementById("video"), note = document.getElementById("note");
-  var ended = false, live = false;
-  function say(text){ note.textContent = text; note.style.display = text ? "" : "none"; }
-  function end(){ if (ended) return; ended = true; say("The phone is not running any more."); }
-  function fit(){
-    var scale = Math.min(innerWidth / W, innerHeight / H);
-    frame.style.width = Math.floor(W * scale) + "px"; frame.style.height = Math.floor(H * scale) + "px";
-  }
-  addEventListener("resize", fit); fit();
-  video.addEventListener("playing", function(){ if (!live) { live = true; say(""); } });
-  // A web view that wants a tap before video plays (the iPhone app's) gets one.
-  function resume(){ if (video.srcObject && video.paused) video.play().catch(function(){ if (!live && !ended) say("Tap to show the phone."); }); }
-  async function play(){
-    if (!whep) { say("This link has no stream."); return; }
-    var pc = new RTCPeerConnection({ iceServers: ice });
-    var stream = new MediaStream();
-    pc.addTransceiver("video", { direction: "recvonly" });
-    pc.addTransceiver("audio", { direction: "recvonly" });
-    pc.ontrack = function(event){ if (event.track.kind === "video") { stream.addTrack(event.track); video.srcObject = stream; resume(); } };
-    pc.onconnectionstatechange = function(){ if (pc.connectionState === "failed" || pc.connectionState === "closed") end(); };
-    var offer = await pc.createOffer(); await pc.setLocalDescription(offer);
-    await new Promise(function(resolve){ if (pc.iceGatheringState === "complete") return resolve(); var t = setTimeout(resolve, 2000); pc.addEventListener("icegatheringstatechange", function(){ if (pc.iceGatheringState === "complete") { clearTimeout(t); resolve(); } }); });
-    var answer = await fetch(whep, { method: "POST", headers: { "content-type": "application/sdp" }, body: pc.localDescription.sdp });
-    if (answer.status === 404 || answer.status === 410) return end();
-    if (!answer.ok) throw new Error("stream " + answer.status);
-    await pc.setRemoteDescription({ type: "answer", sdp: await answer.text() });
-  }
-  play().catch(function(){ if (!ended) say("The phone's picture didn't load. Close and open the view again."); });
+export const REVYL_PHONE: PhoneProviderServer = {
+  canStart: revylEnabled,
+  hasKey: revylConfigured,
+  ownsTimeLimit: false,
+  stopFailedEvent: "cloud.phone_stop_failed.revyl_",
 
-  var socket = null, actionId = 0, queue = [];
-  function connect(){
-    if (!wsUrl || ended) return;
-    socket = new WebSocket(wsUrl);
-    socket.onopen = function(){ while (queue.length) socket.send(queue.shift()); };
-    socket.onclose = function(event){ socket = null; if (event.code === 4404 || event.code === 4410) return end(); if (!ended) setTimeout(connect, 1000); };
-    socket.onmessage = function(event){ if (typeof event.data === "string" && /"(SESSION_ENDED|DEVICE_STOPPED|session_ended)"/.test(event.data)) end(); };
-  }
-  function send(action, fields){
-    if (!wsUrl || ended) return;
-    var message = JSON.stringify(Object.assign({ event_type: "STREAM", action: "MANUAL_" + action, action_id: ++actionId, client_sent_at_ms: Date.now() }, fields));
-    if (socket && socket.readyState === 1) socket.send(message); else { queue.push(message); if (queue.length > 50) queue.shift(); }
-  }
-  connect();
+  async start(env, { userId, device, now }) {
+    const started = await startRevylPhone(env, userId, device, CLOUD_PHONE_IDLE_SECONDS, now);
+    return started instanceof Response ? started : { session: { ...started.session, provider: "revyl" }, reused: started.reused };
+  },
 
-  function point(event){
-    var rect = canvas.getBoundingClientRect();
-    return { x: Math.round(Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * W), y: Math.round(Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) * H) };
-  }
-  var down = null;
-  // A cancelled press gives no focus by itself: it focuses a hidden input instead, so keys reach this page
-  // (in an iframe, and in the iPhone app's web view, which sends keys only to a text field). No on-screen keyboard.
-  canvas.addEventListener("pointerdown", function(event){ event.preventDefault(); keys.focus({ preventScroll: true }); resume(); canvas.setPointerCapture && canvas.setPointerCapture(event.pointerId); var p = point(event); down = { x: p.x, y: p.y, at: Date.now(), last: p }; send("TOUCH_DOWN", p); });
-  canvas.addEventListener("pointermove", function(event){ if (!down) return; var p = point(event); down.last = p; send("TOUCH_MOVE", p); });
-  function lift(event){
-    if (!down) return; var p = event && event.clientX !== undefined ? point(event) : down.last; var held = Date.now() - down.at;
-    var gesture = Math.hypot(p.x - down.x, p.y - down.y) >= 12 ? "drag" : held >= 500 ? "long_press" : "tap";
-    send("TOUCH_UP", { x: p.x, y: p.y, gesture: gesture, duration_ms: held }); down = null;
-    if (gesture === "tap") { flush(); lastTap = { x: p.x, y: p.y }; }
-  }
-  canvas.addEventListener("pointerup", lift); canvas.addEventListener("pointercancel", lift);
-  var wheel = null;
-  canvas.addEventListener("wheel", function(event){
-    event.preventDefault();
-    var p = point(event);
-    if (!wheel) { wheel = { x: p.x, y: p.y, cx: p.x, cy: p.y, at: Date.now() }; send("TOUCH_DOWN", { x: p.x, y: p.y }); }
-    wheel.cx = Math.max(0, Math.min(W, wheel.cx - event.deltaX)); wheel.cy = Math.max(0, Math.min(H, wheel.cy - event.deltaY));
-    send("TOUCH_MOVE", { x: Math.round(wheel.cx), y: Math.round(wheel.cy) });
-    clearTimeout(wheel.timer);
-    wheel.timer = setTimeout(function(){ send("TOUCH_UP", { x: Math.round(wheel.cx), y: Math.round(wheel.cy), gesture: "drag", duration_ms: Date.now() - wheel.at }); wheel = null; }, 120);
-  }, { passive: false });
-  // Typing goes to the field last tapped, as Revyl's own player sends it: the
-  // text at that point, a few keys at a time; Enter and Backspace as keys there.
-  var lastTap = null, typed = "", typeTimer = null;
-  function flush(){ clearTimeout(typeTimer); typeTimer = null; if (!typed || !lastTap) { typed = ""; return; } send("INPUT", { x: lastTap.x, y: lastTap.y, value: typed, incremental: true, skip_tap: true, clear_first: false }); typed = ""; }
-  function type(text){ if (!lastTap) return; typed += text; if (!typeTimer) typeTimer = setTimeout(flush, 25); }
-  var NAMED = { Enter: "ENTER", Backspace: "BACKSPACE" };
-  addEventListener("keydown", function(event){
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
-    if (NAMED[event.key]) { event.preventDefault(); if (!lastTap) return; flush(); send("KEY", { x: lastTap.x, y: lastTap.y, key: NAMED[event.key] }); return; }
-    if (Array.from(event.key).length === 1) { event.preventDefault(); type(event.key); }
-  });
-  // Text that comes with no key (an input method, dictation, a paste of words) arrives as the input's value.
-  keys.addEventListener("input", function(){ if (keys.value) { type(keys.value); keys.value = ""; } });
-  addEventListener("paste", function(event){
-    var text = event.clipboardData && event.clipboardData.getData("text/plain");
-    if (text) { event.preventDefault(); type(text.slice(0, 2000)); }
-  });
-  document.getElementById("home").addEventListener("click", function(){ send("GO_HOME", {}); });
-})();
-</script></body></html>`;
+  read: readKept,
+
+  async stop(env, userId, phoneId, where) {
+    const status = await stopRevylPhone(env, userId, phoneId).catch(() => 504);
+    if (stopRefused(status)) return { ok: false, status, code: `http_${status}` };
+    const after = await readKept(env, userId, phoneId, where);
+    // Revyl reads a phone it just took a stop for as running a few seconds more: it is stopping (ended here).
+    if (after && status < 300 && LIVE_STATES.has(after.session.state)) {
+      after.session.state = "stopping";
+      after.session.ended = { reason: "stopped", at: null };
+    }
+    return { ok: true, status, after };
+  },
+
+  // No per-phone token at Revyl: the brain calls the phone through `/cloud/phone/call`, as itself.
+  startAnswer: async (_env, _session, _userId, now) => ({ token: { token: "", expiresAt: now + TOKEN_MINUTES * 60_000 }, apiBase: "" }),
+
+  async view(env, { userId, phone, control, origin, now }) {
+    if (!phone.ref) return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
+    const view = await revylViewUrl(env, userId, phone.ref, origin, control);
+    if (view instanceof Response) return view;
+    // The stream link lasts the phone's life; the pane asks again before this.
+    return { url: view.url, expiresAt: now + VIEW_MINUTES * 60_000, control, provider: "revyl" };
+  },
+
+  call: routeRevylCall,
+};

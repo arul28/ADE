@@ -44,14 +44,16 @@ const WAIT_LIMIT_S = 30;
 const LAUNCH_SETTLE_MS = 1_500;
 const LOG_LINES = 200;
 
+/** Calls that only read, so a gateway error may be tried again. */
+const SAFE_TO_REPEAT = new Set(["proxy.hierarchy", "proxy.screenshot", "proxy.health", "proxy.device_logs", "build.status", "build.logs"]);
 /** `key` step names as Revyl's keys. */
 const KEYS: Record<string, string> = { return: "ENTER", enter: "ENTER", escape: "ESCAPE", delete: "BACKSPACE", backspace: "BACKSPACE", tab: "TAB", space: "SPACE" };
 /** `scroll down` shows what is below: the finger moves up. */
 const SCROLL_SWIPE: Record<string, string> = { down: "up", up: "down", left: "right", right: "left" };
 const DIRECTIONS = new Set(["up", "down", "left", "right"]);
 
-/** NoMac's `control` actions Revyl has no call for. */
-const NO_CONTROL: Record<string, string> = {
+/** NoMac's `control` actions Revyl has no call for (the service refuses them, and status lists them). */
+const NO_CONTROL: Readonly<Record<string, string>> = {
   uninstall: "Uninstalling an app",
   storekit: "StoreKit testing",
   locale: "Changing the locale",
@@ -117,8 +119,9 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
         if (first) throw new CloudPhoneGoneError();
         throw new CloudPhoneError("The cloud iPhone ended.", "phone_ended");
       }
-      // Ready on the server, still connecting at the phone: a moment more.
-      const connecting = (raw.status === 409 && code === "phone_starting") || raw.status === 502 || raw.status === 503;
+      // Ready on the server, still connecting at the phone: a moment more. A gateway error is
+      // tried again only for a read: a tap or a build may have happened before the 502.
+      const connecting = (raw.status === 409 && code === "phone_starting") || (SAFE_TO_REPEAT.has(action) && (raw.status === 502 || raw.status === 503));
       if (connecting && Date.now() < by) {
         await sleep(1_000);
         continue;
@@ -198,19 +201,20 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
     const rest = words.slice(1);
     const textOf = (from: number): string => rest.slice(from).map((word) => word.word).join(" ");
     const needTarget = (): StepTarget | string => (rest[0] ? readTarget(rest[0]) : `${verb} needs an element: "Label", #id or @x,y`);
+    /** The first word's element on the screen now, or why not. */
+    const targetPoint = async (): Promise<Awaited<ReturnType<typeof locate>>> => {
+      const target = needTarget();
+      return typeof target === "string" ? target : locate(phone, target, cmd);
+    };
     switch (verb) {
       case "tap":
       case "double-tap": {
-        const target = needTarget();
-        if (typeof target === "string") return target;
-        const at = await locate(phone, target, cmd);
+        const at = await targetPoint();
         if (typeof at === "string") return at;
         return act(phone, verb === "tap" ? "tap" : "double_tap", { x: at.x, y: at.y }, cmd);
       }
       case "hold": {
-        const target = needTarget();
-        if (typeof target === "string") return target;
-        const at = await locate(phone, target, cmd);
+        const at = await targetPoint();
         if (typeof at === "string") return at;
         const seconds = Number(rest[1]?.word ?? 1);
         return act(phone, "longpress", { x: at.x, y: at.y, duration_ms: Math.round(Math.min(10, Math.max(0.1, Number.isFinite(seconds) ? seconds : 1)) * 1_000) }, cmd);
@@ -224,9 +228,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
         return act(phone, "input", { x: focused.x, y: focused.y, text: value, clear_first: false, skip_tap: true }, cmd);
       }
       case "fill": {
-        const target = needTarget();
-        if (typeof target === "string") return target;
-        const at = await locate(phone, target, cmd);
+        const at = await targetPoint();
         if (typeof at === "string") return at;
         return act(phone, "input", { x: at.x, y: at.y, text: textOf(1), clear_first: true }, cmd);
       }
@@ -249,9 +251,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
         return act(phone, "swipe", { direction: verb === "scroll" ? SCROLL_SWIPE[direction] : direction, x: at.x, y: at.y, duration_ms: 500 }, cmd);
       }
       case "set": {
-        const target = needTarget();
-        if (typeof target === "string") return target;
-        const at = await locate(phone, target, cmd);
+        const at = await targetPoint();
         if (typeof at === "string") return at;
         const value = Number(rest[1]?.word);
         if (!Number.isFinite(value) || !at.frame) return "set takes a slider and a value from 0 to 100";
@@ -274,7 +274,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
       case "gone": {
         const target = needTarget();
         if (typeof target === "string") return target;
-        const seconds = Number(rest[1]?.word ?? (verb === "wait" ? 10 : 10));
+        const seconds = Number(rest[1]?.word ?? 10);
         return waitFor(phone, target, Number.isFinite(seconds) ? seconds : 10, verb === "gone", cmd);
       }
       default:
@@ -323,7 +323,9 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
       if (Date.now() - started > BUILD_WAIT_MS) throw new CloudPhoneError(`${doing} is still running after 15 minutes.`, "tool_timeout");
       if (Date.now() - awakeAt > BUILD_KEEP_AWAKE_MS) {
         awakeAt = Date.now();
-        await call(phone, "proxy.health").catch(() => undefined);
+        await call(phone, "proxy.health").catch((error: unknown) => {
+          ctx.logger?.warn?.("cloud_phone.build_keep_awake_failed", { error: error instanceof Error ? error.message : String(error) });
+        });
       }
       await sleep(BUILD_POLL_MS);
     }
@@ -331,7 +333,10 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
 
   /** A failed build's own error lines, as Xcode wrote them. */
   async function buildErrors(phone: CloudPhoneHeld, job: string, status: Record<string, unknown>): Promise<string> {
-    const logs = await callJson(phone, "build.logs", { job }).catch(() => ({} as Record<string, unknown>));
+    const logs = await callJson(phone, "build.logs", { job }).catch((error: unknown) => {
+      ctx.logger?.warn?.("cloud_phone.build_logs_failed", { error: error instanceof Error ? error.message : String(error) });
+      return {} as Record<string, unknown>;
+    });
     const lines = Array.isArray(logs.events)
       ? (logs.events as Array<Record<string, unknown>>).map((event) => (typeof event.message === "string" ? event.message : "")).filter(Boolean)
       : [];
@@ -368,27 +373,25 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
   }
 
   return {
+    unsupportedControls: NO_CONTROL,
+
     async read(phone) {
       const client = await ctx.client();
       const state = await client.phoneState!();
       const live = state.phone?.id === phone.phoneId ? state.phone : null;
-      if (!live) return { status: 404, session: null };
-      // In NoMac's words: `ready`, `provisioning`, or `stopped` with why.
-      return {
-        status: 200,
-        session: live.state === "ready" ? { state: "ready" }
-          : live.state === "starting" ? { state: "provisioning" }
-            : { state: "stopped", ended: { reason: live.endReason } },
-      };
+      if (!live) return { state: "gone", code: "phone_gone" };
+      if (live.state === "ended") return { state: "ended", end: { why: live.endReason, at: null } };
+      return { state: live.state };
     },
 
     async keepAlive(phone) {
       const raw = await call(phone, "proxy.hierarchy", undefined, { cmd: command() }).catch((error: unknown) => {
-        if (error instanceof CloudPhoneGoneError) return { status: 404, type: null, body: Buffer.alloc(0) } satisfies Raw;
+        if (error instanceof CloudPhoneGoneError) return null;
         throw error;
       });
-      if (raw.status >= 400 && raw.status !== 404 && raw.status !== 409) throw new CloudPhoneError(`Keeping the cloud iPhone awake failed (${raw.status}).`, refusalOf(raw).code);
-      return raw.status;
+      if (!raw || raw.status === 404 || raw.status === 409) return "gone";
+      if (raw.status >= 400) throw new CloudPhoneError(`Keeping the cloud iPhone awake failed (${raw.status}).`, refusalOf(raw).code);
+      return "alive";
     },
 
     async look(phone, input) {
@@ -442,22 +445,14 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
     async install(phone, input) {
       // A `.app` goes up like a project, and Revyl's runner takes it as the build's app.
       const built = await build(phone, { project: input.app, name: "app" }, "prebuilt");
-      if (!built.ok) return { ...textAnswer(built.text, true), bundleId: input.bundleId };
+      if (!built.ok) return { answer: textAnswer(built.text, true), bundleId: null };
       const installed = await installVersion(phone, built.version);
-      const bundleId = input.bundleId ?? installed.bundleId;
-      if (installed.failure) return { ...textAnswer(`Installing the app failed: ${installed.failure}.`, true), bundleId };
-      if (!input.launch) return { ...textAnswer(`Installed ${bundleId ?? "the app"}.`), bundleId };
-      if (!bundleId) {
-        return { ...textAnswer("Installed, but not launched: ADE could not tell the app's bundle id. Launch it with ade apple relaunch --bundle-id <id>."), bundleId };
-      }
-      const launched = await act(phone, "launch", { bundle_id: bundleId });
-      if (launched) return { ...textAnswer(`Installed ${bundleId}, but launching it failed: ${launched}.`, true), bundleId };
-      return { ...textAnswer(`Installed ${bundleId} and launched it.\n\n${await settledScreen(phone)}`), bundleId };
+      if (installed.failure) return { answer: textAnswer(`Installing the app failed: ${installed.failure}.`, true), bundleId: installed.bundleId };
+      return { answer: textAnswer(`Installed ${installed.bundleId ?? "the app"}.`), bundleId: installed.bundleId };
     },
 
     async control(phone, input) {
       const { action, value, app } = input;
-      if (Object.hasOwn(NO_CONTROL, action)) return textAnswer(`${NO_CONTROL[action]} isn't on this cloud iPhone yet.`, true);
       const needApp = (): string | null => app ?? null;
       const done = (failure: string | null, words: string): CloudPhoneToolAnswer => textAnswer(failure ? `${words} failed: ${failure}.` : `${words}.`, failure != null);
       switch (action) {
@@ -569,10 +564,6 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
         return { answer: textAnswer(`Stopping the recording failed: ${actionFailure(raw) ?? refusalOf(raw).message}.`, true), video: null };
       }
       return { answer: textAnswer("Recording stopped."), video: { bytes: raw.body, extension: videoExtension(raw.body) } };
-    },
-
-    async test() {
-      return textAnswer("Running an app's tests isn't on this cloud iPhone yet. Run them on a Mac (ios@<Mac>), or in CI.", true);
     },
   };
 }

@@ -163,7 +163,7 @@ that is listed.
 
 ```bash
 "$ADE_CLI_PATH" devices use ios@cloud   # this chat's iPhone
-"$ADE_CLI_PATH" apple status --text     # access, minutes left, capabilities
+"$ADE_CLI_PATH" apple status --text     # access, minutes left, capabilities, what this phone can't do yet
 ```
 
 For one command, `ade apple … --machine cloud`. What differs:

@@ -15,23 +15,37 @@ import type {
   CloudPhoneProvider,
 } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudProvider } from "./cloudProvider";
+import type { CloudPhoneRunEnd } from "./cloudPhoneRun";
 
 /** The phone this brain drives, and the account it was started for (a phone and its token belong to one account). */
 export type CloudPhoneHeld = {
   phoneId: string;
-  /** NoMac's token for this phone; empty for Revyl, whose calls go through the server. */
-  token: string;
-  expiresAt: number;
-  /** NoMac's REST base; empty for Revyl. */
-  apiBase: string;
+  /** The server is asked for this phone again before then (NoMac's token runs out). */
+  renewBy: number;
   device: string;
   minutes: CloudPhoneMinutes;
   checkedAt: number;
   account: string | null;
-  provider: CloudPhoneProvider;
   /** The screen in points, when the provider said. */
   points: { width: number; height: number } | null;
-};
+} & (
+  /** NoMac: a token for this phone alone, and NoMac's REST base it calls. */
+  | { provider: "nomac"; token: string; apiBase: string }
+  /** Revyl: no token here; its calls go through the server. */
+  | { provider: Exclude<CloudPhoneProvider, "nomac"> }
+);
+
+/**
+ * The phone read now. `starting` and `ready` run; `ended` says why and when;
+ * `gone` is no longer there (ended, or its token isn't good any more);
+ * `unreadable` (busy with another call, or the provider didn't answer) may
+ * still run. `code` names what the provider said, for a log or an error.
+ */
+export type CloudPhoneRead =
+  | { state: "starting" | "ready" }
+  | { state: "ended"; end: CloudPhoneRunEnd }
+  | { state: "gone"; code: string }
+  | { state: "unreadable"; code: string };
 
 export type CloudPhoneToolAnswer = {
   text: string;
@@ -88,10 +102,9 @@ export type CloudPhoneRunInput = {
 };
 
 export type CloudPhoneDriver = {
-  /** The phone read now, in NoMac's session words (`state`, `ended`, `failure_code`), with the HTTP status. */
-  read(phone: CloudPhoneHeld): Promise<{ status: number; session: Record<string, unknown> | null }>;
-  /** One cheap call the provider counts as use; answers its HTTP status. */
-  keepAlive(phone: CloudPhoneHeld): Promise<number>;
+  read(phone: CloudPhoneHeld): Promise<CloudPhoneRead>;
+  /** One cheap call the provider counts as use: `gone` when the phone (or this token) is no longer there. */
+  keepAlive(phone: CloudPhoneHeld): Promise<"alive" | "gone">;
   /** The screen as text: one element per line, `kind "label" #id state @x,y` in points. */
   look(phone: CloudPhoneHeld, input: { find?: string; screenshot?: boolean }): Promise<CloudPhoneToolAnswer>;
   /** Steps in `look`'s words. */
@@ -100,16 +113,28 @@ export type CloudPhoneDriver = {
   screenshot(phone: CloudPhoneHeld): Promise<{ bytes: Buffer; link: string }>;
   /** Builds the packed project there and starts it: the app's first screen as text, or the build's errors. */
   run(phone: CloudPhoneHeld, input: CloudPhoneRunInput): Promise<CloudPhoneToolAnswer>;
-  /** Installs a packed Simulator `.app`, and launches it by `bundleId` unless `launch` is false. */
-  install(phone: CloudPhoneHeld, input: { app: CloudPhonePacked; bundleId: string | null; launch: boolean }): Promise<CloudPhoneToolAnswer & { bundleId: string | null }>;
+  /** Installs a packed Simulator `.app` (the service launches it, `control` `launch`): the answer and the bundle id it names. */
+  install(phone: CloudPhoneHeld, input: { app: CloudPhonePacked }): Promise<{ answer: CloudPhoneToolAnswer; bundleId: string | null }>;
   /** Apps and the phone: launch, terminate, open_url, location, push, appearance, … */
   control(phone: CloudPhoneHeld, input: { action: string; value?: string; app?: string }): Promise<CloudPhoneToolAnswer>;
   logs(phone: CloudPhoneHeld, input: { app?: string; since?: string; grep?: string; waitFor?: string; crashes?: boolean }): Promise<CloudPhoneToolAnswer>;
   /** `start`, then `stop`: the stop answers the video. */
   record(phone: CloudPhoneHeld, action: "start" | "stop"): Promise<{ answer: CloudPhoneToolAnswer; video: { bytes: Buffer; extension: "mp4" | "mov" } | null }>;
-  test(phone: CloudPhoneHeld, input: CloudPhoneRunInput & { only?: string }): Promise<CloudPhoneToolAnswer>;
+  /** Absent where the provider can't run an app's tests yet (`runTests` is left out of the status's capabilities). */
+  test?(phone: CloudPhoneHeld, input: CloudPhoneRunInput & { only?: string }): Promise<CloudPhoneToolAnswer>;
+  /** `control` actions this provider's phone can't do yet, each as a person reads it ("Changing the locale"). */
+  unsupportedControls: Readonly<Record<string, string>>;
 };
 
 export const textAnswer = (text: string, failed = false): CloudPhoneToolAnswer => ({ text, failed, links: [], images: [], stopNotice: null });
+
+/** Answers one after another as one: their text in order, failed when any failed, the latest stop notice. */
+export const joinAnswers = (answers: readonly CloudPhoneToolAnswer[]): CloudPhoneToolAnswer => ({
+  text: answers.map((answer) => answer.text.trim()).filter(Boolean).join("\n"),
+  failed: answers.some((answer) => answer.failed),
+  links: [...new Set(answers.flatMap((answer) => answer.links))],
+  images: answers.flatMap((answer) => answer.images),
+  stopNotice: [...answers].reverse().find((answer) => answer.stopNotice)?.stopNotice ?? null,
+});
 
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

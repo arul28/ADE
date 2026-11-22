@@ -129,10 +129,8 @@ let agentSkillRootFilter: ((roots: readonly string[]) => string[]) | null = null
  * the skill roots, the `ade-*` line of guidance, `ade skill`) reads this one set.
  */
 export function adeWithheldAgentSkills(): readonly string[] {
-  agentSkillAccessRefresh?.();
   return [
-    ...ALWAYS_WITHHELD_AGENT_SKILLS,
-    ...(adeCloudSkillVisible ? [] : ["ade-cloud"]),
+    ...adeAccessWithheldAgentSkills(),
     ...adeHostWithheldAgentSkills().filter((name) => !(adeCloudIphoneVisible && name === "ade-apple")),
   ];
 }

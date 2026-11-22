@@ -28,26 +28,11 @@ export type CloudPhoneRun<P> = {
 
 export type CloudPhoneRunEnd = { why: string | null; at: number | null };
 
-/** NoMac's states of a phone that still runs. */
-export const CLOUD_PHONE_LIVE_STATES = new Set(["queued", "provisioning", "ready"]);
-
-/** Answers to a phone tool call that mean the phone is gone (ended, its token no longer good). */
-const PHONE_GONE = new Set([401, 404, 409, 410]);
-export const cloudPhoneGone = (status: number): boolean => PHONE_GONE.has(status);
-
 /** The chat a call came from: the RPC server's `approval` stamp, never the caller's own word. */
 export function cloudPhoneCallerChat(args: unknown): string | null {
   const approval = args && typeof args === "object" ? (args as { approval?: unknown }).approval : null;
   const id = approval && typeof approval === "object" ? (approval as { chatSessionId?: unknown }).chatSessionId : null;
   return typeof id === "string" && id.trim() ? id.trim() : null;
-}
-
-/** Why and when a NoMac session ended, as it answers it. */
-export function cloudPhoneEndOf(session: Record<string, unknown>): CloudPhoneRunEnd {
-  const ended = session.ended as { reason?: unknown; at?: unknown } | null | undefined;
-  const why = [ended?.reason, session.end_reason, session.failure_code].find((value): value is string => typeof value === "string" && value.length > 0) ?? null;
-  const at = [ended?.at, session.shutdown_at].map((value) => (typeof value === "string" ? Date.parse(value) : Number.NaN)).find(Number.isFinite) ?? null;
-  return { why, at };
 }
 
 /** Why a phone ended, as a chat reads it. */

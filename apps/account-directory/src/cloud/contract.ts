@@ -231,9 +231,11 @@ export const CLOUD_PATHS = {
   accountLanes: "/account/lanes",
   /**
    * The ADE Cloud iPhone (`phones.ts`): `GET` its `CloudPhoneState`; `POST`
-   * `{ device?, attach? }` starts the account's phone or answers its live one
-   * (`CloudPhoneStart`, a fresh token each time; with `attach` it never starts
-   * one and answers 409 `phone_not_running`); `DELETE` stops it. `/view` (`POST`)
+   * `{ device?, attach?, providers? }` starts the account's phone or answers
+   * its live one (`CloudPhoneStart`, a fresh token each time; with `attach` it
+   * never starts one and answers 409 `phone_not_running`); `providers` lists
+   * the `CloudPhoneProvider`s the client can drive (none listed: NoMac only, so
+   * an older brain never gets a Revyl phone); `DELETE` stops it. `/view` (`POST`)
    * hands out a view link for the live phone.
    */
   phone: "/cloud/phone",
@@ -242,7 +244,7 @@ export const CLOUD_PATHS = {
    * `POST { action, body?, query? }`: one call to the account's live phone at
    * a provider that has no per-phone token (Revyl). The server holds the key,
    * names the phone, and passes the provider's answer back as it is (JSON or
-   * bytes). `phoneCallActions` in `phoneRevyl.ts` lists the actions.
+   * bytes). `PROXY_ACTIONS` and `BUILD_ACTIONS` in `phoneRevyl.ts` list the actions.
    */
   phoneCall: "/cloud/phone/call",
   /** `GET`: ADE's own page that shows a phone streamed over WebRTC (WHEP), for a view link's `#` part. Not an account route. */

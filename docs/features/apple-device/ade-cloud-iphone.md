@@ -10,8 +10,10 @@ ADE Web shows the same pane as a flat live view, and the ADE iPhone app shows it
 from a chat's Tools menu. The launch plan is `docs/plans/ade-cloud-iphone-launch.md`.
 
 Server: `apps/account-directory/src/cloud/phones.ts` (routes, minutes, the
-guard, beta list), `phoneRevyl.ts` (Revyl's workspaces, calls and viewer page)
-and `phoneBilling.ts` (extra minutes to Stripe). Brain:
+guard), one record per provider behind `phoneProvider.ts` (`phoneNomac.ts`,
+`phoneRevyl.ts` for Revyl's workspaces and calls), `phoneViewerPage.ts` (the
+viewer page for Revyl's stream), `phoneBeta.ts` (the owner's beta list) and
+`phoneBilling.ts` (extra minutes to Stripe). Brain:
 `apps/desktop/src/main/services/adeCloud/cloudPhoneService.ts`, with one driver
 per provider (`cloudPhoneDriver.ts`, `cloudPhoneNomacDriver.ts`,
 `cloudPhoneRevylDriver.ts`, `cloudPhoneScreenText.ts`).
@@ -181,12 +183,12 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
               \                         |                        /
         cloud_phone action domain on the machine's brain (cloudPhoneService)
                                   |
-                 server /cloud/phone* (phones.ts)  <- NOMAC_API_KEY
+                 server /cloud/phone* (phones.ts, phoneNomac.ts)  <- NOMAC_API_KEY
                                   |
                         NoMac (nomac.app)  <- one simulator per ADE account
 ```
 
-- **Server.** `phones.ts` is the only place that holds the NoMac account key. It
+- **Server.** `phoneNomac.ts` is the only place that holds the NoMac account key. It
   checks the beta list, reads the period's billed seconds from NoMac, starts or
   reuses the account's phone, and mints the short-lived token a brain drives it
   with. `routes.ts` checks the account sign-in; `safety.ts` checks the owner
@@ -461,7 +463,12 @@ to read with `snapshot`, batch steps in one `act`, and mind the idle stop.
 - The ADE iPhone app's sheet has no Record (the desktop rail has it).
 - **On Revyl:** `ade apple test` (an app's tests), `uninstall`, StoreKit
   files, locale, time zone and status bar overrides answer "isn't on this cloud
-  iPhone yet"; a launch's `env` values are not passed to the app.
+  iPhone yet"; a launch's `env` values are not passed to the app. `status`
+  says so first: `runTests` is left out of `capabilities`, and the `control`
+  actions are listed as `unsupportedControls` ("not on this phone yet").
+- **Older brains get NoMac.** A brain names the phones it can drive
+  (`providers` on `POST /cloud/phone`); one from before Revyl names none, so
+  its account's next phone runs on NoMac even when the account is set to Revyl.
 - NoMac's beta allows 20 phones at once across all ADE accounts. Past that, a
   start waits in line and gives up with "No cloud iPhone was free" after 6
   minutes.

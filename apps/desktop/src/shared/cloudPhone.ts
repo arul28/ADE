@@ -73,8 +73,10 @@ export const CLOUD_PHONE_CALL_TIMEOUT_MS = 7 * 60_000;
 
 /** `cloud_phone.getStatus` as the tools pane reads it (`cloudPhoneService`). */
 export type CloudPhoneStatusView = CloudPhoneState & {
-  /** Every action an agent may call on this device. */
+  /** Every action an agent may call on this device (without the ones the live phone's provider can't do yet). */
   capabilities: readonly string[];
+  /** `control` actions the live phone can't do yet (`locale`, `storekit`, …); empty with no phone or a provider that does them all. */
+  unsupportedControls?: readonly string[];
   supported: boolean;
   /** One line for a person or agent when it can't be used. */
   reason: string | null;

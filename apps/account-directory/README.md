@@ -534,13 +534,17 @@ variant only.
 ### The ADE Cloud iPhone
 
 An iOS Simulator in the cloud, one per account, run by NoMac or Revyl and
-driven from any machine with `ade apple` (`src/cloud/phones.ts`,
-`src/cloud/phoneRevyl.ts`, migrations `0047_cloud_phone_beta.sql`,
+driven from any machine with `ade apple` (`src/cloud/phones.ts` for the rows,
+minutes, access and routes; one provider record each in `phoneNomac.ts` and
+`phoneRevyl.ts` behind `phoneProvider.ts`; Revyl's viewer page in
+`phoneViewerPage.ts`; the owner's beta list in `phoneBeta.ts`; migrations `0047_cloud_phone_beta.sql`,
 `0048_cloud_phone_usage.sql` and `0054_cloud_phone_provider.sql`, shapes in
 `contract.ts`). Revyl starts phones only with the owner's switch
 `CLOUD_PHONE_REVYL=on` (off by default: every new phone is NoMac's). With it
 on, the provider per account is the beta row's `provider`, else the var
-`CLOUD_PHONE_PROVIDER` (`nomac` or `revyl`), else NoMac; each phone row keeps
+`CLOUD_PHONE_PROVIDER` (`nomac` or `revyl`), else NoMac, and Revyl only for a
+client that lists it in the start's `providers` (an older brain gets NoMac);
+each phone row keeps
 the provider it started on, and a Revyl phone is still read and stopped with
 the switch off. Who may use it is the
 var `CLOUD_PHONE_ACCESS`: `beta` (the default: only accounts the owner adds;

@@ -81,7 +81,7 @@
   //
   // SECRETS — NOMAC_API_KEY, NOMAC_EMBED_SECRET, NOMAC_WEBHOOK_SECRET (ADE Cloud iPhone)
   // NoMac's account key (`nmk_…`) runs the account's iOS Simulator
-  // (src/cloud/phones.ts); required, and only this Worker holds it. The
+  // (src/cloud/phoneNomac.ts); required, and only this Worker holds it. The
   // optional embed secret (`nme_…`) signs each view link for the account.
   // Set both out of band, here and with `--env production`. Apply
   // migrations/0047_cloud_phone_beta.sql before the Worker that reads it
