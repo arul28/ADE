@@ -100,8 +100,10 @@ final class AccountCloudStore: ObservableObject {
   /// Consent answers saved this run: an account read that started before one
   /// keeps the saved answer instead of putting back the old one.
   private var sponsoredSaves = 0
-  /// The last answer saved this run, kept for a read that started before it.
+  /// The last answer saved this run, kept for a read that started before it,
+  /// until a read that started after it lands (`savedSponsoredPending`).
   private var savedSponsored: CloudSponsoredState?
+  private var savedSponsoredPending = false
 
   /// Which account the store holds now: a write that started under another one doesn't land.
   var generation: Int { accountGeneration }
@@ -152,7 +154,13 @@ final class AccountCloudStore: ObservableObject {
     guard generation == accountGeneration, AccountService.shared.isPairingCommitAuthorized(owner) else { return }
     if let nextAccess, nextAccess != access { access = nextAccess }
     if var nextAccount {
-      if saves != sponsoredSaves { nextAccount.sponsored = savedSponsored }
+      if saves != sponsoredSaves {
+        // Started before a save: the saved answer, or what a newer read already put in.
+        nextAccount.sponsored = savedSponsoredPending ? savedSponsored : account?.sponsored
+      } else {
+        // Started after every save: the server's answer is the truth now.
+        savedSponsoredPending = false
+      }
       if nextAccount != account { account = nextAccount }
     }
     applyLanesRead(nextLanes, seq: lanesSeq)
@@ -682,6 +690,7 @@ final class AccountCloudStore: ObservableObject {
     guard generation == accountGeneration else { return }
     sponsoredSaves &+= 1
     savedSponsored = state
+    savedSponsoredPending = true
     guard var next = account, next.sponsored != state else { return }
     next.sponsored = state
     account = next
@@ -692,6 +701,7 @@ final class AccountCloudStore: ObservableObject {
   func reset() {
     accountGeneration &+= 1
     savedSponsored = nil
+    savedSponsoredPending = false
     access = nil
     account = nil
     lanesWithoutComputer = []
