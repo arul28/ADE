@@ -19,6 +19,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@gravity-ai/api": "1.4.0",
     "@sentry/cloudflare": "^11.7.0",
     "jose": "^6.2.3"
   },

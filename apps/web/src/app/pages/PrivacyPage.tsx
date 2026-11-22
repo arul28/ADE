@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Container } from "../../components/Container";
 import { Page } from "../../components/Page";
 import { Reveal } from "../../components/Reveal";
+import { GRAVITY_ADS_ON_WEBSITE } from "../../lib/cloudPricing";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 import {
   isMarketingAnalyticsEnabled,
@@ -170,8 +171,31 @@ function AnalyticsPreferenceControl() {
   );
 }
 
+/** Shown only once ads are live (`GRAVITY_ADS_ON_WEBSITE`). */
+const gravitySection: Section = {
+  title: "Sponsored suggestions on the ADE Cloud Free plan",
+  body: [
+    "On the ADE Cloud Free plan, ADE works with Gravity (IRIS Inc., trygravity.com) to show sponsored suggestions. Paid plans have no ads.",
+    "Only after you agree in ADE, and only for chats running on ADE Cloud computers, ADE's server sends Gravity:",
+    {
+      list: [
+        "the last messages of that chat (your latest request and the reply),",
+        "your IP address, and your device type, operating system and the app's user agent,",
+        "a session ID for the chat, and",
+        "a SHA-256 hash of your account email (never the email itself).",
+      ],
+    },
+    "For a sponsored service recommendation, ADE also sends the need the agent described and recent context from the chat.",
+    "Gravity receives this as an independent controller. Under section 7 of Gravity's Terms it keeps a perpetual license to use what ADE sends, and it may not delete it when you ask. Gravity's own privacy policy is at https://trygravity.com/privacy.",
+    "ADE never sends anything from chats on your own computer, from paid plans, or from terminals and CLI sessions. ADE sends no file contents beyond what is in those messages.",
+    "You can turn this off in Settings › ADE Cloud by withdrawing your consent. After that, nothing is sent.",
+    "ADE keeps only counts (requests, views and clicks) for reporting. It keeps no ad content tied to your messages.",
+  ],
+};
+
 export function PrivacyPage() {
   useDocumentTitle("ADE Privacy");
+  const shownSections = GRAVITY_ADS_ON_WEBSITE ? [...sections, gravitySection] : sections;
 
   return (
     <Page>
@@ -187,7 +211,7 @@ export function PrivacyPage() {
           </Reveal>
 
           <div className="mt-10 grid gap-6">
-            {sections.map((section, index) => (
+            {shownSections.map((section, index) => (
               <Reveal key={section.title} delay={Math.min(index * 0.04, 0.2)}>
                 <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
                   <h2 className="text-sm font-semibold text-fg">{section.title}</h2>

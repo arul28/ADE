@@ -4,6 +4,7 @@ import { blockCommand, sendOwnerAlert } from "./blocks";
 import type { CloudPlanId } from "./contract";
 import { sendCloudEmail } from "./email";
 import { idleCleanupReportLine } from "./idleCleanup";
+import { sponsoredReportLines } from "./gravity";
 import {
   CLOUD_PLANS,
   DISK_COST_MICROS_PER_GB_DAY,
@@ -408,8 +409,14 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     reportCloudFailure("cloud.safety_report_failed", { message: error instanceof Error ? error.message : "unknown" });
     return { lines: [] as string[], active: false };
   });
+  // Sponsored cards and the Index (`gravity.ts`): ADE's counts and what Gravity paid, against free use. Best effort.
+  const freeDayCost = rows.filter((row) => row.planId === "free").reduce((sum, row) => sum + row.costMicros, 0);
+  const sponsored = await sponsoredReportLines(env, day, freeDayCost).catch((error: unknown) => {
+    reportCloudFailure("cloud.sponsored_report_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return [] as string[];
+  });
   logCloud("cloud.daily_cost_report", { day, accounts: rows.length, dayCostMicros: dayCost, dayIncomeMicros: dayIncome, alarms: alarms.length });
-  if (rows.length === 0 && alarms.length === 0 && !safety.active) return;
+  if (rows.length === 0 && alarms.length === 0 && !safety.active && sponsored.length === 0) return;
 
   const worst = [...rows].sort((a, b) => (b.costMicros - b.incomeMicros) - (a.costMicros - a.incomeMicros)).slice(0, WORST_ACCOUNTS);
   const margin = (cost: number, income: number) => income > 0 ? `${Math.round(((income - cost) / income) * 100)}%` : "none";
@@ -422,6 +429,7 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
       : `Free-use cap: $${owner.limitUsd}, ${Math.round((owner.freeCostMtdMicros / (owner.limitUsd * 1_000_000)) * 100)}% used${owner.reached ? " (reached: free accounts get no new computers or disk growth; paid accounts are not affected)" : ""}.`,
     ...(idleLine ? [idleLine] : []),
     ...safety.lines,
+    ...sponsored,
     "",
     alarms.length ? "Alarms:" : "No alarms.",
     ...alarms,

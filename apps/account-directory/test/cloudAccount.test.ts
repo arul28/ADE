@@ -4959,3 +4959,99 @@ describe("ADE Cloud computer status (the provider's webhook and the brain's acti
     expect((await status()).activity).toBeNull();
   });
 });
+
+/**
+ * Sponsored cards and the Index (`gravity.ts`): what reaches Gravity is a
+ * privacy contract. Nothing leaves without the switch, the Free plan, the
+ * account's yes and a chat on the account's own ADE Cloud computer; the
+ * person's own address and device go with it; a reply asks once.
+ */
+describe("sponsored cards", () => {
+  type GravityCall = { url: string; body: Row };
+  let gravityCalls: GravityCall[];
+  const AD = { adText: "Serverless Postgres that scales to zero.", title: "Neon", brandName: "Neon", cta: "Try Neon", url: "https://neon.tech", clickUrl: "https://api.trygravity.ai/track/click?p=1", impUrl: "https://api.trygravity.ai/ack?p=1", favicon: "https://icons.example/neon.ico" };
+  const PICK = { search_id: "s1", recommendation: { name: "Neon", description: "Serverless Postgres", category: "database", click_url: "https://index.trygravity.com/go/abc", website_url: "https://neon.tech", sponsored: true }, install: { steps: [{ text: "npm i @neondatabase/serverless" }] } };
+  const DEVICE = { type: "desktop", os: "macos", osVersion: "15.1", ua: "ADE/1.2.133" };
+  const adBody = (overrides: Row = {}) => ({ instanceId: INSTANCE, chatId: "chat-1", turnId: "turn-1", messages: [{ role: "user", content: "set up a database" }, { role: "assistant", content: "Use Postgres." }], device: DEVICE, ...overrides });
+  const send = (caller: string, path: string, body: unknown) => harness.send(caller, "POST", path, body, { "cf-connecting-ip": "203.0.113.7" });
+
+  beforeEach(() => {
+    gravityCalls = [];
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!/trygravity\./.test(url)) return inner(input as RequestInfo, init);
+      gravityCalls.push({ url, body: init?.body ? JSON.parse(String(init.body)) as Row : {} });
+      return new Response(JSON.stringify(url.includes("index.") ? PICK : [AD]), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    Object.assign(harness.env, { GRAVITY_API_KEY: "gravity-key", GRAVITY_ADS: "all" });
+    seedAccount(harness, OWNER);
+    seedComputer(harness);
+    harness.insert("cloud_sponsored_consent", { user_id: OWNER, consent: "granted", email_hash: "e".repeat(64), decided_at: NOW });
+  });
+
+  it("sends the person's chat, address and device once per reply, and answers the same card again", async () => {
+    const first = await (await send(OWNER, "/cloud/sponsored/ad", adBody())).json() as { ad: Row | null };
+    expect(first.ad).toMatchObject({ brand: "Neon", clickUrl: AD.clickUrl, impUrl: AD.impUrl, test: true });
+    expect(gravityCalls).toHaveLength(1);
+    expect(gravityCalls[0]!.body).toMatchObject({
+      testAd: true,
+      messages: [{ role: "user", content: "set up a database" }, { role: "assistant", content: "Use Postgres." }],
+      device: { ip: "203.0.113.7", device_type: "desktop", os: "macos", os_version: "15.1" },
+      user: { hashed_email: "e".repeat(64) },
+    });
+    // The account id never goes: Gravity gets an opaque one.
+    expect(JSON.stringify(gravityCalls[0]!.body)).not.toContain(OWNER);
+    // A reload or a second screen asks for the same reply: the same card, no second request.
+    expect(await (await send(OWNER, "/cloud/sponsored/ad", adBody())).json()).toEqual(first);
+    expect(gravityCalls).toHaveLength(1);
+    // No chat text is kept on the server.
+    expect(JSON.stringify(harness.rows("select * from cloud_sponsored_turns"))).not.toContain("database");
+  });
+
+  it.each<[string, () => void, Row, string]>([
+    ["the switch is off", () => { harness.env.GRAVITY_ADS = undefined as never; }, {}, "off"],
+    ["the account is not a tester", () => { (harness.env as Row).GRAVITY_ADS = "testers"; }, {}, "off"],
+    ["the plan is paid", () => { harness.exec("update cloud_accounts set plan = 'paid' where user_id = ?", OWNER); }, {}, "plan"],
+    ["the plan is paid and past due", () => { harness.exec("update cloud_accounts set plan = 'paid', stripe_status = 'past_due' where user_id = ?", OWNER); }, {}, "plan"],
+    ["the account said no", () => { harness.exec("update cloud_sponsored_consent set consent = 'declined' where user_id = ?", OWNER); }, {}, "consent"],
+    ["the account never answered", () => { harness.exec("delete from cloud_sponsored_consent"); }, {}, "consent"],
+    ["the chat is on the person's own machine", () => undefined, { instanceId: "notacloud1" }, "not_cloud"],
+    ["the computer is another account's", () => { harness.exec("update cloud_computers set user_id = ? where instance_id = ?", OTHER, INSTANCE); }, {}, "not_cloud"],
+    ["the computer was deleted", () => { harness.exec("update cloud_computers set deleted_at = ? where instance_id = ?", NOW, INSTANCE); }, {}, "not_cloud"],
+  ])("no card and nothing sent to Gravity when %s", async (_label, arrange, overrides, reason) => {
+    arrange();
+    const answer = await (await send(OWNER, "/cloud/sponsored/ad", adBody(overrides))).json();
+    expect(answer).toEqual({ ad: null, reason });
+    expect(gravityCalls).toEqual([]);
+  });
+
+  it("tells clients nothing while the switch is off, and the answer while it is on", async () => {
+    harness.env.GRAVITY_ADS = undefined as never;
+    expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toBeUndefined();
+    (harness.env as Row).GRAVITY_ADS = "all";
+    expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "granted", test: true });
+    // A no on one machine is the answer on every machine.
+    expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
+    expect(harness.row("select consent, email_hash from cloud_sponsored_consent where user_id = ?", OWNER)).toEqual({ consent: "declined", email_hash: null });
+    expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "declined", test: true });
+  });
+
+  it("the Index answers an agent only while the person watches, with the person's address", async () => {
+    const index = () => send(OWNER, "/cloud/sponsored/index", { instanceId: INSTANCE, chatId: "chat-1", need: "a hosted Postgres for this app" });
+    expect(await (await index()).json()).toEqual({ pick: null, reason: "nobody_watching" });
+    expect(gravityCalls).toEqual([]);
+
+    // The person opens the chat from home; the agent's search comes from the computer, elsewhere.
+    expect(await (await send(OWNER, "/cloud/sponsored/seen", { instanceId: INSTANCE, device: DEVICE })).json()).toEqual({ ok: true });
+    const answer = await harness.send(OWNER, "POST", "/cloud/sponsored/index", { instanceId: INSTANCE, chatId: "chat-1", need: "a hosted Postgres for this app" }, { "cf-connecting-ip": "198.51.100.9" });
+    expect(await answer.json()).toMatchObject({ pick: { name: "Neon", url: PICK.recommendation.click_url, sponsored: true, installSteps: ["npm i @neondatabase/serverless"] } });
+    expect(gravityCalls).toHaveLength(1);
+    expect(gravityCalls[0]!.body).toMatchObject({ query: "a hosted Postgres for this app", user_ip: "203.0.113.7", user_agent: "ADE/1.2.133" });
+
+    // Ten minutes after the person last looked, nobody is watching.
+    clock = NOW + 11 * 60_000;
+    expect(await (await index()).json()).toEqual({ pick: null, reason: "nobody_watching" });
+    expect(gravityCalls).toHaveLength(1);
+  });
+});

@@ -39,6 +39,17 @@ export { CLOUD_HOUR_UNIT_SENTENCE, CLOUD_SMALL_FAIR_USE_SENTENCE, CLOUD_SMALL_UN
 // Flip to true in the same release that sets the server's CLOUD_PHONE_ACCESS to `all`.
 export const CLOUD_PHONE_ON_WEBSITE = false;
 
+/**
+ * The website's privacy policy and Terms sections about Gravity's sponsored
+ * suggestions (`PrivacyPage`, `TermsPage`) show only once ads are live.
+ */
+// Flip to true in the same release that turns on the server's GRAVITY_ADS switch.
+export const GRAVITY_ADS_ON_WEBSITE = false;
+
+/** The Free plan's ad line, on the pricing page and the home page. */
+export const ADS_FREE_PLAN_SENTENCE =
+  "Free is ad-supported: ADE Cloud chats on Free may show one sponsored suggestion under a reply. Paid plans have no ads. Chats on your own computer never show ads.";
+
 /** The rest of the offer, after `CLOUD_SMALL_UNLIMITED_SENTENCE`. */
 export const CLOUD_OFFER_REST_SENTENCE = "Bigger computers use hours, and each plan has a number of cloud computers.";
 
@@ -72,6 +83,8 @@ export type PricingPlan = {
   extraHourCents: number | null;
   /** What a minute past the plan's iPhone minutes costs, or null on Free; shown only with `CLOUD_PHONE_ON_WEBSITE`. */
   extraPhoneMinuteCents: number | null;
+  /** Whether ADE Cloud chats on the plan may show a sponsored suggestion: only Free. */
+  adSupported: boolean;
   /** Days an unused computer is kept before ADE cleans it up. */
   idleDays: number;
   /** One short line on who the plan is for. */
@@ -97,6 +110,7 @@ export const PRICING_PLANS: readonly PricingPlan[] = (["free", "plus", "pro", "m
     phoneMinutes: plan.phoneMinutes,
     extraHourCents: plan.extraHourCents,
     extraPhoneMinuteCents: plan.extraPhoneMinuteCents,
+    adSupported: id === "free",
     idleDays: id === "free" ? CLOUD_IDLE_CLEANUP_DAYS.free : CLOUD_IDLE_CLEANUP_DAYS.paid,
     pitch: PLAN_PITCHES[id],
   };

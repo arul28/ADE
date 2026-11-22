@@ -1,0 +1,518 @@
+import { gravityAds } from "@gravity-ai/api";
+import { sha256Hex } from "../sinkUtils";
+import {
+  CLOUD_PATHS,
+  CLOUD_SPONSORED_CONSENTS,
+  CLOUD_SPONSORED_DEVICE_TYPES,
+  CLOUD_SPONSORED_MESSAGE_MAX_CHARS,
+  CLOUD_SPONSORED_OSES,
+  type CloudSponsoredAd,
+  type CloudSponsoredAdAnswer,
+  type CloudSponsoredConsent,
+  type CloudSponsoredDevice,
+  type CloudSponsoredIndexAnswer,
+  type CloudSponsoredMessage,
+  type CloudSponsoredNoAdReason,
+  type CloudSponsoredPick,
+  type CloudSponsoredState,
+} from "./contract";
+import { readClerkUser } from "./email";
+import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson, shortString } from "./http";
+import { utcDay } from "./plans";
+import { loadAccount, logCloud, ownedComputer, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
+
+/**
+ * Gravity (trygravity.com): sponsored cards under finished replies, and the
+ * Index's service picks for agents, in the Free plan's ADE Cloud chats
+ * (`docs/plans/pricing-v2-and-gravity.md`). Account-wide, so it lives here:
+ * this Worker holds the key, decides who sees a card, records the consent and
+ * counts the requests. Desktop, web and phone only ask and draw.
+ *
+ * Who sees one, all checked here on every request:
+ * - the switch (`GRAVITY_ADS`): `off` (the default; nothing is sent, the
+ *   account state leaves `sponsored` out), `testers` (accounts in
+ *   `cloud_sponsored_testers` only) or `all`;
+ * - the Free plan (a paid plan, a `past_due` one too, never sees one);
+ * - the person's country (`GRAVITY_COUNTRIES`, US and Canada by default);
+ * - the account's yes to the one-time question (`cloud_sponsored_consent`);
+ * - a chat on one of the account's own ADE Cloud computers: never a chat on
+ *   the person's own machine, whatever the plan.
+ *
+ * Gravity's test ads (`testAd`) are on until `GRAVITY_LIVE` is `1`: free,
+ * never counted against the daily limit, never paid.
+ *
+ * Gravity's rules this follows: one request per ad opportunity (a finished
+ * reply asks once; asking again reads the stored answer), the end user's IP
+ * and user agent forwarded with `device_type` and `os`, the request made
+ * through Gravity's own SDK (`gravityAds`), nothing rewarded for a view or a
+ * click, and the daily request limit of a self-serve account
+ * (`GRAVITY_DAILY_LIMIT`, shared by ads and the Index). No chat text is kept:
+ * a card's own fields only.
+ */
+
+type GravityEnv = CloudEnv & {
+  /** Secret. Gravity's publisher key: ads, the Index and the reports. Unset: everything here is off. */
+  GRAVITY_API_KEY?: string;
+  /** `off` (default), `testers` or `all`. */
+  GRAVITY_ADS?: string;
+  /** `1`: real ads and real Index picks. Anything else: Gravity's test ads. */
+  GRAVITY_LIVE?: string;
+  /** Countries (ISO alpha-2, comma-separated) where cards show. Default `US,CA`. */
+  GRAVITY_COUNTRIES?: string;
+  /** Gravity's id of the reply placement. Default `ade_reply`. */
+  GRAVITY_PLACEMENT_ID?: string;
+  /** Live requests a UTC day, ads and Index together, before ADE stops asking. Default 900 (self-serve allows 1,000). */
+  GRAVITY_DAILY_LIMIT?: string;
+};
+
+const INDEX_URL = "https://index.trygravity.com/search";
+const PLATFORM_URL = "https://platform.trygravity.com";
+const INDEX_REPORT_URL = "https://api-interface.trygravity.com/index/attributions";
+const REQUEST_TIMEOUT_MS = 4_000;
+/** A person "has the chat open" when a client of theirs said so this recently. */
+export const SPONSORED_VIEWER_FRESH_MS = 10 * 60_000;
+/** Ad requests one account may make a UTC day: a busy day of work, never a loop. */
+const ACCOUNT_DAILY_ADS = 120;
+/** Index searches one account may make a UTC day. */
+const ACCOUNT_DAILY_INDEX = 20;
+const DEFAULT_DAILY_LIMIT = 900;
+/** A turn's stored answer lives this long. */
+const TURN_TTL_MS = 24 * 60 * 60_000;
+const ALL = "*";
+const INDEX_CONTEXT_MESSAGES = 6;
+const NEED_MAX_CHARS = 1_000;
+const DEFAULT_COUNTRIES = ["US", "CA"];
+
+type Mode = "off" | "testers" | "all";
+
+export function gravityMode(env: Pick<GravityEnv, "GRAVITY_ADS" | "GRAVITY_API_KEY">): Mode {
+  if (!env.GRAVITY_API_KEY?.trim()) return "off";
+  const value = env.GRAVITY_ADS?.trim().toLowerCase();
+  return value === "all" || value === "testers" ? value : "off";
+}
+
+const isLive = (env: GravityEnv): boolean => env.GRAVITY_LIVE?.trim() === "1";
+
+function countriesOf(env: GravityEnv): string[] {
+  const list = (env.GRAVITY_COUNTRIES ?? "").split(",").map((code) => code.trim().toUpperCase()).filter((code) => /^[A-Z]{2}$/.test(code));
+  return list.length ? list : DEFAULT_COUNTRIES;
+}
+
+/** The caller's country as Cloudflare sees it, or null (a test, a local run). */
+export function requestCountry(request: Request): string | null {
+  const country = (request as Request & { cf?: { country?: unknown } }).cf?.country;
+  return typeof country === "string" && /^[A-Z]{2}$/.test(country) ? country : null;
+}
+
+/**
+ * Why this account sees no card now, or null when it may. The country is the
+ * request's; an unknown one (no Cloudflare data) passes, so local runs work.
+ */
+async function blockedReason(env: GravityEnv, account: AccountRow, country: string | null): Promise<CloudSponsoredNoAdReason | null> {
+  const mode = gravityMode(env);
+  if (mode === "off") return "off";
+  if (mode === "testers") {
+    const row = await env.DB.prepare("select 1 as listed from cloud_sponsored_testers where user_id = ?").bind(account.user_id).first<{ listed: number }>();
+    if (!row) return "off";
+  }
+  // Paid plans have no ads, a `past_due` one included.
+  if (account.plan !== "free") return "plan";
+  if (country && !countriesOf(env).includes(country)) return "country";
+  return null;
+}
+
+async function readConsent(env: GravityEnv, userId: string): Promise<{ consent: CloudSponsoredConsent; email_hash: string | null } | null> {
+  return env.DB.prepare("select consent, email_hash from cloud_sponsored_consent where user_id = ?")
+    .bind(userId).first<{ consent: CloudSponsoredConsent; email_hash: string | null }>();
+}
+
+/**
+ * The account state's `sponsored`: undefined while the switch doesn't reach
+ * this account, so a client shows nothing at all. A paid account the switch
+ * reaches still gets it (`ads` false), so its Settings can say there are none.
+ */
+export async function sponsoredAccountState(env: GravityEnv, account: AccountRow, country: string | null): Promise<CloudSponsoredState | undefined> {
+  const reason = await blockedReason(env, account, country);
+  if (reason === "off") return undefined;
+  const consent = await readConsent(env, account.user_id);
+  return { ads: reason == null, consent: consent?.consent ?? null, test: !isLive(env) };
+}
+
+/* ---- Counting ---- */
+
+function countStatement(env: GravityEnv, day: string, userId: string, kind: string) {
+  return env.DB.prepare(`
+    insert into cloud_sponsored_days (day, user_id, kind, count) values (?, ?, ?, 1)
+    on conflict (day, user_id, kind) do update set count = count + 1
+  `).bind(day, userId, kind);
+}
+
+async function count(env: GravityEnv, now: number, userId: string, kinds: string[]): Promise<void> {
+  const day = utcDay(now);
+  await env.DB.batch(kinds.flatMap((kind) => [countStatement(env, day, userId, kind), countStatement(env, day, ALL, kind)]));
+}
+
+async function countOf(env: GravityEnv, now: number, userId: string, kind: string): Promise<number> {
+  const row = await env.DB.prepare("select count from cloud_sponsored_days where day = ? and user_id = ? and kind = ?")
+    .bind(utcDay(now), userId, kind).first<{ count: number }>();
+  return row?.count ?? 0;
+}
+
+/** Whether a request now would pass this account's or Gravity's daily limit. Test requests never count against Gravity's. */
+async function overLimit(env: GravityEnv, now: number, userId: string, kind: "ad" | "index"): Promise<boolean> {
+  const [mine, live] = await Promise.all([
+    countOf(env, now, userId, `${kind}_request`),
+    isLive(env) ? countOf(env, now, ALL, "live_request") : Promise.resolve(0),
+  ]);
+  const limit = Number(env.GRAVITY_DAILY_LIMIT ?? DEFAULT_DAILY_LIMIT);
+  return mine >= (kind === "ad" ? ACCOUNT_DAILY_ADS : ACCOUNT_DAILY_INDEX) || (isLive(env) && live >= (Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_DAILY_LIMIT));
+}
+
+/* ---- Reading requests ---- */
+
+function readDevice(value: unknown): CloudSponsoredDevice | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const type = CLOUD_SPONSORED_DEVICE_TYPES.find((entry) => entry === raw.type);
+  const os = CLOUD_SPONSORED_OSES.find((entry) => entry === raw.os);
+  if (!type || !os) return null;
+  return { type, os, osVersion: shortString(raw.osVersion, 64), ua: shortString(raw.ua, 512) };
+}
+
+function readMessages(value: unknown, keep: number): CloudSponsoredMessage[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): CloudSponsoredMessage[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const { role, content } = entry as Record<string, unknown>;
+    if ((role !== "user" && role !== "assistant") || typeof content !== "string" || !content.trim()) return [];
+    return [{ role, content: content.trim().slice(0, CLOUD_SPONSORED_MESSAGE_MAX_CHARS) }];
+  }).slice(-keep);
+}
+
+/** The person's own address: Cloudflare's, never a header a client could set. */
+const clientIp = (request: Request): string | null => request.headers.get("cf-connecting-ip")?.trim() || null;
+/** A browser's own user agent wins; an app sends its own in `device.ua`. */
+function clientUa(request: Request, device: CloudSponsoredDevice): string | null {
+  const header = request.headers.get("user-agent")?.trim() ?? "";
+  return /Mozilla\//.test(header) ? header.slice(0, 512) : device.ua ?? (header ? header.slice(0, 512) : null);
+}
+
+/** Gravity's stable id for the account: never the account id itself. */
+const gravityUserId = async (userId: string): Promise<string> => `ade_${(await sha256Hex(`ade.gravity.user\0${userId}`)).slice(0, 32)}`;
+/** Gravity's session for one chat, the same for ads and the Index. */
+const gravitySessionId = async (userId: string, chatId: string): Promise<string> => `ade_${(await sha256Hex(`ade.gravity.session\0${userId}\0${chatId}`)).slice(0, 32)}`;
+
+const httpsUrl = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+};
+const plainText = (value: unknown, max: number): string => (typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "");
+
+/** One of Gravity's ads as a card, or null when it lacks what a card needs. */
+export function adOfGravity(raw: unknown, test: boolean): CloudSponsoredAd | null {
+  if (!raw || typeof raw !== "object") return null;
+  const ad = raw as Record<string, unknown>;
+  const clickUrl = httpsUrl(ad.clickUrl);
+  const brand = plainText(ad.brandName, 80);
+  const text = plainText(ad.adText, 300);
+  if (!clickUrl || !brand || !text) return null;
+  return {
+    id: crypto.randomUUID(),
+    brand,
+    title: plainText(ad.title, 120) || brand,
+    text,
+    cta: plainText(ad.cta, 40) || null,
+    clickUrl,
+    impUrl: httpsUrl(ad.impUrl),
+    favicon: httpsUrl(ad.favicon),
+    test,
+  };
+}
+
+/* ---- Routes ---- */
+
+/** `/cloud/sponsored/*`, or null for any other path. */
+export async function routeSponsored(request: Request, path: string, env: GravityEnv, userId: string, now: number): Promise<Response | null> {
+  if (path === CLOUD_PATHS.sponsoredConsent) return request.method === "PUT" ? handleConsent(request, env, userId, now) : notFound();
+  if (path === CLOUD_PATHS.sponsoredSeen) return request.method === "POST" ? handleSeen(request, env, userId, now) : notFound();
+  if (path === CLOUD_PATHS.sponsoredAd) return request.method === "POST" ? handleAd(request, env, userId, now) : notFound();
+  if (path === CLOUD_PATHS.sponsoredIndex) return request.method === "POST" ? handleIndex(request, env, userId, now) : notFound();
+  return null;
+}
+
+const notFound = () => fail("not_found", "That ADE Cloud route doesn't exist.", 404);
+
+/**
+ * The account's answer, on every machine. A yes keeps the SHA-256 of the
+ * account's email now (Gravity's `hashed_email`); a no, or a later no, keeps
+ * nothing of it. Allowed while the switch reaches the account, so the answer
+ * can be changed back in Settings on any plan.
+ */
+async function handleConsent(request: Request, env: GravityEnv, userId: string, now: number): Promise<Response> {
+  const body = await readJson(request);
+  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  const consent = CLOUD_SPONSORED_CONSENTS.find((entry) => entry === body.consent);
+  if (!consent) return badRequest("Say granted or declined.");
+  const account = await loadAccount(env, userId, now);
+  if ((await blockedReason(env, account, null)) === "off") return notFound();
+  let emailHash: string | null = null;
+  if (consent === "granted") {
+    const email = await readClerkUser(env, userId).then((user) => user?.email ?? null).catch(() => null);
+    emailHash = email ? await sha256Hex(email.trim().toLowerCase()) : null;
+  }
+  await env.DB.prepare(`
+    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at) values (?, ?, ?, ?)
+    on conflict (user_id) do update set consent = excluded.consent, email_hash = excluded.email_hash, decided_at = excluded.decided_at
+  `).bind(userId, consent, emailHash, now).run();
+  logCloud("cloud.sponsored.consent", { consent });
+  const state = await sponsoredAccountState(env, account, requestCountry(request));
+  return json(state ?? { ads: false, consent, test: !isLive(env) });
+}
+
+/** The computer, when it is the account's own live ADE Cloud computer. */
+async function ownCloudComputer(env: GravityEnv, userId: string, value: unknown) {
+  const instanceId = shortString(value, 64);
+  return instanceId && ROW_ID.test(instanceId) ? ownedComputer(env, userId, instanceId) : null;
+}
+
+/**
+ * A person has one of this computer's chats or terminals open. Kept only for
+ * an account that may see cards and said yes: it is the address and device
+ * the Index sends with an agent's search, and the proof someone watches.
+ */
+async function handleSeen(request: Request, env: GravityEnv, userId: string, now: number): Promise<Response> {
+  const body = await readJson(request);
+  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  const device = readDevice(body.device);
+  if (!device) return badRequest("Say which device this is.");
+  const account = await loadAccount(env, userId, now);
+  const country = requestCountry(request);
+  if ((await blockedReason(env, account, country)) || (await readConsent(env, userId))?.consent !== "granted") return json({ ok: false });
+  const computer = await ownCloudComputer(env, userId, body.instanceId);
+  if (!computer) return json({ ok: false });
+  await env.DB.prepare(`
+    insert into cloud_sponsored_viewers (user_id, instance_id, ip, ua, device_type, os, os_version, country, seen_at)
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict (user_id, instance_id) do update set ip = excluded.ip, ua = excluded.ua, device_type = excluded.device_type,
+      os = excluded.os, os_version = excluded.os_version, country = excluded.country, seen_at = excluded.seen_at
+  `).bind(userId, computer.instance_id, clientIp(request), clientUa(request, device), device.type, device.os, device.osVersion ?? null, country, now).run();
+  return json({ ok: true });
+}
+
+async function readTurn(env: GravityEnv, userId: string, chatId: string, turnId: string, now: number): Promise<CloudSponsoredAdAnswer | null> {
+  const row = await env.DB.prepare("select ad_json, reason, created_at from cloud_sponsored_turns where user_id = ? and chat_id = ? and turn_id = ?")
+    .bind(userId, chatId, turnId).first<{ ad_json: string | null; reason: string | null; created_at: number }>();
+  if (!row || now - row.created_at > TURN_TTL_MS) return null;
+  if (!row.ad_json) return { ad: null, reason: (row.reason as CloudSponsoredNoAdReason | null) ?? "no_fill" };
+  try {
+    return { ad: JSON.parse(row.ad_json) as CloudSponsoredAd };
+  } catch {
+    return { ad: null, reason: "no_fill" };
+  }
+}
+
+async function saveTurn(env: GravityEnv, userId: string, chatId: string, turnId: string, answer: CloudSponsoredAdAnswer, now: number): Promise<void> {
+  await env.DB.batch([
+    env.DB.prepare("delete from cloud_sponsored_turns where created_at < ?").bind(now - TURN_TTL_MS),
+    env.DB.prepare(`
+      insert into cloud_sponsored_turns (user_id, chat_id, turn_id, ad_json, reason, created_at) values (?, ?, ?, ?, ?, ?)
+      on conflict (user_id, chat_id, turn_id) do nothing
+    `).bind(userId, chatId, turnId, answer.ad ? JSON.stringify(answer.ad) : null, answer.ad ? null : answer.reason ?? "no_fill", now),
+  ]);
+}
+
+/**
+ * One card under a finished reply. The client asks only while a person has
+ * the chat open; every rule is checked again here. An answer of no card is a
+ * 200 with its reason, never an error: the client shows nothing either way.
+ */
+async function handleAd(request: Request, env: GravityEnv, userId: string, now: number): Promise<Response> {
+  const body = await readJson(request);
+  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  const chatId = shortString(body.chatId, 160);
+  const turnId = shortString(body.turnId, 160);
+  const device = readDevice(body.device);
+  if (!chatId || !ROW_ID.test(chatId) || !turnId || !ROW_ID.test(turnId) || !device) return badRequest("Name the chat, its reply and the device.");
+  const none = (reason: CloudSponsoredNoAdReason) => json({ ad: null, reason } satisfies CloudSponsoredAdAnswer);
+
+  const account = await loadAccount(env, userId, now);
+  const blocked = await blockedReason(env, account, requestCountry(request));
+  if (blocked) return none(blocked);
+  const consent = await readConsent(env, userId);
+  if (consent?.consent !== "granted") return none("consent");
+  // Only a chat on one of the account's own ADE Cloud computers: never one on the person's own machine.
+  if (!await ownCloudComputer(env, userId, body.instanceId)) return none("not_cloud");
+  // One request per finished reply: a second ask (a reload, a second screen) reads the first answer.
+  const stored = await readTurn(env, userId, chatId, turnId, now);
+  if (stored) return json(stored);
+  const messages = readMessages(body.messages, 2);
+  if (!messages.length) return none("no_fill");
+  if (await overLimit(env, now, userId, "ad")) return none("limit");
+
+  const live = isLive(env);
+  await count(env, now, userId, ["ad_request", ...(live ? ["live_request"] : [])]);
+  const ip = clientIp(request);
+  const result = await gravityAds(
+    {
+      body: {
+        gravity_context: {
+          sessionId: await gravitySessionId(userId, chatId),
+          user: { id: await gravityUserId(userId), ...(consent.email_hash ? { hashed_email: consent.email_hash } : {}) },
+          device: {
+            ua: clientUa(request, device) ?? undefined,
+            device_type: device.type,
+            os: device.os,
+            ...(device.osVersion ? { os_version: device.osVersion } : {}),
+          },
+        } as never,
+      },
+      headers: ip ? { "x-forwarded-for": ip } : {},
+    },
+    messages,
+    [{ placement: "below_response", placement_id: env.GRAVITY_PLACEMENT_ID?.trim() || "ade_reply" }],
+    { apiKey: env.GRAVITY_API_KEY, production: live, supportsSpec: false, timeoutMs: REQUEST_TIMEOUT_MS },
+  ).catch(() => null);
+  if (!result || (result.status !== 200 && result.status !== 204 && result.status !== 202)) {
+    // Gravity's answer is never an error for the person: no card, and the owner hears of it.
+    reportCloudFailure("cloud.sponsored.ad_failed", { status: result?.status ?? 0 });
+    return none("unavailable");
+  }
+  const ad = adOfGravity(result.ads[0], !live);
+  const answer: CloudSponsoredAdAnswer = ad ? { ad } : { ad: null, reason: "no_fill" };
+  if (ad) await count(env, now, userId, ["ad_fill"]);
+  await saveTurn(env, userId, chatId, turnId, answer, now);
+  return json(answer);
+}
+
+/** One of Gravity's Index answers as a pick, or null. */
+export function pickOfIndex(raw: unknown): CloudSponsoredPick | null {
+  if (!raw || typeof raw !== "object") return null;
+  const answer = raw as Record<string, unknown>;
+  const rec = answer.recommendation && typeof answer.recommendation === "object" ? answer.recommendation as Record<string, unknown> : null;
+  if (!rec) return null;
+  const url = httpsUrl(rec.click_url) ?? httpsUrl(answer.click_url);
+  const name = plainText(rec.name, 80);
+  if (!url || !name) return null;
+  const install = rec.install && typeof rec.install === "object" ? rec.install as Record<string, unknown> : answer.install && typeof answer.install === "object" ? answer.install as Record<string, unknown> : null;
+  const steps = Array.isArray(install?.steps) ? install.steps.flatMap((step) => {
+    const text = typeof step === "string" ? step : step && typeof step === "object" ? (step as Record<string, unknown>).text ?? (step as Record<string, unknown>).command : null;
+    const clean = plainText(text, 300);
+    return clean ? [clean] : [];
+  }).slice(0, 8) : [];
+  return {
+    id: plainText(answer.search_id, 80) || crypto.randomUUID(),
+    name,
+    description: plainText(rec.description, 400),
+    category: plainText(rec.category, 60) || null,
+    url,
+    websiteUrl: httpsUrl(rec.website_url),
+    docsUrl: httpsUrl(rec.docs_url),
+    sponsored: rec.sponsored === true,
+    installSteps: steps,
+  };
+}
+
+/**
+ * An agent on an ADE Cloud computer asks the Index for a service the person
+ * needs. Only from the account's own cloud computer, only while a person has
+ * one of its chats or terminals open (their address and device go with it),
+ * and only on an account that may see cards and said yes.
+ */
+async function handleIndex(request: Request, env: GravityEnv, userId: string, now: number): Promise<Response> {
+  const body = await readJson(request);
+  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  const need = typeof body.need === "string" ? body.need.replace(/\s+/g, " ").trim().slice(0, NEED_MAX_CHARS) : "";
+  if (need.length < 3) return badRequest("Say what the person needs.");
+  const none = (reason: CloudSponsoredIndexAnswer["reason"]) => json({ pick: null, reason } satisfies CloudSponsoredIndexAnswer);
+
+  const account = await loadAccount(env, userId, now);
+  const computer = await ownCloudComputer(env, userId, body.instanceId);
+  if (!computer) return none("not_cloud");
+  const viewer = await env.DB.prepare("select * from cloud_sponsored_viewers where user_id = ? and instance_id = ?")
+    .bind(userId, computer.instance_id).first<{ ip: string | null; ua: string | null; country: string | null; seen_at: number }>();
+  // The country is the person's, from their last look at the chat: the agent's computer is not where they are.
+  const blocked = await blockedReason(env, account, viewer?.country ?? null);
+  if (blocked) return none(blocked);
+  const consent = await readConsent(env, userId);
+  if (consent?.consent !== "granted") return none("consent");
+  if (!viewer?.ip || now - viewer.seen_at > SPONSORED_VIEWER_FRESH_MS) return none("nobody_watching");
+  if (await overLimit(env, now, userId, "index")) return none("limit");
+  const chatId = shortString(body.chatId, 160);
+  const messages = readMessages(body.messages, INDEX_CONTEXT_MESSAGES);
+
+  await count(env, now, userId, ["index_request", ...(isLive(env) ? ["live_request"] : [])]);
+  let response: Response;
+  try {
+    response = await fetch(INDEX_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": env.GRAVITY_API_KEY! },
+      body: JSON.stringify({
+        query: need,
+        user_ip: viewer.ip,
+        ...(viewer.ua ? { user_agent: viewer.ua } : {}),
+        ...(chatId && ROW_ID.test(chatId) ? { session_id: await gravitySessionId(userId, chatId) } : {}),
+        ...(consent.email_hash ? { hashed_email: consent.email_hash } : {}),
+        ...(viewer.country ? { country: viewer.country } : {}),
+        ...(messages.length ? { context: { messages } } : {}),
+        max_options: 1,
+        vertical: "developer",
+      }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS * 2),
+    });
+  } catch {
+    reportCloudFailure("cloud.sponsored.index_failed", { status: 0 });
+    return none("unavailable");
+  }
+  if (!response.ok) {
+    reportCloudFailure("cloud.sponsored.index_failed", { status: response.status });
+    return none(response.status === 429 ? "limit" : "unavailable");
+  }
+  const pick = pickOfIndex(await response.json().catch(() => null));
+  if (pick) await count(env, now, userId, ["index_pick"]);
+  return json({ pick, ...(pick ? {} : { reason: "no_fill" as const }) } satisfies CloudSponsoredIndexAnswer);
+}
+
+/* ---- The owner's report ---- */
+
+/**
+ * Lines for the owner's daily report: ADE's own counts of the day, and what
+ * Gravity says the day paid (ads and the Index), against `freeCostMicros`, the
+ * day's cost of free-plan use. Nothing while the switch is off and the day
+ * had no requests. Gravity's reports are best effort: a failed read says so.
+ */
+export async function sponsoredReportLines(env: GravityEnv, day: string, freeCostMicros: number): Promise<string[]> {
+  const rows = (await env.DB.prepare("select kind, count from cloud_sponsored_days where day = ? and user_id = ?")
+    .bind(day, ALL).all<{ kind: string; count: number }>()).results ?? [];
+  const counts = new Map(rows.map((row) => [row.kind, row.count]));
+  const mode = gravityMode(env);
+  if (mode === "off" && rows.length === 0) return [];
+  const n = (kind: string) => counts.get(kind) ?? 0;
+  const lines = [
+    `Sponsored (${mode}${isLive(env) ? ", live" : ", test ads"}): ${n("ad_request")} ad requests, ${n("ad_fill")} filled; ${n("index_request")} Index searches, ${n("index_pick")} picks.`,
+  ];
+  if (!env.GRAVITY_API_KEY?.trim()) return lines;
+  const key = env.GRAVITY_API_KEY.trim();
+  const read = async (url: string): Promise<Record<string, unknown> | null> => {
+    const response = await fetch(url, { headers: { "x-api-key": key, accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
+    return response.ok ? await response.json() as Record<string, unknown> : null;
+  };
+  const [ads, index] = await Promise.all([
+    read(`${PLATFORM_URL}/publisher-dashboard/stats?start_date=${day}&end_date=${day}`).catch(() => null),
+    read(`${INDEX_REPORT_URL}?side=publisher&start_date=${day}&end_date=${day}`).catch(() => null),
+  ]);
+  const adUsd = typeof ads?.totalRevenue === "number" ? ads.totalRevenue : null;
+  const summary = index?.summary && typeof index.summary === "object" ? index.summary as Record<string, unknown> : null;
+  const indexUsd = typeof summary?.revenue_cents === "number" ? summary.revenue_cents / 100 : null;
+  const freeCostUsd = freeCostMicros / 1_000_000;
+  lines.push(
+    adUsd == null && indexUsd == null
+      ? "Gravity's reports couldn't be read today."
+      : `Gravity paid $${(adUsd ?? 0).toFixed(2)} for ads${typeof ads?.totalImpressions === "number" ? ` (${ads.totalImpressions} views, ${ads.totalClicks ?? 0} clicks)` : ""} and $${(indexUsd ?? 0).toFixed(2)} for the Index${typeof summary?.conversions === "number" ? ` (${summary.conversions} sign-ups)` : ""}, against $${freeCostUsd.toFixed(2)} of free-plan cost.`,
+  );
+  return lines;
+}

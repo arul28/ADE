@@ -205,5 +205,5 @@ export function cloudTierHoursAt(tier: Pick<CloudTier, "multiplierMilli">, leftM
   if (!cloudTierUsesHours(tier)) return "Unlimited";
   const hours = Math.max(0, leftMilli) / tier.multiplierMilli;
   const shown = hours >= 10 ? Math.floor(hours) : Math.floor(hours * 10) / 10;
-  return `${shown} h`;
+  return `${shown.toLocaleString("en-US")} h`;
 }

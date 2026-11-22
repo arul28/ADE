@@ -1,6 +1,7 @@
 import { Container } from "../../components/Container";
 import { Page } from "../../components/Page";
 import { Reveal } from "../../components/Reveal";
+import { GRAVITY_ADS_ON_WEBSITE } from "../../lib/cloudPricing";
 import { LINKS } from "../../lib/links";
 import { ANALYTICS_FEATURE_ATTRIBUTE, MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
@@ -39,6 +40,29 @@ export function TermsPage() {
                 </p>
               </div>
             </Reveal>
+            {GRAVITY_ADS_ON_WEBSITE ? (
+              <Reveal delay={0.08}>
+                <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
+                  <div className="text-sm font-semibold text-fg">ADE Cloud: ads, age and fair use</div>
+                  <div className="mt-2 space-y-3 text-sm leading-relaxed text-muted-fg">
+                    <p>
+                      The ADE Cloud Free plan is ad-supported. Chats on ADE Cloud computers may show a sponsored
+                      suggestion, labeled “Sponsored”. Paid plans have no ads. The Privacy page lists what is shared.
+                    </p>
+                    <p>ADE Cloud is for people 18 or older.</p>
+                    <p>
+                      “Unlimited Small computers” is subject to fair use. ADE may limit an account whose use is far
+                      outside normal development work, for example running an always-on service, mining, or automated
+                      traffic. ADE gives notice where possible.
+                    </p>
+                    <p>
+                      ADE gives no rewards for viewing or clicking ads. You must not view or click ads automatically,
+                      or for pay.
+                    </p>
+                  </div>
+                </div>
+              </Reveal>
+            ) : null}
             <Reveal delay={0.1}>
               <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
                 <div className="text-sm font-semibold text-fg">Project docs</div>

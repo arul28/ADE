@@ -323,6 +323,8 @@ const REQUESTS_PER_MINUTE = {
   uploads: 1_200,
   /** Agent limits, event-wake topics and the account lane index. */
   settings: 120,
+  /** Sponsored cards and the Index (`gravity.ts`): a few per finished reply and open chat; this stops a loop. */
+  sponsored: 30,
 } as const;
 
 export type CloudRequestBucket = keyof typeof REQUESTS_PER_MINUTE;

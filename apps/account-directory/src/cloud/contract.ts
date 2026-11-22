@@ -244,6 +244,18 @@ export const CLOUD_PATHS = {
   nomacWebhook: "/cloud/nomac/webhook",
   /** The provider's signed status-change webhook (`computerStatus.ts`). Not an account route. */
   agent37Webhook: "/cloud/agent37/webhook",
+  /**
+   * Sponsored cards and the Index on the Free plan's ADE Cloud chats
+   * (`gravity.ts`). `PUT /consent` `{ consent }` records the account's answer
+   * (`CloudSponsoredState`); `POST /seen` `CloudSponsoredSeenRequest` says a
+   * person has one of the account's cloud chats open; `POST /ad`
+   * `CloudSponsoredAdRequest` answers `CloudSponsoredAdAnswer`; `POST /index`
+   * `CloudSponsoredIndexRequest` answers `CloudSponsoredIndexAnswer`.
+   */
+  sponsoredConsent: "/cloud/sponsored/consent",
+  sponsoredSeen: "/cloud/sponsored/seen",
+  sponsoredAd: "/cloud/sponsored/ad",
+  sponsoredIndex: "/cloud/sponsored/index",
 } as const;
 
 /** `/cloud/chats/:machine/:chat/messages[/:msg]`: the person's queue for an existing cloud chat. */
@@ -699,6 +711,12 @@ export type CloudExtraDiskState = "off" | "asked" | "on";
 export type CloudDiskRefusalReason = "plan_disk" | "needs_approval" | "extra_off" | "monthly_limit" | "tier_limit" | "unavailable";
 
 export type CloudAccountState = {
+  /**
+   * Sponsored cards and the Index in this account's ADE Cloud chats
+   * (`gravity.ts`). Sent only when the server's switch reaches this account;
+   * absent, a client shows nothing of them, not even the question.
+   */
+  sponsored?: CloudSponsoredState;
   /** What the person pays for. A `past_due` paid account still says `paid` here. */
   plan: "free" | "paid";
   /** The rules in force: `past_due` is `free` until a paid invoice. */
@@ -3043,3 +3061,94 @@ export type CloudAccountPhone = {
     usedCents: number;
   };
 };
+
+/* ---- Sponsored cards and the Index (Gravity, `gravity.ts`) ---- */
+
+/**
+ * Whether the account's ADE Cloud chats show sponsored cards, as the server
+ * decides it: its switch, the Free plan, the person's country. Paid plans,
+ * chats on the person's own machines and CLI terminals never show one.
+ */
+export type CloudSponsoredState = {
+  /** Sponsored cards may show in this account's ADE Cloud chats now, once `consent` is `granted`. */
+  ads: boolean;
+  /** The account's answer to the one-time question, on every machine; null when it was never asked. */
+  consent: CloudSponsoredConsent | null;
+  /** Gravity's test ads: nothing is paid or counted. True until go-live. */
+  test: boolean;
+};
+export type CloudSponsoredConsent = "granted" | "declined";
+export const CLOUD_SPONSORED_CONSENTS: readonly CloudSponsoredConsent[] = ["granted", "declined"];
+
+/** The device a person reads the chat on, as Gravity wants it (`device_type`, `os`). */
+export type CloudSponsoredDevice = {
+  type: "desktop" | "mobile" | "tablet";
+  os: "macos" | "windows" | "linux" | "ios" | "android" | "chromeos" | "other";
+  osVersion?: string | null;
+  /** The app's own user agent; a browser's request header wins over it. */
+  ua?: string | null;
+};
+export const CLOUD_SPONSORED_DEVICE_TYPES = ["desktop", "mobile", "tablet"] as const;
+export const CLOUD_SPONSORED_OSES = ["macos", "windows", "linux", "ios", "android", "chromeos", "other"] as const;
+
+/** `POST /cloud/sponsored/seen`: a person has a chat or terminal of this ADE Cloud computer open now. */
+export type CloudSponsoredSeenRequest = { instanceId: string; device: CloudSponsoredDevice };
+
+/** One message of the chat as an ad request sends it: the latest request and reply only. */
+export type CloudSponsoredMessage = { role: "user" | "assistant"; content: string };
+/** Gravity reads at most this much of each message. */
+export const CLOUD_SPONSORED_MESSAGE_MAX_CHARS = 4_000;
+
+/** `POST /cloud/sponsored/ad`: one card under a finished reply of a chat on an ADE Cloud computer. */
+export type CloudSponsoredAdRequest = {
+  /** The ADE Cloud computer the chat runs on: the server checks it is the account's own. */
+  instanceId: string;
+  chatId: string;
+  /** The finished reply the card goes under. Asking again for it answers the same card, with no new request to Gravity. */
+  turnId: string;
+  messages: CloudSponsoredMessage[];
+  device: CloudSponsoredDevice;
+};
+export type CloudSponsoredAd = {
+  id: string;
+  brand: string;
+  title: string;
+  text: string;
+  cta: string | null;
+  /** Gravity's tracked link (a 302 to the advertiser): the only link a card opens. */
+  clickUrl: string;
+  /** Requested once, when at least half the card is on screen. */
+  impUrl: string | null;
+  /** The brand's icon (https), or null. */
+  favicon: string | null;
+  test: boolean;
+};
+/** Why no card: the answer is still a 200, and a client shows nothing either way. */
+export type CloudSponsoredNoAdReason = "off" | "plan" | "country" | "consent" | "not_cloud" | "limit" | "no_fill" | "unavailable";
+export type CloudSponsoredAdAnswer = { ad: CloudSponsoredAd | null; reason?: CloudSponsoredNoAdReason };
+
+/** `POST /cloud/sponsored/index`: an agent on an ADE Cloud computer asks for a service the person needs. */
+export type CloudSponsoredIndexRequest = {
+  instanceId: string;
+  chatId?: string | null;
+  /** The person's need, in the agent's words ("a hosted Postgres for this Next.js app"). */
+  need: string;
+  /** The latest messages, for context; the server sends at most the last six. */
+  messages?: CloudSponsoredMessage[];
+};
+export type CloudSponsoredPick = {
+  id: string;
+  name: string;
+  description: string;
+  category: string | null;
+  /** Gravity's tracked link: the one a card opens. */
+  url: string;
+  websiteUrl: string | null;
+  docsUrl: string | null;
+  /** True when the pick is paid placement: the card and the agent say "Sponsored". */
+  sponsored: boolean;
+  /** Setup steps as the service gives them; nothing runs without the person's tap. */
+  installSteps: string[];
+};
+export type CloudSponsoredIndexNoPickReason = CloudSponsoredNoAdReason | "nobody_watching";
+export type CloudSponsoredIndexAnswer = { pick: CloudSponsoredPick | null; reason?: CloudSponsoredIndexNoPickReason };

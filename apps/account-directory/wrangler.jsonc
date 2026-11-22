@@ -94,6 +94,19 @@
   // stops new phones), STRIPE_PHONE_MINUTE_PRICE_ID and
   // STRIPE_PHONE_METER_EVENT (scripts/stripe-setup.mjs prints both).
   //
+  // SECRET — GRAVITY_API_KEY (sponsored cards and the Index, src/cloud/gravity.ts)
+  // Gravity's publisher key (trygravity.com): ads, Index searches and the
+  // owner report's earnings. Only this Worker holds it; no app ever ships it.
+  // Set out of band, here and with `--env production`. Apply
+  // migrations/0054_gravity_sponsored.sql first. Vars (here and under
+  // env.production): GRAVITY_ADS (`off` by default: nothing is sent and no
+  // client shows anything; `testers` for accounts in cloud_sponsored_testers;
+  // `all` at go-live), GRAVITY_LIVE (`1` for real ads; anything else sends
+  // Gravity's free test ads), GRAVITY_COUNTRIES (default `US,CA`),
+  // GRAVITY_PLACEMENT_ID (default `ade_reply`) and GRAVITY_DAILY_LIMIT (live
+  // requests a day, default 900 under self-serve's 1,000). Turning ads on is
+  // the owner's call, asked for on its own.
+  //
   // SECRET — CLOUD_CHAT_MASTER_KEY (ADE Cloud, saved chats)
   // 32 random bytes, base64 (`openssl rand -base64 32`). Seals the per-user key
   // that encrypts saved chats. Set out of band. Rotating it makes existing saved
@@ -307,6 +320,9 @@
         "STRIPE_PHONE_MINUTE_PRICE_ID": "price_1UdF4HPWulQjqSYPydFHhXGd",
         "STRIPE_PHONE_METER_EVENT": "ade_cloud_phone_minutes",
         "CLOUD_PHONE_ACCESS": "beta",
+        // Sponsored cards and the Index (src/cloud/gravity.ts): off, and test
+        // ads, until the owner turns them on. GRAVITY_API_KEY is a secret.
+        "GRAVITY_ADS": "off",
         "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaNNNPWulQjqSYPYyVgxCA6",
         // GitHub App sign-in, restated for the same reason. The two secrets
         // are set with `wrangler secret put … --env production`.

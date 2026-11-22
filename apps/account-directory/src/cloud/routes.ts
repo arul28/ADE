@@ -10,6 +10,7 @@ import { deleteSavedChatsForLaneEverywhere, routeSavedChats } from "./chats";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
+import { routeSponsored } from "./gravity";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, rememberLaunchSetupDisk, routeLaunches, startServerLaunch, type LaunchRouteDeps } from "./launches";
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
@@ -2096,7 +2097,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
     await settleFreePlanGithub(env, account, ctx);
   }
   if (path === CLOUD_PATHS.account) {
-    return request.method === "GET" ? json(await buildAccountState(env, caller.userId, now)) : notFound();
+    return request.method === "GET" ? json(await buildAccountState(env, caller.userId, now, request)) : notFound();
   }
   // The ADE Cloud iPhone: no computer, so no provider (`phones.ts`).
   const phone = await routePhone(request, path, env, caller.userId, now, waitUntil);
@@ -2105,6 +2106,12 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (referrals) return referrals;
   const billing = await routeBilling(request, url, path, env, caller.userId, ctx);
   if (billing) return billing;
+  // Sponsored cards and the Index (`gravity.ts`): rows and Gravity only, no provider.
+  if (path.startsWith("/cloud/sponsored/")) {
+    if (!await takeRequest(env, caller.userId, "sponsored", now)) return tooManyRequests();
+    const sponsored = await routeSponsored(request, path, env, caller.userId, now);
+    if (sponsored) return sponsored;
+  }
   // ADE without a computer: rows and R2 only; a send wakes or launches through the provider.
   const writeBucket = writeBucketOf(path, request.method);
   if (writeBucket && !await takeRequest(env, caller.userId, writeBucket, now)) return tooManyRequests();
