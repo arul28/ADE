@@ -15,6 +15,8 @@ const CONTACT_EMAIL = "arulsharma1028@gmail.com";
 
 type Section = {
   title: string;
+  /** The section's anchor (`/privacy#<id>`), for links from the app. */
+  id?: string;
   body: Array<string | { list: string[] }>;
   analyticsControl?: boolean;
 };
@@ -173,9 +175,10 @@ function AnalyticsPreferenceControl() {
 
 /** Shown only once ads are live (`GRAVITY_ADS_ON_WEBSITE`). */
 const gravitySection: Section = {
-  title: "Sponsored suggestions on the ADE Cloud Free plan",
+  id: "sponsored",
+  title: "Sponsored cards on the ADE Cloud Free plan",
   body: [
-    "On the ADE Cloud Free plan, ADE works with Gravity (IRIS Inc., trygravity.com) to show sponsored suggestions. Paid plans have no ads.",
+    "On the ADE Cloud Free plan, ADE works with Gravity (IRIS Inc., trygravity.com) to show sponsored cards: at most one under a finished reply, and sometimes a sponsored tool an agent recommends for something you need. Paid plans have no ads.",
     "Only after you agree in ADE, and only for chats running on ADE Cloud computers, ADE's server sends Gravity:",
     {
       list: [
@@ -185,11 +188,11 @@ const gravitySection: Section = {
         "a SHA-256 hash of your account email (never the email itself).",
       ],
     },
-    "For a sponsored service recommendation, ADE also sends the need the agent described and recent context from the chat.",
+    "When an agent asks for a tool recommendation, ADE sends the need the agent described, with the IP address and device of your latest visit to that computer's chats. In a CLI session on ADE Cloud, that request is all that is sent; never the terminal's output.",
     "Gravity receives this as an independent controller. Under section 7 of Gravity's Terms it keeps a perpetual license to use what ADE sends, and it may not delete it when you ask. Gravity's own privacy policy is at https://trygravity.com/privacy.",
-    "ADE never sends anything from chats on your own computer, from paid plans, or from terminals and CLI sessions. ADE sends no file contents beyond what is in those messages.",
+    "ADE never sends anything from chats on your own computer or from paid plans. ADE sends no file contents beyond what is in those messages.",
     "You can turn this off in Settings › ADE Cloud by withdrawing your consent. After that, nothing is sent.",
-    "ADE keeps only counts (requests, views and clicks) for reporting. It keeps no ad content tied to your messages.",
+    "ADE keeps the IP address and device of your latest visit to an ADE Cloud chat (replaced on each visit), the sponsored card shown under a reply for one day, and daily counts of requests for reporting. It keeps none of your messages for this. All of it is deleted with your account.",
   ],
 };
 
@@ -213,7 +216,7 @@ export function PrivacyPage() {
           <div className="mt-10 grid gap-6">
             {shownSections.map((section, index) => (
               <Reveal key={section.title} delay={Math.min(index * 0.04, 0.2)}>
-                <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
+                <div id={section.id} className="scroll-mt-24 rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
                   <h2 className="text-sm font-semibold text-fg">{section.title}</h2>
                   <div className="mt-3 space-y-3 text-sm leading-relaxed text-muted-fg">
                     {section.body.map((block, i) =>

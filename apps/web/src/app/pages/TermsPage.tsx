@@ -46,8 +46,8 @@ export function TermsPage() {
                   <div className="text-sm font-semibold text-fg">ADE Cloud: ads, age and fair use</div>
                   <div className="mt-2 space-y-3 text-sm leading-relaxed text-muted-fg">
                     <p>
-                      The ADE Cloud Free plan is ad-supported. Chats on ADE Cloud computers may show a sponsored
-                      suggestion, labeled “Sponsored”. Paid plans have no ads. The Privacy page lists what is shared.
+                      The ADE Cloud Free plan is ad-supported. Chats on ADE Cloud computers may show a sponsored card,
+                      labeled “Sponsored”. Paid plans have no ads. The Privacy page lists what is shared.
                     </p>
                     <p>ADE Cloud is for people 18 or older.</p>
                     <p>

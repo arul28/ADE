@@ -48,7 +48,7 @@ export const GRAVITY_ADS_ON_WEBSITE = false;
 
 /** The Free plan's ad line, on the pricing page and the home page. */
 export const ADS_FREE_PLAN_SENTENCE =
-  "Free is ad-supported: ADE Cloud chats on Free may show one sponsored suggestion under a reply. Paid plans have no ads. Chats on your own computer never show ads.";
+  "Free is ad-supported: an ADE Cloud chat on Free may show one sponsored card under a finished reply. Paid plans have no ads. Chats on your own computer never show ads.";
 
 /** The rest of the offer, after `CLOUD_SMALL_UNLIMITED_SENTENCE`. */
 export const CLOUD_OFFER_REST_SENTENCE = "Bigger computers use hours, and each plan has a number of cloud computers.";

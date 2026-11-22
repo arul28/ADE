@@ -731,8 +731,9 @@ function FaqSection() {
             branch.
           </FaqItem>
           <FaqItem question="Does the Free plan show ads?">
-            {ADS_FREE_PLAN_SENTENCE} A sponsored suggestion is labeled "Sponsored", and nothing is installed unless you
-            tap it. You can turn it off in Settings › ADE Cloud; ads then stop, and so do any sponsored suggestions.
+            {ADS_FREE_PLAN_SENTENCE} A sponsored card is labeled "Sponsored". An agent may also recommend a sponsored
+            tool when you need one; nothing is installed unless you ask. ADE asks you once before the first sponsored
+            card, and you can change your answer in Settings › ADE Cloud.
           </FaqItem>
           <FaqItem question="Do I need ADE Cloud to use ADE?">
             No. The ADE app costs nothing and runs your agents on your own computers. ADE Cloud adds computers in the
