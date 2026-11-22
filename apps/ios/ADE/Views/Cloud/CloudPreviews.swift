@@ -14,6 +14,7 @@ import SwiftUI
 enum CloudPreviews {
   static let names: Set<String> = [
     "duo-cloud", "duo-cloud-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
+    "duo-cloud-sponsored-consent", "duo-cloud-sponsored-ad", "duo-cloud-sponsored-pick", "duo-cloud-sponsored-settings",
   ]
 
   @MainActor static func view(_ name: String) -> AnyView? {
@@ -44,6 +45,21 @@ enum CloudPreviews {
       UserDefaults.standard.set(all, forKey: CloudPlanSeenStore.defaultsKey)
     }
     let store = CloudPaneStore(syncService: sync, fixtureList: list, limits: limits, signIns: signInsFixture(), now: fixtureNow)
+    if name.hasPrefix("duo-cloud-sponsored-") {
+      // A Free account the switch reaches: the question unanswered, or answered yes.
+      var account = list.account
+      account?.sponsored = CloudSponsoredState(ads: true, consent: name == "duo-cloud-sponsored-consent" ? nil : CloudSponsoredState.granted, test: true)
+      AccountCloudStore.shared.seedPreview(access: nil, account: account)
+      if name == "duo-cloud-sponsored-settings" {
+        return AnyView(NavigationStack {
+          ScrollView { CloudSponsoredCard(pageAccount: account).padding(16) }
+            .background(ADEColor.pageBackground.ignoresSafeArea())
+            .navigationTitle("ADE Cloud")
+            .navigationBarTitleDisplayMode(.inline)
+        })
+      }
+      return AnyView(CloudSponsoredChatFixture(kind: name))
+    }
     switch name {
     case "duo-cloud-limits":
       return AnyView(NavigationStack { CloudLimitsScreen(store: store) })
@@ -55,7 +71,7 @@ enum CloudPreviews {
         limit: 3,
         total: 3,
         lanes: [
-          .init(instanceId: "q1w2e3r4t5", laneName: "supabase-stack", awake: false, lastAwakeAt: nowMs - 21 * 86_400_000),
+          .init(instanceId: "q1w2e3r4t5", laneName: "supabase-stack", awake: false, lastAwakeAt: nowMs - 21 * 86_400_000, hasLane: false),
           .init(instanceId: "k2p8a1b2c3", laneName: "android-emulator-suite", awake: false, lastAwakeAt: nowMs - 3 * 3_600_000),
           .init(instanceId: "zodqsue74s", laneName: "fix-login-redirect", awake: true, lastAwakeAt: nowMs - 0.2 * 3_600_000),
         ],
@@ -197,6 +213,95 @@ enum CloudPreviews {
      "claudePasses":[{"key":"claude-pass/0123456789ab","unreadable":false,"label":"Claude pass","email":"arul@work.com","on":true,"newChats":true,"endsInDays":200}]}
     """
     return try? JSONDecoder().decode(ProviderLoginsPhoneStatus.self, from: Data(json.utf8))
+  }
+}
+
+/// A finished reply in an ADE Cloud chat with what can show under it: the
+/// one-time question, a sponsored card, or the agent's Sponsored pick. The
+/// real slot and cards over fixture data (sample text, Gravity's test host).
+private struct CloudSponsoredChatFixture: View {
+  let kind: String
+  @State private var slot = WorkSponsoredSlotModel()
+
+  private let sessionId = "fixture-chat"
+  private var turn: CloudSponsoredTurn {
+    CloudSponsoredTurn(turnId: "turn-1", finishedAt: Date().addingTimeInterval(-60), messages: [
+      CloudSponsoredMessage(role: "user", content: "Add sign-in with email links to the web app."),
+      CloudSponsoredMessage(role: "assistant", content: "Done. Sign-in now sends a one-time link."),
+    ])
+  }
+
+  private var pickCard: WorkAdeCardModel {
+    workAdeCardModel(from: [
+      "cardId": "sponsored-pick:fixture-1",
+      "variant": "sponsored_pick",
+      "state": "live",
+      "title": "Sendwell",
+      "subtitle": "Email API",
+      "rows": [
+        ["key": "sponsored_need", "icon": "info", "text": "sending sign-in emails from the Next.js app"],
+        ["key": "sponsored_description", "icon": "info", "text": "An email API for developers. Send sign-in links and receipts with a few lines of code."],
+        ["key": "sponsored_url", "icon": "info", "text": "Sendwell", "detail": "https://trygravity.ai/c/fixture"],
+        ["key": "sponsored_step", "icon": "info", "text": "npm install sendwell"],
+        ["key": "sponsored_step", "icon": "info", "text": "Add SENDWELL_API_KEY to .env.local"],
+      ],
+      "actions": [],
+      "fallbackText": "Sponsored: Sendwell. An email API for developers.",
+    ], sessionId: sessionId, timestamp: "2026-11-22T10:00:00Z", sequence: 1, turnId: "turn-1")
+  }
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 14) {
+          Text("Add sign-in with email links to the web app.")
+            .font(.system(size: 15))
+            .foregroundStyle(ADEColor.textPrimary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(ADEColor.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .frame(maxWidth: .infinity, alignment: .trailing)
+          Text("Done. Sign-in now sends a one-time link to the address the person enters. The link expires after 15 minutes, and `/auth/verify` signs them in. I added tests for an expired and a reused link.")
+            .font(.system(size: 15))
+            .foregroundStyle(ADEColor.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+          if kind == "duo-cloud-sponsored-pick" {
+            Text("For sending those emails, here is one service that fits.")
+              .font(.system(size: 15))
+              .foregroundStyle(ADEColor.textPrimary)
+            WorkAdeCardView(card: pickCard)
+          } else {
+            WorkSponsoredReplySlot(instanceId: "zodqsue74s", sessionId: sessionId, turn: turn, slot: slot)
+          }
+        }
+        .padding(16)
+      }
+      .background(ADEColor.pageBackground.ignoresSafeArea())
+      .navigationTitle("fix-login-redirect")
+      .navigationBarTitleDisplayMode(.inline)
+    }
+    .environment(\.workSceneBridge, {
+      let bridge = WorkSceneChatBridge()
+      bridge.sessionId = sessionId
+      bridge.canReply = true
+      return bridge
+    }())
+    .onAppear {
+      slot.seedPreviewOnScreen()
+      CloudSponsoredStore.shared.seedPreview(
+        turnKey: CloudSponsoredStore.turnKey(chatId: sessionId, turnId: "turn-1"),
+        ad: CloudSponsoredAd(
+          id: "fixture-ad",
+          brand: "Keyway",
+          title: "Drop-in sign-in for Next.js",
+          text: "Email links, passkeys and social sign-in, with user management built in.",
+          cta: nil,
+          clickUrl: "https://trygravity.ai/c/fixture-ad",
+          impUrl: nil,
+          test: true
+        )
+      )
+    }
   }
 }
 

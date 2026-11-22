@@ -662,6 +662,16 @@ final class AccountCloudStore: ObservableObject {
     return before
   }
 
+  /// The account's sponsored-cards answer as the server just returned it
+  /// (`PUT /cloud/sponsored/consent`): every chat and Settings read it at
+  /// once, with no second account read. Nil (the switch no longer reaches
+  /// the account) turns them off.
+  func noteSponsored(_ state: CloudSponsoredState?) {
+    guard var next = account, next.sponsored != state else { return }
+    next.sponsored = state
+    account = next
+  }
+
   // MARK: Account change
 
   func reset() {
@@ -685,6 +695,7 @@ final class AccountCloudStore: ObservableObject {
     transcriptPartFirstSequence = [:]
     for task in transcriptReads.values { task.cancel() }
     transcriptReads = [:]
+    CloudSponsoredStore.shared.reset()
   }
 
   #if DEBUG

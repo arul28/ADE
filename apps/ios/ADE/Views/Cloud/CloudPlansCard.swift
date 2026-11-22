@@ -232,3 +232,73 @@ struct CloudPlansCard: View {
   }
 
 }
+
+/// "Sponsored cards" (`CloudPlans.tsx` add-on): the account's answer to the
+/// one-time question, on every device at once. Shown only while the server's
+/// switch reaches the account (`sponsored.ads`). Flipping it saves the answer
+/// on the account server (account token, no machine).
+struct CloudSponsoredCard: View {
+  /// The account as this page read it; the account server's own read wins.
+  let pageAccount: CloudPhoneAccount?
+  @ObservedObject private var accountStore = AccountCloudStore.shared
+  @State private var saving = false
+  @State private var error: String?
+  /// The server's answer to this page's save, for a page whose account came
+  /// through a computer (the account store then has no account to update).
+  @State private var saved: CloudSponsoredState?
+
+  private var sponsored: CloudSponsoredState? { accountStore.account?.sponsored ?? saved ?? pageAccount?.sponsored }
+
+  var body: some View {
+    // Also once said yes where none show (a paid plan, another country), so it can be taken back.
+    if let sponsored, sponsored.ads || sponsored.granted {
+      VStack(alignment: .leading, spacing: 0) {
+        ADESettingsRow(title: "Sponsored cards", symbol: "megaphone") {
+          Toggle("Sponsored cards", isOn: Binding(
+            get: { sponsored.granted },
+            set: { on in save(on ? CloudSponsoredState.granted : CloudSponsoredState.declined) }
+          ))
+          .labelsHidden()
+          .tint(ADEColor.accent)
+          .disabled(saving)
+        }
+        // The state line in full, under the row (a row's hint is one short line).
+        Text(stateLine(sponsored))
+          .font(.system(size: 12.5))
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.horizontal, ADEKit.inset)
+          .padding(.top, -4)
+          .padding(.bottom, 12)
+        if let error {
+          Text(error)
+            .font(.system(size: 12))
+            .foregroundStyle(ADEColor.danger)
+            .padding(.horizontal, ADEKit.inset)
+            .padding(.bottom, 10)
+        }
+      }
+      .adeKitCard(padding: nil)
+    }
+  }
+
+  private func stateLine(_ sponsored: CloudSponsoredState) -> String {
+    guard sponsored.granted else { return "Off. Your ADE Cloud chats show no sponsored cards." }
+    return sponsored.ads
+      ? "On. A Free chat on ADE Cloud can show one sponsored card under a finished reply. Gravity, our ad partner, picks it from your last message and the reply."
+      : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."
+  }
+
+  private func save(_ consent: String) {
+    guard !saving else { return }
+    saving = true
+    error = nil
+    Task {
+      switch await cloudSaveSponsoredConsent(consent) {
+      case .success(let state): saved = state
+      case .failure(let failure): error = failure.message
+      }
+      saving = false
+    }
+  }
+}

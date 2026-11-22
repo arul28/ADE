@@ -865,8 +865,9 @@ final class CloudLaneActions: ObservableObject {
   /// The computer-limit card (`computer_limit`), on the host frontmost when it was asked.
   @Published private(set) var computerLimit: CloudComputerLimit?
   private var limitPresenter: UUID?
-  /// Computers the limit card is freeing now (it takes minutes; the card may
-  /// close meanwhile). Only `freeUp` (CloudComputerLimitSheet.swift) writes it,
+  /// Computers the limit card is freeing or deleting now (a free takes
+  /// minutes; the card may close meanwhile). Only `freeUp` and
+  /// `deleteComputerWithoutLane` (CloudComputerLimitSheet.swift) write it,
   /// through `markFreeing`.
   @Published private(set) var freeing: Set<String> = []
 

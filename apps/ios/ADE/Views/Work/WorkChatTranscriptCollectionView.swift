@@ -16,6 +16,9 @@ struct WorkChatTranscriptRow: Identifiable, Hashable {
     /// A message ADE Cloud holds for the chat (`WorkCloudHeldThread`), by id.
     case cloudHeld(messageId: String)
     case streamingStatus
+    /// The place under a finished reply of an ADE Cloud chat where one
+    /// sponsored card (or the one-time question) can show (`WorkSponsoredReplySlot`).
+    case sponsored
     /// The bottom gutter that reserves room for the floating badge chips.
     case tail
   }

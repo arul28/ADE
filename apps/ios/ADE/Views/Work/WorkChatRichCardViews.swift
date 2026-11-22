@@ -5093,6 +5093,9 @@ struct WorkAdeCardView: View, Equatable {
       WorkPrConflictLine(card: card, deeplink: deeplink, onOpenDeeplink: onOpenDeeplink)
     } else if card.variant == "pr_watch_wake" {
       WorkPrWatchWakeLine(card: card, deeplink: deeplink, onOpenDeeplink: onOpenDeeplink)
+    } else if card.variant == cloudSponsoredPickVariant {
+      // Gravity's Index pick: its own calm card, which folds itself (Not now).
+      WorkSponsoredPickCard(card: card)
     } else {
       boxedCard
     }

@@ -46,6 +46,7 @@ struct CloudDashboardScreen: View {
             CloudPlansCard(account: account, tiers: store.tiers, newPlanId: moment?.planId)
             CloudSizesCard(account: account, tiers: store.tiers)
           }
+          CloudSponsoredCard(pageAccount: store.account)
           if let referral = store.account?.referral {
             CloudInviteCard(referral: referral, syncService: store.syncService, onChanged: { Task { await store.reload() } })
           }

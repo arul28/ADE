@@ -387,10 +387,14 @@ struct CloudPhoneAccount: Decodable, Equatable {
   let dueForDeletion: [IdleCleanup]
   let referral: CloudPhoneReferral?
   let phone: Phone?
+  /// Sponsored cards in this account's ADE Cloud chats (`CloudSponsoredState`).
+  /// Absent while the server's switch doesn't reach the account: nothing
+  /// shows. A consent answer replaces it (`AccountCloudStore.noteSponsored`).
+  var sponsored: CloudSponsoredState?
 
   private enum CodingKeys: String, CodingKey {
     case plan, planId, hours, extraHours, disk, computers, recentUse, billing, catalog
-    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, dueForDeletion, referral, phone
+    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, dueForDeletion, referral, phone, sponsored
   }
 
   init(from decoder: Decoder) throws {
@@ -412,6 +416,7 @@ struct CloudPhoneAccount: Decodable, Equatable {
     dueForDeletion = c.lenient([IdleCleanup].self, forKey: .dueForDeletion) ?? []
     referral = c.lenient(CloudPhoneReferral.self, forKey: .referral)
     phone = c.lenient(Phone.self, forKey: .phone)
+    sponsored = c.lenient(CloudSponsoredState.self, forKey: .sponsored)
   }
 
   /// The plan's computer limit (`docs/plans/pricing-v2-and-gravity.md`).

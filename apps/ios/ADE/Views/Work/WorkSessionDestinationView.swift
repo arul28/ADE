@@ -716,6 +716,17 @@ struct WorkSessionDestinationView: View {
     )
   }
 
+  /// The ADE Cloud lane computer this chat runs on, while the account's
+  /// sponsored cards may show (the server's `sponsored.ads`, not declined).
+  /// Its own machine's key, never the tab's unless the chat lives there; nil
+  /// on the person's own machines and for a deleted computer's saved copy.
+  var sponsoredInstanceId: String? {
+    guard let sponsored = accountCloud.account?.sponsored, sponsored.ads,
+          sponsored.consent != CloudSponsoredState.declined,
+          !personalChat, providerSignInIsAdeCloud else { return nil }
+    return syncService.cloudServerInstance(fleetKey: sessionCloudMachineKey)?.id
+  }
+
   var sessionCloudMachineKey: String? {
     crossProjectContext?.machineKey
       ?? syncService.remoteChatMachineKey(sessionId: sessionId)
@@ -2756,6 +2767,7 @@ struct WorkSessionDestinationView: View {
     )
     chatView.ctoLive = ctoLiveModel
     chatView.cloudHeld = cloudHeldThread(frame: thread.frame)
+    chatView.sponsoredInstanceId = sponsoredInstanceId
     chatView.modelPickerCloudCatalog = restingCloudModelCatalog
     chatView.sendBlockedReason = cloudNewComputerBlockedReason
     return chatView
