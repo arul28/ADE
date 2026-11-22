@@ -326,12 +326,14 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
   if ((await blockedReason(env, account, country)) || (await readConsent(env, userId))?.consent !== "granted") return json({ ok: false });
   const computer = await ownCloudComputer(env, userId, body.instanceId);
   if (!computer) return json({ ok: false });
+  // Written only while the answer is still yes, in the same statement: a "no" that lands meanwhile wins.
   await env.DB.prepare(`
     insert into cloud_sponsored_viewers (user_id, instance_id, ip, ua, device_type, os, os_version, country, seen_at)
-    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    select ?, ?, ?, ?, ?, ?, ?, ?, ?
+    where exists (select 1 from cloud_sponsored_consent where user_id = ? and consent = 'granted')
     on conflict (user_id, instance_id) do update set ip = excluded.ip, ua = excluded.ua, device_type = excluded.device_type,
       os = excluded.os, os_version = excluded.os_version, country = excluded.country, seen_at = excluded.seen_at
-  `).bind(userId, computer.instance_id, clientIp(request), clientUa(request, device), device.type, device.os, device.osVersion ?? null, country, now).run();
+  `).bind(userId, computer.instance_id, clientIp(request), clientUa(request, device), device.type, device.os, device.osVersion ?? null, country, now, userId).run();
   return json({ ok: true });
 }
 
@@ -465,9 +467,24 @@ function pickOfIndex(raw: unknown): CloudSponsoredPick | null {
   if (!url || !name) return null;
   const objectOf = (value: unknown) => (value && typeof value === "object" ? value as Record<string, unknown> : null);
   const install = objectOf(rec.install) ?? objectOf(answer.install);
-  const stepText = (step: unknown) => (typeof step === "string" ? step : objectOf(step)?.text ?? objectOf(step)?.command);
+  // Every documented step form, in order: plain text, a command, a file to write, or something the person does.
+  const stepText = (step: unknown): unknown => {
+    if (typeof step === "string") return step;
+    const entry = objectOf(step);
+    if (!entry) return null;
+    const file = typeof entry.file === "string" ? entry.file : null;
+    const action = typeof entry.action === "string" ? entry.action : null;
+    return entry.text ?? entry.command ?? entry.user_action ?? entry.description ?? (action && file ? `${action}: ${file}` : action ?? file);
+  };
+  // A command keeps its exact spacing; one too long to show whole is left out, never cut.
+  const stepOf = (step: unknown): string => {
+    const value = stepText(step);
+    if (typeof value !== "string") return "";
+    const clean = value.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim();
+    return clean.length <= 500 ? clean : "";
+  };
   const steps = Array.isArray(install?.steps)
-    ? install.steps.flatMap((step) => plainText(stepText(step), 300) || []).slice(0, 8)
+    ? install.steps.flatMap((step) => stepOf(step) || []).slice(0, 8)
     : [];
   return {
     id: plainText(answer.search_id, 80) || crypto.randomUUID(),
@@ -574,7 +591,7 @@ export async function pruneSponsored(env: GravityEnv, now: number): Promise<void
   ]);
 }
 
-export async function sponsoredReportLines(env: GravityEnv, day: string, freeCostMicros: number): Promise<string[]> {
+export async function sponsoredReportLines(env: GravityEnv, day: string, freeCostMicros: number | null): Promise<string[]> {
   const rows = (await env.DB.prepare("select kind, count from cloud_sponsored_days where day = ? and user_id = ?")
     .bind(day, ALL).all<{ kind: string; count: number }>()).results ?? [];
   const counts = new Map(rows.map((row) => [row.kind, row.count]));
@@ -597,11 +614,11 @@ export async function sponsoredReportLines(env: GravityEnv, day: string, freeCos
   const adUsd = typeof ads?.totalRevenue === "number" ? ads.totalRevenue : null;
   const summary = index?.summary && typeof index.summary === "object" ? index.summary as Record<string, unknown> : null;
   const indexUsd = typeof summary?.revenue_cents === "number" ? summary.revenue_cents / 100 : null;
-  const freeCostUsd = freeCostMicros / 1_000_000;
+  const freeCost = freeCostMicros == null ? "an unknown amount (couldn't be read)" : `$${(freeCostMicros / 1_000_000).toFixed(2)}`;
   lines.push(
     adUsd == null && indexUsd == null
-      ? `Gravity's reports couldn't be read today. Free-plan cost: $${freeCostUsd.toFixed(2)}.`
-      : `Gravity paid ${adUsd == null ? "an unknown amount (report unreadable)" : `$${adUsd.toFixed(2)}`} for ads${typeof ads?.totalImpressions === "number" ? ` (${ads.totalImpressions} views, ${ads.totalClicks ?? 0} clicks)` : ""} and ${indexUsd == null ? "an unknown amount (report unreadable)" : `$${indexUsd.toFixed(2)}`} for the Index${typeof summary?.conversions === "number" ? ` (${summary.conversions} sign-ups)` : ""}, against $${freeCostUsd.toFixed(2)} of free-plan cost.`,
+      ? `Gravity's reports couldn't be read today. Free-plan cost: ${freeCost}.`
+      : `Gravity paid ${adUsd == null ? "an unknown amount (report unreadable)" : `$${adUsd.toFixed(2)}`} for ads${typeof ads?.totalImpressions === "number" ? ` (${ads.totalImpressions} views, ${ads.totalClicks ?? 0} clicks)` : ""} and ${indexUsd == null ? "an unknown amount (report unreadable)" : `$${indexUsd.toFixed(2)}`} for the Index${typeof summary?.conversions === "number" ? ` (${summary.conversions} sign-ups)` : ""}, against ${freeCost} of free-plan cost.`,
   );
   return lines;
 }

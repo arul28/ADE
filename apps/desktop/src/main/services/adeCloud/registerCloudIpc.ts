@@ -309,15 +309,10 @@ export function registerCloudIpc(args: {
     }
   });
   // The page may not reach outside hosts (`rendererCsp.ts`), so its card's view
-  // link goes from here: only one of Gravity's own links, once per card.
-  const viewedAds = new Set<string>();
-  ipcMain.handle(IPC.cloudSponsoredViewed, async (event, arg: { impUrl?: unknown } | undefined): Promise<boolean> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredViewed)) return false;
-    const impUrl = arg?.impUrl;
-    if (!isGravityUrl(impUrl)) return false;
-    if (viewedAds.has(impUrl)) return true;
-    viewedAds.add(impUrl);
-    if (viewedAds.size > 500) viewedAds.delete(viewedAds.values().next().value as string);
+  // link goes from here: only one of Gravity's own links, once per card. A
+  // second window asking while the first report runs gets that report's answer.
+  const viewedAds = new Map<string, Promise<boolean>>();
+  const sendView = async (impUrl: string): Promise<boolean> => {
     try {
       // Gravity counts the view on its own host; a redirect elsewhere is never followed from this machine.
       const response = await fetch(impUrl, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(10_000) });
@@ -330,6 +325,17 @@ export function registerCloudIpc(args: {
       logger.info("cloud.sponsored_viewed_failed", { error: getErrorMessage(error) });
       return false;
     }
+  };
+  ipcMain.handle(IPC.cloudSponsoredViewed, async (event, arg: { impUrl?: unknown } | undefined): Promise<boolean> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredViewed)) return false;
+    const impUrl = arg?.impUrl;
+    if (!isGravityUrl(impUrl)) return false;
+    const known = viewedAds.get(impUrl);
+    if (known) return known;
+    const report = sendView(impUrl);
+    viewedAds.set(impUrl, report);
+    if (viewedAds.size > 500) viewedAds.delete(viewedAds.keys().next().value as string);
+    return report;
   });
   // A lane's saved work (`laneBackups.ts`): read with no wake and no hours, account level.
   registerCloudLaneBackupIpc({ accountApi, logger });

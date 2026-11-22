@@ -79,6 +79,7 @@ export async function setCloudSponsoredConsent(consent: CloudSponsoredConsent): 
   if (!set) throw new Error("ADE can't save that here.");
   const current = generation;
   const next = await set(consent);
+  if (!next) throw new Error("ADE couldn't reach your account. Try again in a moment.");
   // Another account signed in meanwhile: this answer was the old account's.
   if (current === generation) noteCloudSponsoredState(next);
 }

@@ -411,12 +411,17 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
   });
   // Sponsored cards and the Index (`gravity.ts`): ADE's counts and what Gravity paid, against free use. Best effort.
   // The day's free use as it was counted then, so an account that changed plan since counts on the right side.
+  // A failed read never costs the report: the comparison then says the cost is unknown.
   const freeDay = await env.DB.prepare(`
     select (select coalesce(sum(free_cost_micros), 0) from cloud_computer_days where day = ?) as compute,
       (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day = ? and free = 1) as gb_days
-  `).bind(day, day).first<{ compute: number; gb_days: number }>();
-  const freeDayCost = (freeDay?.compute ?? 0) + (freeDay?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY;
-  await pruneSponsored(env, dayStart + 86_400_000).catch((error: unknown) => {
+  `).bind(day, day).first<{ compute: number; gb_days: number }>().catch((error: unknown) => {
+    reportCloudFailure("cloud.sponsored_free_cost_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return undefined;
+  });
+  const freeDayCost = freeDay === undefined ? null : (freeDay?.compute ?? 0) + (freeDay?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY;
+  // Pruned against the time it runs, so nothing outlives a day by more than the gap between runs.
+  await pruneSponsored(env, Date.now()).catch((error: unknown) => {
     reportCloudFailure("cloud.sponsored_prune_failed", { message: error instanceof Error ? error.message : "unknown" });
   });
   const sponsored = await sponsoredReportLines(env, day, freeDayCost).catch((error: unknown) => {
