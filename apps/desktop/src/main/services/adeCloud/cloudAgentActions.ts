@@ -82,6 +82,7 @@ import {
   type CloudShapeId,
   type CloudInviteRedeemOutcome,
   type CloudReferralSummary,
+  CLOUD_SPONSORED_NEED_MAX_CHARS,
 } from "../../../shared/adeCloud";
 import type { PermissionLevel } from "../../../shared/permissionLadder";
 import { getErrorMessage } from "../shared/utils";
@@ -155,6 +156,8 @@ export type CloudChatApprovals = {
   /** The chat's permission level, or null when this brain doesn't know the chat. */
   permissionLevel(chatSessionId: string): PermissionLevel | null;
   isAutomationRun(chatSessionId: string): Promise<boolean>;
+  /** The chat is a subagent's (ADE started it under another chat). Unset where the chat service can't tell. */
+  isSubagentChat?: (chatSessionId: string) => Promise<boolean>;
   notice(chatSessionId: string, message: string): void;
   /** Posts a card in the chat (a tier change request). Unset where the chat service can't. */
   postCard?: (chatSessionId: string, card: AdeCardPayload) => Promise<void>;
@@ -1026,7 +1029,19 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const instanceId = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
       if (!instanceId) return none(`Recommendations run only on ADE Cloud computers. ${onYourOwn}`, "not_cloud");
       const chatSessionId = approval.chatSessionId;
-      const answer = await deps.machines.sponsoredIndex({ instanceId, ...(chatSessionId ? { chatId: chatSessionId } : {}), need: need.slice(0, 500) })
+      if (chatSessionId && deps.approvals) {
+        // An automation's chat or a subagent's: nobody watches it, whatever the caller says.
+        const approvals = deps.approvals;
+        const unwatched = await Promise.all([
+          approvals.isAutomationRun(chatSessionId),
+          approvals.isSubagentChat?.(chatSessionId) ?? false,
+        ]).then((answers) => answers.some(Boolean), (error: unknown) => {
+          logger.warn?.("cloud.recommend_chat_read_failed", { error: getErrorMessage(error) });
+          return true;
+        });
+        if (unwatched) return none(`No recommendation here: nobody is watching this chat. ${onYourOwn}`, "nobody_watching");
+      }
+      const answer = await deps.machines.sponsoredIndex({ instanceId, ...(chatSessionId ? { chatId: chatSessionId } : {}), need: need.slice(0, CLOUD_SPONSORED_NEED_MAX_CHARS) })
         .catch((error: unknown) => {
           logger.warn?.("cloud.recommend_failed", { error: getErrorMessage(error) });
           return { pick: null, reason: "unavailable" as const };

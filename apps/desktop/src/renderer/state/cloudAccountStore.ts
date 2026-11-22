@@ -1,5 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
-import type { CloudAccountState, CloudMachinesResult, CloudSponsoredState } from "../../shared/adeCloud";
+import type { CloudAccountState, CloudMachinesResult, CloudSponsoredConsent, CloudSponsoredState } from "../../shared/adeCloud";
 import { useAdeCloudEnabled } from "./cloudAccess";
 
 /**
@@ -71,6 +71,13 @@ export function noteCloudAccountRead(result: CloudMachinesResult | null | undefi
 export function noteCloudSponsoredState(next: CloudSponsoredState | null | undefined): void {
   if (!account || !next) return;
   publish({ ...account, sponsored: next });
+}
+
+/** Saves the account's answer on the server, then every surface here sees it. Throws when it couldn't save. */
+export async function setCloudSponsoredConsent(consent: CloudSponsoredConsent): Promise<void> {
+  const set = window.ade?.cloud?.setSponsoredConsent;
+  if (!set) throw new Error("ADE can't save that here.");
+  noteCloudSponsoredState(await set(consent));
 }
 
 /** Whether the shared computer list is watched; while it is, this store does not read on its own. */

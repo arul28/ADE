@@ -318,7 +318,8 @@ export function registerCloudIpc(args: {
     viewedAds.add(impUrl);
     if (viewedAds.size > 500) viewedAds.delete(viewedAds.values().next().value as string);
     try {
-      await fetch(impUrl, { method: "GET", redirect: "follow", signal: AbortSignal.timeout(10_000) });
+      // Gravity counts the view on its own host; a redirect elsewhere is never followed from this machine.
+      await fetch(impUrl, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(10_000) });
     } catch (error) {
       logger.info("cloud.sponsored_viewed_failed", { error: getErrorMessage(error) });
     }

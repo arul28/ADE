@@ -60,35 +60,24 @@ export function lastFinishedTurn(events: readonly AgentChatEventEnvelope[]): Spo
   };
 }
 
+/** Each OS by its user-agent mark, with where its version sits (`_` turns into `.`). */
+const OS_MARKS: ReadonlyArray<{ os: CloudSponsoredDevice["os"]; mark: RegExp; version?: RegExp }> = [
+  { os: "ios", mark: /iPhone|iPad|iPod/, version: /OS ([\d_]+) like Mac OS X/ },
+  { os: "android", mark: /Android/, version: /Android ([\d.]+)/ },
+  { os: "chromeos", mark: /CrOS/ },
+  { os: "macos", mark: /Mac OS X|Macintosh/, version: /Mac OS X ([\d_]+)/ },
+  { os: "windows", mark: /Windows/, version: /Windows NT ([\d.]+)/ },
+  { os: "linux", mark: /Linux/ },
+];
+
 /** What Gravity needs to know about the screen this card would show on. */
 export function sponsoredDevice(): CloudSponsoredDevice {
   const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
-  const os: CloudSponsoredDevice["os"] = /iPhone|iPad|iPod/.test(ua)
-    ? "ios"
-    : /Android/.test(ua)
-      ? "android"
-      : /CrOS/.test(ua)
-        ? "chromeos"
-        : /Mac OS X|Macintosh/.test(ua)
-          ? "macos"
-          : /Windows/.test(ua)
-            ? "windows"
-            : /Linux/.test(ua)
-              ? "linux"
-              : "other";
-  const type: CloudSponsoredDevice["type"] = /iPad|Tablet/.test(ua) || (os === "android" && !/Mobile/.test(ua))
-    ? "tablet"
-    : /Mobi|iPhone|iPod/.test(ua)
-      ? "mobile"
-      : "desktop";
-  const version = os === "windows"
-    ? /Windows NT ([\d.]+)/.exec(ua)?.[1]
-    : os === "macos"
-      ? /Mac OS X ([\d_]+)/.exec(ua)?.[1]?.replace(/_/g, ".")
-      : os === "android"
-        ? /Android ([\d.]+)/.exec(ua)?.[1]
-        : os === "ios"
-          ? /OS ([\d_]+) like Mac OS X/.exec(ua)?.[1]?.replace(/_/g, ".")
-          : undefined;
+  const found = OS_MARKS.find((entry) => entry.mark.test(ua));
+  const os = found?.os ?? "other";
+  const version = found?.version?.exec(ua)?.[1]?.replace(/_/g, ".");
+  let type: CloudSponsoredDevice["type"] = "desktop";
+  if (/iPad|Tablet/.test(ua) || (os === "android" && !/Mobile/.test(ua))) type = "tablet";
+  else if (/Mobi|iPhone|iPod/.test(ua)) type = "mobile";
   return { type, os, ...(version ? { osVersion: version } : {}), ...(ua ? { ua: ua.slice(0, 512) } : {}) };
 }

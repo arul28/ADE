@@ -7423,12 +7423,19 @@ export function AgentChatPane({
   // A sponsored card under the last finished reply, only on a Free-plan chat on
   // an ADE Cloud computer (the slot and the server both check); never in a
   // subagent view. Memoized so the transcript list keeps its memo.
+  const isSubagentView = subagentView != null;
+  const chatCloudInstanceId = chatCloudLane?.instanceId ?? null;
   const sponsoredSlot = useMemo(
-    () => (subagentView ? null : (
-      <SponsoredReplySlot instanceId={chatCloudLane?.instanceId ?? null} sessionId={renderedSessionId} events={selectedEventsForDisplay} turnActive={turnActive} />
+    () => (isSubagentView ? null : (
+      <SponsoredReplySlot
+        instanceId={chatCloudInstanceId}
+        sessionId={renderedSessionId}
+        events={selectedEventsForDisplay}
+        turnActive={turnActive}
+        paneVisible={isTileVisible}
+      />
     )),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [Boolean(subagentView), chatCloudLane?.instanceId, renderedSessionId, selectedEventsForDisplay, turnActive],
+    [isSubagentView, chatCloudInstanceId, renderedSessionId, selectedEventsForDisplay, turnActive, isTileVisible],
   );
   // A live turn that has gone quiet is worth saying out loud (see
   // `turnStallSilenceMs`). The tick runs only while a turn is active, so a

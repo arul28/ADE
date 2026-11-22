@@ -109,8 +109,6 @@ import {
   type CloudSponsoredAdAnswer,
   type CloudSponsoredAdRequest,
   type CloudSponsoredConsent,
-  type CloudSponsoredIndexAnswer,
-  type CloudSponsoredIndexRequest,
   type CloudSponsoredSeenRequest,
   type CloudSponsoredState,
 } from "../../../account-directory/src/cloud/contract";
@@ -255,8 +253,6 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     sponsoredSeen: (input: CloudSponsoredSeenRequest) => request<{ ok: boolean }>("POST", CLOUD_PATHS.sponsoredSeen, { body: input }),
     /** One card under a finished reply, or none (always a 200). */
     sponsoredAd: (input: CloudSponsoredAdRequest) => request<CloudSponsoredAdAnswer>("POST", CLOUD_PATHS.sponsoredAd, { body: input, timeoutMs: 10_000 }),
-    /** An agent's Index search on its own ADE Cloud computer. */
-    sponsoredIndex: (input: CloudSponsoredIndexRequest) => request<CloudSponsoredIndexAnswer>("POST", CLOUD_PATHS.sponsoredIndex, { body: input, timeoutMs: 15_000 }),
     listComputers: async () => (await request<{ data: CloudInstance[] }>("GET", CLOUD_PATHS.instances)).data,
 
     /* ---- A lane on a new computer (the server launcher) ---- */

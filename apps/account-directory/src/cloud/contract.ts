@@ -3166,3 +3166,27 @@ export type CloudSponsoredPick = {
 };
 export type CloudSponsoredIndexNoPickReason = CloudSponsoredNoAdReason | "nobody_watching";
 export type CloudSponsoredIndexAnswer = { pick: CloudSponsoredPick | null; reason?: CloudSponsoredIndexNoPickReason };
+/** The longest need an agent's Index search sends. */
+export const CLOUD_SPONSORED_NEED_MAX_CHARS = 1_000;
+
+/** The server's pick as a client reads it: null for anything malformed or not on Gravity's own link. */
+export function readCloudSponsoredPick(value: unknown): CloudSponsoredPick | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const text = (key: string) => (typeof raw[key] === "string" ? raw[key] as string : null);
+  const id = text("id");
+  const name = text("name");
+  const url = text("url");
+  if (!id || !name || !isGravityUrl(url)) return null;
+  return {
+    id,
+    name,
+    description: text("description") ?? "",
+    category: text("category"),
+    url,
+    websiteUrl: text("websiteUrl"),
+    docsUrl: text("docsUrl"),
+    sponsored: raw.sponsored === true,
+    installSteps: Array.isArray(raw.installSteps) ? raw.installSteps.filter((step): step is string => typeof step === "string") : [],
+  };
+}

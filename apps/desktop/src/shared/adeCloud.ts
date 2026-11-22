@@ -67,7 +67,7 @@ export type {
   CloudSponsoredSeenRequest,
   CloudSponsoredState,
 } from "../../../account-directory/src/cloud/contract";
-export { CLOUD_SPONSORED_MESSAGE_MAX_CHARS, isGravityUrl } from "../../../account-directory/src/cloud/contract";
+export { CLOUD_SPONSORED_MESSAGE_MAX_CHARS, CLOUD_SPONSORED_NEED_MAX_CHARS, isGravityUrl } from "../../../account-directory/src/cloud/contract";
 /** The shared sentences for a cheaper plan's limits and cancelled timed wakes (the server's emails say the same). */
 export { overPlanLimitsSentence, planCleanupDoneSentence, planCleanupSentence, timedWakesCancelledSentence } from "../../../account-directory/src/cloud/contract";
 /** Pricing v2's shared sentences and codes (`docs/plans/pricing-v2-and-gravity.md`): every surface says the same. */

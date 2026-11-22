@@ -120,7 +120,6 @@
   cursor: pointer;
 }
 .ade-sponsored-link:hover { color: var(--color-fg); text-decoration: underline; text-underline-offset: 2px; }
-.ade-sponsored-error { margin: 2px 0 0; font-size: 11.5px; color: var(--color-error, #e5484d); }
 .ade-sponsored-need { margin: 0; font-size: 11.5px; color: var(--kit-text-3); }
 .ade-sponsored-link--start { margin-left: 0; }
 .ade-sponsored-fine { margin-left: auto; font-size: 11px; color: var(--kit-text-3); }

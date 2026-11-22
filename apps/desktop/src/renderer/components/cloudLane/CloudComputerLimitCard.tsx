@@ -171,8 +171,7 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
       </>
     );
     if (freeLane && freeLane.hasLane !== false) {
-      const target = freeLane;
-      confirm = { label: `Free up ${target.laneName}`, variant: "solid", disabled: !canChange, onClick: () => run(() => freeCloudLaneWithConfirm({ instanceId: target.instanceId, laneName: target.laneName, confirmed: true })) };
+      confirm = { label: `Free up ${freeLane.laneName}`, variant: "solid", disabled: !canChange, onClick: () => run(() => freeCloudLaneWithConfirm({ instanceId: freeLane.instanceId, laneName: freeLane.laneName, confirmed: true })) };
     }
   } else if (way === "delete") {
     step = (
@@ -193,12 +192,11 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
       </>
     );
     if (deleteLane) {
-      const target = deleteLane;
       confirm = {
-        label: target.hasLane === false ? "Delete this computer" : `Delete ${target.laneName}`,
+        label: deleteLane.hasLane === false ? "Delete this computer" : `Delete ${deleteLane.laneName}`,
         variant: "solid",
         disabled: !canChange,
-        onClick: () => run(() => deleteCloudLaneWithCheck({ instanceId: target.instanceId, laneName: target.laneName, askFirst: false, keepChats })),
+        onClick: () => run(() => deleteCloudLaneWithCheck({ instanceId: deleteLane.instanceId, laneName: deleteLane.laneName, askFirst: false, keepChats })),
       };
     }
   } else if (way === "move" && next) {

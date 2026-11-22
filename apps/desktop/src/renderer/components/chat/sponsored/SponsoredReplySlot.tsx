@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, X } from "@phosphor-icons/react";
 import type { AgentChatEventEnvelope } from "../../../../shared/types";
 import { isGravityUrl, type CloudSponsoredAd, type CloudSponsoredAdAnswer, type CloudSponsoredConsent } from "../../../../shared/adeCloud";
-import { noteCloudSponsoredState, useCloudAccount } from "../../../state/cloudAccountStore";
+import { setCloudSponsoredConsent, useCloudAccount } from "../../../state/cloudAccountStore";
+import { ipcErrorMessage } from "../../../lib/format";
+import { showToast } from "../../app/toast/toastStore";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { Button } from "../../ui/Button";
-import { holdSponsoredPlace, releaseSponsoredPlace, useSponsoredPlaceHolder } from "./sponsoredOnScreen";
+import { holdSponsoredPlace, releaseSponsoredPlace, useOnScreen, useSponsoredPlaceHolder } from "./sponsoredOnScreen";
 import { SPONSORED_TURN_FRESH_MS, lastFinishedTurn, sponsoredDevice } from "./sponsoredTurn";
 import { useDocumentVisible, useSponsoredViewer } from "./useSponsoredViewer";
 import "./sponsored.css";
@@ -42,37 +44,17 @@ function askOnce(key: string, ask: () => Promise<CloudSponsoredAdAnswer>): Promi
   return pending;
 }
 
-/** Whether `ref`'s element has at least `threshold` of itself on screen. */
-function useOnScreen(ref: React.RefObject<HTMLElement | null>, threshold: number, active: boolean): boolean {
-  const [onScreen, setOnScreen] = useState(false);
-  useEffect(() => {
-    const element = ref.current;
-    if (!active || !element || typeof IntersectionObserver === "undefined") {
-      setOnScreen(false);
-      return;
-    }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const entry = entries[entries.length - 1];
-        if (entry) setOnScreen(entry.isIntersecting && entry.intersectionRatio >= threshold);
-      },
-      { threshold: [0, threshold] },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [ref, threshold, active]);
-  return onScreen;
-}
-
 export type SponsoredReplySlotProps = {
   /** The ADE Cloud lane computer the chat runs on (`useAdeCloudLaneForBinding` of its pin); null on the person's own machine. */
   instanceId: string | null;
   sessionId: string | null;
   events: readonly AgentChatEventEnvelope[];
   turnActive: boolean;
+  /** The pane is on screen (its tile is visible): a hidden pane neither asks nor counts as watched. */
+  paneVisible: boolean;
 };
 
-export function SponsoredReplySlot({ instanceId, sessionId, events, turnActive }: SponsoredReplySlotProps) {
+export function SponsoredReplySlot({ instanceId, sessionId, events, turnActive, paneVisible }: SponsoredReplySlotProps) {
   const account = useCloudAccount(Boolean(instanceId && sessionId));
   const sponsored = account?.sponsored;
   if (!instanceId || !sessionId || !sponsored?.ads || sponsored.consent === "declined") return null;
@@ -82,6 +64,7 @@ export function SponsoredReplySlot({ instanceId, sessionId, events, turnActive }
       sessionId={sessionId}
       events={events}
       turnActive={turnActive}
+      paneVisible={paneVisible}
       consent={sponsored.consent}
       test={sponsored.test}
     />
@@ -93,17 +76,16 @@ function SponsoredReplySlotOn({
   sessionId,
   events,
   turnActive,
+  paneVisible,
   consent,
   test,
-}: {
+}: Omit<SponsoredReplySlotProps, "instanceId" | "sessionId"> & {
   instanceId: string;
   sessionId: string;
-  events: readonly AgentChatEventEnvelope[];
-  turnActive: boolean;
   consent: CloudSponsoredConsent | null;
   test: boolean;
 }) {
-  const visible = useDocumentVisible();
+  const visible = useDocumentVisible() && paneVisible;
   // The scan runs only between turns; while one streams there is no card.
   const turn = useMemo(() => (turnActive ? null : lastFinishedTurn(events)), [events, turnActive]);
   const fresh = turn != null && Date.now() - turn.finishedAt < SPONSORED_TURN_FRESH_MS;
@@ -111,19 +93,26 @@ function SponsoredReplySlotOn({
   const [hidden, setHidden] = useState(() => (turnKey ? hiddenTurns.has(turnKey) : false));
   useEffect(() => setHidden(turnKey ? hiddenTurns.has(turnKey) : false), [turnKey]);
 
-  const anchorRef = useRef<HTMLDivElement | null>(null);
+  // The place under the reply, card included: a card shows only while it is on screen.
+  const regionRef = useRef<HTMLDivElement | null>(null);
   const wanted = fresh && !hidden && visible;
-  const anchorOnScreen = useOnScreen(anchorRef, 0, wanted);
+  const onScreen = useOnScreen(regionRef, 0, wanted);
 
   // Someone is watching this computer's chat: the Index may answer its agents.
-  useSponsoredViewer(instanceId, consent === "granted");
+  useSponsoredViewer(instanceId, consent === "granted" && visible);
+
+  // One sponsored card on screen in the whole window. A pane whose place
+  // another card holds doesn't even ask: its card could never show.
+  const slotId = useId();
+  const holder = useSponsoredPlaceHolder();
+  const placeFree = holder === null || holder === slotId;
 
   const [ad, setAd] = useState<{ key: string; ad: CloudSponsoredAd } | null>(null);
   // A chat's first reply can be asked about before its computer saved the
   // chat's copy (`not_cloud`): one more ask a little later, never more.
   const [askAgain, setAskAgain] = useState<string | null>(null);
   useEffect(() => {
-    if (consent !== "granted" || !wanted || !anchorOnScreen || !turn || !turnKey) return;
+    if (consent !== "granted" || !wanted || !onScreen || !placeFree || !turn || !turnKey) return;
     if (ad?.key === turnKey) return;
     const askAd = window.ade?.cloud?.sponsoredAd;
     if (!askAd) return;
@@ -144,19 +133,13 @@ function SponsoredReplySlotOn({
       live = false;
       if (timer != null) window.clearTimeout(timer);
     };
-  }, [consent, wanted, anchorOnScreen, turn, turnKey, ad?.key, instanceId, sessionId, askAgain]);
+  }, [consent, wanted, onScreen, placeFree, turn, turnKey, ad?.key, instanceId, sessionId, askAgain]);
 
-  const showing: "consent" | "ad" | null = !wanted
-    ? null
-    : consent === null
-      ? "consent"
-      : ad && ad.key === turnKey
-        ? "ad"
-        : null;
+  const adShown = ad !== null && ad.key === turnKey;
+  let showing: "consent" | "ad" | null = null;
+  if (wanted && onScreen && consent === null) showing = "consent";
+  else if (wanted && onScreen && adShown) showing = "ad";
 
-  // One sponsored card on screen in the whole window.
-  const slotId = `${sessionId}`;
-  const holder = useSponsoredPlaceHolder();
   useEffect(() => {
     if (showing) holdSponsoredPlace(slotId);
     else releaseSponsoredPlace(slotId);
@@ -170,8 +153,8 @@ function SponsoredReplySlotOn({
   };
 
   return (
-    <div className="w-full max-w-[var(--chat-content-width,52rem)]">
-      <div ref={anchorRef} aria-hidden className="h-px w-full" />
+    <div ref={regionRef} className="w-full max-w-[var(--chat-content-width,52rem)]">
+      <div aria-hidden className="h-px w-full" />
       {holds && showing === "consent" ? <SponsoredConsentCard /> : null}
       {holds && showing === "ad" && ad ? <SponsoredAdCard ad={ad.ad} test={test} onHide={hide} /> : null}
     </div>
@@ -179,17 +162,12 @@ function SponsoredReplySlotOn({
 }
 
 function SponsoredConsentCard() {
-  const [busy, setBusy] = useState<CloudSponsoredConsent | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const answer = (consent: CloudSponsoredConsent) => {
-    const set = window.ade?.cloud?.setSponsoredConsent;
-    if (!set) return;
-    setBusy(consent);
-    setError(null);
-    void set(consent)
-      .then((state) => noteCloudSponsoredState(state))
-      .catch(() => setError("ADE couldn't save that. Try again."))
-      .finally(() => setBusy(null));
+    setBusy(true);
+    void setCloudSponsoredConsent(consent)
+      .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't save your answer", message: ipcErrorMessage(error) || "Try again in a moment." }))
+      .finally(() => setBusy(false));
   };
   return (
     <section className="ade-sponsored" aria-label="Sponsored cards on ADE Cloud Free">
@@ -198,22 +176,22 @@ function SponsoredConsentCard() {
       </div>
       <p className="ade-sponsored-title">Free cloud chats are ad-supported</p>
       <p className="ade-sponsored-text">
-        A Free chat on ADE Cloud can show one sponsored card under a finished reply. To pick it, ADE sends your last
-        message, the reply, your IP address and your device type to Gravity, our ad partner. Sponsored cards are for
-        people 18 or older. You can change this in Settings › ADE Cloud.
+        A Free chat on ADE Cloud can show one sponsored card under a finished reply, and an agent may recommend a
+        sponsored tool. To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the
+        agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards
+        are for people 18 or older. You can change this in Settings › ADE Cloud.
       </p>
       <div className="ade-sponsored-actions">
-        <Button size="sm" casing="sentence" variant="outline" disabled={busy !== null} onClick={() => answer("granted")}>
+        <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => answer("granted")}>
           Show sponsored cards
         </Button>
-        <Button size="sm" casing="sentence" variant="outline" disabled={busy !== null} onClick={() => answer("declined")}>
+        <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => answer("declined")}>
           No thanks
         </Button>
         <button type="button" className="ade-sponsored-link" onClick={() => openExternalUrl("https://ade-app.dev/privacy#sponsored")}>
           How it works
         </button>
       </div>
-      {error ? <p className="ade-sponsored-error" role="alert">{error}</p> : null}
     </section>
   );
 }

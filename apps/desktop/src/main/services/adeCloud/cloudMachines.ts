@@ -531,7 +531,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     /** An agent's Index search (`cloud.recommend`); no pick without ADE Cloud here. */
     sponsoredIndex: async (input: CloudSponsoredIndexRequest): Promise<CloudSponsoredIndexAnswer> => {
       const client = await deps.client();
-      if (!client?.sponsoredIndex) return { pick: null, reason: "unavailable" };
+      if (!client) return { pick: null, reason: "unavailable" };
       return await client.sponsoredIndex(input);
     },
     /** The account's invite link and what it earned; null without ADE Cloud here. */

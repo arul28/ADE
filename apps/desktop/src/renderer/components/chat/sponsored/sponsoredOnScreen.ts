@@ -1,10 +1,10 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 /**
  * At most one sponsored card on screen (Gravity's rule, and ours): the first
- * chat pane that has one to show holds the place; every other pane shows
- * none until it lets go. The prompt box reads it too, so no ADE upgrade
- * button stands beside a sponsored card.
+ * card on screen, an ad under a reply or an agent's Sponsored pick, holds the
+ * place; every other one shows none, or folds, until it lets go. The prompt
+ * box reads it too, so no ADE upgrade button stands beside a sponsored card.
  */
 
 let holder: string | null = null;
@@ -42,4 +42,26 @@ export function useSponsoredPlaceHolder(): string | null {
 /** Whether a sponsored card is on screen anywhere in this window. */
 export function useSponsoredCardOnScreen(): boolean {
   return useSponsoredPlaceHolder() !== null;
+}
+
+/** Whether `ref`'s element has at least `threshold` of itself on screen. */
+export function useOnScreen(ref: React.RefObject<HTMLElement | null>, threshold: number, active: boolean): boolean {
+  const [onScreen, setOnScreen] = useState(false);
+  useEffect(() => {
+    const element = ref.current;
+    if (!active || !element || typeof IntersectionObserver === "undefined") {
+      setOnScreen(false);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[entries.length - 1];
+        if (entry) setOnScreen(entry.isIntersecting && entry.intersectionRatio >= threshold);
+      },
+      { threshold: [0, threshold] },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [ref, threshold, active]);
+  return onScreen;
 }
