@@ -132,8 +132,8 @@ function limitsUpdate(value: unknown): CloudAgentLimitsUpdate {
   if (typeof limits.maxShape === "string" && LIMIT_SHAPES.has(limits.maxShape as CloudAgentLimitsValue["maxShape"])) {
     out.maxShape = limits.maxShape as CloudAgentLimitsValue["maxShape"];
   }
-  if (limits.extraDiskMonthCents === null) out.extraDiskMonthCents = null;
-  else if (cloudAgentExtraDiskCentsOf(limits.extraDiskMonthCents) != null) out.extraDiskMonthCents = cloudAgentExtraDiskCentsOf(limits.extraDiskMonthCents);
+  const extraDiskMonthCents = cloudAgentExtraDiskCentsOf(limits.extraDiskMonthCents);
+  if (limits.extraDiskMonthCents === null || extraDiskMonthCents != null) out.extraDiskMonthCents = extraDiskMonthCents;
   if (Object.keys(out).length === 0) throw new InvalidCall("ADE couldn't read the limits to save.");
   const ifRevision = given.ifRevision === null ? null : text(given.ifRevision, 200);
   return { limits: out, ...(given.ifRevision !== undefined ? { ifRevision } : {}) };
