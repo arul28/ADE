@@ -879,6 +879,18 @@ extension SyncService {
     UserDefaults.standard.set(seen, forKey: Self.seenCloudFleetKeysDefaultsKey)
   }
 
+  /// Drops fleet keys the server shows are the person's own machines from
+  /// the seen record. True when one was there.
+  @discardableResult
+  func forgetSeenCloudFleetKeys(_ keys: Set<String>) -> Bool {
+    guard !keys.isEmpty else { return false }
+    let seen = UserDefaults.standard.stringArray(forKey: Self.seenCloudFleetKeysDefaultsKey) ?? []
+    let kept = seen.filter { !keys.contains($0) }
+    guard kept.count != seen.count else { return false }
+    UserDefaults.standard.set(kept, forKey: Self.seenCloudFleetKeysDefaultsKey)
+    return true
+  }
+
   /// The focused machine was an ADE Cloud computer the account has since
   /// deleted: this phone saw it as one, and the account's computers no
   /// longer include it. Its cached lanes and chats belong to a computer
@@ -991,12 +1003,24 @@ extension SyncService {
     var byMachine: [String: [CloudSavedChatRow]] = [:]
     for row in cloudSavedChats { byMachine[row.machineKey, default: []].append(row) }
     var laneOnly: [String: CloudServerInstance] = [:]
+    var cloudKeys = Set<String>()
     for box in cloudServerInstances {
-      guard let key = box.machineKey, box.laneId != nil, box.projectOrigin != nil else { continue }
+      guard let key = box.machineKey else { continue }
+      cloudKeys.insert(key.lowercased())
+      guard box.laneId != nil, box.projectOrigin != nil else { continue }
       laneOnly[key] = box
     }
     var out: [(fleetKey: String, name: String, projects: [RemoteRosterProject])] = []
     for machineKey in Set(byMachine.keys).union(laneOnly.keys).sorted() {
+      // Only an ADE Cloud computer, live or deleted. A copy that moved to one
+      // of the person's own machines (a lane moved off a sleeping computer)
+      // has no computer on the server (`computer: null`): its machine lists
+      // its own lanes, and a machine removed from the account is not a
+      // deleted ADE Cloud computer. An older server sends no field and
+      // decides nothing here.
+      guard cloudKeys.contains(machineKey.lowercased())
+        || byMachine[machineKey]?.allSatisfy(\.savedByNoCloudComputer) != true
+      else { continue }
       let fleetKey: String
       if let machine = accountByKey[machineKey], let deviceId = nonEmptyTrimmed(machine.deviceId) {
         fleetKey = HiddenMachineStore.fleetKey(deviceId: deviceId)

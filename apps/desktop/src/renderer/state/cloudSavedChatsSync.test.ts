@@ -223,6 +223,22 @@ describe("the server's answer for a saved chat's computer", () => {
     expect(slice!.computerGone === true).toBe(gone);
     expect(slice!.sessions.map((session) => session.id).sort()).toEqual(chats.map((chat) => (chat as { chatId: string }).chatId).sort());
   });
+
+  it("lists nowhere a copy no ADE Cloud computer saved, chat or CLI: it moved to the person's own machine with its lane", async () => {
+    const cli = {
+      machineKey: "key-told", sessionId: "cli-1", instanceId: null, lineCount: 1, bytes: 1, updatedAt: 2,
+      title: "CLI", laneId: "lane-1", laneName: "Lane", toolType: "claude-code", projectKey: "repo-key", projectId: null,
+      parentChatId: null, status: "exited", lastActivityAt: null,
+    };
+    window.ade = {
+      cloud: { savedChats: { list: async () => ({ nextCursor: null, chats: [told("chat-1", 2, null)] }) } },
+      adeCloud: { projectOverview: async () => ({ origin: "repo-key", lanes: [], truncated: false, chats: [], nextChatCursor: null, sessions: [cli], git: [], deletingSoon: [], checkedAt: 2 }) },
+    } as unknown as typeof window.ade;
+
+    await refreshCloudSavedChats({ projectKey: "repo-key", isActive: () => true, connections: [] as never });
+
+    expect(useAppStore.getState().crossMachineLanesByMachineId[MACHINE_ID]).toBeUndefined();
+  });
 });
 
 describe("a lane deleted while a saved chats read is out", () => {

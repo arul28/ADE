@@ -31048,17 +31048,30 @@ extension SyncService {
   func resolveCloudMachineKeys() {
     // The computers the account server named to this phone itself count
     // too: a connected computer's list that leaves one out can't drop it.
-    let serverKeys = Set(cloudServerInstances.compactMap(\.machineKey)).union(cloudSavedChats.map(\.machineKey))
+    // A machine whose saved copies all say no ADE Cloud computer saved them
+    // (`computer: null`) is one of the person's own: a lane moved there.
+    let savedByMachine = Dictionary(grouping: cloudSavedChats, by: \.machineKey)
+    let savedKeys = savedByMachine.filter { !$0.value.allSatisfy(\.savedByNoCloudComputer) }.keys
+    let serverKeys = Set(cloudServerInstances.compactMap(\.machineKey)).union(savedKeys)
     guard let accountKeys = cloudAccountMachineKeys.map({ $0.union(serverKeys) })
       ?? (serverKeys.isEmpty ? nil : serverKeys) else { return }
     let account = AccountService.shared
     guard account.machinesState == .loaded else { return }
-    let keys = account.machines.compactMap { machine -> String? in
-      guard accountKeys.contains(machine.machineKey),
-            let deviceId = machine.deviceId, !deviceId.isEmpty else { return nil }
-      return HiddenMachineStore.fleetKey(deviceId: deviceId)
+    let ownKeys = Set(savedByMachine.keys).subtracting(savedKeys).subtracting(accountKeys)
+    var keys: [String] = []
+    var ownFleetKeys = Set<String>()
+    for machine in account.machines {
+      guard let deviceId = machine.deviceId, !deviceId.isEmpty else { continue }
+      if accountKeys.contains(machine.machineKey) {
+        keys.append(HiddenMachineStore.fleetKey(deviceId: deviceId))
+      } else if ownKeys.contains(machine.machineKey) {
+        ownFleetKeys.insert(HiddenMachineStore.fleetKey(deviceId: deviceId))
+      }
     }
     cloudMachineFleetKeys = Set(keys)
+    // An own machine an older build took for an ADE Cloud computer just left
+    // the set, which records it as a seen one: it is not a deleted computer.
+    if forgetSeenCloudFleetKeys(ownFleetKeys) { updateFocusedMachineListing() }
     leaveDeletedFocusedCloudComputer()
     forgetDeletedCloudComputerPairings()
   }

@@ -293,10 +293,23 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     // A list whose computers the server did not give (`computersUnread`) says nothing about them.
     const cloudBoxes = cloud?.state === "ok" && !cloud.computersUnread ? cloud.machines : null;
     const machineFacts = new Map<string, { connection: RemoteRuntimeConnectionStatus | null; gone: boolean; name: string | null; laneComputer: boolean }>();
+    // Machines whose copies moved there with their lane (lowercase keys): no
+    // ADE Cloud computer, so their saved CLI copies list nowhere either.
+    const notCloudMachineKeys = new Set<string>();
     for (const [machineKey, rows] of byMachine) {
       const connection = connectionFor(context.connections, machineKey, rows[0]!.instanceId);
       const box = cloudBoxes ? cloudBoxForMachine(cloudBoxes, { machineKey, hostname: rows[0]!.instanceId }) : null;
       const laneComputer = adeCloudLaneComputerForMachine({ machineKey, hostname: rows[0]!.instanceId });
+      // Copies the server says no ADE Cloud computer ever saved (`computer:
+      // null`): they moved to one of the person's own machines with its lane.
+      // That machine lists its own chats, and one removed from the account is
+      // not a deleted ADE Cloud computer, so they list nowhere. An older
+      // server sends no field (undefined) and decides nothing here.
+      if (!box && !laneComputer && rows.every((row) => !row.savedOnMachineKey && row.computer === null)) {
+        byMachine.delete(machineKey);
+        notCloudMachineKeys.add(machineKey.toLowerCase());
+        continue;
+      }
       // Gone only when the account says so: the list's own answer for the
       // computer that saved the chats (a row moved to its lane's new computer
       // speaks for the old one, so it doesn't count), the live computer list,
@@ -541,6 +554,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     const terminalsByMachine = new Map<string, NonNullable<CloudProjectOverview["sessions"]>>();
     for (const row of overview?.sessions ?? []) {
       if (!row.machineKey || deletedAfter(startTick, row.laneId)) continue;
+      // A copy that moved with its lane has no instance id; an ADE Cloud computer's copy always has one.
+      if (!row.instanceId && notCloudMachineKeys.has(row.machineKey.toLowerCase())) continue;
       const rows = terminalsByMachine.get(row.machineKey);
       if (rows) rows.push(row);
       else terminalsByMachine.set(row.machineKey, [row]);
