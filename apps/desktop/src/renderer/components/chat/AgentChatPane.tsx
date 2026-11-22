@@ -7423,7 +7423,8 @@ export function AgentChatPane({
   // A sponsored card under the last finished reply, only on a Free-plan chat on
   // an ADE Cloud computer (the slot and the server both check); never in a
   // subagent view. Memoized so the transcript list keeps its memo.
-  const isSubagentView = subagentView != null;
+  // A subagent's transcript, or a chat ADE started under another one: nobody's to show a card in.
+  const isSubagentView = subagentView != null || Boolean(selectedSession?.orchestrationParentSessionId) || selectedSession?.spawnKind === "subagent";
   const chatCloudInstanceId = chatCloudLane?.instanceId ?? null;
   const sponsoredSlot = useMemo(
     () => (isSubagentView ? null : (

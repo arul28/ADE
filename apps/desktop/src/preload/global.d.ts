@@ -5201,7 +5201,8 @@ declare global {
         sponsoredSeen?: (input: CloudSponsoredSeenRequest) => Promise<void>;
         sponsoredAd?: (input: CloudSponsoredAdRequest) => Promise<CloudSponsoredAdAnswer>;
         /** A card's view link, once half of the card was on screen. */
-        sponsoredViewed?: (impUrl: string) => Promise<void>;
+        /** True once Gravity has the view; false when it should be sent again. */
+        sponsoredViewed?: (impUrl: string) => Promise<boolean>;
         /** Extra iPhone minutes on, with a monthly limit in whole dollars or no limit, or off (paid plans). */
         setExtraPhoneMinutes?: (choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }) => Promise<CloudAccountState | null>;
         /**

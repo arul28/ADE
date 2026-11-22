@@ -184,7 +184,7 @@ const gravitySection: Section = {
       list: [
         "the last messages of that chat (your latest request and the reply),",
         "your IP address, and your device type, operating system and the app's user agent,",
-        "a session ID for the chat, and",
+        "an ID for your account and a session ID for the chat, both scrambled one way so they do not reveal your ADE account or chat, and",
         "a SHA-256 hash of your account email (never the email itself).",
       ],
     },
@@ -192,7 +192,7 @@ const gravitySection: Section = {
     "Gravity receives this as an independent controller. Under section 7 of Gravity's Terms it keeps a perpetual license to use what ADE sends, and it may not delete it when you ask. Gravity's own privacy policy is at https://trygravity.com/privacy.",
     "ADE never sends anything from chats on your own computer or from paid plans. ADE sends no file contents beyond what is in those messages.",
     "You can turn this off in Settings › ADE Cloud by withdrawing your consent. After that, nothing is sent.",
-    "ADE keeps the IP address and device of your latest visit to an ADE Cloud chat (replaced on each visit), the sponsored card shown under a reply for one day, and daily counts of requests for reporting. It keeps none of your messages for this. All of it is deleted with your account.",
+    "ADE keeps the IP address and device of your latest visit to an ADE Cloud chat (replaced on each visit, and deleted within two days of your last visit or when you withdraw consent), the sponsored card shown under a reply for up to two days, and daily counts of requests for reporting. It keeps none of your messages for this. All of it is deleted with your account.",
   ],
 };
 

@@ -157,20 +157,38 @@ async function count(env: GravityEnv, now: number, userId: string, kinds: string
   await env.DB.batch(kinds.flatMap((kind) => [countStatement(env, day, userId, kind), countStatement(env, day, ALL, kind)]));
 }
 
-async function countOf(env: GravityEnv, now: number, userId: string, kind: string): Promise<number> {
-  const row = await env.DB.prepare("select count from cloud_sponsored_days where day = ? and user_id = ? and kind = ?")
-    .bind(utcDay(now), userId, kind).first<{ count: number }>();
-  return row?.count ?? 0;
+const liveDailyLimit = (env: GravityEnv): number => {
+  const limit = Number(env.GRAVITY_DAILY_LIMIT ?? DEFAULT_DAILY_LIMIT);
+  return Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_DAILY_LIMIT;
+};
+
+/** Adds one to a day's count only while it is under `limit`, in one write: true when it did. */
+async function countUnder(env: GravityEnv, day: string, userId: string, kind: string, limit: number): Promise<boolean> {
+  const result = await env.DB.prepare(`
+    insert into cloud_sponsored_days (day, user_id, kind, count) values (?, ?, ?, 1)
+    on conflict (day, user_id, kind) do update set count = count + 1 where count < ?
+  `).bind(day, userId, kind, limit).run();
+  return (result.meta?.changes ?? 0) === 1;
 }
 
-/** Whether a request now would pass this account's or Gravity's daily limit. Test requests never count against Gravity's. */
-async function overLimit(env: GravityEnv, now: number, userId: string, kind: "ad" | "index"): Promise<boolean> {
-  const [mine, live] = await Promise.all([
-    countOf(env, now, userId, `${kind}_request`),
-    isLive(env) ? countOf(env, now, ALL, "live_request") : Promise.resolve(0),
-  ]);
-  const limit = Number(env.GRAVITY_DAILY_LIMIT ?? DEFAULT_DAILY_LIMIT);
-  return mine >= (kind === "ad" ? ACCOUNT_DAILY_ADS : ACCOUNT_DAILY_INDEX) || (isLive(env) && live >= (Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_DAILY_LIMIT));
+/**
+ * Takes one of the day's requests for this account, and one of Gravity's
+ * live ones when live, before the request goes. False when either limit is
+ * reached; then nothing is counted. Test requests never count against Gravity's.
+ */
+async function reserveRequest(env: GravityEnv, now: number, userId: string, kind: "ad" | "index"): Promise<boolean> {
+  const day = utcDay(now);
+  const request = `${kind}_request`;
+  if (!(await countUnder(env, day, userId, request, kind === "ad" ? ACCOUNT_DAILY_ADS : ACCOUNT_DAILY_INDEX))) return false;
+  // The Index has no test mode: every search is a live one.
+  const live = isLive(env) || kind === "index";
+  if (live && !(await countUnder(env, day, ALL, "live_request", liveDailyLimit(env)))) {
+    await env.DB.prepare("update cloud_sponsored_days set count = count - 1 where day = ? and user_id = ? and kind = ? and count > 0")
+      .bind(day, userId, request).run();
+    return false;
+  }
+  await env.DB.batch([countStatement(env, day, ALL, request), ...(live ? [countStatement(env, day, userId, "live_request")] : [])]);
+  return true;
 }
 
 /* ---- Reading requests ---- */
@@ -394,11 +412,13 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   if (stored) return json(stored);
   const messages = readMessages(body.messages, 2);
   if (!messages.length) return none("no_fill");
-  if (await overLimit(env, now, userId, "ad")) return none("limit");
   if (!(await claimTurn(env, userId, chatId, turnId, now))) return none("no_fill");
+  if (!(await reserveRequest(env, now, userId, "ad"))) {
+    await releaseTurn(env, userId, chatId, turnId);
+    return none("limit");
+  }
 
   const live = isLive(env);
-  await count(env, now, userId, ["ad_request", ...(live ? ["live_request"] : [])]);
   const ip = clientIp(request);
   const result = await gravityAds(
     {
@@ -482,6 +502,8 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
   // The country is the person's, from their last look at the chat: the agent's computer is not where they are.
   const blocked = await blockedReason(env, account, viewer?.country ?? null);
   if (blocked) return none(blocked);
+  // Gravity's Index has no test mode, so before go-live only the testers' searches reach it.
+  if (!isLive(env) && gravityMode(env) !== "testers") return none("off");
   const consent = await readConsent(env, userId);
   if (consent?.consent !== "granted") return none("consent");
   if (!viewer?.ip || now - viewer.seen_at > SPONSORED_VIEWER_FRESH_MS) return none("nobody_watching");
@@ -495,10 +517,9 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
     `).bind(computer.instance_id, userId, chatId).first<{ total: number; child: number; here: number }>();
     if (copies && copies.total > 0 && (copies.child || !copies.here)) return none("not_cloud");
   }
-  if (await overLimit(env, now, userId, "index")) return none("limit");
+  if (!(await reserveRequest(env, now, userId, "index"))) return none("limit");
   const messages = readMessages(body.messages, INDEX_CONTEXT_MESSAGES);
 
-  await count(env, now, userId, ["index_request", ...(isLive(env) ? ["live_request"] : [])]);
   let response: Response;
   try {
     response = await fetch(INDEX_URL, {
@@ -538,6 +559,17 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
  * day's cost of free-plan use. Nothing while the switch is off and the day
  * had no requests. Gravity's reports are best effort: a failed read says so.
  */
+/**
+ * The daily clean-up: a reply's answer older than a day, and where a person
+ * watched from once that is a day old (a computer since deleted included).
+ */
+export async function pruneSponsored(env: GravityEnv, now: number): Promise<void> {
+  await env.DB.batch([
+    env.DB.prepare("delete from cloud_sponsored_turns where created_at < ?").bind(now - TURN_TTL_MS),
+    env.DB.prepare("delete from cloud_sponsored_viewers where seen_at < ?").bind(now - TURN_TTL_MS),
+  ]);
+}
+
 export async function sponsoredReportLines(env: GravityEnv, day: string, freeCostMicros: number): Promise<string[]> {
   const rows = (await env.DB.prepare("select kind, count from cloud_sponsored_days where day = ? and user_id = ?")
     .bind(day, ALL).all<{ kind: string; count: number }>()).results ?? [];
@@ -564,8 +596,8 @@ export async function sponsoredReportLines(env: GravityEnv, day: string, freeCos
   const freeCostUsd = freeCostMicros / 1_000_000;
   lines.push(
     adUsd == null && indexUsd == null
-      ? "Gravity's reports couldn't be read today."
-      : `Gravity paid $${(adUsd ?? 0).toFixed(2)} for ads${typeof ads?.totalImpressions === "number" ? ` (${ads.totalImpressions} views, ${ads.totalClicks ?? 0} clicks)` : ""} and $${(indexUsd ?? 0).toFixed(2)} for the Index${typeof summary?.conversions === "number" ? ` (${summary.conversions} sign-ups)` : ""}, against $${freeCostUsd.toFixed(2)} of free-plan cost.`,
+      ? `Gravity's reports couldn't be read today. Free-plan cost: $${freeCostUsd.toFixed(2)}.`
+      : `Gravity paid ${adUsd == null ? "an unknown amount (report unreadable)" : `$${adUsd.toFixed(2)}`} for ads${typeof ads?.totalImpressions === "number" ? ` (${ads.totalImpressions} views, ${ads.totalClicks ?? 0} clicks)` : ""} and ${indexUsd == null ? "an unknown amount (report unreadable)" : `$${indexUsd.toFixed(2)}`} for the Index${typeof summary?.conversions === "number" ? ` (${summary.conversions} sign-ups)` : ""}, against $${freeCostUsd.toFixed(2)} of free-plan cost.`,
   );
   return lines;
 }

@@ -311,17 +311,24 @@ export function registerCloudIpc(args: {
   // The page may not reach outside hosts (`rendererCsp.ts`), so its card's view
   // link goes from here: only one of Gravity's own links, once per card.
   const viewedAds = new Set<string>();
-  ipcMain.handle(IPC.cloudSponsoredViewed, async (event, arg: { impUrl?: unknown } | undefined): Promise<void> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredViewed)) return;
+  ipcMain.handle(IPC.cloudSponsoredViewed, async (event, arg: { impUrl?: unknown } | undefined): Promise<boolean> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredViewed)) return false;
     const impUrl = arg?.impUrl;
-    if (!isGravityUrl(impUrl) || viewedAds.has(impUrl)) return;
+    if (!isGravityUrl(impUrl)) return false;
+    if (viewedAds.has(impUrl)) return true;
     viewedAds.add(impUrl);
     if (viewedAds.size > 500) viewedAds.delete(viewedAds.values().next().value as string);
     try {
       // Gravity counts the view on its own host; a redirect elsewhere is never followed from this machine.
-      await fetch(impUrl, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(10_000) });
+      const response = await fetch(impUrl, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(10_000) });
+      // A manual redirect reads as status 0 or 3xx: Gravity got the view. A server error may be sent again.
+      if (response.status >= 500) throw new Error(`Gravity answered ${response.status}`);
+      return true;
     } catch (error) {
+      // Not delivered: a later look at the card sends it again.
+      viewedAds.delete(impUrl);
       logger.info("cloud.sponsored_viewed_failed", { error: getErrorMessage(error) });
+      return false;
     }
   });
   // A lane's saved work (`laneBackups.ts`): read with no wake and no hours, account level.

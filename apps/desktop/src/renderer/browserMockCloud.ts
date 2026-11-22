@@ -666,7 +666,7 @@ export function applyBrowserMockCloud(ade: any): void {
       return state.sponsored ?? null;
     },
     sponsoredSeen: async () => undefined,
-    sponsoredViewed: async () => undefined,
+    sponsoredViewed: async () => true,
     sponsoredAd: async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 600));
       if (state.sponsored?.consent !== "granted") return { ad: null, reason: "consent" as const };

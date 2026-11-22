@@ -1800,7 +1800,7 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
       const pick = readPlanCleanupPick(body);
       if (!pick) return badRequest("Name the computers to free and whether to push their work first.");
       await pickPlanCleanup(env, userId, body.planId, pick, now);
-      return json(await buildAccountState(env, userId, now));
+      return json(await buildAccountState(env, userId, now, request));
     }
     if (typeof body.enabled !== "boolean") return badRequest(UNREADABLE_REQUEST_MESSAGE);
     if (path === CLOUD_PATHS.billingExtraPhone) {
@@ -1815,10 +1815,10 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
         if (limit == null) return badRequest(`${LIMIT_SENTENCE}, or none.`);
         await setExtraPhoneMinutes(env, userId, { enabled: true, monthlyLimitCents: limit * 100 }, now);
       }
-      return json(await buildAccountState(env, userId, now));
+      return json(await buildAccountState(env, userId, now, request));
     }
     await setExtraHours(env, userId, body.enabled, now);
-    return json(await buildAccountState(env, userId, now));
+    return json(await buildAccountState(env, userId, now, request));
   } catch (error) {
     if (error instanceof CloudBillingError) return fail(error.code, error.message, error.status);
     throw error;
@@ -2063,7 +2063,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   // A blocked account reads what ADE Cloud keeps for it (GET only, `CLOUD_BLOCKED_READ_ROUTES`) and does nothing.
   if (blocked && !blockedMayRead(request.method, path)) return accountBlocked();
   if (blocked && path === CLOUD_PATHS.account) {
-    return json({ ...(await buildAccountState(env, caller.userId, Date.now())), blocked: true });
+    return json({ ...(await buildAccountState(env, caller.userId, Date.now(), request)), blocked: true });
   }
   if (isCloudWakeRequest(url)) {
     // Scheduled work is refused at 0 hours; a timed wake would break the stop.

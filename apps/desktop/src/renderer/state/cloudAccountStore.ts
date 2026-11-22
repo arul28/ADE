@@ -77,7 +77,10 @@ export function noteCloudSponsoredState(next: CloudSponsoredState | null | undef
 export async function setCloudSponsoredConsent(consent: CloudSponsoredConsent): Promise<void> {
   const set = window.ade?.cloud?.setSponsoredConsent;
   if (!set) throw new Error("ADE can't save that here.");
-  noteCloudSponsoredState(await set(consent));
+  const current = generation;
+  const next = await set(consent);
+  // Another account signed in meanwhile: this answer was the old account's.
+  if (current === generation) noteCloudSponsoredState(next);
 }
 
 /** Whether the shared computer list is watched; while it is, this store does not read on its own. */

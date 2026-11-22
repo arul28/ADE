@@ -14516,7 +14516,7 @@ const adeBridge = {
     setSponsoredConsent: (consent: CloudSponsoredConsent): Promise<CloudSponsoredState | null> => ipcRenderer.invoke(IPC.cloudSponsoredConsent, { consent }),
     sponsoredSeen: (input: CloudSponsoredSeenRequest): Promise<void> => ipcRenderer.invoke(IPC.cloudSponsoredSeen, input),
     sponsoredAd: (input: CloudSponsoredAdRequest): Promise<CloudSponsoredAdAnswer> => ipcRenderer.invoke(IPC.cloudSponsoredAd, input),
-    sponsoredViewed: (impUrl: string): Promise<void> => ipcRenderer.invoke(IPC.cloudSponsoredViewed, { impUrl }),
+    sponsoredViewed: (impUrl: string): Promise<boolean> => ipcRenderer.invoke(IPC.cloudSponsoredViewed, { impUrl }),
     openCheckout: (plan?: CloudPaidPlanId, cleanup?: CloudPlanCleanupPick): Promise<CloudOpenCheckoutResult> =>
       ipcRenderer.invoke(IPC.cloudOpenCheckout, plan ? { plan, ...(cleanup ? { cleanup } : {}) } : undefined),
     pickPlanCleanup: (input: { planId: CloudPlanId } & CloudPlanCleanupPick): Promise<CloudAccountState | null> =>

@@ -3,6 +3,7 @@ import { ArrowUpRight } from "@phosphor-icons/react";
 import type { AdeCardPayload } from "../../../../shared/adeCard";
 import { sponsoredPickOfCard, sponsoredPickUseText } from "../../../../shared/sponsoredPick";
 import { openExternalUrl } from "../../../lib/openExternal";
+import { useCloudAccount } from "../../../state/cloudAccountStore";
 import { SceneReplyContext } from "../SceneFrame";
 import { holdSponsoredPlace, releaseSponsoredPlace, useOnScreen, useSponsoredPlaceHolder } from "./sponsoredOnScreen";
 import "./sponsored.css";
@@ -15,17 +16,21 @@ import "./sponsored.css";
  * (no `SceneReplyContext`), so it shows no Use it.
  *
  * It is a sponsored card like the one under a reply: on screen, it holds the
- * window's one place, and while another card holds it, it shows folded.
+ * window's one place, and while another card holds it, it shows folded. An
+ * account that may not see sponsored cards now (it said no, or moved to a
+ * paid plan) sees old picks folded too, with no way to open them.
  */
 export function SponsoredPickCard({ card }: { card: AdeCardPayload }) {
   const facts = sponsoredPickOfCard(card);
   const reply = useContext(SceneReplyContext);
+  const sponsored = useCloudAccount(Boolean(facts))?.sponsored;
+  const allowed = Boolean(sponsored?.ads && sponsored.consent === "granted");
   const [folded, setFolded] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
-  const onScreen = useOnScreen(ref, 0, Boolean(facts) && !folded);
+  const onScreen = useOnScreen(ref, 0, Boolean(facts) && allowed && !folded);
   const slotId = useId();
   const holder = useSponsoredPlaceHolder();
-  const wantsPlace = Boolean(facts) && !folded && onScreen;
+  const wantsPlace = Boolean(facts) && allowed && !folded && onScreen;
   useEffect(() => {
     if (wantsPlace) holdSponsoredPlace(slotId);
     else releaseSponsoredPlace(slotId);
@@ -37,10 +42,10 @@ export function SponsoredPickCard({ card }: { card: AdeCardPayload }) {
   // One element for both forms, so the on-screen watch keeps its target when the card folds.
   return (
     <div ref={ref}>
-      {folded || crowded ? (
+      {folded || crowded || !allowed ? (
         <p className="ade-sponsored-folded">
           Sponsored · {facts.name}
-          {folded && !crowded ? <button type="button" className="ade-sponsored-link" onClick={() => setFolded(false)}>Show</button> : null}
+          {folded && !crowded && allowed ? <button type="button" className="ade-sponsored-link" onClick={() => setFolded(false)}>Show</button> : null}
         </p>
       ) : (
         <section className="ade-sponsored" aria-label={`Sponsored recommendation: ${facts.name}`}>

@@ -4,7 +4,7 @@ import { blockCommand, sendOwnerAlert } from "./blocks";
 import type { CloudPlanId } from "./contract";
 import { sendCloudEmail } from "./email";
 import { idleCleanupReportLine } from "./idleCleanup";
-import { sponsoredReportLines } from "./gravity";
+import { pruneSponsored, sponsoredReportLines } from "./gravity";
 import {
   CLOUD_PLANS,
   DISK_COST_MICROS_PER_GB_DAY,
@@ -410,7 +410,15 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     return { lines: [] as string[], active: false };
   });
   // Sponsored cards and the Index (`gravity.ts`): ADE's counts and what Gravity paid, against free use. Best effort.
-  const freeDayCost = rows.filter((row) => row.planId === "free").reduce((sum, row) => sum + row.costMicros, 0);
+  // The day's free use as it was counted then, so an account that changed plan since counts on the right side.
+  const freeDay = await env.DB.prepare(`
+    select (select coalesce(sum(free_cost_micros), 0) from cloud_computer_days where day = ?) as compute,
+      (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day = ? and free = 1) as gb_days
+  `).bind(day, day).first<{ compute: number; gb_days: number }>();
+  const freeDayCost = (freeDay?.compute ?? 0) + (freeDay?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY;
+  await pruneSponsored(env, dayStart + 86_400_000).catch((error: unknown) => {
+    reportCloudFailure("cloud.sponsored_prune_failed", { message: error instanceof Error ? error.message : "unknown" });
+  });
   const sponsored = await sponsoredReportLines(env, day, freeDayCost).catch((error: unknown) => {
     reportCloudFailure("cloud.sponsored_report_failed", { message: error instanceof Error ? error.message : "unknown" });
     return [] as string[];

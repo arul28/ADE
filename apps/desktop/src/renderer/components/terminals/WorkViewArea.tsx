@@ -835,6 +835,8 @@ function CliSessionSurface({
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
 }) {
+  // A session with no pin runs on the tab's machine, which may be an ADE Cloud computer.
+  const boundBinding = useAppStore((state) => state.projectBinding);
   const workSidebar = useWorkSidebarTool(session.laneId, runtimePin);
   // The ADE input box is for a tracked agent CLI only; a raw CLI ADE does not
   // track has no prompt ADE can tell is free.
@@ -882,7 +884,7 @@ function CliSessionSurface({
           className="h-full w-full"
         />
         {showSidePane ? <CliActionsSidePane /> : null}
-        {inputBoxAvailable ? <SponsoredTerminalViewer pin={runtimePin} visible={pageActive && terminalVisible} /> : null}
+        {inputBoxAvailable ? <SponsoredTerminalViewer pin={runtimePin ?? boundBinding} visible={pageActive && terminalVisible} /> : null}
       </div>
       <CliPromptSlot>
       {showInputBox ? (

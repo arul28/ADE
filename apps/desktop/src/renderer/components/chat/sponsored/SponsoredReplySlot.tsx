@@ -203,7 +203,11 @@ function SponsoredAdCard({ ad, test, onHide }: { ad: CloudSponsoredAd; test: boo
   useEffect(() => {
     if (!halfOnScreen || !visible || !ad.impUrl || viewedAds.has(ad.id)) return;
     viewedAds.add(ad.id);
-    void window.ade?.cloud?.sponsoredViewed?.(ad.impUrl);
+    const sent = window.ade?.cloud?.sponsoredViewed?.(ad.impUrl);
+    // Not delivered (offline): the next time half the card is on screen sends it again.
+    void sent?.then((delivered) => {
+      if (!delivered) viewedAds.delete(ad.id);
+    }, () => viewedAds.delete(ad.id));
   }, [halfOnScreen, visible, ad.id, ad.impUrl]);
   const open = () => {
     if (isGravityUrl(ad.clickUrl)) openExternalUrl(ad.clickUrl);

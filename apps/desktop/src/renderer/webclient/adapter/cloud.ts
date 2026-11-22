@@ -531,8 +531,9 @@ export function createWebCloudNamespace(
     },
     // This page may reach Gravity itself (`_headers`: `connect-src https:`).
     sponsoredViewed: async (impUrl) => {
-      if (!isGravityUrl(impUrl)) return;
-      await fetch(impUrl, { mode: "no-cors", credentials: "omit", keepalive: true }).catch(() => undefined);
+      if (!isGravityUrl(impUrl)) return false;
+      // An opaque answer is all a page gets; only a network failure is worth sending again.
+      return fetch(impUrl, { mode: "no-cors", credentials: "omit", keepalive: true }).then(() => true, () => false);
     },
     setExtraPhoneMinutes: (choice) => billing.setExtraPhoneMinutes(choice),
     pickPlanCleanup: (input) => billing.pickPlanCleanup(input),

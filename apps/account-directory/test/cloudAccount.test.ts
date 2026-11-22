@@ -5044,6 +5044,9 @@ describe("sponsored cards", () => {
 
   it("the Index answers an agent only while the person watches, with the person's address", async () => {
     const index = () => send(OWNER, "/cloud/sponsored/index", { instanceId: INSTANCE, chatId: "chat-1", need: "a hosted Postgres for this app" });
+    // The Index has no test mode: with test ads for everyone, no search goes.
+    expect(await (await index()).json()).toEqual({ pick: null, reason: "off" });
+    Object.assign(harness.env, { GRAVITY_LIVE: "1" });
     expect(await (await index()).json()).toEqual({ pick: null, reason: "nobody_watching" });
     expect(gravityCalls).toEqual([]);
 
