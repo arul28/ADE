@@ -103,19 +103,48 @@ export type ClerkUserFacts = {
   emails: string[];
   createdAt: number | null;
   firstName: string | null;
-  /** `ade_internal: true` in Clerk's private or public metadata: ADE's own account (`isInternalAccount`). */
+  /** ADE's own account (`hasInternalFlag`). */
   internal: boolean;
 };
 
+/**
+ * Whether a Clerk account is ADE's own (tests, smoke users, the team):
+ * `ade_internal: true` in its private or public metadata. The one rule for
+ * the sign-up webhook and for every email that leaves such accounts out.
+ */
+export function hasInternalFlag(account: { private_metadata?: unknown; public_metadata?: unknown } | undefined): boolean {
+  const flagged = (metadata: unknown): boolean =>
+    typeof metadata === "object" && metadata !== null && (metadata as Record<string, unknown>).ade_internal === true;
+  return flagged(account?.private_metadata) || flagged(account?.public_metadata);
+}
+
 /** The account's Clerk user, or null without a Clerk key or when Clerk refuses. Throws when Clerk can't be reached. */
 export async function readClerkUser(env: Pick<CloudEmailEnv, "CLERK_SECRET_KEY">, userId: string): Promise<ClerkUserFacts | null> {
+  const lookup = await lookupClerkUser(env, userId);
+  return lookup.kind === "found" ? lookup.user : null;
+}
+
+/** A Clerk lookup's answer: the user, a gone account (404), or a Clerk that refused or failed, or no key. */
+export type ClerkUserLookup =
+  | { kind: "found"; user: ClerkUserFacts }
+  | { kind: "missing" }
+  | { kind: "unavailable" }
+  | { kind: "not_configured" };
+
+/**
+ * `readClerkUser` that tells a gone account (`missing`, Clerk's 404) from a
+ * Clerk that refused or failed (`unavailable`: a 5xx, a rate limit, a bad
+ * key), and `not_configured` without a key. Throws when Clerk can't be reached.
+ */
+export async function lookupClerkUser(env: Pick<CloudEmailEnv, "CLERK_SECRET_KEY">, userId: string): Promise<ClerkUserLookup> {
   const secretKey = env.CLERK_SECRET_KEY?.trim();
-  if (!secretKey) return null;
+  if (!secretKey) return { kind: "not_configured" };
   const response = await fetch(`${CLERK_USERS_URL}/${encodeURIComponent(userId)}`, {
     headers: { authorization: `Bearer ${secretKey}`, accept: "application/json" },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  if (!response.ok) return null;
+  if (response.status === 404) return { kind: "missing" };
+  if (!response.ok) return { kind: "unavailable" };
   const user = await response.json() as {
     primary_email_address_id?: unknown;
     email_addresses?: unknown;
@@ -124,18 +153,19 @@ export async function readClerkUser(env: Pick<CloudEmailEnv, "CLERK_SECRET_KEY">
     private_metadata?: unknown;
     public_metadata?: unknown;
   };
-  const flagged = (metadata: unknown): boolean =>
-    typeof metadata === "object" && metadata !== null && (metadata as Record<string, unknown>).ade_internal === true;
   const addresses = Array.isArray(user.email_addresses) ? user.email_addresses as Array<Record<string, unknown>> : [];
   const primary = addresses.find((address) => address.id === user.primary_email_address_id) ?? addresses[0];
   return {
-    email: typeof primary?.email_address === "string" ? primary.email_address : null,
-    // Verified only: an address someone added but never proved is not theirs.
-    emails: addresses.flatMap((address) => (typeof address.email_address === "string"
-      && (address.verification as { status?: unknown } | null | undefined)?.status === "verified" ? [address.email_address] : [])),
-    createdAt: typeof user.created_at === "number" ? user.created_at : null,
-    firstName: typeof user.first_name === "string" ? user.first_name.trim().split(/\s+/)[0]?.slice(0, 40) || null : null,
-    internal: flagged(user.private_metadata) || flagged(user.public_metadata),
+    kind: "found",
+    user: {
+      email: typeof primary?.email_address === "string" ? primary.email_address : null,
+      // Verified only: an address someone added but never proved is not theirs.
+      emails: addresses.flatMap((address) => (typeof address.email_address === "string"
+        && (address.verification as { status?: unknown } | null | undefined)?.status === "verified" ? [address.email_address] : [])),
+      createdAt: typeof user.created_at === "number" ? user.created_at : null,
+      firstName: typeof user.first_name === "string" ? user.first_name.trim().split(/\s+/)[0]?.slice(0, 40) || null : null,
+      internal: hasInternalFlag(user),
+    },
   };
 }
 

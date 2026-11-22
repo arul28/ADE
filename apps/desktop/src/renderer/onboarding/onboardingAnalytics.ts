@@ -21,14 +21,17 @@ function onboardingOutcome(action: OnboardingAction): "opened" | "completed" | "
   return action === "onboarding_skipped" || action === "onboarding_tour_skipped" ? "cancelled" : "opened";
 }
 
+/** A count as PostHog's closed `count_bucket` labels. */
+export type CountBucket = "0" | "1" | "2_5" | "6_plus";
+
 /** How many agents were connected, bucketed like every other count. */
-export function onboardingCountBucket(count: number): "0" | "1" | "2_5" | "6_plus" {
+export function onboardingCountBucket(count: number): CountBucket {
   if (count <= 0) return "0";
   if (count === 1) return "1";
   return count <= 5 ? "2_5" : "6_plus";
 }
 
-export function captureOnboarding(action: OnboardingAction, extra?: { count_bucket?: ReturnType<typeof onboardingCountBucket> }): void {
+export function captureOnboarding(action: OnboardingAction, extra?: { count_bucket: CountBucket }): void {
   const reportFailed = () => console.warn("[onboarding] step could not be reported", action);
   try {
     void window.ade?.analytics?.capture({

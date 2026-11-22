@@ -79,9 +79,13 @@ if [ -z "$existing" ]; then
     ade_secret() { command -v ade > /dev/null 2>&1 && ade secrets get "$1" --text 2> /dev/null || true; }
     [ -n "${ADE_POSTHOG_PROJECT_TOKEN:-}" ] || ADE_POSTHOG_PROJECT_TOKEN="$(ade_secret ADE_POSTHOG_PROJECT_TOKEN)"
     [ -n "${ADE_POSTHOG_HOST:-}" ] || ADE_POSTHOG_HOST="$(ade_secret ADE_POSTHOG_HOST)"
-    if [ -z "${ADE_POSTHOG_PROJECT_TOKEN:-}" ] && [ "${ADE_IOS_ALLOW_NO_ANALYTICS:-}" != 1 ]; then
-      echo "no ADE_POSTHOG_PROJECT_TOKEN (environment or ADE secret): this build would send no product analytics. Set it, or ADE_IOS_ALLOW_NO_ANALYTICS=1 to build anyway"
-      exit 1
+    if [ -z "${ADE_POSTHOG_PROJECT_TOKEN:-}" ]; then
+      if [ "${ADE_IOS_ALLOW_NO_ANALYTICS:-}" != 1 ]; then
+        echo "no ADE_POSTHOG_PROJECT_TOKEN (environment or ADE secret): this build would send no product analytics. Set it, or ADE_IOS_ALLOW_NO_ANALYTICS=1 to build anyway"
+        exit 1
+      fi
+      # The validator refuses a host with no token.
+      ADE_POSTHOG_HOST=""
     fi
     printf '%s\n%s\n' "${ADE_POSTHOG_PROJECT_TOKEN:-}" "${ADE_POSTHOG_HOST:-}" \
       | /bin/sh apps/ios/Scripts/validate-posthog-project-token.sh --stdin

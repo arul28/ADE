@@ -33,6 +33,7 @@ import { closeLaneSharesForAccount } from "./laneShares/routes";
 import { deleteAccountProjects } from "./accountProjects/store";
 import { deleteGithubAppAccount, type GithubAppEnv } from "./githubApp/grants";
 import { reportCloudFailure } from "./cloud/store";
+import { hasInternalFlag } from "./cloud/email";
 import { accountDistinctId, uuidFromSeed } from "./sinkUtils";
 import { verifyWebhookSignature } from "./webhookSignature";
 import { deleteWelcomeEmailRows, scheduleWelcomeEmail } from "./welcomeEmail";
@@ -101,9 +102,7 @@ type ClerkUserEvent = {
  * `ade_internal: true` in its Clerk private or public metadata.
  */
 export function isInternalAccount(data: Pick<ClerkUserData, "private_metadata" | "public_metadata"> | undefined): boolean {
-  const flagged = (metadata: unknown): boolean =>
-    typeof metadata === "object" && metadata !== null && (metadata as Record<string, unknown>).ade_internal === true;
-  return flagged(data?.private_metadata) || flagged(data?.public_metadata);
+  return hasInternalFlag(data);
 }
 
 /** `google`, `github`, … for an OAuth sign-up; `email` otherwise. Never the address. */
@@ -198,7 +197,7 @@ export async function handleSignupAnalyticsRequest(
     try {
       await deleteWelcomeEmailRows(env.DB, userId);
     } catch (error) {
-      reportCloudFailure("welcome_email.account_delete_failed", { userId, message: error instanceof Error ? error.message : "unknown" }, "signup");
+      reportCloudFailure("welcome_email.account_delete_failed", { message: error instanceof Error ? error.message : "unknown" }, "signup");
       return json(502, { error: "welcome_email_delete_failed" });
     }
     // The project list (folder paths included): D1 only, safe to repeat.
@@ -226,11 +225,14 @@ export async function handleSignupAnalyticsRequest(
   // The sign-up's address, hashed, for the daily report's burst alarm (`cloud/abuseSignals.ts`). Never fails the webhook.
   if (payload.type === "user.created" && env.DB) {
     const createdAtMs = typeof payload.data?.created_at === "number" ? payload.data.created_at : Date.now();
-    // The day-2 getting-started email (`welcomeEmail.ts`). Never fails the webhook.
+    // The day-2 getting-started email (`welcomeEmail.ts`). Nothing else makes
+    // its row, so a failed write asks Clerk to deliver again; every step of a
+    // `user.created` is safe to repeat (the row and the address keep the first).
     try {
       await scheduleWelcomeEmail(env.DB, { userId, signedUpAtMs: createdAtMs, internal: isInternalAccount(payload.data) });
     } catch (error) {
       reportCloudFailure("welcome_email.schedule_failed", { message: error instanceof Error ? error.message : "unknown" }, "signup");
+      return json(502, { error: "welcome_email_schedule_failed" });
     }
     const ipHash = await recordSignupIp({ DB: env.DB, CLOUD_CHAT_MASTER_KEY: env.CLOUD_CHAT_MASTER_KEY }, userId, signupClientIp(payload), createdAtMs);
     // The owner hears of a burst from one address at once (alert only, nobody is held).

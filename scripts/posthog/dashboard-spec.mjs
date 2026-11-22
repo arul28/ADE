@@ -131,7 +131,7 @@ export const PROPERTIES = Object.freeze({
   CODE: "code",
   // A closed bucket of a count: "0", "1", "2_5", "6_plus".
   COUNT_BUCKET: "count_bucket",
-  // The welcome email's form: `install` or `first_chat`.
+  // The welcome email's form: `start` (no computer yet) or `first_chat`.
   VARIANT: "variant",
   ACTION_DOMAIN: "action_domain",
   BRAIN_ACTION: "brain_action",

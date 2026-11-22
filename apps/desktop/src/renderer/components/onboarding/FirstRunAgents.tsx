@@ -173,11 +173,13 @@ export function FirstRunAgents({
   const connectedCount = tiles.filter((tile) => tile.status.state === "connected").length;
   const checking = !settled;
   // Continue or Skip: how many agents this computer had. Zero is a person who
-  // cannot start a chat yet; the card reports it, setup still goes on.
+  // cannot start a chat yet; the card reports it, setup still goes on. Only
+  // after a status read that answered: a failed read is not "no agents".
+  const statusRead = status != null && !failed;
   const leave = useCallback(() => {
-    if (settled) captureOnboarding("onboarding_agents_done", { count_bucket: onboardingCountBucket(connectedCount) });
+    if (statusRead) captureOnboarding("onboarding_agents_done", { count_bucket: onboardingCountBucket(connectedCount) });
     onDone();
-  }, [connectedCount, onDone, settled]);
+  }, [connectedCount, onDone, statusRead]);
 
   return (
     <div className="ade-glass-card ade-fr-projects ade-fr-agents" data-testid="first-run-agents">

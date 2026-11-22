@@ -52,7 +52,8 @@ const MINUTE_MS = 60_000;
 /** What a capture reads: PostHog's token and host. */
 type AnalyticsEnv = Pick<CloudEnv, "POSTHOG_PROJECT_TOKEN" | "POSTHOG_HOST">;
 
-async function send(env: AnalyticsEnv, body: Record<string, unknown>): Promise<void> {
+/** One event to PostHog's capture API; nothing without a token. Throws when PostHog can't be reached. */
+export async function sendAnalyticsEvent(env: AnalyticsEnv, body: Record<string, unknown>): Promise<void> {
   const token = env.POSTHOG_PROJECT_TOKEN?.trim();
   if (!token) return;
   const host = (env.POSTHOG_HOST?.trim() || "https://us.i.posthog.com").replace(/\/+$/, "");
@@ -84,7 +85,7 @@ export function captureCloudAction(env: CloudEnv, waitUntil: CloudWaitUntil, use
   const bucket = Math.floor(now / bucketMs) * bucketMs;
   const seedKey = event.action === "refused" ? `${event.refusal}` : key;
   hold(waitUntil, (async () => {
-    await send(env, {
+    await sendAnalyticsEvent(env, {
       event: "ade_cloud_action",
       distinct_id: await accountDistinctId(userId),
       uuid: await uuidFromSeed(`ade-cloud-action-v1:${userId}:${event.action}:${seedKey}:${bucket}`),
@@ -142,7 +143,7 @@ export function captureCloudDay(env: CloudEnv, waitUntil: CloudWaitUntil, userId
   if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
   const cap = (value: number) => Math.min(DAY_COUNT_CAP, Math.max(0, Math.floor(value)));
   hold(waitUntil, (async () => {
-    await send(env, {
+    await sendAnalyticsEvent(env, {
       event: "ade_cloud_day",
       distinct_id: await accountDistinctId(userId),
       uuid: await uuidFromSeed(`ade-cloud-day-v1:${userId}:${day}`),
@@ -185,7 +186,7 @@ export function captureCloudReferral(env: CloudEnv, waitUntil: CloudWaitUntil, u
   if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
   const bucket = Math.floor(now / HOUR_MS) * HOUR_MS;
   hold(waitUntil, (async () => {
-    await send(env, {
+    await sendAnalyticsEvent(env, {
       event: "ade_cloud_referral",
       distinct_id: await accountDistinctId(userId),
       uuid: await uuidFromSeed(`ade-cloud-referral-v1:${userId}:${event.step}:${event.result ?? ""}:${event.reason ?? ""}:${key}:${bucket}`),
@@ -228,7 +229,7 @@ export function captureCloudFreePlan(env: CloudEnv, waitUntil: CloudWaitUntil, u
   if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
   const day = Math.floor(now / (24 * HOUR_MS)) * 24 * HOUR_MS;
   hold(waitUntil, (async () => {
-    await send(env, {
+    await sendAnalyticsEvent(env, {
       event: "ade_cloud_free_plan",
       distinct_id: await accountDistinctId(userId),
       uuid: await uuidFromSeed(`ade-cloud-free-plan-v1:${userId}:${step}:${day}`),
@@ -272,7 +273,7 @@ export function captureCloudIdleCleanup(env: CloudEnv, waitUntil: CloudWaitUntil
   if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
   const bucket = Math.floor(now / HOUR_MS) * HOUR_MS;
   hold(waitUntil, (async () => {
-    await send(env, {
+    await sendAnalyticsEvent(env, {
       event: "ade_cloud_idle_cleanup",
       distinct_id: await accountDistinctId(userId),
       uuid: await uuidFromSeed(`ade-cloud-idle-cleanup-v1:${userId}:${event.step}:${key}:${bucket}`),
@@ -316,7 +317,7 @@ export function captureCloudSafety(env: AnalyticsEnv, waitUntil: CloudWaitUntil,
   if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
   const bucket = Math.floor(now / HOUR_MS) * HOUR_MS;
   hold(waitUntil, (async () => {
-    await send(env, {
+    await sendAnalyticsEvent(env, {
       event: "ade_cloud_safety",
       distinct_id: userId ? await accountDistinctId(userId) : SERVER_DISTINCT_ID,
       uuid: await uuidFromSeed(`ade-cloud-safety-v1:${userId ?? SERVER_DISTINCT_ID}:${step}:${key}:${bucket}`),
@@ -348,7 +349,7 @@ export function captureCloudPhone(env: CloudEnv, waitUntil: CloudWaitUntil, user
   if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
   const bucket = event.step === "refused" ? Math.floor(now / HOUR_MS) * HOUR_MS : 0;
   hold(waitUntil, (async () => {
-    await send(env, {
+    await sendAnalyticsEvent(env, {
       event: "ade_cloud_phone",
       distinct_id: await accountDistinctId(userId),
       uuid: await uuidFromSeed(`ade-cloud-phone-v1:${userId}:${event.step}:${key}:${bucket}`),
