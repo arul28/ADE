@@ -5008,6 +5008,10 @@ describe("sponsored cards", () => {
     // A reload or a second screen asks for the same reply: the same card, no second request.
     expect(await (await send(OWNER, "/cloud/sponsored/ad", adBody())).json()).toEqual(first);
     expect(gravityCalls).toHaveLength(1);
+    // Two screens ask for a new reply at the same moment: Gravity is asked once.
+    const both = await Promise.all([1, 2].map(async () => (await send(OWNER, "/cloud/sponsored/ad", adBody({ turnId: "turn-2" }))).json() as Promise<{ ad: Row | null }>));
+    expect(gravityCalls).toHaveLength(2);
+    expect(both.filter((answer) => answer.ad).length).toBe(1);
     // No chat text is kept on the server.
     expect(JSON.stringify(harness.rows("select * from cloud_sponsored_turns"))).not.toContain("database");
   });
@@ -5024,6 +5028,7 @@ describe("sponsored cards", () => {
     ["the computer was deleted", () => { harness.exec("update cloud_computers set deleted_at = ? where instance_id = ?", NOW, INSTANCE); }, {}, "not_cloud"],
     ["the chat doesn't run on that computer", () => undefined, { chatId: "chat-elsewhere" }, "not_cloud"],
     ["the chat is a subagent's", () => { harness.exec("update cloud_chat_copies set parent_chat_id = 'chat-0' where chat_id = 'chat-1'"); }, {}, "not_cloud"],
+    ["the account used today's ads", () => { harness.insert("cloud_sponsored_days", { day: new Date(NOW).toISOString().slice(0, 10), user_id: OWNER, kind: "ad_request", count: 120 }); }, {}, "limit"],
   ])("no card and nothing sent to Gravity when %s", async (_label, arrange, overrides, reason) => {
     arrange();
     const answer = await (await send(OWNER, "/cloud/sponsored/ad", adBody(overrides))).json();
@@ -5037,8 +5042,11 @@ describe("sponsored cards", () => {
     gravityEnv().GRAVITY_ADS = "all";
     expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "granted", test: true });
     // A no on one machine is the answer on every machine.
+    expect(await (await send(OWNER, "/cloud/sponsored/seen", { instanceId: INSTANCE, device: DEVICE })).json()).toEqual({ ok: true });
     expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
     expect(harness.row("select consent, email_hash from cloud_sponsored_consent where user_id = ?", OWNER)).toEqual({ consent: "declined", email_hash: null });
+    // A no keeps nothing of where the person watched from.
+    expect(harness.rows("select * from cloud_sponsored_viewers")).toEqual([]);
     expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "declined", test: true });
   });
 
@@ -5056,6 +5064,11 @@ describe("sponsored cards", () => {
     expect(await answer.json()).toMatchObject({ pick: { name: "Neon", url: PICK.recommendation.click_url, sponsored: true, installSteps: ["npm i @neondatabase/serverless"] } });
     expect(gravityCalls).toHaveLength(1);
     expect(gravityCalls[0]!.body).toMatchObject({ query: "a hosted Postgres for this app", user_ip: "203.0.113.7", user_agent: "ADE/1.2.133" });
+
+    // A subagent's chat gets nothing, even while the person watches another chat there.
+    harness.insert("cloud_chat_copies", { user_id: OWNER, machine_key: "mk-1", chat_id: "chat-child", instance_id: INSTANCE, r2_key: "chats/2", updated_at: NOW, parent_chat_id: "chat-1" });
+    expect(await (await send(OWNER, "/cloud/sponsored/index", { instanceId: INSTANCE, chatId: "chat-child", need: "a hosted Postgres for this app" })).json()).toEqual({ pick: null, reason: "not_cloud" });
+    expect(gravityCalls).toHaveLength(1);
 
     // Ten minutes after the person last looked, nobody is watching.
     clock = NOW + 11 * 60_000;

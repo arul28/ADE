@@ -349,6 +349,7 @@ async function readTurn(env: GravityEnv, userId: string, chatId: string, turnId:
   try {
     return { ad: JSON.parse(row.ad_json) as CloudSponsoredAd };
   } catch {
+    reportCloudFailure("cloud.sponsored.turn_unreadable", {});
     return { ad: null, reason: "no_fill" };
   }
 }
@@ -546,7 +547,10 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
     reportCloudFailure("cloud.sponsored.index_failed", { status: response.status });
     return none(response.status === 429 ? "limit" : "unavailable");
   }
-  const pick = pickOfIndex(await response.json().catch(() => null));
+  const pick = pickOfIndex(await response.json().catch(() => {
+    reportCloudFailure("cloud.sponsored.index_unreadable", { status: response.status });
+    return null;
+  }));
   if (pick) await count(env, now, userId, ["index_pick"]);
   return json({ pick, ...(pick ? {} : { reason: "no_fill" as const }) } satisfies CloudSponsoredIndexAnswer);
 }
