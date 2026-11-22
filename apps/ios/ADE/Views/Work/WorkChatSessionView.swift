@@ -2162,7 +2162,9 @@ struct WorkChatSessionView: View {
   /// The ADE Cloud computer of a chat that may show a sponsored card: never
   /// a subagent's view or a personal chat.
   var sponsoredChatInstanceId: String? {
-    guard let sponsoredInstanceId, !isPersonalChat, chatSummaryContext.spawnKind != .subagent else { return nil }
+    // Until the chat's summary is read, its lineage is unknown: no card yet.
+    guard let sponsoredInstanceId, !isPersonalChat, chatSummaryContext.isAvailable,
+          chatSummaryContext.spawnKind != .subagent, chatSummaryContext.orchestrationParentSessionId == nil else { return nil }
     return sponsoredInstanceId
   }
 
@@ -2859,7 +2861,8 @@ struct WorkChatSessionView: View {
     if sponsoredChatInstanceId != nil {
       sponsoredSlot.update(
         distanceFromBottom: geometry.distanceFromBottom,
-        tail: tailGutterHeight,
+        // Below the card: its cell's bottom margin, then the gutter cell with both of its margins.
+        tail: tailGutterHeight + WorkChatTranscriptController.rowSpacing * 1.5,
         visibleHeight: transcriptVisibleHeight
       )
     }

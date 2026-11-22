@@ -316,8 +316,8 @@ export function registerCloudIpc(args: {
     try {
       // Gravity counts the view on its own host; a redirect elsewhere is never followed from this machine.
       const response = await fetch(impUrl, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(10_000) });
-      // A manual redirect reads as status 0 or 3xx: Gravity got the view. A server error may be sent again.
-      if (response.status >= 500) throw new Error(`Gravity answered ${response.status}`);
+      // A manual redirect reads as status 0 or 3xx: Gravity got the view. A server error or "too many" may be sent again.
+      if (response.status >= 500 || response.status === 429) throw new Error(`Gravity answered ${response.status}`);
       return true;
     } catch (error) {
       // Not delivered: a later look at the card sends it again.

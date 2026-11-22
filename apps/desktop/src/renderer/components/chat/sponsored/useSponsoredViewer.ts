@@ -1,4 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
+import { useCloudAccount } from "../../../state/cloudAccountStore";
 import { sponsoredDevice } from "./sponsoredTurn";
 
 /**
@@ -22,6 +23,11 @@ export function useDocumentVisible(): boolean {
 
 export function useSponsoredViewer(instanceId: string | null, enabled: boolean): void {
   const visible = useDocumentVisible();
+  // A no deletes the account's viewer rows on the server: the next yes reports at once.
+  const consent = useCloudAccount(Boolean(instanceId))?.sponsored?.consent ?? null;
+  useEffect(() => {
+    if (consent !== "granted") lastSeenAt.clear();
+  }, [consent]);
   useEffect(() => {
     if (!instanceId || !enabled || !visible) return;
     const tell = () => {

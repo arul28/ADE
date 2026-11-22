@@ -100,6 +100,8 @@ final class AccountCloudStore: ObservableObject {
   /// Consent answers saved this run: an account read that started before one
   /// keeps the saved answer instead of putting back the old one.
   private var sponsoredSaves = 0
+  /// The last answer saved this run, kept for a read that started before it.
+  private var savedSponsored: CloudSponsoredState?
 
   /// Which account the store holds now: a write that started under another one doesn't land.
   var generation: Int { accountGeneration }
@@ -150,7 +152,7 @@ final class AccountCloudStore: ObservableObject {
     guard generation == accountGeneration, AccountService.shared.isPairingCommitAuthorized(owner) else { return }
     if let nextAccess, nextAccess != access { access = nextAccess }
     if var nextAccount {
-      if saves != sponsoredSaves { nextAccount.sponsored = account?.sponsored }
+      if saves != sponsoredSaves { nextAccount.sponsored = savedSponsored }
       if nextAccount != account { account = nextAccount }
     }
     applyLanesRead(nextLanes, seq: lanesSeq)
@@ -679,6 +681,7 @@ final class AccountCloudStore: ObservableObject {
   func noteSponsored(_ state: CloudSponsoredState?, generation: Int) {
     guard generation == accountGeneration else { return }
     sponsoredSaves &+= 1
+    savedSponsored = state
     guard var next = account, next.sponsored != state else { return }
     next.sponsored = state
     account = next
@@ -688,6 +691,7 @@ final class AccountCloudStore: ObservableObject {
 
   func reset() {
     accountGeneration &+= 1
+    savedSponsored = nil
     access = nil
     account = nil
     lanesWithoutComputer = []

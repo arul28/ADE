@@ -38,7 +38,14 @@ const hiddenTurns = new Set<string>();
 function askOnce(key: string, ask: () => Promise<CloudSponsoredAdAnswer>): Promise<CloudSponsoredAdAnswer> {
   const known = answers.get(key);
   if (known) return known;
-  const pending = ask().catch((): CloudSponsoredAdAnswer => ({ ad: null, reason: "unavailable" }));
+  const pending = ask()
+    .catch((): CloudSponsoredAdAnswer => ({ ad: null, reason: "unavailable" }))
+    .then((answer) => {
+      // A failed ask (Gravity down, offline) is not the turn's answer: the
+      // server freed the turn, so the next look asks again.
+      if (answer.reason === "unavailable" && answers.get(key) === pending) answers.delete(key);
+      return answer;
+    });
   answers.set(key, pending);
   if (answers.size > ANSWER_CACHE_LIMIT) answers.delete(answers.keys().next().value as string);
   return pending;

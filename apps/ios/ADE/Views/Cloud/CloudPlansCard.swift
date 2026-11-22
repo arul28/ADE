@@ -247,7 +247,11 @@ struct CloudSponsoredCard: View {
   /// through a computer (the account store then has no account to update).
   @State private var saved: CloudSponsoredState?
 
-  private var sponsored: CloudSponsoredState? { accountStore.account?.sponsored ?? saved ?? pageAccount?.sponsored }
+  /// The shared account's answer wins even when it is none (the switch went off).
+  private var sponsored: CloudSponsoredState? {
+    if let account = accountStore.account { return account.sponsored }
+    return saved ?? pageAccount?.sponsored
+  }
 
   var body: some View {
     // Also once said yes where none show (a paid plan, another country), so it can be taken back.

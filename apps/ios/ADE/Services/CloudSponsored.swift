@@ -201,6 +201,8 @@ func cloudSaveSponsoredConsent(_ consent: String) async -> Result<CloudSponsored
   let generation = AccountCloudStore.shared.generation
   do {
     let state = try await client.setSponsoredConsent(consent)
+    // A no deletes the account's viewer rows on the server.
+    if !state.granted { CloudSponsoredStore.shared.forgetSeen() }
     AccountCloudStore.shared.noteSponsored(state, generation: generation)
     return .success(state)
   } catch {
@@ -284,9 +286,21 @@ func cloudSponsoredLastFinishedTurn(_ events: [WorkChatEnvelope]) -> CloudSponso
   )
 }
 
+/// The end of a message within the server's limit, counted as it counts
+/// (UTF-16 units, like the desktop's string length), never splitting a character.
 private func cloudSponsoredTail(_ text: String) -> String {
   let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-  return trimmed.count > cloudSponsoredMessageMaxChars ? String(trimmed.suffix(cloudSponsoredMessageMaxChars)) : trimmed
+  guard trimmed.utf16.count > cloudSponsoredMessageMaxChars else { return trimmed }
+  var units = 0
+  var start = trimmed.endIndex
+  while start > trimmed.startIndex {
+    let previous = trimmed.index(before: start)
+    let width = trimmed[previous...].prefix(1).utf16.count
+    if units + width > cloudSponsoredMessageMaxChars { break }
+    units += width
+    start = previous
+  }
+  return String(trimmed[start...])
 }
 
 // MARK: - This app run's sponsored state
@@ -318,6 +332,8 @@ final class CloudSponsoredStore: ObservableObject {
   private var retriedNotCloud: Set<String> = []
   private var viewedAds: Set<String> = []
   private var lastSeenAt: [String: Date] = [:]
+  /// Account changes this run: an ask that spans one publishes nothing.
+  private var resetCount = 0
   private var observers: [NSObjectProtocol] = []
   /// No cookies, no cache, no redirects: a view link is one plain GET to
   /// Gravity's own host, and a redirect elsewhere is never followed.
@@ -360,8 +376,14 @@ final class CloudSponsoredStore: ObservableObject {
         answers[oldest] = nil
       }
     }
+    let resets = resetCount
     let answer = await task.value
+    // Another account signed in while this ask ran: its card is not theirs.
+    guard resets == resetCount else { return .unavailable }
     if let ad = answer.shownAd, ads[turnKey] != ad { ads[turnKey] = ad }
+    // A failed ask (Gravity down, offline) is not the turn's answer: the
+    // server freed the turn, so the next look asks again.
+    if answer.reason == "unavailable", answers[turnKey] == task { forgetAnswer(turnKey: turnKey) }
     return answer
   }
 
@@ -412,7 +434,8 @@ final class CloudSponsoredStore: ObservableObject {
       do {
         let (_, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if status > 0 && status < 500 { return }
+        // Delivered, or refused for good (a 4xx other than "too many"): never sent twice.
+        if status > 0 && status < 500 && status != 429 { return }
         cloudSponsoredLog.notice("sponsored view not delivered status=\(status, privacy: .public)")
       } catch {
         cloudSponsoredLog.notice("sponsored view not delivered error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
@@ -444,7 +467,13 @@ final class CloudSponsoredStore: ObservableObject {
   static var seenInterval: TimeInterval { seenEvery }
 
   /// Another account signed in: nothing of the last one's cards stays.
+  /// The person said no: the next yes reports their presence at once.
+  func forgetSeen() {
+    lastSeenAt = [:]
+  }
+
   func reset() {
+    resetCount &+= 1
     for task in answers.values { task.cancel() }
     answers = [:]
     answerOrder = []

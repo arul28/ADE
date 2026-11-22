@@ -444,7 +444,9 @@ final class WorkChatTranscriptController: UIViewController {
   var isRestoringAnchor = false
 
   /// Gap between rows, matching the transcript's former `LazyVStack` spacing.
-  let rowSpacing: CGFloat = 14
+  /// Each cell carries half of it above and below its content.
+  static let rowSpacing: CGFloat = 14
+  let rowSpacing = WorkChatTranscriptController.rowSpacing
 
   var diagnosticsScrollKey: String { "thread-\(ObjectIdentifier(self).hashValue)" }
 

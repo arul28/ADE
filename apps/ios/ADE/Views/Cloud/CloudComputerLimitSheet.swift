@@ -24,10 +24,8 @@ struct CloudComputerLimit: Equatable, Identifiable {
     let awake: Bool
     let lastAwakeAt: Double?
     /// False for a computer that holds no lane: it can only be deleted.
+    /// Unsaid means it holds one, so the checked lane delete is the default.
     var hasLane = true
-    /// The server said whether it holds a lane (it reads the lane's own rows);
-    /// the account's list, which can lag a new lane, never overrides it.
-    var serverNamedLane = false
     var id: String { instanceId }
   }
 
@@ -97,8 +95,7 @@ struct CloudComputerLimit: Equatable, Identifiable {
         laneName: row.laneName.flatMap { nonEmptyTrimmed($0) } ?? "Computer \(id.prefix(6))",
         awake: row.awake ?? false,
         lastAwakeAt: row.lastAwakeAt,
-        hasLane: row.hasLane ?? true,
-        serverNamedLane: row.hasLane != nil
+        hasLane: row.hasLane ?? true
       )
     }
     self.init(
@@ -235,16 +232,8 @@ struct CloudComputerLimitSheet: View {
 
   /// The account's computers, least recently used first.
   private var lanes: [CloudComputerLimit.Lane] {
-    if !limit.lanes.isEmpty {
-      // The refusal names them; when it doesn't say which hold no lane, the account's list does.
-      return limit.lanes.map { lane in
-        guard !lane.serverNamedLane,
-              let instance = syncService.cloudServerInstances.first(where: { $0.id == lane.instanceId }) else { return lane }
-        var known = lane
-        known.hasLane = lane.hasLane && instance.laneId != nil
-        return known
-      }
-    }
+    // The refusal names them and says which hold a lane; the account's list can lag a new lane.
+    if !limit.lanes.isEmpty { return limit.lanes }
     return syncService.cloudServerInstances
       .filter { !$0.isGone }
       .sorted { ($0.lastActiveAt ?? 0) < ($1.lastActiveAt ?? 0) }
@@ -462,8 +451,10 @@ struct CloudComputerLimitSheet: View {
       // The ordinary lane delete: it reads the lane's work and asks first when some isn't on GitHub.
       actions.delete(target)
     } else {
-      // The account's list hasn't named the lane's id yet: its computer page deletes it.
-      actions.manageComputer(instanceId: lane.instanceId, showsOpenWork: false)
+      // The account's list hasn't named the lane's id yet. Its work can't be
+      // read without it, so nothing is deleted until the list catches up.
+      syncService.refreshCloudServerIfStale(force: true)
+      actions.toast = ADEToastMessage(text: "Still reading \(lane.laneName)", kind: .failure, detail: "ADE needs a moment to find this lane's work. Try again shortly.")
     }
   }
 
