@@ -17552,7 +17552,7 @@ final class ADETests: XCTestCase {
     )
 
     XCTAssertEqual(groups.map(\.id), ["lane:lane-primary", "lane:lane-deleted-a", "lane:lane-deleted-b"])
-    XCTAssertEqual(groups.map(\.label), ["Primary", "feature/cleanup", "feature/recent"])
+    XCTAssertEqual(groups.map(\.label), ["Main checkout", "feature/cleanup", "feature/recent"])
     XCTAssertEqual(groups.map(\.isOrphaned), [false, true, true])
     XCTAssertEqual(groups.map(\.icon), [.laneBranch, .warning, .warning])
     XCTAssertEqual(groups.last?.sessions.count, 2)

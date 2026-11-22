@@ -1706,6 +1706,7 @@ struct WorkRootListScreen: View, Equatable {
       // Another machine's terminal: it streams from its own machine.
       TerminalSessionScreen(
         session: remoteTerminal.session,
+        laneName: workSessionLaneDisplayName(remoteTerminal.session, lanes: lanes),
         leading: remoteTerminalLeadingControl(inColumn: inColumn),
         remoteTerminal: remoteTerminal
       )

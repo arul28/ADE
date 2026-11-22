@@ -361,6 +361,7 @@ func buildWorkRootSessionPresentation(
     machineFilter: machineFilter,
     searchText: searchText,
     outputSearchBySessionId: outputSearchBySessionId,
+    laneDisplayNameByLaneId: searchText.isEmpty ? [:] : laneById.mapValues(\.displayName),
     laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
     busySubagentParentIds: busySubagentParentIds,
     now: now
@@ -1135,7 +1136,7 @@ func workSessionGroupsByLane(
     guard let list = byLaneId[lane.id], !list.isEmpty else { continue }
     groups.append(WorkSessionGroup(
       id: "lane:\(lane.id)",
-      label: lane.name,
+      label: lane.displayName,
       icon: .laneBranch,
       tint: LaneColorPalette.displayColor(forHex: lane.color),
       sessions: list,

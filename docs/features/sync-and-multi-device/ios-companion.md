@@ -2405,6 +2405,16 @@ tint, because amber means "your move".
   lane chip, lane git state, then model or time) with one right-hand **status
   slot**; the title and the lane's PR badge (`WorkLanePrIndicator`,
   `LanePrTag`); an italic preview and the provider mark.
+- **One card at every width.** The phone, the wide sessions column (the Duo's
+  inner display, an iPad) and the board draw the same card. The column only
+  widens the padding and the selection fill (`duoRow`). A board card
+  (`boardCard`) shows the time in the status slot because its column is the
+  status, gives the title two lines, and moves the PR badge to the preview
+  line, where it yields to Pending sync, ARCHIVED or an EXIT code.
+- **Lane name.** Rows, lane headers, the wide chat subtitle, the CLI screen
+  title and Work search use the lane's shown name (`LaneSummary.displayName`,
+  `workSessionLaneDisplayName`), so the main checkout reads "Main checkout".
+  Search also matches the stored name.
 - **Status slot.** One label. A provider mode may show **Planning**; a current
   activity (detected by the host from tool calls, or reported by the agent) may
   refine a running row to Planning, Exploring, Implementing, Testing,

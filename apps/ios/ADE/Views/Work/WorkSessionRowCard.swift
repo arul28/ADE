@@ -304,7 +304,9 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.title = chatSummary?.title ?? session.title
     self.provider = chatSummary?.provider ?? session.toolType
     self.symbolProvider = chatSummary?.provider
-    self.laneName = session.laneName
+    // The lane's shown name: the main checkout reads "Main checkout", never
+    // its stored "Primary".
+    self.laneName = lane?.displayName ?? session.laneName
     self.laneColor = lane?.color
     self.laneIcon = lane?.icon
     self.laneEmoji = lane?.emoji
@@ -423,12 +425,11 @@ struct WorkSessionRow: View, Equatable {
   /// lane itself. Under a lane header the chip would just repeat the header.
   var showsLaneIdentity: Bool = true
   var waitingOnSubagent: Bool = false
-  /// A card on the Duo's board: drawn in the Duo row's shape (`duoBody`),
-  /// without the status slot, because the board's column is the status.
+  /// A card on the Duo's board: the time where the status would be, because
+  /// the board's column is the status.
   var boardCard: Bool = false
-  /// A row in the Duo's sessions column: the provider mark leading, the title
-  /// on up to two lines, the latest word on one, then one meta line (lane,
-  /// PR, status and time). The column is wide enough to say all of it.
+  /// A row in the Duo's sessions column: the phone's card, with wider padding
+  /// and the column's soft selection fill.
   var duoRow: Bool = false
   private let renderSignature: WorkSessionRowRenderSignature
 
@@ -490,12 +491,11 @@ struct WorkSessionRow: View, Equatable {
     let _ = ScrollDiagnostics.shared.count(.workRowBody)
     if compact {
       compactBody
-    } else if duoRow || boardCard {
-      WorkSessionRowLayoutSwitch(
-        standard: { duoBody },
-        accessible: { accessibleBody }
-      )
     } else {
+      // The Duo's sessions column and its board draw the phone's card: the
+      // lane on top, then the title and the latest word. Only the padding and
+      // the selection fill widen for the column (`sessionCardSurface`).
+      //
       // The Dynamic Type branch lives in a leaf rather than in this view because
       // `WorkSessionRow` is rendered through `.equatable()`: an environment
       // dependency read here can be short-circuited by the equality check, while
@@ -593,147 +593,6 @@ struct WorkSessionRow: View, Equatable {
     }
   }
 
-  /// The Duo's row (and board card): provider mark leading like an avatar,
-  /// then title (two lines), the latest word (one line) and the meta line.
-  private var duoBody: some View {
-    sessionCardSurface {
-      HStack(alignment: .top, spacing: 10) {
-        if !boardCard {
-          WorkProviderBareLogo(
-            provider: chatSummary?.provider ?? session.toolType,
-            fallbackSymbol: sessionSymbol(session, provider: chatSummary?.provider),
-            tint: providerTintColor,
-            size: 20
-          )
-          .fixedSize()
-          .padding(.top, 1)
-          .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-icon-\(session.id)" : nil, in: transitionNamespace)
-        }
-        VStack(alignment: .leading, spacing: 3) {
-          titleView(lineLimit: 2)
-          if duoMetaHasLeading || renderSignature.previewText == nil {
-            if renderSignature.previewText != nil {
-              previewView(lineLimit: 1)
-            }
-            duoMetaLine
-              .padding(.top, 2)
-          } else {
-            // Under a lane header the meta line would hold only the status:
-            // it rides at the end of the latest-word line instead of taking a
-            // line of its own.
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-              previewView(lineLimit: 1)
-              duoStatus
-            }
-          }
-          launchRailLine
-        }
-      }
-    }
-  }
-
-  /// Lane, PR, then status and time hard against the trailing edge. The lane
-  /// and PR only where no lane header above already says them. A row never
-  /// names its machine: an open chat does.
-  ///
-  /// Nothing on this line may draw over anything else: when it does not fit,
-  /// the PR tag goes first, then the lane's git state; the lane name
-  /// truncates last.
-  private var duoMetaLine: some View {
-    HStack(spacing: 6) {
-      ViewThatFits(in: .horizontal) {
-        duoMetaItems(pr: true, git: true)
-        duoMetaItems(pr: false, git: true)
-        duoMetaItems(pr: false, git: false)
-      }
-      .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-      .clipped()
-
-      duoStatus
-    }
-  }
-
-  private func duoMetaItems(pr: Bool, git: Bool) -> some View {
-    HStack(spacing: 6) {
-      if session.pinned {
-        Image(systemName: "pin.fill")
-          .font(.caption2)
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      if isMuted {
-        Image(systemName: "bell.slash")
-          .font(.caption2)
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      if let goal = renderSignature.activeGoal {
-        Image(systemName: "target")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(goal.status == "active" ? ADEColor.warning : ADEColor.textMuted)
-          .accessibilityHidden(true)
-      }
-      lineageMark(font: .caption2)
-      subagentMarkView
-      if showsLaneIdentity {
-        HStack(spacing: 4) {
-          Circle()
-            .fill(laneTint)
-            .frame(width: 7, height: 7)
-          Text(renderSignature.laneName)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-        }
-        .layoutPriority(-1)
-        if git {
-          laneGitState
-        }
-      }
-      if pr, showsLaneIdentity, let pullRequest {
-        WorkLanePrIndicator(tag: pullRequest)
-          .fixedSize()
-      }
-      if let exitCode = failedExitCode {
-        Text("EXIT \(exitCode)")
-          .font(.caption2.monospaced().weight(.semibold))
-          .foregroundStyle(ADEColor.danger)
-          .fixedSize()
-      }
-    }
-  }
-
-  /// Whether the meta line has anything before the status.
-  private var duoMetaHasLeading: Bool {
-    session.pinned || isMuted || renderSignature.activeGoal != nil
-      || subagentMark != nil || showsSubagentIdentity || showsCtoLineage
-      || showsLaneIdentity || failedExitCode != nil
-  }
-
-  /// The status (or, on a board card, the time) hard against the trailing edge.
-  @ViewBuilder
-  private var duoStatus: some View {
-    HStack(spacing: 0) {
-      if isPendingSyncCreation {
-        Text("Pending sync")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-          .fixedSize()
-      } else if isArchived {
-        Text("ARCHIVED")
-          .font(.caption2.monospaced().weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-          .fixedSize()
-      } else if boardCard {
-        Text(relativeTimestampCompact(renderSignature.activityTimestamp))
-          .font(.caption2.monospacedDigit())
-          .foregroundStyle(ADEColor.textMuted)
-          .fixedSize()
-      } else {
-        statusSlot(wraps: false)
-      }
-    }
-    .fixedSize()
-  }
-
   /// Leading chrome glyphs, the lane and its git state (headerless rows only),
   /// subagent identity, then the one status slot hard against the trailing edge.
   ///
@@ -778,7 +637,15 @@ struct WorkSessionRow: View, Equatable {
         subagentMarkView
       }
       .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-      statusSlot(wraps: false)
+      if boardCard {
+        // The board's column is the status; the card says when.
+        Text(relativeTimestampCompact(renderSignature.activityTimestamp))
+          .font(.caption2.monospacedDigit())
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize()
+      } else {
+        statusSlot(wraps: false)
+      }
     }
   }
 
@@ -839,12 +706,13 @@ struct WorkSessionRow: View, Equatable {
 
   private var lineTwo: some View {
     HStack(spacing: 6) {
-      titleView(lineLimit: 1)
+      titleView(lineLimit: boardCard ? 2 : 1)
 
       // Only on a headerless row. Under a lane header the PR already sits on the
       // header, so rendering it per row prints the same "#14 Open" down the
-      // whole section.
-      if showsLaneIdentity, let pullRequest {
+      // whole section. A board column is narrow, so there the PR moves to the
+      // latest-word line and the title keeps the whole width.
+      if showsLaneIdentity, !boardCard, let pullRequest {
         WorkLanePrIndicator(tag: pullRequest)
           .fixedSize()
       }
@@ -883,6 +751,14 @@ struct WorkSessionRow: View, Equatable {
         Text("EXIT \(exitCode)")
           .font(.caption2.monospaced().weight(.semibold))
           .foregroundStyle(ADEColor.danger)
+          .fixedSize()
+      }
+
+      // Only when nothing else claims this line: a board column is too narrow
+      // for the PR beside Pending sync, ARCHIVED or an EXIT code.
+      if boardCard, showsLaneIdentity, !isPendingSyncCreation, !isArchived,
+         failedExitCode == nil, let pullRequest {
+        WorkLanePrIndicator(tag: pullRequest)
           .fixedSize()
       }
 
@@ -1216,7 +1092,7 @@ struct WorkSessionRow: View, Equatable {
   /// clause below reads a model field, not a view.
   var accessibilityLabel: String {
     let effectiveStatus = renderSignature.statusLabel ?? sessionStatusLabel(for: status)
-    var parts = [chatSummary?.title ?? session.title, session.laneName, effectiveStatus]
+    var parts = [chatSummary?.title ?? session.title, renderSignature.laneName, effectiveStatus]
     if renderSignature.steeringInput && renderSignature.statusGlyph == .working {
       parts.append("has a question")
     }

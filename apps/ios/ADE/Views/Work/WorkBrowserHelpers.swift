@@ -211,6 +211,9 @@ func workFilteredSessions(
   machineFilter: Set<String> = [],
   searchText: String,
   outputSearchBySessionId: [String: String] = [:],
+  /// Lane id → the lane's shown name, so a search for "Main checkout" finds
+  /// the rows that say it. The stored name stays searchable too.
+  laneDisplayNameByLaneId: [String: String] = [:],
   /// Lane → PR-derived wait, from `workLaneWaitingReasonByLaneId`. Empty is a
   /// valid input (no PRs loaded yet): Waiting can still contain scheduled wakes,
   /// busy parents, or snoozed rows; running rows stay in Working rather than
@@ -280,6 +283,7 @@ func workFilteredSessions(
         session: session,
         summary: chatSummaries[session.id],
         query: searchText,
+        laneDisplayName: laneDisplayNameByLaneId[session.laneId],
         outputSearchText: outputSearchBySessionId[session.id]
       )
     }
@@ -341,6 +345,14 @@ func resolvedWorkNavigationLaneId(for session: TerminalSessionSummary, lanes: [L
   }
 
   return session.laneId
+}
+
+/// The name a screen shows for a session's lane: the main checkout reads
+/// "Main checkout", never its stored "Primary". A lane this phone does not
+/// list keeps the session's own name.
+func workSessionLaneDisplayName(_ session: TerminalSessionSummary, lanes: [LaneSummary]) -> String {
+  let laneId = resolvedWorkNavigationLaneId(for: session, lanes: lanes)
+  return lanes.first(where: { $0.id == laneId })?.displayName ?? session.laneName
 }
 
 private func normalizedWorkLaneLookupValue(_ value: String) -> String {
@@ -443,6 +455,7 @@ private func workSessionMatchesSearch(
   session: TerminalSessionSummary,
   summary: AgentChatSessionSummary?,
   query: String,
+  laneDisplayName: String? = nil,
   outputSearchText: String? = nil
 ) -> Bool {
   let tokens = query
@@ -451,13 +464,19 @@ private func workSessionMatchesSearch(
     .split(whereSeparator: \.isWhitespace)
     .map(String.init)
   guard !tokens.isEmpty else { return true }
-  let indexed = workSessionSearchIndex(session: session, summary: summary, outputSearchText: outputSearchText)
+  let indexed = workSessionSearchIndex(
+    session: session,
+    summary: summary,
+    laneDisplayName: laneDisplayName,
+    outputSearchText: outputSearchText
+  )
   return tokens.allSatisfy(indexed.contains)
 }
 
 private func workSessionSearchIndex(
   session: TerminalSessionSummary,
   summary: AgentChatSessionSummary?,
+  laneDisplayName: String? = nil,
   outputSearchText: String? = nil
 ) -> String {
   let status = normalizedWorkChatSessionStatus(session: session, summary: summary)
@@ -467,6 +486,7 @@ private func workSessionSearchIndex(
   fields.append(session.goal ?? "")
   fields.append(summary?.goal ?? "")
   fields.append(session.laneName)
+  fields.append(laneDisplayName ?? "")
   fields.append(session.toolType ?? "")
   fields.append(workSessionRuntimeLabel(session: session))
   fields.append(session.lastOutputPreview ?? "")
