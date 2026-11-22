@@ -1,4 +1,4 @@
-import { useRef, useState, type ComponentType, type ReactNode } from "react";
+import { Fragment, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { Bot, Check, ChevronDown, Clock, Cpu, Gift, MemoryStick, Recycle, Server, Timer, X, Zap } from "lucide-react";
 
 import { CloudLockup } from "../../components/cloud/CloudMark";
@@ -190,11 +190,14 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
         <span className="text-[14px] text-white/45">a month</span>
       </p>
       <div className="mt-5 rounded-2xl border border-white/[0.08] bg-black/25 px-4 py-3.5">
-        <p className="flex items-baseline gap-1.5">
-          <span className="text-[30px] font-semibold leading-none tracking-tight text-white">{formatCount(plan.hours)}</span>
-          <span className="text-[15px] text-white/60">hours for bigger computers</span>
+        <p className="text-[30px] font-semibold leading-none tracking-tight text-white">{formatCount(plan.hours)}</p>
+        <p className="mt-1.5 text-[14px] text-white/60">hours for bigger computers</p>
+        {/* Three lines tall on every card, so the plan lines below start level; a size never breaks inside its phrase. */}
+        <p className="mt-1.5 min-h-[4.5em] text-[13px] leading-[1.5] text-white/50">
+          {hoursOnSizesLine(plan.hours).split(" · ").map((part, index) => (
+            <Fragment key={part}>{index ? " · " : null}<span className="whitespace-nowrap">{part}</span></Fragment>
+          ))}
         </p>
-        <p className="mt-1.5 text-[13px] leading-[1.5] text-white/50">{hoursOnSizesLine(plan.hours)}</p>
       </div>
       <ul className="mt-5 flex flex-1 flex-col gap-3 text-[14px]">
         <PlanLine icon={Server} label="Cloud computers" value={formatCount(plan.computerLimit)} />
