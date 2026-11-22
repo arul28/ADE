@@ -811,6 +811,31 @@ Worker and a Clerk webhook subscribed to `user.created` and `user.deleted`;
 until then the route answers 503 and records nothing. Volume is one event per
 new or deleted account.
 
+#### The day-2 getting-started email (server-side)
+
+`apps/account-directory/src/welcomeEmail.ts` (README "The day-2
+getting-started email") sends each new account one email a day after
+sign-up. A sent email is one `ade_welcome_email_sent` on the account's
+`ade_user_…` distinct id, uuid from the user id (so at most one per account
+ever), `client: "account"`, `interactive: false`, no person profile, and
+`variant`: `start` (no computer of its own and no ADE Cloud computer yet) or
+`first_chat`. Its links carry `utm_source=email&utm_medium=lifecycle&utm_campaign=welcome_day2`,
+so a click lands on the site's attribution. Volume is at most one event per
+new account.
+
+Failures go to Sentry through `reportCloudFailure`, tagged `area:
+welcome_email` with a closed `code` only (`clerk_unreachable`,
+`clerk_unavailable`, `resend_unreachable`, `resend_<status>`):
+`welcome_email.retrying` when a try will be repeated and
+`welcome_email.failed` when the email is given up, each at most once a
+minute per name. `welcome_email.schedule_failed` (`area: signup`) is a
+`user.created` whose row could not be written; the webhook answers 502 so
+Clerk delivers again. Every outcome is one Workers log line
+(`welcome_email.sent`, `.failed`, `.skipped_*`, `.unsubscribed`, and the warn
+lines `.waiting` with the missing setting, `.refused` with Resend's status,
+`.capture_failed`) carrying the outcome and the variant only: never the
+address, the name or the account id.
+
 #### ADE Cloud (server-side)
 
 The account-directory Worker records ADE Cloud's product facts itself,
