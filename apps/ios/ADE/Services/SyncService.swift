@@ -31048,7 +31048,12 @@ extension SyncService {
   func resolveCloudMachineKeys() {
     // The computers the account server named to this phone itself count
     // too: a connected computer's list that leaves one out can't drop it.
-    let serverKeys = Set(cloudServerInstances.compactMap(\.machineKey)).union(cloudSavedChats.map(\.machineKey))
+    // A machine whose saved copies all say no ADE Cloud computer saved them
+    // (`computer: null`) is one of the person's own: a lane moved there.
+    let savedKeys = Dictionary(grouping: cloudSavedChats, by: \.machineKey)
+      .filter { !$0.value.allSatisfy(\.savedByNoCloudComputer) }
+      .keys
+    let serverKeys = Set(cloudServerInstances.compactMap(\.machineKey)).union(savedKeys)
     guard let accountKeys = cloudAccountMachineKeys.map({ $0.union(serverKeys) })
       ?? (serverKeys.isEmpty ? nil : serverKeys) else { return }
     let account = AccountService.shared
