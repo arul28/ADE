@@ -359,7 +359,9 @@ function textOf(call: Call, value: unknown): string {
       + `It counts minutes until it stops. Run ade apple stop when you are done: by itself it stops only after ${CLOUD_PHONE_IDLE_SECONDS / 60} minutes with no command or input (those minutes count too), or after ${CLOUD_PHONE_MAX_MINUTES / 60} hours. The next command starts a new one.\n`;
   }
   if (action === "stop") return value.stopped ? "Stopped the ADE Cloud iPhone.\n" : "The ADE Cloud iPhone was not running.\n";
-  const text = asString(value.text) ?? "";
+  // A recording saved on the brain's machine (Revyl's has no download link): say where.
+  const saved = action === "record" ? asString(value.path) : null;
+  const text = `${asString(value.text) ?? ""}${saved ? `\nSaved ${saved}` : ""}`;
   const notice = asString(value.stopNotice);
   return `${text}${text.endsWith("\n") ? "" : "\n"}${notice ? `! ${notice}\n` : ""}`;
 }

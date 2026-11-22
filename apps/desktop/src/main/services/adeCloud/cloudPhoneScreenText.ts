@@ -148,8 +148,8 @@ export function screenText(screen: Screen, find?: string): string {
 /* ---- Steps ---- */
 
 /** A step's words: bare words, and JSON-quoted values kept whole (`"Sign In"`, `#"an id"`). */
-export function stepWords(step: string): Array<{ word: string; quoted: boolean }> {
-  const words: Array<{ word: string; quoted: boolean }> = [];
+export function stepWords(step: string): Array<{ word: string; quoted: boolean; id?: boolean }> {
+  const words: Array<{ word: string; quoted: boolean; id?: boolean }> = [];
   const pattern = /\s*(#?)("(?:[^"\\]|\\.)*"|\S+)/gy;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(step)) !== null) {
@@ -163,7 +163,8 @@ export function stepWords(step: string): Array<{ word: string; quoted: boolean }
       } catch {
         // A quote it can't read is taken as written.
       }
-      words.push({ word: `${hash}${value}`, quoted: true });
+      // `#"an id"` is an id; `"#Trending"` is a label that starts with #.
+      words.push({ word: `${hash}${value}`, quoted: true, id: Boolean(hash) });
     } else {
       words.push({ word: `${hash}${body}`, quoted: false });
     }
@@ -177,10 +178,10 @@ export type StepTarget =
   | { by: "point"; x: number; y: number };
 
 /** A step's element: `"Label"`, a bare label, `#id`, or `@x,y`. */
-export function readTarget(word: { word: string; quoted: boolean }): StepTarget {
+export function readTarget(word: { word: string; quoted: boolean; id?: boolean }): StepTarget {
   const point = /^@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/.exec(word.word);
   if (point && !word.quoted) return { by: "point", x: Number(point[1]), y: Number(point[2]) };
-  if (word.word.startsWith("#") && word.word.length > 1) return { by: "id", id: word.word.slice(1) };
+  if (word.word.startsWith("#") && word.word.length > 1 && (!word.quoted || word.id)) return { by: "id", id: word.word.slice(1) };
   return { by: "label", label: word.word };
 }
 

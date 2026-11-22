@@ -160,8 +160,17 @@ async function workspaceOf(env: CloudEnv, userId: string, now: number): Promise<
     reportCloudFailure(`cloud.phone_revyl_connect_failed.${code.replace(/[^A-Za-z0-9_]/g, "").slice(0, 40)}`, { userId, status: answer.status, code }, "cloud-phone");
     return fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. ADE has been told.", 503);
   }
-  await env.DB.prepare("insert into cloud_phone_revyl (user_id, external_id, app_id, created_at, updated_at) values (?, ?, null, ?, ?) on conflict(user_id) do nothing")
-    .bind(userId, externalId, now, now).run();
+  // Kept only for an account that still exists: one deleted meanwhile has its connection taken back at once.
+  const kept = await env.DB.prepare(`
+    insert into cloud_phone_revyl (user_id, external_id, app_id, created_at, updated_at)
+    select ?, ?, null, ?, ? where exists (select 1 from cloud_accounts where user_id = ? and deleted_at is null)
+    on conflict(user_id) do nothing
+  `).bind(userId, externalId, now, now, userId).run();
+  if ((kept.meta?.changes ?? 0) === 0 && !(await env.DB.prepare("select 1 from cloud_phone_revyl where user_id = ?").bind(userId).first())) {
+    const undone = await partner(env, "DELETE", `/partner/connections/${encodeURIComponent(externalId)}`);
+    if (undone.status >= 400 && undone.status !== 404) reportCloudFailure("cloud.phone_revyl_orphan_disconnect_failed", { userId, status: undone.status, code: revylErrorOf(undone).code }, "cloud-phone");
+    return fail("phone_unavailable", "The ADE Cloud iPhone can't be used with this account.", 400);
+  }
   logCloud("cloud.phone_revyl_workspace", { userId, created: answer.status === 201 });
   return { user_id: userId, external_id: externalId, app_id: null };
 }

@@ -111,6 +111,8 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
     if (options.cmd) options.cmd.first = false;
     const client = await ctx.client();
     if (!client.phoneCall) throw new CloudPhoneError("Update ADE to drive this cloud iPhone.", "no_account");
+    // The server drives the signed-in account's phone: after a switch, never this command's next step.
+    if ((client.account ?? null) !== phone.account) throw new CloudPhoneError("The ADE account changed while the cloud iPhone was in use. Try again.", "no_account");
     const by = Date.now() + CONNECT_WAIT_MS;
     for (;;) {
       const raw = await client.phoneCall({ action, ...(body ? { body } : {}), ...(options.query ? { query: options.query } : {}) }, { timeoutMs: options.timeoutMs });

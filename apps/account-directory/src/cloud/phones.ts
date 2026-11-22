@@ -310,7 +310,8 @@ async function providerFor(env: CloudEnv, userId: string, drives: (provider: Clo
 }
 
 async function phoneAccess(env: CloudEnv, userId: string): Promise<CloudPhoneAccess> {
-  if (!anyProviderConfigured(env)) return "off";
+  // A key, not a start: a provider switched off for new phones (Revyl's) keeps its running ones usable.
+  if (!anyProviderKey(env)) return "off";
   const setting = phoneAccessSetting(env);
   if (setting === "off") return "off";
   if (setting === "all") return "on";
@@ -473,8 +474,10 @@ async function phoneContext(env: CloudEnv, userId: string, now: number): Promise
 const startedBeforePeriod = (context: PhoneContext): boolean => context.live != null && context.live.createdAt < context.account.period_start;
 
 /** Why the account's live phone must stop now, or null while it may run on. */
-async function stopReasonOf(env: CloudEnv, userId: string, context: PhoneContext): Promise<string | null> {
+async function stopReasonOf(env: CloudEnv, userId: string, context: PhoneContext, now: number): Promise<string | null> {
   if (startedBeforePeriod(context)) return "period_changed";
+  // One phone's longest: Revyl's has no limit of its own, so this check is its stop.
+  if (context.live && now >= context.live.createdAt + CLOUD_PHONE_MAX_MINUTES * 60_000) return "time_limit";
   if ((await phoneAccess(env, userId)) !== "on") return "access_removed";
   if (await isCloudBlocked(env, userId)) return "account_blocked";
   if (allowedMinutes(context.usage) <= 0) return "minutes_used";
@@ -495,7 +498,7 @@ export async function enforcePhoneAllowance(env: CloudEnv, userId: string, now: 
   const context = await phoneContext(env, userId, now);
   if (context instanceof Response || !context.live) return "none";
   const live = context.live;
-  const why = await stopReasonOf(env, userId, context);
+  const why = await stopReasonOf(env, userId, context, now);
   if (why) {
     // Due now, saved first: if NoMac refuses the stop, the minute tick tries it again.
     await env.DB.prepare("update cloud_phones set stop_at = ?, updated_at = ? where phone_id = ? and state = 'live'").bind(now, now, live.session.id).run();
@@ -674,6 +677,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     }
     // What this phone may use: the plan's minutes left, then extra minutes, and never more than one phone's longest.
     const minutes = Math.min(CLOUD_PHONE_MAX_MINUTES, allowedMinutes(context.usage));
+    if (!anyProviderConfigured(env)) return fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);
     provider = await providerFor(env, userId, drives);
     const started = await PHONE_PROVIDERS[provider].start(env, { userId, label: context.label, device, minutes, lastPhoneId: context.lastPhoneId, now });
     if (started instanceof Response) return started;
@@ -851,6 +855,18 @@ export async function runPhoneChecks(env: CloudEnv, now: number): Promise<void> 
     if (isDeletedAccount(row.user_id)) continue;
     // A phone read in the last few minutes (a pane open, a webhook) is fresh enough.
     if (now - row.updated_at < 5 * 60_000 && now - row.created_at < LIVE_STALE_MS) continue;
+    try {
+      const read = await readPhone(env, row.user_id, row.phone_id, whereOfRow(row));
+      if (read) await savePhone(env, row.user_id, read.session, now);
+    } catch (error) {
+      reportCloudFailure("cloud.phone_check_read_failed", { message: error instanceof Error ? error.message : "unknown" });
+    }
+  }
+  // A Revyl phone saved as ended on its stop had only an estimate then: its final time is read once more.
+  const settling = await env.DB.prepare("select phone_id, user_id, created_at, updated_at, provider, provider_ref, device from cloud_phones where state = 'ended' and provider = 'revyl' and ended_at >= ? limit ?")
+    .bind(now - 15 * 60_000, CHECK_BATCH).all<Pick<PhoneRow, "phone_id" | "user_id" | "created_at" | "updated_at" | "provider" | "provider_ref" | "device">>();
+  for (const row of settling.results ?? []) {
+    if (isDeletedAccount(row.user_id)) continue;
     try {
       const read = await readPhone(env, row.user_id, row.phone_id, whereOfRow(row));
       if (read) await savePhone(env, row.user_id, read.session, now);
