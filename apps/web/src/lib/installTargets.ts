@@ -33,7 +33,7 @@ export type InstallTarget = {
     blurb?: string;
     analyticsFeature: MarketingFeature;
   };
-  /** Absent for Linux — there is no ADE desktop app for Linux. */
+  /** Direct downloads of the desktop app. */
   downloads?: {
     heading: string;
     blurb?: string;
@@ -130,15 +130,46 @@ export const INSTALL_TARGETS: Readonly<Record<InstallPlatform, InstallTarget>> =
   },
   linux: {
     platform: "linux",
-    title: "Run the ADE brain on Linux",
+    title: "Get ADE for Linux",
     terminal: {
-      heading: "Install from your terminal",
+      heading: "No desktop? Install just the brain",
       command: LINUX_INSTALL_COMMAND,
       blurb:
-        "Run the brain on any Linux box and control it from ADE on your Mac, Windows, phone, or the web.",
+        "Run the brain on a server and control it from ADE on your Mac, Windows, phone, or the web.",
       analyticsFeature: MARKETING_FEATURES.COPY_INSTALL_COMMAND_LINUX,
     },
-    footnote: {},
+    downloads: {
+      heading: "Download the desktop app",
+      options: [
+        {
+          href: LINKS.downloadLinuxX64Deb,
+          label: ".deb for x64",
+          detail: "Ubuntu and Debian",
+          analyticsCta: MARKETING_CTA_LABELS.DOWNLOAD_LINUX_X64_DEB,
+        },
+        {
+          href: LINKS.downloadLinuxArm64Deb,
+          label: ".deb for ARM",
+          detail: "Ubuntu and Debian",
+          analyticsCta: MARKETING_CTA_LABELS.DOWNLOAD_LINUX_ARM64_DEB,
+        },
+        {
+          href: LINKS.downloadLinuxX64AppImage,
+          label: "AppImage for x64",
+          detail: "Updates itself",
+          analyticsCta: MARKETING_CTA_LABELS.DOWNLOAD_LINUX_X64_APPIMAGE,
+        },
+        {
+          href: LINKS.downloadLinuxArm64AppImage,
+          label: "AppImage for ARM",
+          detail: "Updates itself",
+          analyticsCta: MARKETING_CTA_LABELS.DOWNLOAD_LINUX_ARM64_APPIMAGE,
+        },
+      ],
+    },
+    footnote: {
+      text: "Ubuntu 22.04, Debian 12, or newer. On Ubuntu 24.04 and newer, use the .deb.",
+    },
     openAnalyticsFeature: MARKETING_FEATURES.INSTALL_DIALOG_LINUX,
   },
 });
