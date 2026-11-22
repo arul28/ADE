@@ -139,15 +139,15 @@ type Sender = { resendKey: string; origin: string };
  * the unsubscribe link would be keyed with the public development constant,
  * so anyone could forge one: no email goes out until it is set.
  */
-function readSender(env: WelcomeEmailEnv): { sender: Sender } | { blocked: string } {
-  if (env.WELCOME_EMAILS?.trim() === "0") return { blocked: "turned_off" };
+function readSender(env: WelcomeEmailEnv): { kind: "ready"; sender: Sender } | { kind: "blocked"; reason: string } {
+  if (env.WELCOME_EMAILS?.trim() === "0") return { kind: "blocked", reason: "turned_off" };
   const resendKey = env.RESEND_API_KEY?.trim();
-  if (!resendKey) return { blocked: "no_resend_key" };
-  if (!env.CLERK_SECRET_KEY?.trim()) return { blocked: "no_clerk_key" };
-  if (!env.CLOUD_CHAT_MASTER_KEY?.trim()) return { blocked: "no_signing_key" };
+  if (!resendKey) return { kind: "blocked", reason: "no_resend_key" };
+  if (!env.CLERK_SECRET_KEY?.trim()) return { kind: "blocked", reason: "no_clerk_key" };
+  if (!env.CLOUD_CHAT_MASTER_KEY?.trim()) return { kind: "blocked", reason: "no_signing_key" };
   const origin = publicOrigin(env);
-  if (!origin) return { blocked: "no_public_origin" };
-  return { sender: { resendKey, origin } };
+  if (!origin) return { kind: "blocked", reason: "no_public_origin" };
+  return { kind: "ready", sender: { resendKey, origin } };
 }
 
 type DueRow = { user_id: string; signed_up_at: number; due_at: number; attempts: number };
@@ -174,9 +174,9 @@ export async function runWelcomeEmails(env: WelcomeEmailEnv, scheduledMs: number
       await finish(env.DB, row.user_id, "skipped_stale");
       continue;
     }
-    if ("sender" in settings) await sendOne(env, env.DB, row, settings.sender);
+    if (settings.kind === "ready") await sendOne(env, env.DB, row, settings.sender);
   }
-  if ("blocked" in settings) warnCloud("welcome_email.waiting", { reason: settings.blocked, due: results.length });
+  if (settings.kind === "blocked") warnCloud("welcome_email.waiting", { reason: settings.reason, due: results.length });
 }
 
 async function finish(db: D1Database, userId: string, outcome: Outcome, variant?: WelcomeVariant): Promise<void> {
