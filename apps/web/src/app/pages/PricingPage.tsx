@@ -1,5 +1,5 @@
 import { Fragment, useRef, useState, type ComponentType, type ReactNode } from "react";
-import { Bot, Check, ChevronDown, Clock, Cpu, Gift, MemoryStick, Recycle, Server, Timer, X, Zap } from "lucide-react";
+import { Bot, Check, ChevronDown, Clock, Megaphone, Cpu, Gift, MemoryStick, Recycle, Server, Timer, X, Zap } from "lucide-react";
 
 import { CloudLockup } from "../../components/cloud/CloudMark";
 import { ComingSoon } from "../../components/cloud/ComingSoon";
@@ -9,6 +9,7 @@ import { InstallBlock } from "../../components/home/Hero";
 import { Page } from "../../components/Page";
 import { cn } from "../../lib/cn";
 import {
+  ADS_FREE_PLAN_SENTENCE,
   CLOUD_HOUR_UNIT_SENTENCE,
   CLOUD_OFFER_REST_SENTENCE,
   CLOUD_SMALL_FAIR_USE_SENTENCE,
@@ -144,6 +145,9 @@ function PricingHero() {
         <p className="mx-auto mt-6 max-w-[48rem] text-center text-[14px] leading-[1.6] text-white/45">
           Prices are monthly, in US dollars. {CLOUD_HOUR_UNIT_SENTENCE} {CLOUD_SMALL_FAIR_USE_SENTENCE}
         </p>
+        <p className="mx-auto mt-2 max-w-[48rem] text-center text-[14px] leading-[1.6] text-white/45">
+          {ADS_FREE_PLAN_SENTENCE}
+        </p>
         <ComingSoon compact className="mt-8" />
       </div>
     </section>
@@ -204,6 +208,7 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
         <PlanLine icon={Cpu} label="Small computers" value="Unlimited" />
         <PlanLine icon={Zap} label="Extra hours" value={plan.extraHourCents == null ? "None" : `${formatCents(plan.extraHourCents)} each`} />
         <PlanLine icon={Bot} label="Outside agents" value={plan.outsideAgents ? "Yes" : "No"} />
+        <PlanLine icon={Megaphone} label="Ads" value={plan.adSupported ? "Ad-supported" : "No ads"} />
         <PlanLine icon={Timer} label="Unused kept" value={days(plan.idleDays)} />
       </ul>
       <PlanButton
@@ -724,6 +729,11 @@ function FaqSection() {
             task's branch. Files git ignores, such as .env or a local database, are never pushed, so they are not kept;
             the email lists them. The task and its chats stay, and your next message makes a new computer from the
             branch.
+          </FaqItem>
+          <FaqItem question="Does the Free plan show ads?">
+            {ADS_FREE_PLAN_SENTENCE} A sponsored card is labeled "Sponsored". An agent may also recommend a sponsored
+            tool when you need one; nothing is installed unless you ask. ADE asks you once before the first sponsored
+            card, and you can change your answer in Settings › ADE Cloud.
           </FaqItem>
           <FaqItem question="Do I need ADE Cloud to use ADE?">
             No. The ADE app costs nothing and runs your agents on your own computers. ADE Cloud adds computers in the

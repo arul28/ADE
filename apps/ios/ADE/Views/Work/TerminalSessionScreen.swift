@@ -66,6 +66,16 @@ struct TerminalSessionScreen: View {
       .onReceive(keyboardShowPublisher) { _ in handleKeyboardWillShow() }
       .onReceive(keyboardHidePublisher) { _ in keyboardVisible = false }
       .onReceive(pasteboardPublisher) { _ in refreshPasteboardState() }
+      // An agent CLI on an ADE Cloud computer, on screen: the Index may
+      // answer that agent (it says "Sponsored" in its own reply). A terminal
+      // never shows a card.
+      .background(WorkSponsoredViewerBeacon(instanceId: sponsoredViewerInstanceId))
+  }
+
+  /// The ADE Cloud lane computer of an agent CLI on screen; nil on the person's own machines.
+  private var sponsoredViewerInstanceId: String? {
+    guard isAgentCli, syncService.isCloudFleetKey(sessionMachineKey) else { return nil }
+    return syncService.cloudServerInstance(fleetKey: sessionMachineKey)?.id
   }
 
   private var lifecycleDecorated: some View {

@@ -679,6 +679,39 @@ move keeps the old disk.
   after it. `$ADE_HOME/cloud/disk-grow.json` keeps what was told. After the
   restart, the cards are retried after 10 s, then up to 5 times every 30 s.
 
+### Sponsored cards and the Index (Free, behind a switch)
+
+Free is ad-supported through Gravity (`apps/account-directory/src/cloud/gravity.ts`,
+migration `0054`). The account server decides everything and holds the partner
+key (`GRAVITY_API_KEY`, a Worker secret): the switch `GRAVITY_ADS` (`off` |
+`testers` | `all`, production `off`; `testers` reads `cloud_sponsored_testers`),
+test ads until `GRAVITY_LIVE=1`, the plan (Free only, `past_due` included as
+paid), the country (`GRAVITY_COUNTRIES`, from Cloudflare), the account's answer
+(`cloud_sponsored_consent`, one per account, so every machine agrees), and that
+the chat runs on one of the account's own live ADE Cloud computers and is not a
+subagent's (`cloud_chat_copies`). Chats on the person's own machine never get a
+card, whatever the plan.
+
+- **Reply card** (`renderer/components/chat/sponsored/`, iOS
+  `WorkSponsoredCards.swift`): at most one, under a finished reply, asked for
+  only while the pane and that spot are on screen. The server claims the reply
+  before it asks Gravity, so two screens make one request, and keeps the card's
+  fields (never chat text) for a day. The view link goes once half the card is
+  on screen; nothing rewards a view or a click. One sponsored unit per window
+  (`sponsoredOnScreen.ts`), and the tray hides its upgrade button beside it.
+- **Index pick** (`ade cloud recommend --need "…"`, `cloudAgentActions.ts`): an
+  agent on an ADE Cloud computer asks for a service the person needs. Refused
+  for a person, ADE MCP, automation and subagent chats, and while nobody has a
+  chat or agent CLI of that computer open (`cloud_sponsored_viewers`, from
+  `seen` every 4 minutes). The Index has no test mode, so before go-live only
+  testers reach it. A chat gets a `sponsored_pick` card that installs nothing;
+  a CLI session gets text the agent repeats once, starting with "Sponsored:".
+- **Limits and report:** per account per day (120 ads, 20 Index searches) and
+  Gravity's live allowance (`GRAVITY_DAILY_LIMIT`), each taken in one
+  conditional write before the request (`cloud_sponsored_days`). The daily cost
+  report prints the counts and Gravity's revenue against the day's free-plan
+  cost, and prunes answers and viewer rows older than a day.
+
 ## Referrals and the free plan
 
 The server enforces all of it (`referrals.ts`, `freePlan.ts`,

@@ -80,9 +80,12 @@ const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgra
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
+// The first URL's query: the app routes away from it and drops the query.
+const INITIAL_SEARCH = typeof window === "undefined" ? "" : window.location.search;
+
 function param(name: string): string | null {
   try {
-    return new URLSearchParams(window.location.search).get(name);
+    return new URLSearchParams(INITIAL_SEARCH).get(name);
   } catch {
     return null;
   }
@@ -597,6 +600,13 @@ export function applyBrowserMockCloud(ade: any): void {
   const fix = fixture(scenario);
   const machines = fix.lanes.map((spec) => machine(spec, now));
   let state = account(fix, machines, now);
+  // `&mockSponsored=ask` (the one-time question) or `on` (answered yes): sponsored
+  // cards, test ads only, whatever the scenario's plan (the server says when).
+  // Pair with `mockCloudLaneMachine=1` so a chat runs on an ADE Cloud computer.
+  const sponsoredParam = param("mockSponsored");
+  if (sponsoredParam === "ask" || sponsoredParam === "on") {
+    state = { ...state, sponsored: { ads: true, consent: sponsoredParam === "on" ? "granted" : null, test: true } };
+  }
   // `upgraded`: this computer last saw the account on Free, a period ago, with 79.1 hours left
   // (once per tab, as a real checkout coming back is seen once).
   if (scenario === "upgraded") {
@@ -652,6 +662,31 @@ export function applyBrowserMockCloud(ade: any): void {
     },
     getAgentLimits: base.getAgentLimits ?? (async () => ({ maxShape: "4x8", machinesPerDay: 3, unattendedHours: true, askBeforeVm: true })),
     setAgentLimits: base.setAgentLimits ?? (async (limits: unknown) => limits),
+    setSponsoredConsent: async (consent: "granted" | "declined") => {
+      if (!state.sponsored) return null;
+      state = { ...state, sponsored: { ...state.sponsored, consent } };
+      for (const listener of statusListeners) listener();
+      return state.sponsored ?? null;
+    },
+    sponsoredSeen: async () => undefined,
+    sponsoredViewed: async () => true,
+    sponsoredAd: async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 600));
+      if (state.sponsored?.consent !== "granted") return { ad: null, reason: "consent" as const };
+      return {
+        ad: {
+          id: "mock-ad-1",
+          brand: "Northwind Postgres",
+          title: "Managed Postgres with branching",
+          text: "Spin up a database branch for every pull request, then merge the schema when it lands.",
+          cta: "Learn more",
+          clickUrl: "https://trygravity.ai/",
+          impUrl: null,
+          favicon: null,
+          test: true,
+        },
+      };
+    },
     setExtraHours: async (enabled: boolean) => {
       state.extraHours = { ...state.extraHours, enabled };
       for (const listener of statusListeners) listener();

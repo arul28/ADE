@@ -1,41 +1,50 @@
-import { useMemo } from "react";
-import { Desktop } from "@phosphor-icons/react";
+import { useMemo, useState } from "react";
+import { ArrowCircleUp, Desktop, Recycle, Trash } from "@phosphor-icons/react";
 import {
   CLOUD_PLAN_LABELS,
+  cloudCatalogOf,
   cloudComputerLimitDetailOf,
   cloudComputerLimitTitle,
   cloudComputerLimitUpgradeLabel,
+  formatCloudHours,
   type CloudAccountState,
   type CloudComputerLimitDetail,
   type CloudComputerLimitLane,
   type CloudNextPlan,
 } from "../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
-import { ipcErrorMessage } from "../../lib/format";
+import { formatAgo, ipcErrorMessage } from "../../lib/format";
 import { showToast } from "../app/toast/toastStore";
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import { refreshCloudMachines, useCloudMachines } from "../remoteTargets/useCloudMachines";
-import { Dialog, openDialog } from "../ui/dialog";
-import { checkoutCloudPlanUp, confirmCloudPlanMoveUp } from "../settings/cloudDashboard/cloudPlanMoveUp";
-import { deleteCloudLaneWithCheck, freeCloudLaneWithConfirm } from "./deleteCloudLane";
+import { Dialog, openDialog, type DialogAction } from "../ui/dialog";
+import { checkoutCloudPlanUp } from "../settings/cloudDashboard/cloudPlanMoveUp";
+import { KeepChatsCheckbox, deleteCloudLaneWithCheck, freeCloudLaneWithConfirm } from "./deleteCloudLane";
 import { cloudLaneChangesAvailable } from "./cloudLaneActions";
 import "./cloudLane.css";
 
 /**
  * The computer limit card (Pricing v2): a new cloud lane needs a computer and
- * the account uses all its plan's. One card, three ways out:
+ * the account uses all its plan's. Three ways out, side by side, each with one
+ * line under it; picking one opens its step below, which says exactly what
+ * will happen, and the confirm button names the action:
  *
- * 1. Free up a computer from another lane (the server's "free the computer,
- *    keep the lane" job, `POST /cloud/instances/:id/free`). The lane and its
- *    chats stay; it gets a new computer the next time a message is sent there.
+ * 1. Free up a computer (the server's "free the computer, keep the lane" job,
+ *    `POST /cloud/instances/:id/free`). The lane and its chats stay; it gets a
+ *    new computer the next time a message is sent there. A computer with no
+ *    lane can only be deleted.
  * 2. Delete a lane (the ordinary cloud lane delete, which checks its work first).
- * 3. Move to the next plan (the ordinary checkout).
+ * 3. Move to the next plan (the ordinary checkout). On a paid plan the move
+ *    charges the difference now: the step says so, and its button is the one ask.
  *
  * It opens from a refusal (`computer_limit`, whose `CloudComputerLimitDetail`
  * names the computers) or before a new lane, from the account read. Account
  * level: every call here goes to ADE Cloud by the computer's id, no pin. Each
- * way out closes the card first and reports with a toast.
+ * way out closes the card first and reports with a toast. The iPhone's
+ * `CloudComputerLimitSheet` has the same shape.
  */
+
+type Way = "free" | "delete" | "move";
 
 /** The account's computers, least recently used first, from the list read (when no refusal named them). */
 function lanesOfMachines(machines: readonly CloudLaneMachine[]): CloudComputerLimitLane[] {
@@ -51,9 +60,16 @@ function lanesOfMachines(machines: readonly CloudLaneMachine[]): CloudComputerLi
     .sort((a, b) => (a.lastAwakeAt ?? 0) - (b.lastAwakeAt ?? 0));
 }
 
-async function moveUp(next: CloudNextPlan, onPaidPlan: boolean): Promise<void> {
-  // A paid plan's move up charges the difference now: ask once, as the Plans card does.
-  if (onPaidPlan && !(await confirmCloudPlanMoveUp(next))) return;
+/** "Awake · in use now", "Asleep 3 days", "Asleep · no lane". */
+function laneStateLine(lane: CloudComputerLimitLane, now: number): string {
+  const when = lane.lastAwakeAt ? formatAgo(lane.lastAwakeAt, now).replace(/ ago$/, "") : null;
+  const state = lane.awake ? "Awake · in use now" : when && when !== "just now" ? `Asleep ${when}` : "Asleep";
+  return lane.hasLane === false ? `${state} · no lane` : state;
+}
+
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+async function moveUp(next: CloudNextPlan): Promise<void> {
   try {
     await checkoutCloudPlanUp(next);
   } catch (error) {
@@ -61,6 +77,46 @@ async function moveUp(next: CloudNextPlan, onPaidPlan: boolean): Promise<void> {
   } finally {
     refreshCloudMachines();
   }
+}
+
+function WayButton({ way, picked, icon, title, line, onPick }: { way: Way; picked: Way | null; icon: React.ReactNode; title: string; line: string; onPick: (way: Way) => void }) {
+  return (
+    <button type="button" className="adecl-limit-way" aria-pressed={picked === way} data-way={way} onClick={() => onPick(way)}>
+      <span className="adecl-limit-way-head">{icon}{title}</span>
+      <span className="adecl-limit-way-line">{line}</span>
+    </button>
+  );
+}
+
+function LanePicker({ lanes, chosen, onChoose, freeOnly, now, label }: {
+  lanes: CloudComputerLimitLane[];
+  chosen: string | null;
+  onChoose: (instanceId: string) => void;
+  freeOnly: boolean;
+  now: number;
+  label: string;
+}) {
+  return (
+    <div className="adecl-limit-pick" role="radiogroup" aria-label={label}>
+      {lanes.map((lane) => {
+        const disabled = freeOnly && lane.hasLane === false;
+        return (
+          <label key={lane.instanceId} className="adecl-limit-pick-row" data-disabled={disabled || undefined}>
+            <input
+              type="radio"
+              name={`adecl-limit-${label}`}
+              checked={chosen === lane.instanceId}
+              disabled={disabled}
+              onChange={() => onChoose(lane.instanceId)}
+            />
+            <Desktop size={13} aria-hidden />
+            <span className="adecl-limit-pick-name" title={lane.laneName}>{lane.laneName}</span>
+            <span className="adecl-limit-pick-state">{disabled ? "No lane · delete only" : laneStateLine(lane, now)}</span>
+          </label>
+        );
+      })}
+    </div>
+  );
 }
 
 function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitDetail | null; onClose: () => void }) {
@@ -72,86 +128,135 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
     if (given) return given.lanes.length || !result ? given : { ...given, lanes: lanesOfMachines(result.machines as CloudLaneMachine[]) };
     return account ? cloudComputerLimitDetailOf(account, lanesOfMachines((result?.machines ?? []) as CloudLaneMachine[])) : null;
   }, [account, given, result]);
+  const [now] = useState(() => Date.now());
+  const [way, setWay] = useState<Way | null>(null);
+  const [freeId, setFreeId] = useState<string | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [keepChats, setKeepChats] = useState(false);
   const canChange = cloudLaneChangesAvailable();
   const onPaidPlan = (detail?.planId ?? "free") !== "free";
+  const lanes = detail?.lanes ?? [];
+  const withLane = lanes.filter((lane) => lane.hasLane !== false);
+  const next = detail?.nextPlan ?? null;
+  // The next plan's hours, when the catalog has them.
+  const nextHours = next ? cloudCatalogOf(account).plans[next.planId]?.includedMilli ?? null : null;
+
+  // The first computer each step offers: the one used least lately.
+  const freeLane = lanes.find((lane) => lane.instanceId === (freeId ?? withLane[0]?.instanceId)) ?? null;
+  const deleteLane = lanes.find((lane) => lane.instanceId === (deleteId ?? lanes[0]?.instanceId)) ?? null;
 
   const run = (work: () => Promise<unknown>) => {
     onClose();
     void work().finally(() => refreshCloudMachines());
   };
 
-  const title = detail ? cloudComputerLimitTitle(detail) : "You're using all your cloud computers.";
-  const lanes = detail?.lanes ?? [];
+  const loading = !detail && machines.loading;
+  const title = detail ? cloudComputerLimitTitle(detail) : "All your cloud computers are in use";
+
+  let step: React.ReactNode = null;
+  let confirm: DialogAction | null = null;
+  if (way === "free") {
+    step = withLane.length === 0 ? (
+      <p className="adecl-limit-empty">None of your computers holds a lane to keep. Delete one instead.</p>
+    ) : (
+      <>
+        <p className="adecl-limit-step-q">Which computer?</p>
+        <LanePicker lanes={lanes} chosen={freeLane?.instanceId ?? null} onChoose={setFreeId} freeOnly now={now} label="Computer to free up" />
+        {freeLane ? (
+          <p className="adecl-limit-what">
+            <b>What happens:</b> its work is pushed to GitHub, the computer is deleted, and “{freeLane.laneName}” stays in your lanes with its chats.
+            {freeLane.awake ? " What runs on it now stops." : ""} Your next message there starts a new computer.
+          </p>
+        ) : null}
+      </>
+    );
+    if (freeLane && freeLane.hasLane !== false) {
+      confirm = { label: `Free up ${freeLane.laneName}`, variant: "solid", disabled: !canChange, onClick: () => run(() => freeCloudLaneWithConfirm({ instanceId: freeLane.instanceId, laneName: freeLane.laneName, confirmed: true })) };
+    }
+  } else if (way === "delete") {
+    step = (
+      <>
+        <p className="adecl-limit-step-q">Which lane?</p>
+        <LanePicker lanes={lanes} chosen={deleteLane?.instanceId ?? null} onChoose={setDeleteId} freeOnly={false} now={now} label="Lane to delete" />
+        {deleteLane ? (
+          <>
+            <p className="adecl-limit-what">
+              <b>What happens:</b>{" "}
+              {deleteLane.hasLane === false
+                ? "this computer has no lane; ADE deletes it."
+                : `“${deleteLane.laneName}”, its computer and its chats are deleted. If any of its work isn't on GitHub, ADE asks you first.`}
+            </p>
+            {deleteLane.hasLane !== false ? <KeepChatsCheckbox checked={keepChats} onChange={setKeepChats} /> : null}
+          </>
+        ) : null}
+      </>
+    );
+    if (deleteLane) {
+      confirm = {
+        label: deleteLane.hasLane === false ? "Delete this computer" : `Delete ${deleteLane.laneName}`,
+        variant: "solid",
+        disabled: !canChange,
+        onClick: () => run(() => deleteCloudLaneWithCheck({ instanceId: deleteLane.instanceId, laneName: deleteLane.laneName, askFirst: false, keepChats })),
+      };
+    }
+  } else if (way === "move" && next) {
+    const label = CLOUD_PLAN_LABELS[next.planId];
+    step = (
+      <>
+        <p className="adecl-limit-step-q">{label} · ${next.priceUsd} a month</p>
+        <ul className="adecl-limit-facts">
+          <li>{plural(next.computerLimit, "cloud computer")}{detail ? `, ${next.computerLimit - detail.limit} more than now` : ""}</li>
+          {nextHours != null ? <li>{formatCloudHours(nextHours)} hours a month for bigger computers</li> : null}
+          <li>Small computers stay unlimited and never use your hours</li>
+        </ul>
+        <p className="adecl-limit-what">
+          <b>What happens:</b>{" "}
+          {onPaidPlan
+            ? `your plan changes to ${label} now, and you pay the difference for the rest of this month. Hours you used stay used.`
+            : `ADE opens the checkout. Once it's paid you can have ${plural(next.computerLimit, "cloud computer")}, and your new lane can start.`}
+        </p>
+      </>
+    );
+    confirm = { label: onPaidPlan ? `Move to ${label} now` : `Continue to checkout · $${next.priceUsd} a month`, variant: "solid", onClick: () => { onClose(); void moveUp(next); } };
+  }
+
   return (
     <Dialog
       open
-      size="md"
+      size="lg"
       tone="warning"
       icon={<CloudMark size={16} brand />}
       onOpenChange={(open) => { if (!open) onClose(); }}
       title={title}
-      description="A new cloud lane needs a computer of its own. Make room one of these ways."
-      actions={detail?.nextPlan
-        ? [
-          { label: `${cloudComputerLimitUpgradeLabel(detail.nextPlan)}`, variant: "solid", autoFocus: true, onClick: () => { const next = detail.nextPlan!; onClose(); void moveUp(next, onPaidPlan); } },
-          { label: "Not now", variant: "secondary", onClick: onClose },
-        ]
-        : [{ label: "Close", variant: "secondary", onClick: onClose }]}
+      description="A new cloud lane needs a computer of its own. Pick how to make room."
+      actions={[...(confirm ? [{ ...confirm, autoFocus: true }] : []), { label: "Not now", variant: "secondary", onClick: onClose }]}
+      footerStart={!canChange && way !== "move" && way ? <span className="adecl-limit-empty">Free up or delete lanes from the ADE desktop app.</span> : undefined}
     >
-      <ol className="adecl-limit-ways">
-        <li>
-          <b>Free up a computer from another lane.</b>
-          <span className="adecl-limit-why">The lane and its chats stay; it gets a new computer the next time you send a message there.</span>
-          {!detail && machines.loading ? (
-            <p className="adecl-limit-empty">Reading your computers…</p>
-          ) : lanes.length === 0 ? (
+      {loading ? (
+        <p className="adecl-limit-empty">Reading your computers…</p>
+      ) : (
+        <>
+          <div className="adecl-limit-ways" data-count={next ? 3 : 2}>
+            <WayButton way="free" picked={way} onPick={setWay} icon={<Recycle size={14} />} title="Free up a computer" line="Keep the lane and its chats; it gets a new computer later." />
+            <WayButton way="delete" picked={way} onPick={setWay} icon={<Trash size={14} />} title="Delete a lane" line="The lane and its computer go. ADE checks its work is on GitHub." />
+            {next ? (
+              <WayButton
+                way="move"
+                picked={way}
+                onPick={setWay}
+                icon={<ArrowCircleUp size={14} />}
+                title={cloudComputerLimitUpgradeLabel(next)}
+                line={`${plural(next.computerLimit, "computer")}, $${next.priceUsd} a month. Small stays unlimited.`}
+              />
+            ) : null}
+          </div>
+          {lanes.length === 0 && way && way !== "move" ? (
             <p className="adecl-limit-empty">ADE couldn't list your computers here. Open Settings › ADE Cloud to see every lane.</p>
-          ) : (
-            <ul className="adecl-limit-lanes" aria-label="Your cloud computers">
-              {lanes.map((lane) => (
-                <li key={lane.instanceId} className="adecl-limit-lane">
-                  <Desktop size={13} aria-hidden />
-                  <span className="adecl-limit-lane-name" title={lane.laneName}>{lane.laneName}</span>
-                  <span className="kit-tag" data-tone={lane.awake ? "accent" : undefined}>{lane.awake ? "Awake" : "Asleep"}</span>
-                  <span className="adecl-limit-lane-actions">
-                    {lane.hasLane !== false ? <button
-                      type="button"
-                      className="kit-btn"
-                      data-size="sm"
-                      disabled={!canChange}
-                      title={lane.awake ? "Its work is pushed to GitHub first; what runs on it now stops." : "Its work is pushed to GitHub first."}
-                      onClick={() => run(() => freeCloudLaneWithConfirm({ instanceId: lane.instanceId, laneName: lane.laneName }))}
-                    >
-                      Free up
-                    </button> : null}
-                    <button
-                      type="button"
-                      className="kit-btn kit-btn-ghost"
-                      data-size="sm"
-                      data-tone="crit"
-                      disabled={!canChange}
-                      onClick={() => run(() => deleteCloudLaneWithCheck({ instanceId: lane.instanceId, laneName: lane.laneName, askFirst: true }))}
-                    >
-                      Delete
-                    </button>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </li>
-        <li>
-          <b>Delete a lane.</b>
-          <span className="adecl-limit-why">Its computer goes with it. ADE checks first that its work is on GitHub.</span>
-        </li>
-        {detail?.nextPlan ? (
-          <li>
-            <b>{cloudComputerLimitUpgradeLabel(detail.nextPlan)}.</b>
-            <span className="adecl-limit-why">${detail.nextPlan.priceUsd} a month. Small computers stay unlimited on every plan.</span>
-          </li>
-        ) : null}
-      </ol>
-      {!canChange ? <p className="adecl-limit-empty">Free up or delete lanes from the ADE desktop app.</p> : null}
+          ) : step ? (
+            <div className="adecl-limit-step">{step}</div>
+          ) : null}
+        </>
+      )}
     </Dialog>
   );
 }

@@ -1089,6 +1089,14 @@ struct WorkChatSessionView: View {
   /// drawn after the transcript as the person's own messages, with the
   /// working line while the server moves them. Nil for any other chat.
   var cloudHeld: WorkCloudHeldThread? = nil
+  /// The ADE Cloud lane computer this chat runs on, when the account's
+  /// sponsored cards may show (`AccountCloudStore` `sponsored.ads`, not
+  /// declined). Nil for a chat on the person's own machines, and wherever
+  /// the host doesn't set it. Read through `sponsoredChatInstanceId`.
+  var sponsoredInstanceId: String? = nil
+  /// Where the place under the last reply sits on screen. `@State`, not
+  /// observed: only the slot redraws when it moves.
+  @State var sponsoredSlot = WorkSponsoredSlotModel()
   /// The CTO greeting's starters: fills the composer with the text.
 
   @State private var threadCommentsSheetPresented = false
@@ -2010,6 +2018,11 @@ struct WorkChatSessionView: View {
         )
       )
     }
+    if let sponsored = sponsoredSlotTurn {
+      rows.append(
+        WorkChatTranscriptRow(id: "chat-sponsored", kind: .sponsored, revision: sponsored.turnId.hashValue)
+      )
+    }
     if showsStreamingStatus {
       var hasher = Hasher()
       hasher.combine(isStreamingTurn)
@@ -2135,11 +2148,33 @@ struct WorkChatSessionView: View {
       }
     case .streamingStatus:
       streamingStatusSection
+    case .sponsored:
+      if let instanceId = sponsoredChatInstanceId, let turn = sponsoredSlotTurn {
+        WorkSponsoredReplySlot(instanceId: instanceId, sessionId: session.id, turn: turn, slot: sponsoredSlot)
+      }
     case .tail:
       Color.clear
         .frame(height: tailGutterHeight)
         .accessibilityHidden(true)
     }
+  }
+
+  /// The ADE Cloud computer of a chat that may show a sponsored card: never
+  /// a subagent's view or a personal chat.
+  var sponsoredChatInstanceId: String? {
+    // Until the chat's summary is read, its lineage is unknown: no card yet.
+    guard let sponsoredInstanceId, !isPersonalChat, chatSummaryContext.isAvailable,
+          chatSummaryContext.spawnKind != .subagent, chatSummaryContext.orchestrationParentSessionId == nil else { return nil }
+    return sponsoredInstanceId
+  }
+
+  /// The finished turn the sponsored slot goes under, scanned only between
+  /// turns and only in a chat that can show one: nil while a turn streams,
+  /// while ADE Cloud holds a message, or after a failed or stopped turn.
+  var sponsoredSlotTurn: CloudSponsoredTurn? {
+    guard sponsoredChatInstanceId != nil, !showsStreamingStatus, cloudHeld?.messages.isEmpty ?? true,
+          let turn = cloudSponsoredLastFinishedTurn(transcript), turn.isFresh() else { return nil }
+    return turn
   }
 
   /// What an empty timeline is allowed to claim.
@@ -2823,6 +2858,14 @@ struct WorkChatSessionView: View {
       contentFitsViewport: geometry.contentFitsViewport
     )
     requestOlderHistoryIfScrolledNearTop(distanceFromTop: geometry.distanceFromTop)
+    if sponsoredChatInstanceId != nil {
+      sponsoredSlot.update(
+        distanceFromBottom: geometry.distanceFromBottom,
+        // Below the card: its cell's bottom margin, then the gutter cell with both of its margins.
+        tail: tailGutterHeight + WorkChatTranscriptController.rowSpacing * 1.5,
+        visibleHeight: transcriptVisibleHeight
+      )
+    }
   }
 
   /// Layout half of the chat column (structure + geometry preferences).
@@ -3437,6 +3480,8 @@ struct WorkChatSessionView: View {
       .modifier(laneToolsPresenter)
       .environment(\.workChatAttachIssue, onAttachIssue.map(WorkChatAttachIssueAction.init))
       .environment(\.workChatAttachGitHubIssue, onAttachGitHubIssue.map(WorkChatAttachIssueAction.init))
+      // Someone watches this ADE Cloud chat: the Index may answer its agent.
+      .background(WorkSponsoredViewerBeacon(instanceId: sponsoredChatInstanceId, slot: sponsoredSlot))
     )
   }
 

@@ -1249,6 +1249,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "lane_launch", "lane_launch_status", "lane_launch_cancel",
     // An agent asks the person for a tier change: a card in its chat; it changes nothing.
     "tier_request",
+    // An agent's Index search on ADE Cloud Free: a Sponsored card in its chat; it installs nothing.
+    "recommend",
     // Clear a cloud computer's caches: the person from the dashboard; an agent asks the person with a card.
     "clear_caches",
     // Grow the disk of the cloud computer this runs on: up to its size's disk maximum, with no card.

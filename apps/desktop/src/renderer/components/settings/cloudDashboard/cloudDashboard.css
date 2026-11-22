@@ -604,7 +604,7 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 .adecd-table:focus-visible { box-shadow: inset 0 0 0 2px var(--adec-400); border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
 .adecd-tr {
   display: grid;
-  grid-template-columns: minmax(0, 2.4fr) minmax(0, 1fr) 64px minmax(0, 0.9fr) minmax(0, 1fr) 28px;
+  grid-template-columns: minmax(0, 2.4fr) minmax(0, 1.4fr) minmax(0, 0.9fr) minmax(0, 1fr) 28px;
   align-items: center;
   gap: 12px;
   min-height: 40px;

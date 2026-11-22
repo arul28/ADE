@@ -1,4 +1,5 @@
 import { peekLocalSyncStatus } from "../../lib/localSyncStatusReader";
+import { SponsoredReplySlot } from "./sponsored/SponsoredReplySlot";
 import { msToNextBeat } from "../../lib/workBeat";
 import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
@@ -7419,6 +7420,24 @@ export function AgentChatPane({
     Boolean(pendingInput)
     || (Boolean(composerSessionId) && selectedSession?.awaitingInput === true);
   const turnActive = composerSessionId ? (turnActiveBySession[composerSessionId] ?? false) : false;
+  // A sponsored card under the last finished reply, only on a Free-plan chat on
+  // an ADE Cloud computer (the slot and the server both check); never in a
+  // subagent view. Memoized so the transcript list keeps its memo.
+  // A subagent's transcript, or a chat ADE started under another one: nobody's to show a card in.
+  const isSubagentView = subagentView != null || Boolean(selectedSession?.orchestrationParentSessionId) || selectedSession?.spawnKind === "subagent";
+  const chatCloudInstanceId = chatCloudLane?.instanceId ?? null;
+  const sponsoredSlot = useMemo(
+    () => (isSubagentView ? null : (
+      <SponsoredReplySlot
+        instanceId={chatCloudInstanceId}
+        sessionId={renderedSessionId}
+        events={selectedEventsForDisplay}
+        turnActive={turnActive}
+        paneVisible={isTileVisible}
+      />
+    )),
+    [isSubagentView, chatCloudInstanceId, renderedSessionId, selectedEventsForDisplay, turnActive, isTileVisible],
+  );
   // A live turn that has gone quiet is worth saying out loud (see
   // `turnStallSilenceMs`). The tick runs only while a turn is active, so a
   // silent stream still re-renders and surfaces the stall — there may never be
@@ -22933,6 +22952,7 @@ export function AgentChatPane({
                           ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
                           : turnActive && selectedSession?.status !== "ended"}
                         sessionTurnActive={turnActive}
+                        trailing={sponsoredSlot}
                         wakingSinceMs={!subagentView && cloudWakingSince ? Date.parse(cloudWakingSince) : null}
                         usageLimitResumeActive={usageLimitResume != null}
                         // Only a limit ADE is waiting out reads "Paused"; one with no
