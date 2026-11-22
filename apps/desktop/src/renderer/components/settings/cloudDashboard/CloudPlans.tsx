@@ -418,7 +418,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 </div>
                 <small className="adecd-addon-state">
                   {sponsoredToggle.consent !== "granted"
-                    ? "Off. If you turn it on, a Free ADE Cloud chat can show one sponsored card under a finished reply. To pick it, ADE sends Gravity, our ad partner, your last message and the reply, your IP address, your device type and a hashed copy of your account email."
+                    ? "Off. If you turn it on, a Free ADE Cloud chat can show one sponsored card under a finished reply, and an agent may recommend a sponsored tool. To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older."
                     : sponsoredToggle.ads
                       ? "On. A Free chat on ADE Cloud can show one sponsored card under a finished reply. Gravity, our ad partner, picks it from your last message and the reply."
                       : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."}
