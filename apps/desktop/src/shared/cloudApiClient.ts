@@ -286,7 +286,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     wake: (instanceId: string, origin?: "mcp") =>
       request<{ status: string }>("POST", `${instancePath(instanceId)}/start`, { body: origin ? { origin } : {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     /** The server wakes a sleeping computer first. `computerIdle` is needed to grow the disk of a running one. */
-    resize: (instanceId: string, args: { cpu?: number; memory?: number; disk?: number; computerIdle?: boolean }) =>
+    resize: (instanceId: string, args: { cpu?: number; memory?: number; disk?: number; computerIdle?: boolean; origin?: "mcp" }) =>
       request<{ status: string }>("POST", `${instancePath(instanceId)}/resize`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     /** `keepLane.onlyIfSaved`: only while it rests with every lane's work saved (409 otherwise, nothing deleted). */
     deleteComputer: (

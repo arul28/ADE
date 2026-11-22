@@ -441,7 +441,7 @@ account bearer. The plan rules, hours, disk and cleanups are in
 | `PUT /cloud/instances/:id/event-wakes`, `PUT/DELETE /cloud/wake` | [Timed wakes and event wakes](#ade-cloud-timed-wakes-and-event-wakes) |
 | `/cloud/instances/:id/messages…`, `/cloud/chats…`, `/cloud/sessions…`, `/cloud/git…`, `/cloud/capsules…`, `/cloud/backups…`, `/cloud/projects/overview` | [Saved copies](#saved-chats-and-other-saved-copies) and [the queue](#the-message-queue-of-an-existing-chat-or-cli) |
 | `/cloud/launches…`, `/cloud/sign-ins…`, `/cloud/models` | [Launches](#launches-from-the-web-and-the-phone) |
-| `POST /cloud/billing/{checkout,portal,extra-hours,extra-disk,plan-cleanup,free-unlock}` | [Payments](#payments) |
+| `POST /cloud/billing/{checkout,portal,extra-hours,plan-cleanup,free-unlock}` | [Payments](#payments) |
 | `GET /cloud/referrals`, `POST /cloud/referrals/redeem` | Referral summary and invite redeem |
 | `GET /cloud/lanes/without-computer`, `POST /cloud/projects/computers/delete`, `/cloud/automations…` | Kept lanes, a project's computers (with `dryRun`), automations whose home is ADE Cloud |
 
@@ -1150,7 +1150,9 @@ To set up either one:
    (Small 1000, free 100,000): right after the deploy, run the follow-up SQL
    in the migration's header once (it is safe to run again). Rerun `scripts/stripe-setup.mjs` (new 2¢ Pro and Max extra-hours
    prices, new product descriptions) and update the
-   `STRIPE_EXTRA_HOURS_{PRO,MAX}_PRICE_ID` vars before that deploy.
+   `STRIPE_EXTRA_HOURS_{PRO,MAX}_PRICE_ID` vars before that deploy. The old
+   Pro and Max ids are already in `STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS`, so
+   a subscription that holds one moves to the new price at its renewal.
 
 Release builds use the production origin. Set `ADE_ACCOUNT_DIRECTORY_URL` on a
 machine only for a trusted self-hosted override. `ONLINE_WINDOW_MS` (default

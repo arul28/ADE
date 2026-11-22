@@ -115,9 +115,9 @@ extension CloudLaneActions {
   /// computer is free.
   func freeUp(_ lane: CloudComputerLimit.Lane) {
     guard !freeing.contains(lane.instanceId) else { return }
-    freeing.insert(lane.instanceId)
+    markFreeing(lane.instanceId, true)
     Task { @MainActor [self] in
-      defer { freeing.remove(lane.instanceId) }
+      defer { markFreeing(lane.instanceId, false) }
       let sync = SyncMenuSafePublisher.shared.service
       guard let client = await sync.cloudServerClient() else {
         toast = ADEToastMessage(text: "Couldn't free \(lane.laneName)'s computer", kind: .failure, detail: "Sign in to ADE, then try again.")

@@ -372,7 +372,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
         computer: (id) => client.getInstance(id),
         sleep: (id) => client.sleepInstance(id),
         wake: (id, origin) => client.startInstance(id, origin ? { origin } : undefined),
-        resize: (id, resources, computerIdle) => client.resizeInstance(id, resources, computerIdle ? { computerIdle: true } : undefined),
+        resize: (id, resources, computerIdle, origin) => client.resizeInstance(id, resources, computerIdle || origin ? { ...(computerIdle ? { computerIdle: true } : {}), ...(origin ? { origin } : {}) } : undefined),
         backup: (id) => client.createBackup(id),
         update: (id) => client.updateInstance(id),
       }, instanceId, args);

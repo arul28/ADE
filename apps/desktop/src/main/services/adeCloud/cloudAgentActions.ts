@@ -758,7 +758,8 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       if (!shapeId) throw new Error("Pass the new size (--shape 4x8).");
       const shape = cloudShapeById(shapeId);
       const account = await hoursCheck({ kind: cloudMachineKindOf(box.type), shape: shapeId });
-      await approve(readApproval(args), {
+      const approval = readApproval(args);
+      await approve(approval, {
         action: "spend",
         title: `Resize "${box.name ?? box.instanceId}" to ${shape.label}`,
         body: `It restarts to change size: files stay, running chats, terminals and processes stop. ${describeCloudHoursUse(cloudMachineKindOf(box.type), shape.id, cloudCatalogOf(account))}`,
@@ -766,7 +767,9 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         shape: shapeId,
         tierChange: true,
       });
-      return await runAction(box, { instanceId: box.instanceId, action: "resize", shape: shapeId });
+      // An outside agent's resize says so too (it may wake an asleep computer): the server refuses it on the free plan.
+      const viaAdeMcp = approval.by === "agent" && approval.viaAdeMcp === true;
+      return await runAction(box, { instanceId: box.instanceId, action: "resize", shape: shapeId, ...(viaAdeMcp ? { origin: "mcp" as const } : {}) });
     },
 
     async copy(rawArgs?: unknown) {
@@ -781,7 +784,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const yes = await approve(approval, {
         action: "spend",
         title: `Copy "${box.name ?? box.instanceId}" into a new machine`,
-        body: `"${name}" gets the same files (repos, lanes, installed dependencies) and signs in as a new computer${rate ? `, and uses ${rate}` : ""}. A big disk takes a few minutes to copy.`,
+        body: `"${name}" gets the same files (repos, lanes, installed dependencies) and signs in as a new computer${rate ? `, and ${rate} while awake` : ""}. A big disk takes a few minutes to copy.`,
         confirm: "Copy it",
         newMachine: true,
         makesComputer: true,
@@ -930,7 +933,9 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         shape: shape?.id ?? null,
         personPlace: CLOUD_LANE_PERSON_PLACE,
         // A Small lane never uses hours: an unattended agent may start one at 0 hours (Pricing v2).
-        ...(tier.multiplierMilli === 0 && !mayMoveUp ? { usesHours: false as const } : {}),
+        // A default Small too: it starts Small, and the server moves it up to Medium only with
+        // the hours for it (launches.ts `startSizeOf`), so it is not blocked on hours here.
+        ...(tier.multiplierMilli === 0 ? { usesHours: false as const } : {}),
       });
       // An agent nobody watches stays within the agent limits as they are now: a default Small
       // moves up only when they allow Medium. A retry too (they may have been lowered since the

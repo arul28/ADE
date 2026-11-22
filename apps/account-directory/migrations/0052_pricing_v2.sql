@@ -21,12 +21,14 @@
 --       when type = 'vm' and cpu = 4 and memory_gb = 16 then 4000
 --       when type = 'vm' and cpu = 4 and memory_gb = 32 then 7250
 --     end
---   where deleted_at is null and (
+--   where (
 --     (type = 'default' and cpu = 2 and memory_gb = 4) or (type = 'default' and cpu = 4 and memory_gb in (8, 16, 32))
 --     or (type = 'vm' and cpu = 2 and memory_gb = 4) or (type = 'vm' and cpu = 4 and memory_gb in (8, 16, 32)));
 --   update cloud_accounts set included_milli = 50000 where plan = 'free' and included_milli = 100000;
 --
--- (A computer of another shape keeps its rate; only the eight sizes exist. A
+-- (Deleted computers too: the daily reconcile still settles their last days,
+-- at the computer's rate when a day has no row. A computer of another shape
+-- keeps its rate; only the eight sizes exist. A
 -- paid period the old Worker rolled in those minutes keeps its old, larger
 -- hours: in the person's favor, and left as it is.)
 --
@@ -59,17 +61,31 @@
 -- past-due period ended owing, billed later from the same counter) is halved
 -- like used: what it still bills, `owed - reported`, can then only shrink,
 -- never bill an old Small-hour as a Medium-hour.
+--
+-- A past-due account's saved paid period (`past_due_used_milli`, restored if
+-- the same period is paid after all) loses its Small use the same way before
+-- it is halved. No column keeps that period's start, only its end
+-- (`past_due_period_end`), and a period is a month, so its Small days are
+-- counted from 31 days before that end on, up to today: a few days before
+-- the period and those after the payment failed come off too (in the
+-- person's favor; it cannot go below 0).
 update cloud_accounts set used_milli = max(0, used_milli - coalesce((
   select sum(d.metered_milli + coalesce(d.corrected_milli, 0)) from cloud_computer_days d
   where d.user_id = cloud_accounts.user_id and d.multiplier_milli = 1000
     and d.day >= strftime('%Y-%m-%d', cloud_accounts.period_start / 1000, 'unixepoch')
 ), 0)) / 2;
 
+update cloud_accounts set past_due_used_milli = max(0, past_due_used_milli - coalesce((
+  select sum(d.metered_milli + coalesce(d.corrected_milli, 0)) from cloud_computer_days d
+  where d.user_id = cloud_accounts.user_id and d.multiplier_milli = 1000
+    and d.day >= strftime('%Y-%m-%d', cloud_accounts.past_due_period_end / 1000, 'unixepoch', '-31 days')
+), 0)) / 2
+where past_due_used_milli is not null;
+
 update cloud_accounts set
   included_milli = included_milli / 2,
   extra_owed_milli = extra_owed_milli / 2,
-  past_due_included_milli = past_due_included_milli / 2,
-  past_due_used_milli = past_due_used_milli / 2;
+  past_due_included_milli = past_due_included_milli / 2;
 
 -- 2. Day rows. Small rows use no hours; every other rate halves, and so does
 -- what it metered and what the reconcile corrected. The reconcile corrects a
@@ -86,8 +102,10 @@ update cloud_computer_days set
   multiplier_milli = multiplier_milli / 2
 where multiplier_milli > 0;
 
--- 3. Computers. Each rate by its shape. A stretch open when this runs is
--- settled at the new rate when it closes, the part before this included.
+-- 3. Computers, deleted ones too (the reconcile reads a deleted computer's
+-- rate for a day with no row). Each rate by its shape; another shape halves,
+-- like a day row. A stretch open when this runs is settled at the new rate
+-- when it closes, the part before this included.
 update cloud_computers set multiplier_milli = case
     when type = 'default' and cpu = 2 and memory_gb = 4 then 0
     when type = 'default' and cpu = 4 and memory_gb = 8 then 1000
@@ -98,8 +116,7 @@ update cloud_computers set multiplier_milli = case
     when type = 'vm' and cpu = 4 and memory_gb = 16 then 4000
     when type = 'vm' and cpu = 4 and memory_gb = 32 then 7250
     else multiplier_milli / 2
-  end
-where deleted_at is null;
+  end;
 
 -- 4. The ADE Cloud iPhone's testers by email (src/cloud/phones.ts): an email
 -- the owner added before any ADE account had it waits here, and the account

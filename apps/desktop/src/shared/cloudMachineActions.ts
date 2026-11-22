@@ -17,8 +17,8 @@ export type CloudMachineLifecycleOps = {
   sleep(instanceId: string): Promise<unknown>;
   /** `origin: "mcp"`: an outside agent asked (the start body's mark). */
   wake(instanceId: string, origin?: "mcp"): Promise<string>;
-  /** No `cpu`/`memory`: the size stays as the server has it (a disk-only grow). */
-  resize(instanceId: string, resources: { cpu?: number; memory?: number; disk?: number }, computerIdle: boolean): Promise<string>;
+  /** No `cpu`/`memory`: the size stays as the server has it (a disk-only grow). `origin: "mcp"` as for `wake`. */
+  resize(instanceId: string, resources: { cpu?: number; memory?: number; disk?: number }, computerIdle: boolean, origin?: "mcp"): Promise<string>;
   backup(instanceId: string): Promise<unknown>;
   update(instanceId: string): Promise<unknown>;
 };
@@ -88,6 +88,7 @@ export async function runCloudMachineLifecycleAction(
       await ops.update(instanceId);
       return { ok: true, blocker: null, message: "Updating. It restarts and is back in a few minutes." };
     case "resize": {
+      const origin = args.origin === "mcp" ? "mcp" : undefined;
       const shape = args.shape === undefined ? null : cloudShape(args.shape);
       const disk = typeof args.disk === "number" && Number.isInteger(args.disk) && args.disk > 0 ? args.disk : null;
       if ((args.shape !== undefined && !shape) || (!shape && disk == null)) return { ok: false, blocker: null, message: "Pick a size." };
@@ -100,7 +101,7 @@ export async function runCloudMachineLifecycleAction(
         if (!growDisk) return { ok: true, blocker: null, message: "The disk is already that size." };
         // Same size, bigger disk: the server restarts the computer for it.
         // No size in the request: the server keeps the one it has, never an older read of it.
-        const status = await ops.resize(instanceId, { disk }, computerIdle);
+        const status = await ops.resize(instanceId, { disk }, computerIdle, origin);
         return {
           ok: true,
           blocker: null,
@@ -116,6 +117,7 @@ export async function runCloudMachineLifecycleAction(
         instanceId,
         { cpu: shape.cpu, memory: shape.memoryGb, ...(growDisk ? { disk } : {}) },
         computerIdle,
+        origin,
       );
       return {
         ok: true,

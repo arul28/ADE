@@ -316,6 +316,7 @@ console.log(JSON.stringify({
   STRIPE_PRO_PRICE_ID: proPrice.id,
   STRIPE_MAX_PRICE_ID: maxPrice.id,
   // Each plan's own; STRIPE_EXTRA_HOURS_PRICE_ID (the first price) stays as it is in wrangler.jsonc.
+  // A plan's id that changes goes into STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS, or its subscriptions never move.
   STRIPE_EXTRA_HOURS_PLUS_PRICE_ID: extraPrices.plus.id,
   STRIPE_EXTRA_HOURS_PRO_PRICE_ID: extraPrices.pro.id,
   STRIPE_EXTRA_HOURS_MAX_PRICE_ID: extraPrices.max.id,

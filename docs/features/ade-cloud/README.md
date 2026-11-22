@@ -378,8 +378,10 @@ Pricing v2 (owner, 2026-11-21; [docs/plans/pricing-v2-and-gravity.md](../../plan
   outlive its move, and counts again after `MOVE_GRACE_MS`), so two moves at
   once can't leave the account over. An account over its plan is refused a
   move like a create (`over_plan_limits`). `past_due` keeps the bought plan's
-  limit; a downgrade waiting for the period end applies the lower limit at
-  once. `computers.limit` on the account is the plan's limit, and
+  limit, and so does a downgrade waiting for the period end, until then (the
+  person paid for it; the downgrade's cleanup handles going over at the
+  switch), so the limit card offers the plan above the bought one.
+  `computers.limit` on the account is the plan's limit, and
   `computers.nextPlan` (`CloudNextPlan`, from `nextPlanOffer`) the plan the
   limit card offers: the same object a refusal carries, so no client works it
   out.
@@ -407,8 +409,9 @@ Pricing v2 (owner, 2026-11-21; [docs/plans/pricing-v2-and-gravity.md](../../plan
 - Computers sleep a few minutes after work stops (`CLOUD_IDLE_SLEEP_AFTER_MS`),
   so hours go only to real work.
 - **Migration 0052** (`0052_pricing_v2.sql`) moves stored hours to
-  Medium-hours: this period's Small use comes off `used_milli`, then
-  every account, day and computer number halves (Small's become 0). Apply it
+  Medium-hours: this period's Small use comes off `used_milli` (and off a
+  past-due account's saved paid period), then every account, day and
+  computer number halves, deleted computers too (Small's become 0). Apply it
   right before the Worker that reads it. Earned hours (referrals) stay as
   they are, now Medium-hours. The extra hours already reported to Stripe
   (`extra_reported_milli` and its daily-report snapshot) stay unhalved: the

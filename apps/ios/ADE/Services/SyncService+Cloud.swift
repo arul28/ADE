@@ -485,7 +485,7 @@ struct CloudPhoneLimits: Decodable, Equatable {
   let machinesPerDay: Int
   let maxShape: String
   let preset: String
-  /// Paid extra disk agents nobody watches may use a month, in cents. Nil: up to the account's own extra-disk limit.
+  /// Older apps' limit on paid extra disk (no longer sold since Pricing v2), in cents a month. Kept as saved; never a limit.
   let extraDiskMonthCents: Int?
 }
 

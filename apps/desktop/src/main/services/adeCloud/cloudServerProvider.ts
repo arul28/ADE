@@ -365,7 +365,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
         body: {
           ...resources,
           ...(options?.computerIdle ? { computerIdle: true } : {}),
-          ...(options?.origin === "auto" ? { origin: "auto" } : {}),
+          ...(options?.origin === "auto" || options?.origin === "mcp" ? { origin: options.origin } : {}),
           ...(options?.origin === "auto" && options.launchId ? { launchId: options.launchId } : {}),
         },
         timeoutMs: LIFECYCLE_TIMEOUT_MS,

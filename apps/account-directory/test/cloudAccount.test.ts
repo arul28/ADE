@@ -1102,14 +1102,17 @@ describe("ADE Cloud account", () => {
   // reservation's one insert, so creates at once can't pass it together. A move's count leaves its
   // own source out, but another running move's source counts: a source can outlive its move, so two
   // moves at once can't leave the account over. (The hidden awake cap, 25, is above every plan's
-  // limit: a create meets the limit first.)
-  it.each<[string, number, "create" | "move", Array<201 | "computer_limit" | "over_plan_limits">]>([
+  // limit: a create meets the limit first.) A move whose reservation timed out stops counting, and
+  // its source counts again at once, before the tick cleans the move up.
+  it.each<[string, number, "create" | "move" | "move one computer twice" | "create after a timed-out move", Array<201 | "computer_limit" | "computer_busy" | "over_plan_limits">]>([
     ["19 asleep computers on Max don't stop a new one", 19, "create", [201]],
     ["20 asleep computers on Max stop a new one, with what the limit card shows", 20, "create", ["computer_limit"]],
     ["two creates at once with room for one: one is made, the other meets the limit", 19, "create", [201, "computer_limit"]],
     ["a move at the limit goes (its computer replaces the old one)", 20, "move", [201]],
     ["two moves at once at the limit: one goes, the other meets the limit", 20, "move", [201, "computer_limit"]],
+    ["two moves of one computer at once at the limit: one goes, the other finds it busy", 20, "move one computer twice", [201, "computer_busy"]],
     ["an account already over its limit is refused a move like a create", 21, "move", ["over_plan_limits"]],
+    ["a move whose reservation timed out counts its source again", 20, "create after a timed-out move", ["computer_limit"]],
   ])("computer limit: %s", async (_label, count, kind, outcomes) => {
     seedAccount(harness, OWNER, { plan: "paid", paid_plan: "max", included_milli: 1_500_000, stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1", stripe_status: "active" });
     harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
@@ -1118,12 +1121,18 @@ describe("ADE Cloud account", () => {
       seedComputer(harness, { instance_id: idOf(index), disk_gb: 4, status: "stopped", awake_since: null, last_awake_at: NOW - index * 60_000 });
       provide(harness, idOf(index), "stopped");
     }
+    if (kind === "create after a timed-out move") {
+      seedComputer(harness, { instance_id: "pending:timed-out-move", moving_from: idOf(0), status: "provisioning", awake_since: null, created_at: NOW - 16 * 60_000 });
+      const state = (await (await harness.send(OWNER, "GET", "/cloud/account")).json()) as { computers: { total: number } };
+      expect(state.computers.total).toBe(count);
+    }
 
-    // Each move starts from its own computer.
+    // Each move starts from its own computer, but for the one moved twice.
     let sent = 0;
     const send = () => {
       const index = sent++;
-      return harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, ...(kind === "move" ? { moveFromInstanceId: idOf(index) } : {}) });
+      const source = kind === "move" ? idOf(index) : kind === "move one computer twice" ? idOf(0) : null;
+      return harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, ...(source ? { moveFromInstanceId: source } : {}) });
     };
     // A second request lands its whole request after the first passed every check and before its reservation is written.
     const others: Response[] = [];

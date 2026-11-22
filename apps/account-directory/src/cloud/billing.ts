@@ -158,9 +158,14 @@ function extraHoursPriceFor(env: CloudEnv, plan: CloudPaidPlanId): string | null
   return own || firstExtraHoursPrice(env);
 }
 
-/** Every extra-hours price a subscription may hold: each plan's, and the first one older subscriptions keep until they move. */
+/**
+ * Every extra-hours price a subscription may hold: each plan's, the first one,
+ * and the ones a plan no longer sells. Older subscriptions keep theirs until
+ * a renewal moves it.
+ */
 function extraHoursPrices(env: CloudEnv): Set<string> {
-  const prices = [firstExtraHoursPrice(env), env.STRIPE_EXTRA_PRICE_ID?.trim(), ...(["plus", "pro", "max"] as const).map((plan) => extraHoursPriceFor(env, plan))];
+  const retired = env.STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS?.split(",").map((price) => price.trim()) ?? [];
+  const prices = [firstExtraHoursPrice(env), env.STRIPE_EXTRA_PRICE_ID?.trim(), ...(["plus", "pro", "max"] as const).map((plan) => extraHoursPriceFor(env, plan)), ...retired];
   return new Set(prices.filter((price): price is string => Boolean(price)));
 }
 

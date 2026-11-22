@@ -866,8 +866,14 @@ final class CloudLaneActions: ObservableObject {
   @Published private(set) var computerLimit: CloudComputerLimit?
   private var limitPresenter: UUID?
   /// Computers the limit card is freeing now (it takes minutes; the card may
-  /// close meanwhile). Only `freeUp` (CloudComputerLimitSheet.swift) writes it.
-  @Published var freeing: Set<String> = []
+  /// close meanwhile). Only `freeUp` (CloudComputerLimitSheet.swift) writes it,
+  /// through `markFreeing`.
+  @Published private(set) var freeing: Set<String> = []
+
+  /// Marks a computer the limit card is freeing (`on`), or done with.
+  func markFreeing(_ instanceId: String, _ on: Bool) {
+    if on { freeing.insert(instanceId) } else { freeing.remove(instanceId) }
+  }
 
   /// Asks before deleting a cloud lane. `fromMenu`: a context menu is still
   /// closing, and a sheet presented into that is dropped.

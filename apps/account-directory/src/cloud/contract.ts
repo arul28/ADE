@@ -26,7 +26,7 @@
  *   GET    /cloud/instances/:id/status         CloudComputerStatus   (the lane's status menu; never wakes it)
  *   POST   /cloud/agent37/webhook              { ok: true }   NO account token: the provider's signed status change (Standard Webhooks)
  *   POST   /cloud/instances/:id/keep           { ok: true }   "Keep it": restarts the idle cleanup clock with no wake
- *   POST   /cloud/instances/:id/resize         { status }
+ *   POST   /cloud/instances/:id/resize         { status }   ({ origin: "mcp" }: an outside agent asked; 403 `outside_agent_free_plan` on the free plan)
  *   POST   /cloud/instances/:id/backups        { id, created, sizeBytes }
  *   PUT    /cloud/instances/:id/auto-sleep     { ok: true }
  *   POST   /cloud/instances/:id/public-ports   { port, url }
@@ -150,7 +150,7 @@
  * `past_due` plan included) is refused with 403 `outside_agent_free_plan`.
  * It is known by the lane metadata `ade_made_by_agent: "mcp"` (create, copy,
  * move), a launch's `madeBy: { kind: "agent", agent: "mcp" }`, or
- * `origin: "mcp"` on a server copy, a move, a start or a sent message.
+ * `origin: "mcp"` on a server copy, a move, a start, a resize or a sent message.
  * Deleting a computer always works.
  * `POST /cloud/instances` takes `{ channel: "stable" | "beta" }` (an Alpha
  * build sends `beta`; left out is `stable`): the computer starts from that
@@ -698,15 +698,6 @@ export type CloudExtraDiskState = "off" | "asked" | "on";
  */
 export type CloudDiskRefusalReason = "plan_disk" | "needs_approval" | "extra_off" | "monthly_limit" | "tier_limit" | "unavailable";
 
-/**
- * Older servers only. At the account's disk limit (`plan_disk`, `needs_approval`, `extra_off`,
- * `monthly_limit`), the refusal also names the computers that hold the disk,
- * biggest first (`error.lanes`): the lane's name (or the computer's), and its
- * disk. Optional: servers before it send none, and clients that don't read it
- * still have `error.message`.
- */
-export type CloudDiskLimitLane = { laneName: string; diskGb: number };
-
 export type CloudAccountState = {
   /** What the person pays for. A `past_due` paid account still says `paid` here. */
   plan: "free" | "paid";
@@ -723,8 +714,6 @@ export type CloudAccountState = {
     state: CloudHoursState;
   };
   extraHours: { available: boolean; enabled: boolean; usedMilli: number };
-  /** Older servers only (Pricing v2 never sends it). `usedCents` was the period's billable extra disk. */
-  extraDisk?: { available: boolean; state: CloudExtraDiskState; monthlyLimitCents: number | null; usedCents: number };
   /** The ADE Cloud iPhone: access, this period's minutes and extra minutes. Older servers leave it out. */
   phone?: CloudAccountPhone;
   /**
@@ -1166,6 +1155,11 @@ export function planCleanupSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "
  */
 export function overPlanLimitsSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "computerCount" | "computerLimit">): string {
   return `${planCleanupSentence(cleanup)} ADE can't make a new computer until you have fewer. Free up or delete computers yourself, or open Settings › ADE Cloud › Plans to pick the ones ADE frees.`;
+}
+
+/** A move refused for the same reason: a move makes a new computer too. */
+export function overPlanLimitsMoveSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "computerCount" | "computerLimit">): string {
+  return `${planCleanupSentence(cleanup)} A move makes a new computer, so ADE can't move this one until you have fewer. Free up or delete computers yourself, or open Settings › ADE Cloud › Plans to pick the ones ADE frees.`;
 }
 
 /** "1 cloud computer", "3 cloud computers". */
@@ -2871,7 +2865,7 @@ export type CloudAgentLimitsValue = {
   unattendedSpend: boolean;
   machinesPerDay: number;
   maxShape: "2x4" | "4x8" | "4x16" | "4x32";
-  /** Cents a month of paid extra disk agents may grow into; null: the account's own extra-disk limit. */
+  /** Older apps' limit on paid extra disk (no longer sold since Pricing v2), cents a month: kept as saved, never a limit. */
   extraDiskMonthCents: number | null;
 };
 /** `revision`: what a write names in `ifRevision` (null: none stored yet). `stored: false`: these are the defaults. */

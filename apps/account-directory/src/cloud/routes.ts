@@ -59,6 +59,7 @@ import {
   CLOUD_PLAN_PAST_DUE_SENTENCE,
   cloudAutoSizeRefusalSentence,
   computerLimitSentence,
+  overPlanLimitsMoveSentence,
   overPlanLimitsSentence,
   type CloudAccess,
   type CloudComputerLimitDetail,
@@ -262,7 +263,7 @@ async function computerLimitCheck(env: CloudEnv, account: AccountRow, now: numbe
  * work only on a paid plan (`CloudPlanFacts.outsideAgents`). It marks itself
  * `ade_made_by_agent: "mcp"` on a create or copy, `madeBy.agent: "mcp"` on a
  * launch (which reaches `createComputer` with that metadata), and `origin:
- * "mcp"` on a start, a server copy and a sent message. Reads stay allowed.
+ * "mcp"` on a start, a resize, a server copy and a sent message. Reads stay allowed.
  */
 const isOutsideAgentMetadata = (metadata: Record<string, string>): boolean => metadata.ade_made_by_agent === "mcp";
 
@@ -354,9 +355,10 @@ function tierRefusal(size: CloudSize, diskGb: number, moving: boolean): Refused 
  * allows, and nobody picked what goes): a new computer is refused until the
  * person cleans up or picks in ADE. Nothing is ever freed for it.
  */
-function overPlanLimits(env: CloudEnv, account: AccountRow, computers: ComputerRow[]): Refused | null {
+function overPlanLimits(env: CloudEnv, account: AccountRow, computers: ComputerRow[], action: "create" | "move" = "create"): Refused | null {
   const over = overPlanInForce(env, account, computers);
-  return over ? { response: fail("over_plan_limits", overPlanLimitsSentence(over), 403), refusal: "over_plan_limits" } : null;
+  const sentence = action === "move" ? overPlanLimitsMoveSentence : overPlanLimitsSentence;
+  return over ? { response: fail("over_plan_limits", sentence(over), 403), refusal: "over_plan_limits" } : null;
 }
 
 /** The plan to label an event with, for a route that didn't load the account. */
@@ -497,7 +499,7 @@ async function markGone(env: CloudEnv, computer: ComputerRow, now: number): Prom
  * reservation itself counts until it is made or `PENDING_TIMEOUT_MS` passes
  * (`accountComputerCountSql`). A move replaces its computer, so its count
  * leaves its own source out, while every other running move's source counts
- * (`moveSources`): a source still there after `MOVE_GRACE_MS` counts again
+ * (`accountComputerCountSql`'s `moveFrom`): a source still there after `MOVE_GRACE_MS` counts again
  * (the tick's `endMoves`), so two moves at once must not both take the last
  * slot. It records its source in `moving_from`, and the pair counts once in
  * the account's own count while the move runs.
@@ -516,12 +518,13 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
 }): Promise<{ ok: true; pendingId: string } | ({ ok: false } & Refused) | { ok: false; response: Response; refusal: null } | { ok: false; replay: true }> {
   const pendingId = newPendingId();
   const cutoff = args.now - PENDING_TIMEOUT_MS;
+  const count = accountComputerCountSql("?", { moveFrom: args.moveFromInstanceId, cutoff });
   const result = await env.DB.prepare(`
     insert into cloud_computers (instance_id, user_id, request_id, type, cpu, memory_gb, disk_gb, multiplier_milli, template_version, name, status, status_changed_at, last_awake_at, created_at, moving_from, channel,
       lane_id, lane_name, lane_project_origin, lane_branch)
     select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?, ?
     where (select count(*) from cloud_computers where user_id = ? and deleted_at is null and ${AWAKE_CAP_COUNT_SQL}) < ?
-      and ${accountComputerCountSql("?", { moveSources: args.moveFromInstanceId != null })} < ?
+      and ${count.sql} < ?
       and not exists (select 1 from cloud_computers where request_id = ? and user_id <> ?)
       and not exists (select 1 from cloud_computers where request_id = ? and user_id = ? and deleted_at is null)
       and not exists (select 1 from cloud_computers where deleted_at is null and moving_from is not null and (moving_from = ? or instance_id = ?))
@@ -530,7 +533,7 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
     args.templateVersion, args.name, args.now, args.now, args.now, args.moveFromInstanceId, args.channel,
     args.lane.laneId, args.lane.laneName, args.lane.projectOrigin, args.lane.branch,
     account.user_id, cutoff, AWAKE_COMPUTER_CAP,
-    account.user_id, args.moveFromInstanceId ?? "", cutoff, computerLimitOf(account),
+    account.user_id, ...count.binds, computerLimitOf(account),
     args.requestId, account.user_id,
     args.requestId, account.user_id,
     args.moveFromInstanceId, args.moveFromInstanceId,
@@ -710,7 +713,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   // The owner's cap limits free use only: a paid account is never refused here.
   if (await freeCapRefuses(env, account, now, waitUntil)) return refused(refuse({ response: cantMakeComputer(), refusal: "owner_limit" }));
   // An account over its plan gets no new computer, a move's included: a move whose source outlives it would add one.
-  const over = overPlanLimits(env, account, computers);
+  const over = overPlanLimits(env, account, computers, action);
   if (over) return refused(refuse(over));
 
   // A move carries the old computer's disk; a plain create starts at the smallest, or at its repository's setup disk.
@@ -966,10 +969,13 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const { account, outOfHoursFor } = await getAccountContext(env, computer.user_id, now);
-  // The computer's own disk grower says so; anything else is a person or their agent.
-  const origin: CloudActionOrigin = body.origin === "auto" ? "system" : "person";
+  // The computer's own disk grower says so (`auto`), and an outside agent (`mcp`); anything else is a person or their agent.
+  const origin: CloudActionOrigin = body.origin === "auto" ? "system" : body.origin === "mcp" ? "agent" : "person";
   const refusedAction: CloudRefusedAction = body.disk !== undefined ? "grow" : "tier_change";
   const { track, refuse } = cloudActionTracker({ env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin, key: computer.instance_id, refusedAction, now });
+  // An outside agent on the free plan: a resize may wake an asleep computer, as a start would.
+  const outside = outsideAgentRefusal(account, body.origin === "mcp");
+  if (outside) return refuse(outside);
 
   const size = cloudSizeFor(computer.type, body.cpu ?? computer.cpu, body.memory ?? computer.memory_gb);
   if (!size) return badRequest("That size isn't one ADE Cloud offers.");
@@ -1520,7 +1526,7 @@ async function moveRefusal(env: CloudEnv, source: ComputerRow, size: CloudSize, 
     return fail("computer_busy", "ADE is freeing this computer for your plan, so it can't move now.", 409);
   }
   // As its create checks: an account over its plan gets no move, and the count leaves only this source out.
-  const over = overPlanLimits(env, account, computers) ?? await computerLimitCheck(env, account, now, source.instance_id);
+  const over = overPlanLimits(env, account, computers, "move") ?? await computerLimitCheck(env, account, now, source.instance_id);
   if (over) return refuse(over);
   const tooBig = tierRefusal(size, source.disk_gb, true);
   if (tooBig) return refuse(tooBig);

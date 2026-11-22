@@ -156,7 +156,7 @@ async function webMachineAction(api: CloudApiClient, args: CloudMachineActionArg
       computer: (id) => api.computer(id),
       sleep: (id) => api.sleep(id),
       wake: async (id, origin) => (await api.wake(id, origin)).status,
-      resize: async (id, resources, computerIdle) => (await api.resize(id, { ...resources, ...(computerIdle ? { computerIdle: true } : {}) })).status,
+      resize: async (id, resources, computerIdle, origin) => (await api.resize(id, { ...resources, ...(computerIdle ? { computerIdle: true } : {}), ...(origin ? { origin } : {}) })).status,
       backup: (id) => api.backup(id),
       update: (id) => api.update(id),
     }, instanceId, args);

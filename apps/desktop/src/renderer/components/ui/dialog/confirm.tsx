@@ -284,7 +284,7 @@ export function __resetDialogRequestsForTests() {
 }
 
 /**
- * Renders pending confirm/prompt requests. Mount once at the app root. If more
+ * Renders pending confirm, prompt and custom dialog requests. Mount once at the app root. If more
  * than one is mounted, only the first renders.
  */
 export function DialogHost(): JSX.Element {

@@ -35,7 +35,7 @@ export type CloudAgentLimits = {
   unattendedSpend: boolean;
   machinesPerDay: number;
   maxShape: string;
-  /** Paid extra disk an unattended agent may grow into, cents a month; null or left out: the account's own extra-disk limit. */
+  /** Older apps' limit on paid extra disk (no longer sold, Pricing v2), cents a month: kept as saved, never read as a limit. */
   extraDiskMonthCents?: number | null;
 };
 /** The desktop's default (`CLOUD_DEFAULT_AGENT_LIMITS`, "balanced"). */
@@ -71,7 +71,7 @@ function tokenOf(raw: unknown): boolean {
   }
 }
 
-/** The most `extraDiskMonthCents` may be (`CLOUD_AGENT_EXTRA_DISK_MAX_CENTS` in the desktop's cloudDiskGrowRules.ts). */
+/** The most `extraDiskMonthCents` may be (as `cloudAgentExtraDiskCentsOf` in the desktop's shared/adeCloud/accountCalls.ts). */
 export const AGENT_EXTRA_DISK_MAX_CENTS = 100_000;
 
 /** A whole number of cents from 0 to the max, or null (the account's own limit), like the desktop's `cloudAgentExtraDiskCentsOf`. */

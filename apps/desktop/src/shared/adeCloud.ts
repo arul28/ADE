@@ -1032,7 +1032,7 @@ export type CloudMachineActionArgs = {
   shape?: CloudShapeId;
   /** For `resize`: the new disk in GB (a multiple of the catalog's step, never smaller). Keeps the size when `shape` is unset. */
   disk?: number;
-  /** For `wake`: `mcp` when an outside agent (ADE MCP) asked; the server refuses it on the free plan (`outside_agent_free_plan`). */
+  /** For `wake` and `resize`: `mcp` when an outside agent (ADE MCP) asked; the server refuses it on the free plan (`outside_agent_free_plan`). */
   origin?: "mcp";
   /**
    * For a `resize` that grows the disk: the person confirmed the restart it

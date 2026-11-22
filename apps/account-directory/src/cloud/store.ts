@@ -65,6 +65,14 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   STRIPE_EXTRA_HOURS_PLUS_PRICE_ID?: string;
   STRIPE_EXTRA_HOURS_PRO_PRICE_ID?: string;
   STRIPE_EXTRA_HOURS_MAX_PRICE_ID?: string;
+  /**
+   * Extra-hours prices a plan no longer sells (comma-separated), so a
+   * subscription that still holds one is known to have its extra-hours item:
+   * a renewal moves it to the plan's price, and turning extra hours on adds
+   * no second item on the hours meter. Add a plan's old id here whenever a
+   * `scripts/stripe-setup.mjs` rerun replaces it.
+   */
+  STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS?: string;
   STRIPE_METER_EVENT?: string;
   /** Pro's monthly price (`scripts/stripe-setup.mjs`). Unset: only Plus can be bought. */
   STRIPE_PRO_PRICE_ID?: string;
@@ -957,60 +965,76 @@ export function cloudOffers(env: Pick<CloudEnv, "STRIPE_PLAN_PRICE_ID" | "STRIPE
 /**
  * How many cloud computers the account may have, asleep or not (Pricing v2).
  * The plan it pays for, so a `past_due` account keeps its plan's limit while
- * Stripe still tries the card (it is never cleaned either, `cleanupPlanOf`);
- * a downgrade waiting for the period end already holds to the next plan's
- * lower limit, so the switch finds the account fitting.
+ * Stripe still tries the card (it is never cleaned either, `cleanupPlanOf`),
+ * and a downgrade waiting for the period end keeps the bought plan's limit
+ * until then: the person paid for it. Going over the cheaper plan at the
+ * switch is the downgrade's cleanup (`planCleanup.ts`).
  */
-export function computerLimitOf(account: Pick<AccountRow, "plan" | "paid_plan" | "paid_plan_next">): number {
+export function computerLimitOf(account: Pick<AccountRow, "plan" | "paid_plan">): number {
   return CLOUD_PLANS[computerLimitPlanOf(account)].computerLimit;
 }
 
-/** The plan whose computer limit holds now (`computerLimitOf`): the bought plan, or a waiting downgrade's when it allows fewer. */
-export function computerLimitPlanOf(account: Pick<AccountRow, "plan" | "paid_plan" | "paid_plan_next">): CloudPlanId {
-  const bought = account.plan === "paid" ? paidPlanOf(account) : "free";
-  const next = bought !== "free" ? account.paid_plan_next : null;
-  return next && CLOUD_PLANS[next].computerLimit < CLOUD_PLANS[bought].computerLimit ? next : bought;
+/** The plan whose computer limit holds now (`computerLimitOf`): the bought plan, until the period ends. */
+export function computerLimitPlanOf(account: Pick<AccountRow, "plan" | "paid_plan">): CloudPlanId {
+  return account.plan === "paid" ? paidPlanOf(account) : "free";
 }
 
 /**
  * SQL for how many computers count toward the computer limit, as a scalar
- * subquery for the account named by `userIdSql` (a `?` or a column). Binds
- * two more `?`: a computer to leave out (a move's source: the move replaces
- * it; `''` for none) and the reservation cutoff (`now - PENDING_TIMEOUT_MS`).
+ * subquery for the account named by `userIdSql` (a `?` or a column), and the
+ * `binds` for its other `?`s, in order after `userIdSql`'s own. `moveFrom` is
+ * a computer to leave out (a move's source: the move replaces it); `cutoff`
+ * is the reservation cutoff (`now - PENDING_TIMEOUT_MS`).
  * Every computer not deleted counts, asleep, stopped or failed (the person
  * frees or deletes it), and so does a reservation still being made, so two
  * creates at once can't both take the last slot. A reservation older than
  * `PENDING_TIMEOUT_MS` stops counting (the tick adopts or drops it), so a
  * lost create never holds a slot. A move's source and its new computer count
- * once while the move runs; once `endMoves` ends a move that ran past
- * `MOVE_GRACE_MS`, both count.
+ * once while the move runs: the source is left out only while its new
+ * computer counts, so a move whose reservation timed out counts its source
+ * again at once, not when the tick cleans it up. Once `endMoves` ends a move
+ * that ran past `MOVE_GRACE_MS`, both count.
  *
- * `moveSources: true` is a move's own check: it leaves out only its own
- * source, and the source of every other move still running counts too. A
+ * A `moveFrom` is a move's own check: it leaves out its own source (and
+ * another move's new computer from that same source, so a second move of one
+ * computer answers `computer_busy`, not the limit), and the source of every
+ * other move still running counts too. A
  * move's source may outlive the move (the desktop never deletes it), so two
  * moves at once from an account at its limit must not both pass: the second
  * sees the first's pair as two and meets the limit.
  */
-export function accountComputerCountSql(userIdSql: string, { moveSources = false }: { moveSources?: boolean } = {}): string {
-  return `(select count(*) from cloud_computers cc where cc.user_id = ${userIdSql} and cc.deleted_at is null and cc.instance_id <> ?`
-    + (moveSources ? "" : " and not exists (select 1 from cloud_computers cm where cm.moving_from = cc.instance_id and cm.deleted_at is null)")
-    + ` and (cc.instance_id not like '${PENDING_PREFIX}%' or cc.created_at > ?))`;
+export function accountComputerCountSql(userIdSql: string, { moveFrom = null, cutoff }: { moveFrom?: string | null; cutoff: number }): { sql: string; binds: unknown[] } {
+  const counts = (alias: string) => `(${alias}.instance_id not like '${PENDING_PREFIX}%' or ${alias}.created_at > ?)`;
+  const moveSources = moveFrom != null;
+  return {
+    sql: `(select count(*) from cloud_computers cc where cc.user_id = ${userIdSql} and cc.deleted_at is null and cc.instance_id <> ?`
+      // A move's own check leaves out another move of the same source too, so that one answers `computer_busy`.
+      + (moveSources
+        ? " and (cc.moving_from is null or cc.moving_from <> ?)"
+        : ` and not exists (select 1 from cloud_computers cm where cm.moving_from = cc.instance_id and cm.deleted_at is null and ${counts("cm")})`)
+      + ` and ${counts("cc")})`,
+    binds: moveSources ? [moveFrom, moveFrom, cutoff] : ["", cutoff, cutoff],
+  };
 }
+
+/** Whether `computer` (not deleted) counts toward the limit: made, or a reservation still being made. */
+const countsTowardLimit = (computer: Pick<ComputerRow, "instance_id" | "created_at">, now: number): boolean =>
+  !isPendingId(computer.instance_id) || computer.created_at > now - PENDING_TIMEOUT_MS;
 
 /** The computers `computers` (one account's, not deleted) count toward the limit; as `accountComputerCountSql` with nothing left out. */
 export function countedComputers(computers: Pick<ComputerRow, "instance_id" | "moving_from" | "created_at">[], now: number): number {
-  const moving = new Set(computers.map((computer) => computer.moving_from).filter((id) => id != null));
-  return computers.filter((computer) => !moving.has(computer.instance_id)
-    && (!isPendingId(computer.instance_id) || computer.created_at > now - PENDING_TIMEOUT_MS)).length;
+  const moving = new Set(computers.filter((computer) => computer.moving_from != null && countsTowardLimit(computer, now)).map((computer) => computer.moving_from));
+  return computers.filter((computer) => !moving.has(computer.instance_id) && countsTowardLimit(computer, now)).length;
 }
 
 /**
  * How many computers count toward the account's limit now. `moveFrom` is a
  * move's own check: that source is left out and other moves' sources count
- * (`accountComputerCountSql` with `moveSources`).
+ * (`accountComputerCountSql` with `moveFrom`).
  */
 export async function accountComputerCount(env: CloudDb, userId: string, now: number, moveFrom: string | null = null): Promise<number> {
-  const row = await env.DB.prepare(`select ${accountComputerCountSql("?", { moveSources: moveFrom != null })} as n`).bind(userId, moveFrom ?? "", now - PENDING_TIMEOUT_MS).first<{ n: number }>();
+  const count = accountComputerCountSql("?", { moveFrom, cutoff: now - PENDING_TIMEOUT_MS });
+  const row = await env.DB.prepare(`select ${count.sql} as n`).bind(userId, ...count.binds).first<{ n: number }>();
   return row?.n ?? 0;
 }
 
@@ -1212,6 +1236,16 @@ export async function loadAccount(env: CloudEnv, userId: string, now: number): P
 }
 
 /**
+ * Puts `userId` on the ADE Cloud iPhone beta list, keeping `email` (the
+ * address the owner typed) when one is given and the one it had otherwise.
+ * Shared by the owner's add, a waiting email's claim and its hourly retry.
+ */
+export function phoneBetaAddStatement(db: D1Database, userId: string, email: string | null, now: number): D1PreparedStatement {
+  return db.prepare("insert into cloud_phone_beta (user_id, email, added_at) values (?, ?, ?) on conflict(user_id) do update set email = coalesce(excluded.email, cloud_phone_beta.email)")
+    .bind(userId, email, now);
+}
+
+/**
  * The owner adds ADE Cloud iPhone testers by email, before or after they sign
  * up (`POST /cloud/owner/phone-beta`). An email no ADE account had yet waits
  * in `cloud_phone_beta_pending` (migration 0052); the account that first
@@ -1232,8 +1266,7 @@ async function claimPhoneBetaInvite(env: CloudEnv, userId: string, now: number):
       .bind(JSON.stringify(emails)).first<{ email: string }>();
     if (!found) return;
     await env.DB.batch([
-      env.DB.prepare("insert into cloud_phone_beta (user_id, email, added_at) values (?, ?, ?) on conflict(user_id) do update set email = coalesce(cloud_phone_beta.email, excluded.email)")
-        .bind(userId, found.email, now),
+      phoneBetaAddStatement(env.DB, userId, found.email, now),
       env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(found.email),
     ]);
     logCloud("cloud.phone_beta_claimed", { userId });

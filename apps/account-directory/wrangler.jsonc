@@ -186,6 +186,11 @@
     "STRIPE_EXTRA_HOURS_PLUS_PRICE_ID": "price_1UbECABsy4QVYccDEYv5HvpZ",
     "STRIPE_EXTRA_HOURS_PRO_PRICE_ID": "price_1UbECABsy4QVYccDRUVKf1y7",
     "STRIPE_EXTRA_HOURS_MAX_PRICE_ID": "price_1UbECABsy4QVYccD0aD7kNA5",
+    // Extra-hours prices a plan no longer sells: subscriptions holding one keep
+    // it until their renewal moves it to the plan's price. Pro's and Max's
+    // Cloud 7 prices, which the Pricing v2 rerun of stripe-setup replaces; add
+    // each id a later rerun replaces.
+    "STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS": "price_1UbECABsy4QVYccDRUVKf1y7,price_1UbECABsy4QVYccD0aD7kNA5",
     "STRIPE_METER_EVENT": "ade_cloud_small_hours",
     // Pro, Max, extra disk ($2 per 10 GB a month, its own meter, never the
     // hours price) and the billing portal setup (card, cancel, invoices).
@@ -291,6 +296,7 @@
         "STRIPE_EXTRA_HOURS_PLUS_PRICE_ID": "price_1UbMTjPWulQjqSYPb3jzlykP",
         "STRIPE_EXTRA_HOURS_PRO_PRICE_ID": "price_1UbMTjPWulQjqSYPROgTWr6C",
         "STRIPE_EXTRA_HOURS_MAX_PRICE_ID": "price_1UbMTkPWulQjqSYPhPcWm3l6",
+        "STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS": "price_1UbMTjPWulQjqSYPROgTWr6C,price_1UbMTkPWulQjqSYPhPcWm3l6",
         "STRIPE_DISK_PRICE_ID": "price_1UbMTkPWulQjqSYPQYFuKXln",
         "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
         "STRIPE_PHONE_MINUTE_PRICE_ID": "price_1UdF4HPWulQjqSYPydFHhXGd",
