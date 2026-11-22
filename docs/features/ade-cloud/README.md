@@ -358,9 +358,11 @@ Pricing v2 (owner, 2026-11-21; [docs/plans/pricing-v2-and-gravity.md](../../plan
   `diskMaxGb` and no further (`disk_limit`, reason `tier_limit`). No extra
   disk is sold; `catalog.extraDiskCentsPer10GbMonth` and
   `CloudAccountState.extraDisk` are never sent, `disk.limitGb` is null, and
-  `POST /cloud/billing/extra-disk` is a 404. Older builds still read
-  `plans[].diskGb`, sent as the plan's computers at Small's 12 GB, never
-  enforced. The owner's daily report alarms on a free account holding more
+  `POST /cloud/billing/extra-disk` is no route (404). Builds before Pricing
+  v2 read `plans[].diskGb` as the plan's shared disk and check their own
+  grows against it, so it is sent as the plan's computers times the largest
+  size's `diskMaxGb`: such a build never refuses a grow the server allows.
+  The server never enforces it. The owner's daily report alarms on a free account holding more
   than 24 GB (`costReport.ts`).
 - **The computer limit.** Every computer the account has counts, asleep,
   stopped or failed; a lane without a computer doesn't. A create, copy,
@@ -370,10 +372,17 @@ Pricing v2 (owner, 2026-11-21; [docs/plans/pricing-v2-and-gravity.md](../../plan
   `message` = `computerLimitSentence` (`cloud.computer_limit_reached`). The
   count is part of `reserveComputer`'s one conditional insert, so concurrent
   creates can't pass it together. A reservation that never finished counts
-  until it times out (15 minutes). A move's two computers count once, and a
-  move is never refused by the limit. `past_due` keeps the bought plan's
+  until it times out (15 minutes). A move's two computers count once in the
+  account's count. A move's own check leaves its source out, so a move at
+  the limit goes; another running move's source counts there (a source can
+  outlive its move, and counts again after `MOVE_GRACE_MS`), so two moves at
+  once can't leave the account over. An account over its plan is refused a
+  move like a create (`over_plan_limits`). `past_due` keeps the bought plan's
   limit; a downgrade waiting for the period end applies the lower limit at
-  once. `computers.limit` on the account is the plan's limit.
+  once. `computers.limit` on the account is the plan's limit, and
+  `computers.nextPlan` (`CloudNextPlan`, from `nextPlanOffer`) the plan the
+  limit card offers: the same object a refusal carries, so no client works it
+  out.
 - **Out of hours.** At 0 hours only sizes that use hours are refused (402
   `out_of_hours`) or stopped by the cron; Small keeps working, and its timed
   wake-ups stay. An account with no free plan (`free_refused_at` or
@@ -392,13 +401,21 @@ Pricing v2 (owner, 2026-11-21; [docs/plans/pricing-v2-and-gravity.md](../../plan
   `soon`), and ADE shows no iPhone. The owner can add a tester by email
   before they sign up: the email waits in `cloud_phone_beta_pending`, and the
   account that first appears with it as a verified Clerk address takes it.
+  The owner check (every 10 minutes) also asks Clerk about each waiting email
+  about once an hour, ten a run, so a failed first read or an address
+  verified later still lands.
 - Computers sleep a few minutes after work stops (`CLOUD_IDLE_SLEEP_AFTER_MS`),
   so hours go only to real work.
 - **Migration 0052** (`0052_pricing_v2.sql`) moves stored hours to
   Medium-hours: this period's Small use comes off `used_milli`, then
   every account, day and computer number halves (Small's become 0). Apply it
   right before the Worker that reads it. Earned hours (referrals) stay as
-  they are, now Medium-hours.
+  they are, now Medium-hours. The extra hours already reported to Stripe
+  (`extra_reported_milli` and its daily-report snapshot) stay unhalved: the
+  meter identifiers count from it, so halving it would bill those hours
+  twice. Right after the Worker deploy, run the follow-up SQL in the
+  migration's header once (computers made and free periods rolled by the old
+  Worker in between keep old numbers).
 - **Period terms** (migration 0033): hours are stored per period
   (`included_milli`). A free period that began on fewer hours than the free
   plan has now is raised on the next read (`raiseFreeHours`), except for an

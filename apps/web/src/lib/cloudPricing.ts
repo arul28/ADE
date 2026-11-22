@@ -36,6 +36,7 @@ export { CLOUD_HOUR_UNIT_SENTENCE, CLOUD_SMALL_FAIR_USE_SENTENCE, CLOUD_SMALL_UN
  * and the "coming soon" card, its minutes line and the home page mention
  * come back (`ComingSoon`, `CloudSection`).
  */
+// Flip to true in the same release that sets the server's CLOUD_PHONE_ACCESS to `all`.
 export const CLOUD_PHONE_ON_WEBSITE = false;
 
 /** The rest of the offer, after `CLOUD_SMALL_UNLIMITED_SENTENCE`. */
@@ -77,7 +78,6 @@ export type PricingPlan = {
   pitch: string;
 };
 
-const PLAN_NAMES: Record<CloudPlanId, string> = { free: "Free", plus: "Plus", pro: "Pro", max: "Max" };
 const PLAN_PITCHES: Record<CloudPlanId, string> = {
   free: "Try your agents in the cloud.",
   plus: "A few lanes, most days.",
@@ -89,7 +89,7 @@ export const PRICING_PLANS: readonly PricingPlan[] = (["free", "plus", "pro", "m
   const plan = CLOUD_PLANS[id];
   return {
     id,
-    name: PLAN_NAMES[id],
+    name: plan.label,
     priceUsd: plan.priceUsd,
     hours: hoursOf(plan.includedMilli),
     computerLimit: plan.computerLimit,

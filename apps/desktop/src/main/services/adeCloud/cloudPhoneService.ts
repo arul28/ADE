@@ -723,9 +723,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         // Not the account's live phone now: it ended, or the server couldn't read it just now.
         else await settleEnd(tracked, Boolean(state.phone));
       }
-      const reason = state.access === "on" ? null
-        : state.access === "soon" ? "The ADE Cloud iPhone isn't on this account."
-          : "The ADE Cloud iPhone isn't available right now.";
+      // Access is on or off (an older server's `soon` reads as off).
+      const reason = state.access === "on" ? null : "The ADE Cloud iPhone isn't available right now.";
       const lastActivityAt = liveRun && state.phone?.id === liveRun.phoneId && state.phone.state !== "ended" ? liveRun.lastActivityAt : null;
       return { ...state, capabilities: state.access === "on" ? CLOUD_PHONE_AGENT_ACTIONS : [], supported: state.access === "on", reason, lastActivityAt };
     },

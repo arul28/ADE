@@ -86,7 +86,7 @@ import {
   cloudSizeFor,
   isMeteredStatus,
   isPaidPlanId,
-  nextPlanUp,
+  nextPlanOffer,
   setupStartDiskGb,
   tierOf,
   type CloudSize,
@@ -210,8 +210,11 @@ function diskRefusal(code: string, message: string, reason: CloudDiskRefusalReas
  * error carries `CloudComputerLimitDetail` beside `code` and `message`, flat
  * on `error`, for the limit card. The count is part of the reservation's one
  * conditional insert (`reserveComputer`), so two creates at once can't both
- * take the last slot. A move replaces its computer and is never refused for
- * it.
+ * take the last slot. A move replaces its computer, so its count leaves its
+ * own source out: a move from an account at or under its limit passes. Other
+ * moves still running count as two (their sources may outlive them), so two
+ * moves at once from an account at its limit can't both pass, and an account
+ * already over its limit is refused a move like a create.
  */
 
 /** The account's made computers, least recently used first, for the limit card. Empty when they can't be read. */
@@ -232,21 +235,24 @@ async function computerLimitLanes(env: CloudEnv, userId: string): Promise<CloudC
 /** The refusal at the computer limit, with what the card shows. */
 async function computerLimitRefusal(env: CloudEnv, account: AccountRow, now: number): Promise<Refused> {
   const planId = computerLimitPlanOf(account);
-  const next = nextPlanUp(planId, cloudOffers(env));
   const detail: CloudComputerLimitDetail = {
     planId,
     limit: computerLimitOf(account),
     total: await accountComputerCount(env, account.user_id, now),
     lanes: await computerLimitLanes(env, account.user_id),
-    nextPlan: next ? { planId: next, computerLimit: CLOUD_PLANS[next].computerLimit, priceUsd: CLOUD_PLANS[next].priceUsd } : null,
+    nextPlan: nextPlanOffer(planId, cloudOffers(env)),
   };
   logCloud("cloud.computer_limit_reached", { userId: account.user_id, plan: planId, limit: detail.limit, total: detail.total });
   return { response: fail(CLOUD_COMPUTER_LIMIT_CODE, computerLimitSentence(detail), 403, detail), refusal: "computer_limit" };
 }
 
-/** A copy's or a server copy's early answer at the limit (the reservation checks again in the same write as the insert). */
-async function computerLimitCheck(env: CloudEnv, account: AccountRow, now: number): Promise<Refused | null> {
-  return await accountComputerCount(env, account.user_id, now) >= computerLimitOf(account) ? computerLimitRefusal(env, account, now) : null;
+/**
+ * A copy's, a server copy's or a server move's early answer at the limit (the
+ * reservation checks again in the same write as the insert). `moveFrom` is a
+ * move's source, left out of its count.
+ */
+async function computerLimitCheck(env: CloudEnv, account: AccountRow, now: number, moveFrom: string | null = null): Promise<Refused | null> {
+  return await accountComputerCount(env, account.user_id, now, moveFrom) >= computerLimitOf(account) ? computerLimitRefusal(env, account, now) : null;
 }
 
 /*
@@ -489,10 +495,12 @@ async function markGone(env: CloudEnv, computer: ComputerRow, now: number): Prom
  * A reservation that makes the awake cap and the computer limit hold under
  * concurrent creates: the counts are in the same write as the insert, and the
  * reservation itself counts until it is made or `PENDING_TIMEOUT_MS` passes
- * (`accountComputerCountSql`). A move replaces its computer, so it is never
- * held to the limit; it records its source in `moving_from`, the pair counts
- * once while the move runs, and a source still there after `MOVE_GRACE_MS`
- * counts again (the tick's `endMoves`).
+ * (`accountComputerCountSql`). A move replaces its computer, so its count
+ * leaves its own source out, while every other running move's source counts
+ * (`moveSources`): a source still there after `MOVE_GRACE_MS` counts again
+ * (the tick's `endMoves`), so two moves at once must not both take the last
+ * slot. It records its source in `moving_from`, and the pair counts once in
+ * the account's own count while the move runs.
  */
 async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
   size: CloudSize;
@@ -513,7 +521,7 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
       lane_id, lane_name, lane_project_origin, lane_branch)
     select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?, ?
     where (select count(*) from cloud_computers where user_id = ? and deleted_at is null and ${AWAKE_CAP_COUNT_SQL}) < ?
-      and (? = 1 or ${accountComputerCountSql("?")} < ?)
+      and ${accountComputerCountSql("?", { moveSources: args.moveFromInstanceId != null })} < ?
       and not exists (select 1 from cloud_computers where request_id = ? and user_id <> ?)
       and not exists (select 1 from cloud_computers where request_id = ? and user_id = ? and deleted_at is null)
       and not exists (select 1 from cloud_computers where deleted_at is null and moving_from is not null and (moving_from = ? or instance_id = ?))
@@ -522,7 +530,7 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
     args.templateVersion, args.name, args.now, args.now, args.now, args.moveFromInstanceId, args.channel,
     args.lane.laneId, args.lane.laneName, args.lane.projectOrigin, args.lane.branch,
     account.user_id, cutoff, AWAKE_COMPUTER_CAP,
-    args.moveFromInstanceId ? 1 : 0, account.user_id, args.moveFromInstanceId ?? "", cutoff, computerLimitOf(account),
+    account.user_id, args.moveFromInstanceId ?? "", cutoff, computerLimitOf(account),
     args.requestId, account.user_id,
     args.requestId, account.user_id,
     args.moveFromInstanceId, args.moveFromInstanceId,
@@ -542,7 +550,7 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
     reportAwakeCap(account.user_id, "create", awake);
     return { ok: false, ...tooManyAwake() };
   }
-  if (!args.moveFromInstanceId && await accountComputerCount(env, account.user_id, args.now) >= computerLimitOf(account)) {
+  if (await accountComputerCount(env, account.user_id, args.now, args.moveFromInstanceId) >= computerLimitOf(account)) {
     return { ok: false, ...await computerLimitRefusal(env, account, args.now) };
   }
   // What's left: the computer to move started another move meanwhile.
@@ -701,8 +709,8 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   if (empty) return refused(refuse(empty));
   // The owner's cap limits free use only: a paid account is never refused here.
   if (await freeCapRefuses(env, account, now, waitUntil)) return refused(refuse({ response: cantMakeComputer(), refusal: "owner_limit" }));
-  // A move replaces its computer, so it adds nothing: only a new computer waits for the account to fit.
-  const over = isMove ? null : overPlanLimits(env, account, computers);
+  // An account over its plan gets no new computer, a move's included: a move whose source outlives it would add one.
+  const over = overPlanLimits(env, account, computers);
   if (over) return refused(refuse(over));
 
   // A move carries the old computer's disk; a plain create starts at the smallest, or at its repository's setup disk.
@@ -727,7 +735,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
     const tooBig = tierRefusal(size, diskGb, true);
     if (tooBig) return refused(refuse(tooBig));
   }
-  // The computer limit is checked in the reservation's own write (a move is never held to it).
+  // The computer limit is checked in the reservation's own write (a move's count leaves its source out).
   const reservation = await reserveComputer(env, account, { size, diskGb, moveFromInstanceId, name, requestId, templateVersion, channel, lane, now });
   if (!reservation.ok) {
     if ("replay" in reservation) return await replayRequest(env, provider, userId, requestId, now) ?? { kind: "in_progress" };
@@ -1497,7 +1505,7 @@ async function handleList(env: CloudEnv, userId: string, provider: CloudProvider
  */
 async function moveRefusal(env: CloudEnv, source: ComputerRow, size: CloudSize, { now, waitUntil }: CloudRequestContext): Promise<Response | null> {
   const userId = source.user_id;
-  const { account, outOfHoursFor } = await getAccountContext(env, userId, now);
+  const { account, computers, outOfHoursFor } = await getAccountContext(env, userId, now);
   const { refuse } = cloudActionTracker({ env, waitUntil, userId, plan: planIdOf(account), origin: "person", key: source.instance_id, refusedAction: "move", now });
   const newWork = await newWorkRefusal(env, userId, "move", now, waitUntil);
   if (newWork) return newWork;
@@ -1511,7 +1519,9 @@ async function moveRefusal(env: CloudEnv, source: ComputerRow, size: CloudSize, 
   if (readPlanCleanupChoiceIds(account).includes(source.instance_id)) {
     return fail("computer_busy", "ADE is freeing this computer for your plan, so it can't move now.", 409);
   }
-  // A move replaces its computer, so the computer limit never refuses it.
+  // As its create checks: an account over its plan gets no move, and the count leaves only this source out.
+  const over = overPlanLimits(env, account, computers) ?? await computerLimitCheck(env, account, now, source.instance_id);
+  if (over) return refuse(over);
   const tooBig = tierRefusal(size, source.disk_gb, true);
   if (tooBig) return refuse(tooBig);
   return null;
@@ -1708,7 +1718,7 @@ async function refuseForeignWake(body: Record<string, unknown> | null, env: Clou
   return wakeUrl && normalized(wakeUrl) === normalized(body.url) ? null : badRequest("That isn't this computer's wake address.");
 }
 
-const BILLING_PATHS = new Set<string>([CLOUD_PATHS.billingCheckout, CLOUD_PATHS.billingPortal, CLOUD_PATHS.billingExtraHours, CLOUD_PATHS.billingExtraDisk, CLOUD_PATHS.billingExtraPhone, CLOUD_PATHS.billingPlanCleanup, CLOUD_PATHS.billingFreeUnlock]);
+const BILLING_PATHS = new Set<string>([CLOUD_PATHS.billingCheckout, CLOUD_PATHS.billingPortal, CLOUD_PATHS.billingExtraHours, CLOUD_PATHS.billingExtraPhone, CLOUD_PATHS.billingPlanCleanup, CLOUD_PATHS.billingFreeUnlock]);
 /** The most a person may set as a monthly limit (extra iPhone minutes), in dollars. */
 const MONTHLY_LIMIT_MAX_USD = 1000;
 
@@ -1765,8 +1775,7 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
   if (!BILLING_PATHS.has(path)) return null;
   if (request.method !== "POST") return notFound();
   const offers = cloudOffers(env);
-  // Extra disk is no longer sold (Pricing v2), and an extra that isn't set up: as if it didn't exist.
-  if (path === CLOUD_PATHS.billingExtraDisk) return notFound();
+  // An extra that isn't set up: as if it didn't exist. (Extra disk isn't sold since Pricing v2: its path is no route.)
   if (path === CLOUD_PATHS.billingExtraPhone && !extraPhoneOffered(env)) return notFound();
   try {
     // The desktop sends the portal no body, which reads as `{}`.

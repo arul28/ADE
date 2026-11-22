@@ -984,10 +984,16 @@ export function computerLimitPlanOf(account: Pick<AccountRow, "plan" | "paid_pla
  * lost create never holds a slot. A move's source and its new computer count
  * once while the move runs; once `endMoves` ends a move that ran past
  * `MOVE_GRACE_MS`, both count.
+ *
+ * `moveSources: true` is a move's own check: it leaves out only its own
+ * source, and the source of every other move still running counts too. A
+ * move's source may outlive the move (the desktop never deletes it), so two
+ * moves at once from an account at its limit must not both pass: the second
+ * sees the first's pair as two and meets the limit.
  */
-export function accountComputerCountSql(userIdSql: string): string {
+export function accountComputerCountSql(userIdSql: string, { moveSources = false }: { moveSources?: boolean } = {}): string {
   return `(select count(*) from cloud_computers cc where cc.user_id = ${userIdSql} and cc.deleted_at is null and cc.instance_id <> ?`
-    + " and not exists (select 1 from cloud_computers cm where cm.moving_from = cc.instance_id and cm.deleted_at is null)"
+    + (moveSources ? "" : " and not exists (select 1 from cloud_computers cm where cm.moving_from = cc.instance_id and cm.deleted_at is null)")
     + ` and (cc.instance_id not like '${PENDING_PREFIX}%' or cc.created_at > ?))`;
 }
 
@@ -998,9 +1004,13 @@ export function countedComputers(computers: Pick<ComputerRow, "instance_id" | "m
     && (!isPendingId(computer.instance_id) || computer.created_at > now - PENDING_TIMEOUT_MS)).length;
 }
 
-/** How many computers count toward the account's limit now; `except` leaves one out (a move's source). */
-export async function accountComputerCount(env: CloudDb, userId: string, now: number, except = ""): Promise<number> {
-  const row = await env.DB.prepare(`select ${accountComputerCountSql("?")} as n`).bind(userId, except, now - PENDING_TIMEOUT_MS).first<{ n: number }>();
+/**
+ * How many computers count toward the account's limit now. `moveFrom` is a
+ * move's own check: that source is left out and other moves' sources count
+ * (`accountComputerCountSql` with `moveSources`).
+ */
+export async function accountComputerCount(env: CloudDb, userId: string, now: number, moveFrom: string | null = null): Promise<number> {
+  const row = await env.DB.prepare(`select ${accountComputerCountSql("?", { moveSources: moveFrom != null })} as n`).bind(userId, moveFrom ?? "", now - PENDING_TIMEOUT_MS).first<{ n: number }>();
   return row?.n ?? 0;
 }
 
@@ -1207,7 +1217,9 @@ export async function loadAccount(env: CloudEnv, userId: string, now: number): P
  * in `cloud_phone_beta_pending` (migration 0052); the account that first
  * appears with it moves onto the beta list here. Its email is read from Clerk
  * once, and only while some email waits, so an account read never asks Clerk.
- * Best effort: a failure leaves the email waiting and logs it.
+ * Best effort: a failure leaves the email waiting and reports it; the owner
+ * check asks Clerk again for each waiting email (`resolvePendingPhoneBeta` in
+ * `phones.ts`), so a failed read or an address verified later still lands.
  */
 async function claimPhoneBetaInvite(env: CloudEnv, userId: string, now: number): Promise<void> {
   try {
@@ -1226,8 +1238,7 @@ async function claimPhoneBetaInvite(env: CloudEnv, userId: string, now: number):
     ]);
     logCloud("cloud.phone_beta_claimed", { userId });
   } catch (error) {
-    // Before migration 0052 the table is missing: nothing waits.
-    logCloud("cloud.phone_beta_claim_failed", { userId, error: error instanceof Error ? error.message : "unknown" });
+    reportCloudFailure("cloud.phone_beta_claim_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
   }
 }
 
@@ -1338,11 +1349,11 @@ export async function rollPeriodIfDue(env: CloudEnv, account: AccountRow, now: n
   // `past_due` stays a paid account underneath: only a cancel ends the plan here.
   const nextPlan = cancelled ? "free" : account.plan === "paid" ? "paid" : "free";
   const rolled = await startFreshPeriod(env, account, { plan: nextPlan, start: period.start, end: period.end, included: "free" }, now, cancelled ? [
-    env.DB.prepare(`update cloud_accounts set cancel_at_period_end = 0, extra_enabled = 0, extra_disk_state = 'off', stripe_status = null,
+    env.DB.prepare(`update cloud_accounts set cancel_at_period_end = 0, extra_enabled = 0, stripe_status = null,
       phone_extra_enabled = ${PHONE_EXTRA_ENDED_SQL}, updated_at = ? where user_id = ?`).bind(now, account.user_id),
   ] : []);
   return cancelled
-    ? { ...rolled, cancel_at_period_end: 0, extra_enabled: 0, extra_disk_state: "off", stripe_status: null, phone_extra_enabled: phoneExtraEnded(account) }
+    ? { ...rolled, cancel_at_period_end: 0, extra_enabled: 0, stripe_status: null, phone_extra_enabled: phoneExtraEnded(account) }
     : rolled;
 }
 
@@ -1462,7 +1473,7 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
       break;
     case "to_free":
       // Extra iPhone minutes are billed for the ended period, then off.
-      extras.push(["extra_enabled", 0], ["extra_disk_state", "off"], ["phone_extra_enabled", phoneExtraEnded(account)]);
+      extras.push(["extra_enabled", 0], ["phone_extra_enabled", phoneExtraEnded(account)]);
       break;
   }
   // An upgrade, or back to the higher plan, inside a running period (no new period start): the

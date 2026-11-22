@@ -1,22 +1,22 @@
 import { useMemo } from "react";
-import { createRoot } from "react-dom/client";
 import { Desktop } from "@phosphor-icons/react";
 import {
   CLOUD_PLAN_LABELS,
-  isPaidPlanId,
   cloudComputerLimitDetailOf,
   cloudComputerLimitTitle,
   cloudComputerLimitUpgradeLabel,
   type CloudAccountState,
   type CloudComputerLimitDetail,
   type CloudComputerLimitLane,
+  type CloudNextPlan,
 } from "../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { ipcErrorMessage } from "../../lib/format";
 import { showToast } from "../app/toast/toastStore";
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import { refreshCloudMachines, useCloudMachines } from "../remoteTargets/useCloudMachines";
-import { Dialog, confirmDialog } from "../ui/dialog";
+import { Dialog, openDialog } from "../ui/dialog";
+import { checkoutCloudPlanUp, confirmCloudPlanMoveUp } from "../settings/cloudDashboard/cloudPlanMoveUp";
 import { deleteCloudLaneWithCheck, freeCloudLaneWithConfirm } from "./deleteCloudLane";
 import { cloudLaneChangesAvailable } from "./cloudLaneActions";
 import "./cloudLane.css";
@@ -51,29 +51,13 @@ function lanesOfMachines(machines: readonly CloudLaneMachine[]): CloudComputerLi
     .sort((a, b) => (a.lastAwakeAt ?? 0) - (b.lastAwakeAt ?? 0));
 }
 
-async function moveUp(next: NonNullable<CloudComputerLimitDetail["nextPlan"]>, onPaidPlan: boolean): Promise<void> {
-  const label = CLOUD_PLAN_LABELS[next.planId];
-  const open = window.ade?.cloud?.openCheckout;
-  // The next plan up is always a paid one; a free id here would be a server bug.
-  if (!open || !isPaidPlanId(next.planId)) {
-    showToast({ tone: "error", title: `Couldn't open ${label}`, message: "Open Settings › ADE Cloud › Plans in the ADE desktop app." });
-    return;
-  }
+async function moveUp(next: CloudNextPlan, onPaidPlan: boolean): Promise<void> {
   // A paid plan's move up charges the difference now: ask once, as the Plans card does.
-  if (onPaidPlan) {
-    const ok = await confirmDialog({
-      title: `Move to ${label}?`,
-      message: `${label} is $${next.priceUsd} a month with ${next.computerLimit} cloud computers. You pay the difference for the rest of this month now.`,
-      confirmLabel: `Move to ${label}`,
-    });
-    if (!ok) return;
-  }
+  if (onPaidPlan && !(await confirmCloudPlanMoveUp(next))) return;
   try {
-    const result = await open(next.planId as Parameters<typeof open>[0]);
-    if (result?.change === "now") showToast({ tone: "success", title: `You're on ${label} now.`, message: `You can have ${next.computerLimit} cloud computers.` });
-    else if (result?.opened) showToast({ title: `Finish ${label} in your browser`, message: `Once it's done, you can have ${next.computerLimit} cloud computers.` });
+    await checkoutCloudPlanUp(next);
   } catch (error) {
-    showToast({ tone: "error", title: `Couldn't open ${label}`, message: ipcErrorMessage(error) || "Try again in a moment." });
+    showToast({ tone: "error", title: `Couldn't open ${CLOUD_PLAN_LABELS[next.planId]}`, message: ipcErrorMessage(error) || "Try again in a moment." });
   } finally {
     refreshCloudMachines();
   }
@@ -172,30 +156,11 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
   );
 }
 
-let openRoot: { close: () => void } | null = null;
-
 /**
- * Opens the limit card. `detail`: the refusal's (it names the computers);
- * without it the card reads the account. One card at a time: opening it
- * again replaces the one up.
+ * Opens the limit card on the dialog host. `detail`: the refusal's (it names
+ * the computers); without it the card reads the account. One card at a time:
+ * opening it again replaces the one up.
  */
 export function openCloudComputerLimitCard(detail: CloudComputerLimitDetail | null = null): void {
-  if (typeof document === "undefined") return;
-  openRoot?.close();
-  const container = document.createElement("div");
-  container.setAttribute("data-ade-cloud-limit-card", "");
-  document.body.appendChild(container);
-  const root = createRoot(container);
-  const handle = {
-    close: () => {
-      if (openRoot === handle) openRoot = null;
-      // Unmount after this event, so the dialog's own close handlers finish first.
-      queueMicrotask(() => {
-        root.unmount();
-        container.remove();
-      });
-    },
-  };
-  openRoot = handle;
-  root.render(<CloudComputerLimitCard given={detail} onClose={handle.close} />);
+  openDialog((close) => <CloudComputerLimitCard given={detail} onClose={close} />, { key: "cloud-computer-limit" });
 }

@@ -8,6 +8,7 @@ import { cloudLaunchAppArgs, cloudLaunchLaneFields } from "../../../shared/cloud
 import { createCloudApiClient, CloudApiError } from "../../../shared/cloudApiClient";
 import type {
   AgentChatFileRef,
+  ChatLaunchCloudRefusal,
   ChatLaunchCloudStageId,
   ChatLaunchSnapshot,
   ChatLaunchStage,
@@ -283,9 +284,9 @@ export function createCloudLaneComputerStages(
         if (error instanceof CloudApiError && error.status >= 400 && error.status < 500) {
           // All the plan's computers in use: the card offers the three ways out (`CloudComputerLimitDetail`).
           // An outside agent on Free: the agent's tool passes the server's sentence on as its error.
-          const refusal = error.code === CLOUD_COMPUTER_LIMIT_CODE
-            ? { code: error.code, computerLimit: readCloudComputerLimitDetail(error.detail) }
-            : error.code === CLOUD_OUTSIDE_AGENT_FREE_CODE ? { code: error.code } : null;
+          const refusal: ChatLaunchCloudRefusal | null = error.code === CLOUD_COMPUTER_LIMIT_CODE
+            ? { code: CLOUD_COMPUTER_LIMIT_CODE, computerLimit: readCloudComputerLimitDetail(error.detail) }
+            : error.code === CLOUD_OUTSIDE_AGENT_FREE_CODE ? { code: CLOUD_OUTSIDE_AGENT_FREE_CODE } : null;
           throw new LaunchStepError(error.message, refusal);
         }
         throw error;

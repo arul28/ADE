@@ -268,7 +268,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
   // The free plan's GitHub hold: the hero's line and the plan card's notice say it, with what to do.
   const accountBanner = cloudAccountBanner(account);
   const banner = accountBanner?.id === CLOUD_FREE_GITHUB_BANNER_ID || accountBanner?.id === CLOUD_FREE_REFUSED_BANNER_ID ? null : accountBanner;
-  // Pricing v2: the plan's computer limit (null before it, when there was none to show).
+  // The plan's computer limit, asleep or not.
   const computers = cloudAccountComputers(account);
   // "You're on Plus", while this session shows it (cloudPlanMoment.ts).
   const moment = useCloudPlanMomentState();
@@ -336,7 +336,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
           <Desktop size={14} />
           Lanes and computers
           <span className="kit-card-head-count">{lanes.length}</span>
-          <span className="adecd-head-note">{computers ? `${computers.total} of ${computers.limit} computers` : `${account.computers.total} ${account.computers.total === 1 ? "computer" : "computers"}`} · {account.computers.awake} awake</span>
+          <span className="adecd-head-note">{`${computers.total} of ${computers.limit} computers`} · {account.computers.awake} awake</span>
         </header>
         <div className="kit-card-body" data-flush="true" ref={tableRef}>
           {inside ? (
@@ -407,7 +407,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
  * The dusk sky at the top: the logo and the plan, the numbers that matter
  * (hours for bigger computers, computers of the plan's limit) and the city of
  * the account's lanes. The numbers are said once on the page; nothing below
- * repeats them. No account disk: since Pricing v2 only a computer's own disk
+ * repeats them. No account disk: only a computer's own disk
  * shows, on its row, when it is nearly full.
  */
 function CloudHero({
@@ -501,12 +501,12 @@ function CloudHero({
             </div>
           </div>
           <div className="adecd-minis">
-            {/* Pricing v2: computers of the plan's limit, asleep or not. Older servers had no limit to show: a count. */}
+            {/* Computers of the plan's limit, asleep or not. */}
             <MiniMeter
               label="Cloud computers"
-              value={String(computers?.total ?? account.computers.total)}
-              of={computers ? `of ${computers.limit}` : null}
-              pct={computers ? percentOf(computers.total, computers.limit) : null}
+              value={String(computers.total)}
+              of={`of ${computers.limit}`}
+              pct={percentOf(computers.total, computers.limit)}
               note={`${account.computers.awake} awake now · asleep ones count too`}
               title="Every cloud computer counts toward your plan, asleep or not."
             />

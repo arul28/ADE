@@ -196,10 +196,6 @@ export function createWebCloudBilling(accountClient: CloudBillingAccountClient) 
       return accountState(await post(CLOUD_PATHS.billingExtraHours, { enabled }, page));
     },
 
-    async setExtraDisk(choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }): Promise<CloudAccountState> {
-      return accountState(await post(CLOUD_PATHS.billingExtraDisk, choice, page));
-    },
-
     async setExtraPhoneMinutes(choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }): Promise<CloudAccountState> {
       return accountState(await post(CLOUD_PATHS.billingExtraPhone, choice, page));
     },

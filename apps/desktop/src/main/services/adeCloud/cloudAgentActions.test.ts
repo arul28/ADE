@@ -27,8 +27,6 @@ describe("ADE Cloud agent actions: approvals", () => {
     /** How that size was chosen. */
     savedChoice?: "default" | "picked";
     maxShape?: string;
-    /** The agents' paid extra disk a month, in cents (null: up to the account's limit). */
-    extraDiskMonthCents?: number | null;
     /** The person's limits can't be read (the account vault doesn't answer). */
     limitsUnreadable?: boolean;
   } = {}) {
@@ -41,10 +39,7 @@ describe("ADE Cloud agent actions: approvals", () => {
       unattendedSpend: options.unattendedSpend ?? true,
       machinesPerDay: 3,
       maxShape: (options.maxShape ?? "4x16") as CloudAgentLimits["maxShape"],
-      extraDiskMonthCents: options.extraDiskMonthCents ?? null,
     };
-    /** What `grow_disk`'s approval answered the grower for paid extra disk. */
-    const extraAnswers: unknown[] = [];
     const box = { instanceId: "inst_1", name: "lane box", machineKey: "mk_1", type: "box", hoursRate: 1, state: "asleep", lane: { laneId: "lane_1", laneName: "Fix login", projectOrigin: "github.com/acme/widgets" } };
     const deps = {
       machines: {
@@ -96,12 +91,9 @@ describe("ADE Cloud agent actions: approvals", () => {
           return { status: { launch: { phase: "running" } }, created: !options.launchPhase };
         },
       }),
-      // The computer's grower: a 16 GB disk 4 GB past the plan, about 80¢ a month.
+      // The computer's grower: an 8 GB disk growing to 16 GB.
       diskGrow: () => ({
-        growToFit: async (ask: { approveExtra?: (fit: unknown) => Promise<unknown> }) => {
-          extraAnswers.push(await ask.approveExtra?.({ kind: "extra", fromGb: 8, toGb: 16, pastGb: 4, limitGb: 30, monthCents: 80, limitCents: 1000, sentence: "A 16 GB disk uses paid extra disk." }));
-          return { state: "growing", fromGb: 8, toGb: 16, message: "growing" };
-        },
+        growToFit: async () => ({ state: "growing", fromGb: 8, toGb: 16, message: "growing" }),
       }),
       // A lane's account side: its computer, its work (all on GitHub), its delete and its free.
       lanes: {
@@ -134,7 +126,7 @@ describe("ADE Cloud agent actions: approvals", () => {
         notice: () => undefined,
       },
     } as unknown as CloudAgentActionDeps;
-    return { actions: buildCloudAgentActions(deps), ran, cards, starts, extraAnswers, checks };
+    return { actions: buildCloudAgentActions(deps), ran, cards, starts, checks };
   }
 
   const person: CloudApproval = { by: "person" };
@@ -208,37 +200,6 @@ describe("ADE Cloud agent actions: approvals", () => {
     expect(cards).toHaveLength(expectedCards);
     // A lane's work check runs only for the card a person reads: never for a caller ADE refuses or answers alone.
     expect(checks).toHaveLength(verb === "lane_delete" ? expectedCards : 0);
-  });
-
-  // Paid extra disk for a disk grow (`cloud.grow_disk`): a person on a card decides for a watched chat; for an
-  // agent nobody watches, the agents' extra-disk limit does, and a limit ADE can't read says no. Extra disk costs
-  // money, not hours: hours ADE can't read don't stop it.
-  it.each([
-    ["unattended, the default limits (up to the account's limit): yes, with no card", { level: "full-auto" }, true, 0],
-    ["unattended, exactly at the agents' extra disk (80¢): yes", { level: "full-auto", extraDiskMonthCents: 80 }, true, 0],
-    ["unattended, a cent past the agents' extra disk: the agent limit says no", { level: "full-auto", extraDiskMonthCents: 79 }, "agent_limit", 0],
-    ["unattended, agents may use no extra disk: the agent limit says no", { level: "full-auto", extraDiskMonthCents: 0 }, "agent_limit", 0],
-    ["unattended, agents may not spend: the agent limit says no", { level: "full-auto", unattendedSpend: false }, "agent_limit", 0],
-    ["unattended, the limits can't be read: no", { level: "full-auto", limitsUnreadable: true }, "agent_limit", 0],
-    ["unattended, the hours can't be read: yes, a disk spends no hours", { level: "full-auto", spendUnreadable: true }, true, 0],
-    ["a watched chat asks the person, and yes grows it", { level: "ask", answer: "yes" }, true, 1],
-    ["a watched chat asks the person, and no stops it", { level: "ask", answer: "no" }, false, 1],
-  ] as const)("paid extra disk for a grow: %s", async (_label, options, expected, expectedCards) => {
-    vi.stubEnv("ADE_CLOUD_INSTANCE_ID", "inst_1");
-    try {
-      const { actions, cards, extraAnswers, ran } = setup(options);
-
-      const answer = await actions.grow_disk!({ needFreeGb: 8, reason: "the emulator's first boot", approval: agent } as never);
-
-      expect(answer).toMatchObject({ state: "growing" });
-      expect(extraAnswers).toHaveLength(1);
-      if (typeof expected === "string") expect(extraAnswers[0]).toMatchObject({ reason: expected, sentence: expect.any(String) });
-      else expect(extraAnswers[0]).toBe(expected);
-      expect(cards).toHaveLength(expectedCards);
-      expect(ran).toEqual([]);
-    } finally {
-      vi.unstubAllEnvs();
-    }
   });
 
   // A full-auto agent's retry of a default Small: the limits as they are now decide whether setup may move it up.

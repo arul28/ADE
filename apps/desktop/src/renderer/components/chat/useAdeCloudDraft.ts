@@ -167,8 +167,8 @@ export function useAdeCloudDraft({
   const runOnLine = useMemo(() => {
     const tier = tiers.find((entry) => entry.id === tierId) ?? null;
     if (!account || !tier) return null;
-    // Small never uses hours: it stays unlimited, also at 0 hours left.
-    if (!cloudTierUsesHours(tier)) return `${tier.label} · unlimited`;
+    // Small never uses hours: it stays unlimited, also at 0 hours left (`cloudTierHoursAt` says so).
+    if (!cloudTierUsesHours(tier)) return `${tier.label} · ${cloudTierHoursAt(tier, 0).toLowerCase()}`;
     if (cloudOutOfHours(account) && hoursLeftMilli === 0) return `${tier.label} · no hours left`;
     return `${tier.label} · ${cloudTierHoursAt(tier, hoursLeftMilli ?? 0)} left at this size`;
   }, [account, hoursLeftMilli, tierId, tiers]);

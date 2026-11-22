@@ -6,6 +6,7 @@ import type {
   CloudComputerLimitLane,
   CloudComputerStatus,
   CloudDiskRefusalReason,
+  CloudNextPlan,
   CloudDiskUsage,
   CloudDiskUsageItem,
   CloudDiskUsageKind,
@@ -64,7 +65,7 @@ export {
   cloudComputersPhrase,
   computerLimitSentence,
 } from "../../../account-directory/src/cloud/contract";
-export type { CloudComputerLimitDetail, CloudComputerLimitLane };
+export type { CloudComputerLimitDetail, CloudComputerLimitLane, CloudDiskRefusalReason, CloudNextPlan };
 /** The idle cleanup's shared sentences (the server's emails say the same). */
 export {
   CLOUD_IGNORED_FILES_MAX_PATHS,
@@ -76,20 +77,21 @@ export {
 } from "../../../account-directory/src/cloud/contract";
 
 export { formatCloudCents };
-/** The disk-grow rules and the agents' extra disk live in `cloudDiskGrowRules.ts`. */
+/** The disk-grow rules live in `cloudDiskGrowRules.ts`. */
+export { cloudDiskGrowFit, cloudDiskGrowPlan } from "./cloudDiskGrowRules";
+export type { CloudDiskGrowFit, CloudDiskGrowPlan } from "./cloudDiskGrowRules";
+/** The computer limit and outside agents live in `cloudComputerLimit.ts`. */
 export {
-  CLOUD_AGENT_EXTRA_DISK_CHOICES,
-  CLOUD_AGENT_EXTRA_DISK_MAX_CENTS,
-  cloudAgentExtraDiskCentsOf,
-  cloudAgentExtraDiskLooser,
-  cloudAgentExtraDiskRefusal,
-  cloudDiskGrowFit,
-  cloudDiskGrowPlan,
-  cloudDiskLanesSentence,
-  cloudDiskLimitNamesLanes,
-  describeCloudAgentExtraDisk,
-} from "./cloudDiskGrowRules";
-export type { CloudDiskGrowExtra, CloudDiskGrowFit, CloudDiskGrowPlan, CloudDiskLaneUse, CloudDiskLimitReason } from "./cloudDiskGrowRules";
+  cloudAccountComputers,
+  cloudComputerLimitDetailOf,
+  cloudComputerLimitReached,
+  cloudComputerLimitTitle,
+  cloudComputerLimitUpgradeLabel,
+  cloudOutsideAgentsAllowed,
+  cloudPlanComputerLimitOf,
+  readCloudComputerLimitDetail,
+  readCloudNextPlan,
+} from "./cloudComputerLimit";
 
 /**
  * Stamped on every ADE Cloud approval card (`providerMetadata`). Only the
@@ -168,16 +170,16 @@ export function cloudKindLabel(kind: CloudMachineKind): string {
 /**
  * The server's sizes and plans (`GET /cloud/account`) for a surface that has
  * no account yet: the server's own catalog code, with only what every server
- * sells (Pro, Max and extra disk are offered only when the server sends them).
- * No client keeps numbers of its own; everything else reads the answer.
+ * sells (Pro and Max are offered only when the server sends them). No client
+ * keeps numbers of its own; everything else reads the answer.
  */
-const CLOUD_CATALOG_FALLBACK: CloudCatalog = cloudCatalog({ pro: false, max: false, extraDisk: false });
+const CLOUD_CATALOG_FALLBACK: CloudCatalog = cloudCatalog({ pro: false, max: false });
 
 /**
  * The sizes and plans the server answers with, or the fallback until the
  * account has loaded. Nothing is added that the server didn't send: a server
- * before Pro has no `plus`, `pro` or extra-disk price, and its `paid` plan
- * gets only its own price (`paidPriceUsd`) filled in.
+ * before Pro has no `plus` or `pro`, and its `paid` plan gets only its own
+ * price (`paidPriceUsd`) filled in.
  */
 export function cloudCatalogOf(account: Pick<CloudAccountState, "catalog"> | null | undefined): CloudCatalog {
   const catalog = account?.catalog;
@@ -233,117 +235,6 @@ export function cloudExtraHourCentsOf(planId: CloudPlanId, catalog: CloudCatalog
   return own === undefined ? catalog.extraHourCents : own;
 }
 
-/*
- * Pricing v2 (`docs/plans/pricing-v2-and-gravity.md`): each plan has a number
- * of cloud computers (asleep or not), Small computers never use hours, and
- * hours count Medium-hours. A server before it says so by leaving out
- * `catalog.hourUnit`; its `computerLimit` and `computers.limit` were a hidden
- * awake cap, never shown as a plan limit.
- */
-
-/** True when the catalog is Pricing v2's (Medium-hours, a computer limit per plan). */
-export function cloudCatalogIsPricingV2(catalog: Pick<CloudCatalog, "hourUnit">): boolean {
-  return catalog.hourUnit === "medium";
-}
-
-/** How many cloud computers a plan allows, asleep or not, from the catalog; null from a server before Pricing v2. */
-export function cloudPlanComputerLimitOf(facts: Pick<CloudPlanFacts, "computerLimit"> | null | undefined, catalog: Pick<CloudCatalog, "hourUnit">): number | null {
-  if (!cloudCatalogIsPricingV2(catalog)) return null;
-  const limit = facts?.computerLimit;
-  return typeof limit === "number" && Number.isFinite(limit) && limit >= 0 ? limit : null;
-}
-
-/** The account's computers and its plan's limit (asleep or not), or null when the server doesn't say (before Pricing v2). */
-export function cloudAccountComputers(account: Pick<CloudAccountState, "computers" | "catalog"> | null | undefined): { total: number; limit: number } | null {
-  if (!account?.computers || !cloudCatalogIsPricingV2(cloudCatalogOf(account))) return null;
-  const { total, limit } = account.computers;
-  if (typeof limit !== "number" || !Number.isFinite(limit) || typeof total !== "number") return null;
-  return { total, limit };
-}
-
-/** Whether the account uses all its plan's cloud computers, so a new cloud lane is refused (`computer_limit`). */
-export function cloudComputerLimitReached(account: Pick<CloudAccountState, "computers" | "catalog"> | null | undefined): boolean {
-  const computers = cloudAccountComputers(account);
-  return computers != null && computers.total >= computers.limit;
-}
-
-/** The next plan up that the server sells, with its computers and price, or null (Max, or not sold). */
-export function cloudNextPlanUp(account: Pick<CloudAccountState, "plan" | "planId" | "catalog">): CloudComputerLimitDetail["nextPlan"] {
-  const catalog = cloudCatalogOf(account);
-  const current = cloudPlanIdOf(account);
-  const order: CloudPaidPlanId[] = ["plus", "pro", "max"];
-  for (const planId of order) {
-    if (CLOUD_PLAN_RANK[planId] <= CLOUD_PLAN_RANK[current]) continue;
-    const facts = planId === "plus" ? catalog.plans.plus ?? catalog.plans.paid : catalog.plans[planId];
-    const computerLimit = cloudPlanComputerLimitOf(facts, catalog);
-    if (!facts || computerLimit == null) return null;
-    return { planId, computerLimit, priceUsd: facts.priceUsd };
-  }
-  return null;
-}
-
-/**
- * What the computer limit card shows, built from the account when no refusal
- * carried it (the card opened before a new lane): the limit, the count, and
- * the next plan. `lanes` comes from the caller's list of the account's computers.
- */
-export function cloudComputerLimitDetailOf(
-  account: Pick<CloudAccountState, "plan" | "planId" | "catalog" | "computers">,
-  lanes: CloudComputerLimitLane[] = [],
-): CloudComputerLimitDetail | null {
-  const computers = cloudAccountComputers(account);
-  if (!computers) return null;
-  return { planId: cloudPlanIdOf(account), limit: computers.limit, total: computers.total, lanes, nextPlan: cloudNextPlanUp(account) };
-}
-
-/** A `computer_limit` refusal's detail (flat on the server's `error`), or null when it isn't one. */
-export function readCloudComputerLimitDetail(value: unknown): CloudComputerLimitDetail | null {
-  if (!value || typeof value !== "object") return null;
-  const raw = value as Record<string, unknown>;
-  if (typeof raw.limit !== "number" || typeof raw.total !== "number") return null;
-  const planId: CloudPlanId = raw.planId === "free" || isPaidPlanId(raw.planId) ? raw.planId : "free";
-  const lanes = Array.isArray(raw.lanes)
-    ? raw.lanes.flatMap((entry): CloudComputerLimitLane[] => {
-      if (!entry || typeof entry !== "object") return [];
-      const lane = entry as Record<string, unknown>;
-      if (typeof lane.instanceId !== "string" || !lane.instanceId) return [];
-      return [{
-        instanceId: lane.instanceId,
-        laneName: typeof lane.laneName === "string" && lane.laneName ? lane.laneName : lane.instanceId,
-        awake: lane.awake === true,
-        lastAwakeAt: typeof lane.lastAwakeAt === "number" && Number.isFinite(lane.lastAwakeAt) ? lane.lastAwakeAt : null,
-        hasLane: lane.hasLane !== false,
-      }];
-    })
-    : [];
-  const next = raw.nextPlan && typeof raw.nextPlan === "object" ? raw.nextPlan as Record<string, unknown> : null;
-  const nextPlan = next && isPaidPlanId(next.planId) && typeof next.computerLimit === "number" && typeof next.priceUsd === "number"
-    ? { planId: next.planId, computerLimit: next.computerLimit, priceUsd: next.priceUsd }
-    : null;
-  return { planId, limit: raw.limit, total: raw.total, lanes, nextPlan };
-}
-
-/** "You're using all 2 of your cloud computers.": the limit card's title. */
-export function cloudComputerLimitTitle(detail: Pick<CloudComputerLimitDetail, "limit">): string {
-  return `You're using all ${detail.limit} of your cloud computers.`;
-}
-
-/** The limit card's third way out: "Move to Plus for 3 computers." */
-export function cloudComputerLimitUpgradeLabel(nextPlan: NonNullable<CloudComputerLimitDetail["nextPlan"]>): string {
-  return `Move to ${CLOUD_PLAN_SENTENCE_NAMES[nextPlan.planId]} for ${nextPlan.computerLimit} computers`;
-}
-
-/**
- * Whether outside agents (ADE MCP) may start ADE Cloud work on the account's
- * plan, from the catalog: false only when the server says so (Free since
- * Pricing v2). The server refuses anyway (`outside_agent_free_plan`); this
- * only answers early.
- */
-export function cloudOutsideAgentsAllowed(account: Pick<CloudAccountState, "plan" | "planId" | "catalog"> | null | undefined): boolean {
-  if (!account) return true;
-  return cloudPlanFactsOf(account, cloudCatalogOf(account))?.outsideAgents !== false;
-}
-
 /** "2¢", "1.5¢": an extra hour's price as people read it. */
 export const formatCloudCentsPerHour = (cents: number): string => `${Number(cents.toFixed(2))}¢`;
 /** "2.5¢": an extra iPhone minute's price as people read it. */
@@ -366,13 +257,19 @@ export function cloudHoursRate(kind: CloudMachineKind, shape: CloudShapeId, cata
 }
 
 /**
- * "Uses no hours" for Small, "Uses 2.5 hours an hour" for the rest: a size's
- * rate in words, never a multiplier. Where the account's hours are known,
- * surfaces say how long they last instead (`cloudTierHoursAt`).
+ * "uses no hours" for Small, "uses 2.5 hours an hour" for the rest: a size's
+ * rate in words, never a multiplier, lowercase to sit inside a sentence
+ * (`capitalizeCloudPhrase` where it starts one). Where the account's hours
+ * are known, surfaces say how long they last instead (`cloudTierHoursAt`).
  */
 export function formatCloudHoursRate(rate: number): string {
-  if (!(rate > 0)) return "Uses no hours";
-  return `Uses ${Number(rate.toFixed(2))} ${rate === 1 ? "hour" : "hours"} an hour`;
+  if (!(rate > 0)) return "uses no hours";
+  return `uses ${Number(rate.toFixed(2))} ${rate === 1 ? "hour" : "hours"} an hour`;
+}
+
+/** A lowercase phrase as the start of a sentence: "Uses 2.5 hours an hour". */
+export function capitalizeCloudPhrase(phrase: string): string {
+  return phrase.charAt(0).toUpperCase() + phrase.slice(1);
 }
 
 /** What a size uses of the plan, as one sentence for approval cards: Small never uses hours. */
@@ -744,25 +641,13 @@ export function cloudDiskGrowRefusedWayOut(
   reason: string | null | undefined,
   exactReason?: string | null,
 ): string | null {
-  // Since Pricing v2 there is no plan or account disk: only a size's own disk
-  // maximum (`tier_limit`) stops a grow. The other reasons come from older
-  // servers; each still gets a way out, never a GB figure.
-  const growOrMove = "Free up space on it, or move it to a bigger size.";
-  const known: Partial<Record<CloudDiskRefusalReason | CloudDiskFullReason, string>> = {
-    plan_disk: growOrMove,
-    needs_approval: growOrMove,
-    extra_off: growOrMove,
-    monthly_limit: growOrMove,
-    tier_limit: "This size can't have a bigger disk. Move it to a bigger size.",
-    unavailable: "ADE Cloud can't grow it right now.",
-    free_limit: growOrMove,
-    account_limit: growOrMove,
-  };
-  for (const value of [exactReason, reason]) {
-    if (!value) continue;
-    return known[value as keyof typeof known] ?? "It can't grow right now.";
-  }
-  return null;
+  // There is no plan or account disk: a size's own disk maximum
+  // (`tier_limit`) stops a grow, or ADE Cloud can't grow disks right now.
+  const value = exactReason || reason;
+  if (!value) return null;
+  if (value === "tier_limit") return "This size can't have a bigger disk. Move it to a bigger size.";
+  if (value === "unavailable") return "ADE Cloud can't grow it right now.";
+  return "Free up space on it, or move it to a bigger size.";
 }
 
 /**
@@ -799,27 +684,22 @@ export type CloudAgentLimits = {
   /** The largest size an unattended agent may pick. */
   maxShape: CloudShapeId;
   /**
-   * Paid extra disk an unattended agent may grow a disk into: the most the
-   * account's extra disk may cost a month after the grow, in cents. 0: none.
-   * Null or left out (the default, and every limits saved before it): up to
-   * the account's own monthly extra-disk limit, so agents use the extra disk
-   * the person turned on with no more setup. The account's extra disk being
-   * off or turned down still means none, for everyone.
+   * Older apps' limit on paid extra disk, which ADE Cloud no longer sells.
+   * Read and kept as saved so an older app finds it; nothing here shows or uses it.
    */
   extraDiskMonthCents?: number | null;
   /**
    * Set when ADE couldn't read the account's copy: these are this computer's
-   * copy or the default, and may be out of date. An unattended agent uses no
-   * paid extra disk then (`cloudAgentExtraDiskRefusal`).
+   * copy or the default, and may be out of date.
    */
   fallback?: true;
 };
 
 export type CloudLimitsPreset = "ask" | "balanced" | "hands_off";
 export const CLOUD_LIMITS_PRESETS: Readonly<Record<CloudLimitsPreset, CloudAgentLimits>> = {
-  ask: { unattendedSpend: false, machinesPerDay: 1, maxShape: "4x8", extraDiskMonthCents: null },
-  balanced: { unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", extraDiskMonthCents: null },
-  hands_off: { unattendedSpend: true, machinesPerDay: 10, maxShape: "4x32", extraDiskMonthCents: null },
+  ask: { unattendedSpend: false, machinesPerDay: 1, maxShape: "4x8" },
+  balanced: { unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16" },
+  hands_off: { unattendedSpend: true, machinesPerDay: 10, maxShape: "4x32" },
 };
 export const CLOUD_DEFAULT_AGENT_LIMITS: CloudAgentLimits = CLOUD_LIMITS_PRESETS.balanced;
 export const CLOUD_MACHINES_PER_DAY_CHOICES = [1, 3, 5, 10] as const;
@@ -830,7 +710,6 @@ export function cloudLimitsPresetOf(limits: CloudAgentLimits): CloudLimitsPreset
       preset.unattendedSpend === limits.unattendedSpend
       && preset.machinesPerDay === limits.machinesPerDay
       && preset.maxShape === limits.maxShape
-      && (preset.extraDiskMonthCents ?? null) === (limits.extraDiskMonthCents ?? null)
     ) {
       return id;
     }
@@ -1153,6 +1032,8 @@ export type CloudMachineActionArgs = {
   shape?: CloudShapeId;
   /** For `resize`: the new disk in GB (a multiple of the catalog's step, never smaller). Keeps the size when `shape` is unset. */
   disk?: number;
+  /** For `wake`: `mcp` when an outside agent (ADE MCP) asked; the server refuses it on the free plan (`outside_agent_free_plan`). */
+  origin?: "mcp";
   /**
    * For a `resize` that grows the disk: the person confirmed the restart it
    * takes. The server refuses a grow on a running computer without it.

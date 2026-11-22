@@ -1666,10 +1666,10 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "ade-cloud.plans",
     label: "ADE Cloud plans and billing",
-    keywords: ["plan", "plans", "upgrade", "plus", "pro", "max", "free", "price", "billing", "extra hours", "extra disk", "manage billing", "subscription", "invoice", "cancel"],
+    keywords: ["plan", "plans", "upgrade", "plus", "pro", "max", "free", "price", "billing", "extra hours", "manage billing", "subscription", "invoice", "cancel"],
     tab: "ade-cloud",
     anchor: "cloud-plan",
-    // The plans side by side, extra hours and extra disk; the account's Stripe subscription.
+    // The plans side by side and extra hours; the account's Stripe subscription.
     scope: "account",
     web: "account",
     group: "ADE Cloud",

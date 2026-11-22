@@ -8,7 +8,6 @@
 
 import {
   CLOUD_OUT_OF_HOURS_MESSAGE,
-  cloudCatalogIsPricingV2,
   cloudCatalogOf,
   cloudComputerLimitDetailOf,
   cloudComputerLimitReached,
@@ -19,7 +18,7 @@ import {
   type CloudAgentMaker,
   type CloudMachine,
 } from "./adeCloud";
-import { cloudTier } from "./cloudTiers";
+import { cloudTier, cloudTierUsesHours } from "./cloudTiers";
 import { normalizeGitRemoteIdentity } from "./crossMachineHandoff";
 import type { ChatLaunchArgs, ChatLaunchLaneConfig, ChatLaunchSnapshot } from "./types/chatLaunch";
 import type { AgentChatFileRef } from "./types/chat";
@@ -107,13 +106,12 @@ export function cloudLaunchAppArgs(launch: Omit<ChatLaunchArgs, "cloud" | "prior
  * account (hours, computers), or null. One wording for every caller: the
  * composer's label above the prompt box, `cloud.status`'s `canStartLane`,
  * and the early refusal of `cloud.lane_launch` and `cloud.create`.
- * `newLane: false` (a send to a lane that exists) checks hours only: a
- * sleeping lane wakes on hours too.
+ * `newLane: false` (a send to a lane that exists) skips the computer limit.
  *
- * Pricing v2: Small computers never use hours, so out of hours stops only a
- * size known to use them (`sizeId`); a caller that doesn't know the size gets
- * no hours block and the server decides. A new lane past the plan's computers
- * is `computer_limit` (the limit card's three ways out).
+ * Small computers never use hours, so out of hours stops only a size known
+ * to use them (`sizeId`); a caller that doesn't pass the size gets no hours
+ * block (only a held free plan's) and the server decides. A new lane past
+ * the plan's computers is `computer_limit` (the limit card's three ways out).
  *
  * Unknown (no account read) is never a block here: the server still refuses,
  * and each caller says what it does with unknown.
@@ -133,9 +131,9 @@ export function cloudLaneStartBlock(
   // A partial answer (an older server) can lack a part: that check is skipped, never thrown.
   const { extraHours } = account as Partial<CloudAccountState>;
   const catalog = cloudCatalogOf(account);
-  // Before Pricing v2 every size used hours; since, only a size the catalog rates above 0.
+  // Only a size the catalog rates above 0 uses hours.
   const size = options.sizeId ? cloudTier(catalog, options.sizeId) : null;
-  const usesHours = cloudCatalogIsPricingV2(catalog) ? size != null && size.multiplierMilli > 0 : true;
+  const usesHours = size != null && cloudTierUsesHours(size);
   // A held free plan (GitHub rules, refused) stops every size, Small too.
   const github = (account as Partial<CloudAccountState>).rules === "free" ? cloudFreePlanOf(account).github : undefined;
   const why = github && github.state !== "ok" ? github.sentence : null;
@@ -143,7 +141,7 @@ export function cloudLaneStartBlock(
     // The free plan's GitHub rules hold its hours: their sentence says why and what to do.
     return {
       code: "out_of_hours",
-      message: why ?? (cloudCatalogIsPricingV2(catalog) ? `${CLOUD_OUT_OF_HOURS_MESSAGE} Small computers keep working.` : CLOUD_OUT_OF_HOURS_MESSAGE),
+      message: why ?? `${CLOUD_OUT_OF_HOURS_MESSAGE} Small computers keep working.`,
       short: why ? "Free hours wait on GitHub." : "Out of hours for this size.",
     };
   }

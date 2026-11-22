@@ -2,7 +2,7 @@ import { CaretDown, Check, GearSix, Info, SlidersHorizontal, Warning } from "@ph
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
-import { cloudTierFacts, cloudTierHoursAt, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudTierFacts, cloudTierHoursAt, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
@@ -113,9 +113,9 @@ export function CloudSizeButton({
               // text, and in its description for the keyboard and screen readers.
               const shape = `${tier.cpu} CPU · ${tier.memoryGb} GB`;
               const runs = facts.full ? `Full computer: ${facts.runs}` : facts.runs;
-              // Hours as time at this size; Small never uses them, so it reads "Unlimited" (never a multiplier).
-              const usesHours = facts.rate > 0;
-              const hoursAt = !usesHours ? "Unlimited" : hoursLeftMilli != null ? cloudTierHoursAt(tier, hoursLeftMilli) : null;
+              // Hours as time at this size (Small reads "Unlimited", never a multiplier); a bigger size waits for the account.
+              const usesHours = cloudTierUsesHours(tier);
+              const hoursAt = usesHours && hoursLeftMilli == null ? null : cloudTierHoursAt(tier, hoursLeftMilli ?? 0);
               const about = `${facts.specs.join(", ")}. ${runs}. ${facts.rateLine}.${usesHours && hoursAt ? ` Your hours last ${hoursAt} here.` : ""}`;
               const aboutId = `${idBase}-${tier.id}`;
               return (

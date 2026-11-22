@@ -22,7 +22,6 @@ import {
   CLOUD_DEFAULT_AGENT_LIMITS,
   CLOUD_WAKE_PORT,
   CLOUD_WAKE_PORT_LABEL,
-  cloudAgentExtraDiskCentsOf,
   cloudShape,
   type CloudAgentLimits,
   type CloudWakeForUseResult,
@@ -192,6 +191,11 @@ const WAKE_LOOKUP_TIMEOUT_MS = 5_000;
 export const CLOUD_AGENT_LIMITS_VAULT_KEY = "cloud-budget";
 const CLOUD_AGENT_LIMITS_MACHINE_CREDENTIAL_KEY = "cloud.budget.v1";
 
+/** An older app's `extraDiskMonthCents` as saved: whole cents from 0 to $1,000, or null. Kept so a whole-value save doesn't drop it. */
+function olderExtraDiskCentsOf(raw: unknown): number | null {
+  return typeof raw === "number" && Number.isInteger(raw) && raw >= 0 && raw <= 100_000 ? raw : null;
+}
+
 function parseAgentLimits(raw: unknown): CloudAgentLimits {
   const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
   const fallback = CLOUD_DEFAULT_AGENT_LIMITS;
@@ -200,8 +204,7 @@ function parseAgentLimits(raw: unknown): CloudAgentLimits {
     unattendedSpend: typeof value.unattendedSpend === "boolean" ? value.unattendedSpend : fallback.unattendedSpend,
     machinesPerDay: typeof perDay === "number" && Number.isInteger(perDay) && perDay >= 0 && perDay <= 100 ? perDay : fallback.machinesPerDay,
     maxShape: cloudShape(typeof value.maxShape === "string" ? value.maxShape : null)?.id ?? fallback.maxShape,
-    // Left out (limits saved before it) is the account's own extra-disk limit.
-    extraDiskMonthCents: cloudAgentExtraDiskCentsOf(value.extraDiskMonthCents),
+    extraDiskMonthCents: olderExtraDiskCentsOf(value.extraDiskMonthCents),
   };
 }
 

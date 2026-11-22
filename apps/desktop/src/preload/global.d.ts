@@ -5191,10 +5191,8 @@ declare global {
         /** What unattended agents may do on ADE Cloud (account vault; no pin). */
         getAgentLimits?: () => Promise<CloudAgentLimits | null>;
         setAgentLimits?: (limits: Partial<CloudAgentLimits>) => Promise<CloudAgentLimits | null>;
-        /** The account's plan (no pin): extra hours and extra disk for paid accounts, and Stripe's pages in the browser. */
+        /** The account's plan (no pin): extra hours for paid accounts, and Stripe's pages in the browser. */
         setExtraHours?: (enabled: boolean) => Promise<CloudAccountState | null>;
-        /** Extra disk on with a monthly limit in whole dollars (1 to 1,000), or off. */
-        setExtraDisk?: (choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }) => Promise<CloudAccountState | null>;
         /** Extra iPhone minutes on, with a monthly limit in whole dollars or no limit, or off (paid plans). */
         setExtraPhoneMinutes?: (choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }) => Promise<CloudAccountState | null>;
         /**

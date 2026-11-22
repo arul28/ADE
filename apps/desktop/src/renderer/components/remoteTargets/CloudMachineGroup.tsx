@@ -28,7 +28,6 @@ import {
   describeCloudRate,
   type CloudBoxWork,
 } from "./cloudMachineModel";
-import { MachineActionsMenu, type MachineAction } from "./MachineActionsMenu";
 import { CloudUpdateLine } from "./CloudUpdateLine";
 import { cloudPendingLabel, type CloudBoxActionError, type CloudBoxPending } from "./useCloudBoxActions";
 import { connectButtonStyle, machineRowStyle, nameStyle, subTextStyle } from "./remoteTargetListStyles";
@@ -50,7 +49,7 @@ export function CloudGroupHead({
       {loading ? <CircleNotch size={11} className="animate-spin" aria-label="Checking ADE Cloud" /> : null}
       {totals.hoursRate > 0 ? (
         <span className="ade-cx-cloud-head-facts kit-num" title="How fast the computers awake now use your hours. One hour is one hour on a Medium; Small computers use none.">
-          {formatCloudHoursRate(totals.hoursRate)} now
+          Now: {formatCloudHoursRate(totals.hoursRate)}
         </span>
       ) : null}
     </div>
@@ -238,7 +237,7 @@ export function CloudBoxStrip({
             id: `cloud-disk-full-${box.instanceId}`,
             tone: "warning",
             title: box.diskFull,
-            // Extra disk, its monthly limit and the plans all live in Settings.
+            // A bigger size and the plans live in Settings.
             actions: onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined,
             report: false,
           }}

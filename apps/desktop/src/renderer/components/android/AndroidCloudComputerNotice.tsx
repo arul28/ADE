@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { AndroidLogo } from "@phosphor-icons/react";
 import {
   cloudAndroidNeedsVmCost,
@@ -19,7 +18,6 @@ import { changeCloudLaneTier, cloudLaneChangesAvailable } from "../cloudLane/clo
 import type { NoticeAction } from "../ui/notice";
 import { Banner } from "../ui/notice";
 import { cloudBoxContext, cloudPendingLabel, useCloudBoxActions } from "../remoteTargets/useCloudBoxActions";
-import { openCloudPlanSettings } from "../remoteTargets/openCloudPlanSettings";
 
 /** What the cloud computer lacks for the Android emulator. */
 export type AndroidCloudNeed =
@@ -51,13 +49,12 @@ function canMove(box: CloudMachine): boolean {
  * - no emulator: the Connections menu's "Move to a full computer…" (a
  *   standard computer) or "Resize…" (a small full computer), with the hours
  *   that uses;
- * - too little disk: "Grow the disk" to the smallest step that fits, with
- *   what it takes of the plan's disk at one time, or what extra disk costs.
- *   It runs as the lane's size-change job at the same size (save work,
- *   grow, start ADE, connect), so the lane's chats show its steps and its
- *   result across the restart (`CloudLaneChatStatus`). The person starts the
- *   device again once it is back. A grow into extra disk never decided goes
- *   straight to the server, whose refusal opens the plans card.
+ * - too little disk: "Grow the disk" to the smallest step that fits, up to
+ *   the size's own disk maximum. It runs as the lane's size-change job at
+ *   the same size (save work, grow, start ADE, connect), so the lane's chats
+ *   show its steps and its result across the restart (`CloudLaneChatStatus`).
+ *   The person starts the device again once it is back. With the account
+ *   not read, the grow goes straight to the server, whose refusal shows.
  *
  * All account level: they take the instance id, never a pin (the pane finds
  * the computer by its pin). Not an error, so nothing to report.
@@ -91,18 +88,14 @@ export function AndroidCloudComputerNotice({
   const boxShape = cloudShape(box.shapeId);
   const pending = actions.pendingById[box.instanceId] ?? null;
   const failure = actions.errorById[box.instanceId]?.message ?? null;
-  // The grow went past the plan's disk with extra disk never decided: the
-  // server's sentence says so, and the way on is the plans card.
-  const [needsApproval, setNeedsApproval] = useState(false);
-  const approvalAsked = failure != null && needsApproval;
   const items: NoticeAction[] = [];
   let sentence: string;
   if (need.kind === "disk") {
     const plan = cloudDiskGrowPlan(box, account, need.neededMb - need.freeMb);
     sentence = `${androidLowDiskSentence(need.neededMb, need.freeMb)} ${plan.sentence}`;
-    if (!approvalAsked && plan.grow && box.state === "running") {
+    if (plan.grow && box.state === "running") {
       const toGb = plan.toGb;
-      // Inside the plan, or into extra disk the person turned on: the lane's job, whose card shows in its chats.
+      // Inside the size's maximum: the lane's job, whose card shows in its chats.
       const sizeId: CloudTierId | null = cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(account)))?.id ?? null;
       const viaJob = cloudLaneChangesAvailable() && sizeId != null && plan.within != null;
       items.push({
@@ -124,15 +117,10 @@ export function AndroidCloudComputerNotice({
             }
           })()
           : () => void actions.growDisk(ctx, toGb).then((result) => {
-            if (!result) return;
-            // Any other refusal shows the server's own sentence (`errorById`).
-            setNeedsApproval(!result.ok && result.diskRefusal?.reason === "needs_approval");
-            if (result.ok) onDismiss?.();
+            // A refusal shows the server's own sentence (`errorById`).
+            if (result?.ok) onDismiss?.();
           }),
       });
-    }
-    if (approvalAsked || (!plan.grow && plan.settings)) {
-      items.push({ label: "Open Settings", onClick: openCloudPlanSettings });
     }
   } else {
     sentence = cloudAndroidNeedsVmCost(boxShape, kind);
@@ -168,10 +156,7 @@ export function AndroidCloudComputerNotice({
           report: false,
           dismiss: failure
             ? {
-              onDismiss: () => {
-                setNeedsApproval(false);
-                actions.dismissError(box.instanceId);
-              },
+              onDismiss: () => actions.dismissError(box.instanceId),
               title: "Dismiss this message",
               label: "Dismiss this message",
             }

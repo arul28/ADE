@@ -8,6 +8,7 @@
  *
  *   NEITHER FILE MAY USE THE OTHER'S IMPORTS AS A VALUE AT MODULE SCOPE.
  */
+import { formatCloudHoursRate } from "../../desktop/src/shared/adeCloud";
 import { isRecord } from "./cli";
 
 /** "12.5" from a number of hours, "—" when unknown. */
@@ -33,11 +34,9 @@ function cloudUpdateText(value: unknown): string {
   return target && target !== image ? `${head}, ${target} next` : `${head}, up to date`;
 }
 
-/** "Uses no hours" (Small), "Uses 2.5 hours an hour": a rate in words, never a multiplier (as the desktop's `formatCloudHoursRate`). */
+/** "uses no hours" (Small), "uses 2.5 hours an hour": a rate in words, never a multiplier; "—" when unknown. */
 function cloudRateText(value: unknown): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
-  if (!(value > 0)) return "no hours";
-  return `${Number(value.toFixed(2))} ${value === 1 ? "hour" : "hours"} an hour`;
+  return typeof value === "number" && Number.isFinite(value) ? formatCloudHoursRate(value) : "—";
 }
 
 /** "$5", "$1.50": cents as dollars, cents shown only when there are some. */

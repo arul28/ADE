@@ -62,15 +62,12 @@ export function CloudPlanLimitsDialog({
 
   const chosen = choices.filter((computer) => picked.has(computer.instanceId));
   const count = chosen.length;
-  // Pricing v2 counts computers. A server before it compared disk (never shown): its fit decides there.
-  const total = cleanup.computerCount ?? null;
-  const limit = cleanup.computerLimit ?? null;
-  const byCount = total != null && limit != null;
-  const after = byCount ? Math.max(0, total - count) : null;
+  // Only the number of computers counts. The server sends both; an answer without them reads as the suggested pick fitting.
+  const total = cleanup.computerCount ?? choices.length;
+  const limit = cleanup.computerLimit ?? Math.max(0, total - cleanup.computers.length);
+  const after = Math.max(0, total - count);
   const shown = path === "ade" ? after : total;
-  const fits = byCount
-    ? (after ?? 0) <= limit
-    : Math.max(0, cleanup.usedGb - chosen.reduce((sum, computer) => sum + computer.diskGb, 0)) <= cleanup.limitGb;
+  const fits = after <= limit;
   const many = count === 1 ? "computer" : "computers";
 
   const toggle = (id: string) => setPicked((current) => {
@@ -141,11 +138,9 @@ export function CloudPlanLimitsDialog({
       <div className="adecd-limits">
         <div aria-live="polite">
           <div className="adecd-limits-list-head">{path === "ade" ? `Left after ADE frees the ${count === 1 ? "computer" : "computers"} you pick` : "Now"}</div>
-          {shown != null && limit != null ? (
-            <div className="adecd-limits-fit">
-              <FitCell label="Cloud computers" fits={shown <= limit} value={String(shown)} limit={String(limit)} />
-            </div>
-          ) : null}
+          <div className="adecd-limits-fit">
+            <FitCell label="Cloud computers" fits={shown <= limit} value={String(shown)} limit={String(limit)} />
+          </div>
         </div>
 
         <div className="adecd-fl-choices" role="radiogroup" aria-label="How to fit the plan">
@@ -162,7 +157,7 @@ export function CloudPlanLimitsDialog({
             onPick={() => setPath("self")}
             title="I'll clean up myself"
             hint={mode === "downgrade"
-              ? `You stay on ${currentPlanLabel}. Free up or delete computers until you have ${limit != null ? `${limit} or fewer` : "few enough"}, then move to ${plan} again.`
+              ? `You stay on ${currentPlanLabel}. Free up or delete computers until you have ${limit} or fewer, then move to ${plan} again.`
               : "Free up or delete computers until you have few enough. ADE frees nothing on its own."}
           />
         </div>

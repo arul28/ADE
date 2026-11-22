@@ -121,7 +121,7 @@ export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountSta
       </div>
       <div className="kit-meter" data-level={usageLeftLevel(pct)}><span style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: usageLeftLevel(pct) == null ? BRAND_FILL : undefined }} /></div>
       <div className={cn("flex flex-wrap gap-x-3 gap-y-1 text-muted-fg", USAGE_TEXT.micro)}>
-        <span>{computers ? `${computers.total} of ${computers.limit} computers` : `${state.computers.total} ${state.computers.total === 1 ? "computer" : "computers"}`}, {state.computers.awake} awake</span>
+        <span>{`${computers.total} of ${computers.limit} computers`}, {state.computers.awake} awake</span>
         <span>Small computers unlimited</span>
         {hours.earnedMilli > 0 ? <span>Includes {formatCloudHours(hours.earnedMilli)} h earned</span> : null}
         {state.extraHours.available ? <span>Extra hours {state.extraHours.enabled ? "on" : "off"}</span> : null}

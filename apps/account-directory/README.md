@@ -458,9 +458,12 @@ account bearer. The plan rules, hours, disk and cleanups are in
   account-wide disk and no extra disk (Pricing v2). Each plan allows a
   number of computers (`computerLimit`: Free 2, Plus 3, Pro 10, Max 20);
   asleep ones count. `reserveComputer` counts them in its one conditional
-  insert (pending reservations until they time out; a move's pair once; a
-  move itself is never refused), so concurrent creates can't pass the limit;
-  past it, 403 `computer_limit`. About 25 may be awake at once
+  insert (pending reservations until they time out; a move's pair once), so
+  concurrent creates can't pass the limit; past it, 403 `computer_limit`. A
+  move's own count leaves its source out, so a move at the limit goes; another
+  running move's source counts (it can outlive its move), so two moves at once
+  can't leave the account over, and an account over its plan gets
+  `over_plan_limits` for a move as for a create. About 25 may be awake at once
   (`AWAKE_COMPUTER_CAP`).
 - An outside agent (ADE MCP: lane metadata `ade_made_by_agent: "mcp"`, a
   launch's `madeBy.agent: "mcp"`, or `origin: "mcp"` on a copy, move, start or
@@ -1140,7 +1143,12 @@ To set up either one:
    `0052_pricing_v2.sql` converts stored hours from Small-hours to
    Medium-hours and must not run twice or apart from its Worker: the deploy
    script's order (migrations, then the Worker at once) is the one that is
-   safe. Rerun `scripts/stripe-setup.mjs` (new 2¢ Pro and Max extra-hours
+   safe. It leaves `extra_reported_milli` (and its `cloud_account_days`
+   snapshot) as it is: Stripe's meter identifiers count from it, so halving
+   it would bill reported hours twice. Computers made and free periods rolled
+   by the old Worker between the migration and the deploy keep old numbers
+   (Small 1000, free 100,000): right after the deploy, run the follow-up SQL
+   in the migration's header once (it is safe to run again). Rerun `scripts/stripe-setup.mjs` (new 2¢ Pro and Max extra-hours
    prices, new product descriptions) and update the
    `STRIPE_EXTRA_HOURS_{PRO,MAX}_PRICE_ID` vars before that deploy.
 

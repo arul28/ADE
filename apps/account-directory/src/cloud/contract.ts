@@ -133,9 +133,9 @@
  * switch plans on a subscription with more than one item.
  * `POST /cloud/billing/plan-cleanup` takes `{ planId, push, instanceIds }` for
  * an account already over a cheaper plan (one made in the billing portal, or
- * a plan that ended): the same check, then the same freeing. A create or copy
- * while the account has more computers than the plan in force allows is
- * refused with 403 `over_plan_limits`; nothing is ever freed without a pick.
+ * a plan that ended): the same check, then the same freeing. A create, copy
+ * or move while the account has more computers than the plan in force allows
+ * is refused with 403 `over_plan_limits`; nothing is ever freed without a pick.
  * Each plan allows a number of computers (`CloudPlanFacts.computerLimit`;
  * asleep ones count, a lane with no computer doesn't). A create, copy or new
  * lane at that number is refused with 403 `computer_limit`, carrying
@@ -184,11 +184,6 @@ export function formatCloudCents(cents: number): string {
   return `$${(cents / 100).toFixed(cents % 100 === 0 ? 0 : 2)}`;
 }
 
-/** Older servers only: why no computer woke on the free plan above its disk (`over_plan_disk`). Pricing v2 servers never send it. */
-export function overPlanDiskSentence(usedGb: number, freeGb: number): string {
-  return `Your computers use ${usedGb} GB and the free plan has ${freeGb} GB at one time. Delete a computer, or get Plus.`;
-}
-
 export const CLOUD_PATHS = {
   access: "/cloud/access",
   account: "/cloud/account",
@@ -197,7 +192,6 @@ export const CLOUD_PATHS = {
   billingCheckout: "/cloud/billing/checkout",
   billingPortal: "/cloud/billing/portal",
   billingExtraHours: "/cloud/billing/extra-hours",
-  billingExtraDisk: "/cloud/billing/extra-disk",
   /** `POST` `{ planId, push, instanceIds }`: free the picked computers to fit a cheaper plan (`CloudPlanCleanupPick`). */
   billingPlanCleanup: "/cloud/billing/plan-cleanup",
   /** `POST {}`: save a card with no charge to start the free hours of a GitHub account younger than 30 days (`CloudFreeUnlockResult`). */
@@ -614,8 +608,11 @@ export type CloudPlanFacts = {
   /** A month's hours, in thousandths of a Medium-hour. Small computers never use them. */
   includedMilli: number;
   /**
-   * For older builds only, which showed a disk shared by all computers: the
-   * plan's computers at the Small size's disk. Not a limit; never show it.
+   * For builds before Pricing v2 only, which show this as the plan's disk
+   * shared by all computers and check their own disk grows against it. Set
+   * to `computerLimit` x the largest size's `diskMaxGb`, so such a build never
+   * refuses a grow this server allows (each size's own disk maximum is the
+   * only disk limit now). New builds never read or show it.
    */
   diskGb: number;
   priceUsd: number;
@@ -1195,7 +1192,7 @@ export type CloudComputerLimitLane = {
   /**
    * The computer holds a lane, so "free up" keeps that lane. False: it was
    * made with no lane (only "delete" applies; the free-up job refuses it with
-   * `no_lane`). Older servers leave it out: read it as true.
+   * `no_lane`). Left out: read it as true.
    */
   hasLane?: boolean;
 };

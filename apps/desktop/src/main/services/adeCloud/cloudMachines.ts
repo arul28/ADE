@@ -371,7 +371,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       const lifecycle = await runCloudMachineLifecycleAction({
         computer: (id) => client.getInstance(id),
         sleep: (id) => client.sleepInstance(id),
-        wake: (id) => client.startInstance(id),
+        wake: (id, origin) => client.startInstance(id, origin ? { origin } : undefined),
         resize: (id, resources, computerIdle) => client.resizeInstance(id, resources, computerIdle ? { computerIdle: true } : undefined),
         backup: (id) => client.createBackup(id),
         update: (id) => client.updateInstance(id),

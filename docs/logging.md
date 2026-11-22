@@ -879,7 +879,11 @@ client version and for work nobody watches
   `cloud.phone_check_read_failed`, `cloud.phone_allowance_check_failed`,
   `cloud.phone_stop_due_failed`, `cloud.phone_stops_failed`,
   `cloud.nomac_webhook_failed`, `cloud.phone_nomac_credit`,
-  `cloud.extra_phone_item_failed`, `cloud.block_phone_stop_failed`.
+  `cloud.extra_phone_item_failed`, `cloud.block_phone_stop_failed`,
+  `cloud.phone_beta_claim_failed` (a new account's tester-email claim
+  failed; the email keeps waiting), `cloud.phone_beta_pending_check_failed`
+  (the owner check's hourly Clerk lookup of waiting tester emails got no
+  answer: count only).
 - **`ade_cloud_safety`** (`blocks.ts`, `safety.ts`, `costReport.ts`,
   `chats.ts`): `step` is `first_chat` (the account's first saved cloud chat,
   once), `free_cap_50`, `free_cap_80`, `free_cap_100` (free use passed that
@@ -921,9 +925,10 @@ Server log lines (Worker logs only, `logCloud`) for plans and cost:
 `cloud.owner_limit_reached`, `cloud.owner_cost_step` (the month's estimate
 passed another $50 below the limit: step, estimate, limit; one owner email),
 `cloud.computer_limit_reached` (a create, copy or launch refused at the
-plan's computer limit: plan, limit, total), `cloud.phone_beta_claimed` and
-`cloud.phone_beta_claim_failed` (a new account took, or failed to take, an
-iPhone tester email the owner added before it signed up), and
+plan's computer limit: plan, limit, total), `cloud.phone_beta_claimed` (an
+iPhone tester email the owner added before it signed up reached its account:
+at the account's first read, or `retried: true` with a count from the owner
+check's hourly Clerk lookup), and
 `cloud.analytics_capture_failed`. Before Pricing v2 there was also
 `cloud.extra_disk_capped`.
 

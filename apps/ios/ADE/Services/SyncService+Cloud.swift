@@ -168,13 +168,25 @@ struct CloudPhoneAccount: Decodable, Equatable {
   }
 
   /// How many cloud computers the account has (asleep or not) and how many
-  /// are awake. `limit` is the plan's computer limit from a Pricing v2
-  /// server; an older one sent the hidden awake cap there, which is never
-  /// shown (read it through `CloudPhoneAccount.computerLimit`).
+  /// are awake. `limit` is the plan's computer limit (read it through
+  /// `CloudPhoneAccount.computerLimit`); `nextPlan` is the next plan up and
+  /// its limit (`CloudNextPlan`), nil on Max. The same object a
+  /// `computer_limit` refusal carries.
   struct Computers: Decodable, Equatable {
     let total: Int
     let awake: Int
     let limit: Int?
+    let nextPlan: CloudComputerLimit.NextPlan?
+
+    private enum CodingKeys: String, CodingKey { case total, awake, limit, nextPlan }
+
+    init(from decoder: Decoder) throws {
+      let c = try decoder.container(keyedBy: CodingKeys.self)
+      total = try c.decode(Int.self, forKey: .total)
+      awake = try c.decode(Int.self, forKey: .awake)
+      limit = c.lenient(Int.self, forKey: .limit)
+      nextPlan = c.lenient(CloudComputerLimit.NextPlan.self, forKey: .nextPlan)
+    }
   }
 
   /// The ADE Cloud iPhone's access for this account (`CloudAccountPhone`):
@@ -324,13 +336,12 @@ struct CloudPhoneAccount: Decodable, Equatable {
   /// is for older builds only and is not read.
   struct PlanFacts: Decodable, Equatable {
     /// A month's hours for the sizes bigger than Small, in thousandths of a
-    /// Medium-hour (`Catalog.hourUnit`). Small computers never use them.
+    /// Medium-hour. Small computers never use them.
     let includedMilli: Int
     /// Phone minutes a month (shown on the plan table only, while the ADE
     /// Cloud iPhone is on for the account); nil from an older server.
     let phoneMinutes: Int?
-    /// How many cloud computers the plan allows, asleep or not. Read only
-    /// from a Pricing v2 catalog: older servers sent the awake cap here.
+    /// How many cloud computers the plan allows, asleep or not.
     let computerLimit: Int?
     /// Extra hours past the plan are sold on it (never shown as a price).
     let extraHourCents: Double?
@@ -355,10 +366,6 @@ struct CloudPhoneAccount: Decodable, Equatable {
     }
     let plans: Plans
     let sizes: [Size]
-    /// `medium` from a Pricing v2 server: hours count Medium-hours, Small
-    /// uses none, and each plan has a computer limit. Older servers leave it
-    /// out (Small-hours, no limit).
-    let hourUnit: String?
   }
 
   let plan: String
@@ -407,14 +414,9 @@ struct CloudPhoneAccount: Decodable, Equatable {
     phone = c.lenient(Phone.self, forKey: .phone)
   }
 
-  /// The server counts hours in Medium-hours and limits computers per plan
-  /// (Pricing v2, `docs/plans/pricing-v2-and-gravity.md`).
-  var isPricingV2: Bool { catalog?.hourUnit == "medium" }
-
-  /// The plan's computer limit, only from a Pricing v2 server (an older one
-  /// sent the hidden awake cap in the same field, never a plan limit).
+  /// The plan's computer limit (`docs/plans/pricing-v2-and-gravity.md`).
   var computerLimit: Int? {
-    guard isPricingV2, let limit = computers?.limit, limit > 0 else { return nil }
+    guard let limit = computers?.limit, limit > 0 else { return nil }
     return limit
   }
 

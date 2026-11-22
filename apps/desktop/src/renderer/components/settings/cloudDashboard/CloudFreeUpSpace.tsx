@@ -11,12 +11,10 @@ import { refreshCloudLanesWithoutComputer } from "../../cloudLane/cloudLaneStore
 
 type Choice = "keep" | "free" | "delete";
 
-/** "3 of 3 cloud computers in use. ": the plan's computers (Pricing v2); a count before it. */
+/** "3 of 3 cloud computers in use. ": the plan's computers, asleep or not. */
 function computersLine(account: CloudAccountState): string {
   const computers = cloudAccountComputers(account);
-  if (computers) return `${computers.total} of ${computers.limit} cloud computers in use. `;
-  const total = account.computers.total;
-  return `${total} cloud ${total === 1 ? "computer" : "computers"}. `;
+  return `${computers.total} of ${computers.limit} cloud computers in use. `;
 }
 
 /**
@@ -24,7 +22,7 @@ function computersLine(account: CloudAccountState): string {
  * each with what its computer last said about its work (Safe to delete:
  * pull request merged, nothing unpushed). The person picks per lane; ADE
  * deletes nothing they did not pick, and asks again before a delete that
- * isn't marked safe. Since Pricing v2 no plan limits disk: the sheet frees
+ * isn't marked safe. No plan limits disk: the sheet frees
  * computers (each counts toward the plan's computers) and the disk on them.
  */
 export function CloudFreeUpSpace({

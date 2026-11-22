@@ -72,7 +72,7 @@ export function ComingSoon({ compact, className }: { compact?: boolean; classNam
           </div>
           <h3 className="mt-5 text-[18px] font-semibold text-white">{item.title}</h3>
           <p className="mt-2 max-w-[30rem] text-[14.5px] leading-[1.6] text-white/60">{item.body}</p>
-          {item.id === "ios" && CLOUD_PHONE_ON_WEBSITE ? (
+          {item.id === "ios" ? (
             <p className="mt-4 text-[13px] text-white/45">
               Plans will include minutes on a phone in the cloud:{" "}
               {PRICING_PLANS.map((plan) => `${formatCount(plan.phoneMinutes)} on ${plan.name}`).join(", ")}.

@@ -69,28 +69,7 @@ struct CloudLimitsScreen: View {
             ForEach(cloudShapes, id: \.id) { Text($0.label).tag($0.id) }
           }
           .disabled(!limits.unattendedSpend || !store.canWriteLimits)
-          // Pricing v2 sells no extra disk: an older server's limit only.
-          if !extraDiskGone {
-          Picker("Paid extra disk a month", selection: Binding(
-            get: { limits.extraDiskMonthCents ?? Self.yourLimit },
-            set: { value in
-              // Nil on the wire is "up to your limit".
-              let cents: Any = value == Self.yourLimit ? NSNull() : value
-              Task { await store.setLimits(["extraDiskMonthCents": cents]) }
-            }
-          )) {
-            ForEach(Self.extraDiskChoices(limits.extraDiskMonthCents), id: \.self) { cents in
-              Text(cents == 0 ? "None" : Self.dollars(cents)).tag(cents)
-            }
-            Text("Your limit").tag(Self.yourLimit)
-          }
-          .disabled(!limits.unattendedSpend || !store.canWriteLimits)
-          }
-        } header: { CloudSectionLabel("Limits") } footer: {
-          if !extraDiskGone {
-            Text("Paid extra disk: what agents nobody watches may add past your plan's disk. Your limit: up to the monthly limit you set for extra disk.")
-          }
-        }
+        } header: { CloudSectionLabel("Limits") }
       } else {
         Section { ProgressView().frame(maxWidth: .infinity) }
       }
@@ -108,25 +87,6 @@ struct CloudLimitsScreen: View {
     .background(ADEColor.pageBackground.ignoresSafeArea())
     .navigationTitle("What agents may do")
     .navigationBarTitleDisplayMode(.inline)
-  }
-}
-
-extension CloudLimitsScreen {
-  /// The picker's tag for "up to the account's extra-disk limit" (the saved value is nil).
-  static let yourLimit = -1
-
-  /// The desktop's choices (`CLOUD_AGENT_EXTRA_DISK_CHOICES`), plus a value set elsewhere.
-  /// A Pricing v2 server has no extra disk to limit.
-  private var extraDiskGone: Bool { store.account?.isPricingV2 == true }
-
-  static func extraDiskChoices(_ current: Int?) -> [Int] {
-    let choices = [0, 500, 1000, 2500]
-    guard let current, !choices.contains(current) else { return choices }
-    return (choices + [current]).sorted()
-  }
-
-  static func dollars(_ cents: Int) -> String {
-    cents % 100 == 0 ? "$\(cents / 100)" : String(format: "$%.2f", Double(cents) / 100)
   }
 }
 

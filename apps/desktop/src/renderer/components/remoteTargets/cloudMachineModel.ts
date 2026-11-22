@@ -5,6 +5,7 @@
  */
 
 import {
+  capitalizeCloudPhrase,
   formatCloudHoursRate,
   type CloudMachine,
   type CloudMachineState,
@@ -105,12 +106,12 @@ function cloudCurrentHoursRate(box: CloudMachine): number | null {
   return box.hoursRate;
 }
 
-/** "2× hours" while awake; "No hours" asleep or stopped. */
+/** "Uses 2.5 hours an hour" while awake; "No hours" asleep or stopped. */
 export function describeCloudRate(box: CloudMachine): string | null {
   if (box.pastDue) return "Suspended";
   if (box.state === "asleep" || box.state === "stopped") return "No hours";
   const rate = cloudCurrentHoursRate(box);
-  return rate != null ? formatCloudHoursRate(rate) : null;
+  return rate != null ? capitalizeCloudPhrase(formatCloudHoursRate(rate)) : null;
 }
 
 export const CLOUD_STATE_LABELS: Record<CloudMachineState, string> = {

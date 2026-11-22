@@ -8,7 +8,7 @@
  * already one plain sentence; that sentence is the error the person sees.
  */
 
-import { CLOUD_COMPUTER_LIMIT_CODE, readCloudComputerLimitDetail, readCloudPlanCleanup, readCloudReferralSummary, type CloudAccountState, type CloudComputerLimitDetail, type CloudComputerStatus, type CloudDiskLaneUse, type CloudFreeUnlockResult } from "../../../shared/adeCloud";
+import { CLOUD_COMPUTER_LIMIT_CODE, readCloudComputerLimitDetail, readCloudPlanCleanup, readCloudReferralSummary, type CloudAccountState, type CloudComputerLimitDetail, type CloudComputerStatus, type CloudFreeUnlockResult } from "../../../shared/adeCloud";
 import {
   CLOUD_COMPUTER_FEATURES,
   CLOUD_COMPUTER_HEADER,
@@ -122,26 +122,15 @@ function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function readError(body: unknown): { code: string | null; message: string | null; reason: string | null; lanes?: CloudDiskLaneUse[]; computerLimit?: CloudComputerLimitDetail } {
+function readError(body: unknown): { code: string | null; message: string | null; reason: string | null; computerLimit?: CloudComputerLimitDetail } {
   const error = record(record(body)?.error);
   // All the plan's computers in use: the limit card's facts sit flat on `error` (`CloudComputerLimitDetail`).
   const computerLimit = error?.code === CLOUD_COMPUTER_LIMIT_CODE ? readCloudComputerLimitDetail(error) : null;
-  // At the account's disk limit: the computers that hold it (`disk_limit`'s optional `lanes`).
-  const rawLanes = error?.lanes;
-  const lanes = Array.isArray(rawLanes)
-    ? rawLanes.flatMap((entry: unknown) => {
-      const lane = record(entry);
-      return typeof lane?.laneName === "string" && typeof lane.diskGb === "number" && Number.isFinite(lane.diskGb)
-        ? [{ laneName: lane.laneName, diskGb: lane.diskGb }]
-        : [];
-    })
-    : null;
   return {
     code: typeof error?.code === "string" ? error.code : null,
     message: typeof error?.message === "string" ? error.message : null,
     // A disk refusal's reason; a reason this build doesn't know still comes with `message`.
     reason: typeof error?.reason === "string" ? error.reason : null,
-    ...(lanes?.length ? { lanes } : {}),
     ...(computerLimit ? { computerLimit } : {}),
   };
 }
@@ -224,7 +213,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       init.signal?.removeEventListener("abort", onCallerAbort);
     }
     if (!response.ok) {
-      const { code, message, reason, lanes, computerLimit } = readError(body);
+      const { code, message, reason, computerLimit } = readError(body);
       // Off the access list, the server answers every route 404. On the list route
       // that means this account, not one computer.
       const refused = response.status === 401 || code === "unauthorized"
@@ -233,7 +222,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
         message ?? (response.status >= 500 ? "ADE Cloud is having trouble right now. Try again in a moment." : `ADE Cloud answered with an error (${response.status}).`),
         refused ? CLOUD_ACCESS_REFUSED : code ?? `http_${response.status}`,
         response.status,
-        { reason, ...(lanes ? { lanes } : {}), ...(computerLimit ? { computerLimit } : {}) },
+        { reason, ...(computerLimit ? { computerLimit } : {}) },
       );
     }
     return body;
@@ -331,8 +320,9 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       return statusOf(await request("POST", instancePath(id, "idle"), { body, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "sleeping");
     },
 
-    async startInstance(id: string): Promise<string> {
-      return statusOf(await request("POST", instancePath(id, "start"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "running");
+    async startInstance(id: string, options?: { origin?: "mcp" }): Promise<string> {
+      const body = options?.origin === "mcp" ? { origin: "mcp" } : {};
+      return statusOf(await request("POST", instancePath(id, "start"), { body, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "running");
     },
 
     async stopInstance(id: string): Promise<string> {
@@ -499,10 +489,6 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async setExtraHours(enabled: boolean): Promise<CloudAccountState> {
       return await request("POST", "/cloud/billing/extra-hours", { body: { enabled } }) as CloudAccountState;
-    },
-
-    async setExtraDisk(choice): Promise<CloudAccountState> {
-      return await request("POST", "/cloud/billing/extra-disk", { body: choice }) as CloudAccountState;
     },
 
     async setExtraPhoneMinutes(choice): Promise<CloudAccountState> {

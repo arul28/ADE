@@ -36,7 +36,7 @@ import { SettingsSelect, SettingsToggle } from "../primitives/SettingsControls";
 import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
 import { CloudFreeGithubNotice } from "./CloudFreeGithubNotice";
 import { useStillWhenHidden } from "./CloudSky";
-import { CLOUD_PLAN_MOMENT_TOAST_ID } from "./cloudPlanMoment";
+import { checkoutCloudPlanUp, confirmCloudPlanMoveUp } from "./cloudPlanMoveUp";
 import "./cloudPlans.css";
 
 /** The monthly limits a person picks for extra iPhone minutes, in dollars; "none" is no limit. */
@@ -83,8 +83,6 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
 
   const catalog = cloudCatalogOf(account);
   const tiers = cloudTiers(catalog);
-  // A plan's computers, from the catalog; null from a server before Pricing v2 (its number was a hidden cap, never shown).
-  const computersOf = (facts: CloudPlanFacts): number | null => cloudPlanComputerLimitOf(facts, catalog);
   const pro = cloudCatalogHasPro(catalog) ? catalog.plans.pro : null;
   const max = cloudCatalogHasMax(catalog) ? catalog.plans.max : null;
   const current = cloudPlanIdOf(account);
@@ -135,13 +133,16 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
     }
   };
 
-  const checkout = (plan?: CloudPaidPlanId) => run(async () => {
-    const result = await bridge?.openCheckout?.(plan);
-    if (!plan || !result?.change) return;
-    const label = CLOUD_PLAN_LABELS[plan];
-    // The same toast as the plan moment (cloudPlanMoment.ts): whichever lands second replaces the first.
-    if (result.change === "now") showToast({ id: CLOUD_PLAN_MOMENT_TOAST_ID, title: `You're on ${label} now.`, tone: "success" });
-    else showToast({ title: `You move to ${label} on ${formatCloudDate(billing.periodEnd)}. ${cloudPlanLabelOf(account, catalog)} stays until then.` });
+  const checkout = (target: Column) => run(async () => {
+    // A server that doesn't sell Pro takes no plan: its one paid plan.
+    if (!pro || target.id === "free") {
+      await bridge?.openCheckout?.();
+      return;
+    }
+    const result = await checkoutCloudPlanUp({ planId: target.id, computerLimit: cloudPlanComputerLimitOf(target.facts) });
+    if (result?.change === "next_period") {
+      showToast({ title: `You move to ${CLOUD_PLAN_LABELS[target.id]} on ${formatCloudDate(billing.periodEnd)}. ${cloudPlanLabelOf(account, catalog)} stays until then.` });
+    }
   });
 
   // Only an answer that the plan changed now says it worked; anything else shows the plan error.
@@ -159,17 +160,18 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
       return;
     }
     if (!paid) {
-      await checkout(pro ? target.id : undefined);
+      await checkout(target);
       return;
     }
     const label = CLOUD_PLAN_LABELS[target.id];
     if (CLOUD_PLAN_RANK[target.id] > CLOUD_PLAN_RANK[current]) {
-      const ok = await confirmDialog({
-        title: `Move to ${label}?`,
-        message: `${label} is $${target.facts.priceUsd} a month${computersOf(target.facts) != null ? ` with ${computersOf(target.facts)} cloud computers and` : " with"} ${formatCloudHours(target.facts.includedMilli)} hours for bigger computers. You pay the difference for the rest of this month now. Hours you used stay used.`,
-        confirmLabel: `Move to ${label}`,
+      const ok = await confirmCloudPlanMoveUp({
+        planId: target.id,
+        priceUsd: target.facts.priceUsd,
+        computerLimit: cloudPlanComputerLimitOf(target.facts),
+        includedMilli: target.facts.includedMilli,
       });
-      if (ok) await checkout(target.id);
+      if (ok) await checkout(target);
       return;
     }
     // A move down starts with the next month. Past the cheaper plan's computers,
@@ -288,9 +290,8 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
             // The plan right above the current one: the one to sell, with how much more it gives.
             const isNext = !isCurrent && CLOUD_PLAN_RANK[column.id] === CLOUD_PLAN_RANK[current] + 1 && action != null;
             const below = index > 0 ? columns[index - 1]! : null;
-            const computers = computersOf(column.facts);
-            const belowComputers = below ? computersOf(below.facts) : null;
-            const more = computers != null && belowComputers != null ? Math.max(0, computers - belowComputers) : 0;
+            const computers = cloudPlanComputerLimitOf(column.facts);
+            const more = below ? Math.max(0, computers - cloudPlanComputerLimitOf(below.facts)) : 0;
             const tag = planCardTag({
               isCurrent,
               startsLater: nextPlanId === column.id || (billing.cancelAtPeriodEnd && column.id === "free"),
@@ -318,9 +319,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                   <span>{column.facts.priceUsd ? "a month" : "forever"}</span>
                 </div>
                 <ul className="adecd-plancard-facts">
-                  {computers != null ? (
-                    <li title="Cloud computers your account may have, asleep or not: one per lane"><Desktop size={13} /><span><b className="kit-num" data-face="ui">{computers}</b> cloud {computers === 1 ? "computer" : "computers"} <span className="adecd-nowrap">(asleep or not)</span></span></li>
-                  ) : null}
+                  <li title="Cloud computers your account may have, asleep or not: one per lane"><Desktop size={13} /><span><b className="kit-num" data-face="ui">{computers}</b> cloud {computers === 1 ? "computer" : "computers"} <span className="adecd-nowrap">(asleep or not)</span></span></li>
                   <li title={CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span><b>Unlimited</b> Small computers</span></li>
                   {isCurrent && oldTerms?.hoursMilli != null ? (
                     <li title={`${formatCloudHours(column.facts.includedMilli)} hours from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(oldTerms.hoursMilli)}</b> hours for bigger computers until {until}</span></li>

@@ -47,8 +47,8 @@ export type CloudPlanMoment = {
   label: string;
   /** The plan's hours for computers bigger than Small (Medium-hours). */
   includedMilli: number;
-  /** How many cloud computers the plan allows; null from a server before Pricing v2. */
-  computers: number | null;
+  /** How many cloud computers the plan allows. */
+  computers: number;
   renewsAt: number;
   /** Free hours left before the upgrade that the new plan's fresh period replaced; null when none were. */
   replacedFreeMilli: number | null;
@@ -66,7 +66,7 @@ export function cloudPlanMomentWords(moment: CloudPlanMoment): { title: string; 
   const replaced = cloudPlanReplacedSentence(moment);
   return {
     title: `You're on ${moment.label}`,
-    detail: `${moment.computers != null ? `${moment.computers} cloud computers, unlimited Small ones and ` : "Unlimited Small computers and "}${formatCloudHours(moment.includedMilli)} hours a month for bigger ones. Renews ${formatCloudDate(moment.renewsAt)}.${replaced ? ` ${replaced}` : ""}`,
+    detail: `${moment.computers} cloud computers, unlimited Small ones and ${formatCloudHours(moment.includedMilli)} hours a month for bigger ones. Renews ${formatCloudDate(moment.renewsAt)}.${replaced ? ` ${replaced}` : ""}`,
   };
 }
 
@@ -96,7 +96,7 @@ export function nextCloudPlanSeen(previous: CloudPlanSeen | null, account: Cloud
       label: CLOUD_PLAN_LABELS[planId],
       // The period's own numbers when the server sent them (an older period keeps its terms), else the plan's.
       includedMilli: account.hours.includedMilli > 0 ? account.hours.includedMilli : facts.includedMilli,
-      computers: cloudPlanComputerLimitOf(facts, catalog),
+      computers: cloudPlanComputerLimitOf(facts),
       renewsAt: account.billing.periodEnd,
       replacedFreeMilli: replaced,
     },

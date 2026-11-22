@@ -114,7 +114,7 @@ export function formatCloudLane(value: unknown): string {
     ["Project", str(lane.projectOrigin) || "unknown"],
   ];
   if (computer) {
-    facts.push(["Computer", `${str(computer.name) || str(computer.instanceId)} · ${str(computer.sizeLabel)}${typeof computer.hoursRate === "number" ? ` · ${formatCloudHoursRate(computer.hoursRate).toLowerCase()}` : ""}`]);
+    facts.push(["Computer", `${str(computer.name) || str(computer.instanceId)} · ${str(computer.sizeLabel)}${typeof computer.hoursRate === "number" ? ` · ${formatCloudHoursRate(computer.hoursRate)}` : ""}`]);
     if (str(computer.lastUsedAt)) facts.push(["Last used", day(computer.lastUsedAt)]);
     if (str(computer.deletesAt)) facts.push(["Cleanup", `ADE deletes the computer ${day(computer.deletesAt)} unless it is used or kept (ade cloud lanes keep <lane>)`]);
   }

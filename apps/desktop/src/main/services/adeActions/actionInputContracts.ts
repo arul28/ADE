@@ -241,13 +241,13 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade cloud create --kind vm --shape 4x8 --name \"android vm\"",
     },
     limits: {
-      description: "What unattended agents (full-auto chats, automation runs) may do on ADE Cloud alone: {unattendedSpend, machinesPerDay, maxShape, preset: ask | balanced | hands_off | custom}. (extraDiskMonthCents is kept for older apps; since Pricing v2 there is no paid extra disk, so it changes nothing.) Attended agents always ask in their chat.",
+      description: "What unattended agents (full-auto chats, automation runs) may do on ADE Cloud alone: {unattendedSpend, machinesPerDay, maxShape, preset: ask | balanced | hands_off | custom}. Attended agents always ask in their chat.",
       input: "none",
       example: "ade cloud limits --text",
     },
     set_limits: {
       description: "Change what unattended agents may do: a level in `preset` (ask, balanced, hands_off), or single limits. Loosening any limit asks the person; an unattended agent is refused.",
-      input: "object { preset?: \"ask\" | \"balanced\" | \"hands_off\", unattendedSpend?: boolean, machinesPerDay?: number (0-100), maxShape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\", extraDiskMonthCents?: number (0-100000) | null (up to the account's extra-disk limit) }",
+      input: "object { preset?: \"ask\" | \"balanced\" | \"hands_off\", unattendedSpend?: boolean, machinesPerDay?: number (0-100), maxShape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\" }",
       example: "ade cloud limits balanced",
     },
     make_status: {

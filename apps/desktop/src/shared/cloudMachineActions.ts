@@ -15,7 +15,8 @@ import { cloudResourcesOfInstance } from "./cloudMachineOfInstance";
 export type CloudMachineLifecycleOps = {
   computer(instanceId: string): Promise<CloudInstance>;
   sleep(instanceId: string): Promise<unknown>;
-  wake(instanceId: string): Promise<string>;
+  /** `origin: "mcp"`: an outside agent asked (the start body's mark). */
+  wake(instanceId: string, origin?: "mcp"): Promise<string>;
   /** No `cpu`/`memory`: the size stays as the server has it (a disk-only grow). */
   resize(instanceId: string, resources: { cpu?: number; memory?: number; disk?: number }, computerIdle: boolean): Promise<string>;
   backup(instanceId: string): Promise<unknown>;
@@ -73,7 +74,7 @@ export async function runCloudMachineLifecycleAction(
       await ops.sleep(instanceId);
       return { ok: true, blocker: null, message: "Asleep. It uses no hours until it wakes." };
     case "wake": {
-      const status = await ops.wake(instanceId);
+      const status = await ops.wake(instanceId, args.origin === "mcp" ? "mcp" : undefined);
       return {
         ok: true,
         blocker: null,

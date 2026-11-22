@@ -10,12 +10,10 @@
  * after the restart, and the continue says the disk grew (restart cause
  * `disk_grow`). The chat named in the ask gets a card before the restart,
  * updated in place once the computer is back (`cloudDiskGrowCard.ts`), and
- * a card naming the computers that hold the disk when it can't grow.
+ * a card that says why when it can't grow.
  */
 
-import type { CloudDiskGrowExtra, CloudDiskGrowFit, CloudDiskLaneUse, CloudDiskLimitReason } from "../../../shared/adeCloud";
-
-export type { CloudDiskGrowExtra };
+import type { CloudDiskRefusalReason } from "../../../shared/adeCloud";
 
 /** A chat to tell before and after the restart: its id and its project's root on this computer. */
 export type CloudDiskGrowChat = { chatSessionId: string; projectRoot: string | null };
@@ -30,19 +28,8 @@ export type CloudDiskGrowAsk = {
   /** Who asks: an agent (`cloud.grow_disk`) or the Android emulator's first start. */
   origin: "agent" | "android";
   chat?: CloudDiskGrowChat | null;
-  /**
-   * Past the plan's disk, inside the extra disk the person turned on: the
-   * person's card, or the agent limits for a caller nobody watches. True to
-   * grow; false when the person said no; `agent_limit` when the agent limits
-   * say no, answered as a `limit` that names the computers holding the disk.
-   * Absent: a grow never goes into extra disk.
-   */
-  approveExtra?: ((fit: Extract<CloudDiskGrowFit, { kind: "extra" }>) => Promise<CloudDiskExtraApproval>) | null;
   signal?: AbortSignal;
 };
-
-/** `approveExtra`'s answer: yes, no, or no because of the agent limits (with the card's sentence). */
-export type CloudDiskExtraApproval = boolean | { reason: "agent_limit"; sentence: string };
 
 export type CloudDiskGrowAnswer =
   /** Already enough room: nothing grew. */
@@ -51,14 +38,8 @@ export type CloudDiskGrowAnswer =
   | { state: "grown"; fromGb: number; toGb: number; message: string }
   /** Asked for, and the restart hasn't come within the wait. */
   | { state: "growing"; fromGb: number; toGb: number; message: string }
-  /**
-   * It can't grow: the size's cap, the plan, extra disk, the monthly limit, the agent limits (`agent_limit`).
-   * `sentence`: why, for the card (which lists `lanes` itself). `message`: the same with the computers named, for the agent.
-   * `lanes` holds the account's disk, when known.
-   */
-  | { state: "limit"; fromGb: number; toGb: number; reason: CloudDiskLimitReason; sentence: string; message: string; lanes: CloudDiskLaneUse[] }
-  /** Past the plan: the person said no, nobody answered, or nobody watches this chat. */
-  | { state: "declined"; fromGb: number; toGb: number; message: string }
+  /** It can't grow: the size's maximum (`tier_limit`), or ADE Cloud can't grow it now. `message` says why and the way out. */
+  | { state: "limit"; fromGb: number; toGb: number; reason: CloudDiskRefusalReason; message: string }
   /** Something the restart would cut runs here (a command, a lane's setup, a copy). */
   | { state: "busy"; message: string }
   /** No way to ask now (ADE Cloud not reachable, a grow already running). */

@@ -5,7 +5,7 @@ import { freePlanOf } from "./freePlan";
 import { freePlanGithubOf } from "./freePlanGithub";
 import { idleCleanupEntries } from "./idleCleanup";
 import { planCleanupState } from "./planCleanup";
-import { cloudCatalog, isMeteredStatus } from "./plans";
+import { cloudCatalog, isMeteredStatus, nextPlanOffer } from "./plans";
 import { readSummaryRow, referralSummary } from "./referrals";
 import { phoneAccountState } from "./phones";
 import {
@@ -13,6 +13,7 @@ import {
   boughtPlanIdOf,
   cloudOffers,
   computerLimitOf,
+  computerLimitPlanOf,
   countedComputers,
   countedDiskGb,
   earnedDrawMilli,
@@ -122,6 +123,8 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
       total: countedComputers(computers, now),
       awake: computers.filter((computer) => isMeteredStatus(computer.status)).length,
       limit: computerLimitOf(account),
+      // What the limit card offers: the same answer a `computer_limit` refusal carries.
+      nextPlan: nextPlanOffer(computerLimitPlanOf(account), offers),
     },
     recentUse: { days: RECENT_USE_DAYS, usedMilli: recentMilli },
     dueForDeletion: due,

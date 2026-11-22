@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useEffect,
   useId,
   useRef,
@@ -23,6 +24,9 @@ import { isMac } from "../../../lib/platform";
  *
  * Requests raised while another dialog is open stack above it on the
  * `nestedDialog` layer; Radix hands focus to the newest one and back again.
+ *
+ * `openDialog` puts a feature's own `<Dialog>` on the same host, for a dialog
+ * opened from outside React (a refusal, a menu) that is more than a yes/no.
  *
  * Never call `window.confirm`, `window.prompt` or `alert` in the renderer.
  */
@@ -133,7 +137,8 @@ type PromptRequest = {
 
 type Request =
   | { id: number; kind: "confirm"; options: ConfirmDialogOptions; resolve: (value: CheckboxConfirmResult) => void }
-  | PromptRequest;
+  | PromptRequest
+  | { id: number; kind: "custom"; key: string | null; render: (close: () => void) => ReactNode };
 
 let nextId = 1;
 let requests: Request[] = [];
@@ -248,6 +253,24 @@ export async function checkboxConfirmDialog(
   return await confirmRequest(options);
 }
 
+/**
+ * Opens a feature's own dialog on the dialog host: `render` draws a
+ * `<Dialog open …>` and calls `close` when it is done (its own buttons, Escape,
+ * the scrim). `key`: one dialog of that kind at a time, so opening it again
+ * replaces the one up. Returns `close`, for the caller to take it down.
+ */
+export function openDialog(render: (close: () => void) => ReactNode, options: { key?: string } = {}): () => void {
+  const key = options.key ?? null;
+  if (key) requests = requests.filter((open) => open.kind !== "custom" || open.key !== key);
+  const id = nextId++;
+  requests = [...requests, { id, kind: "custom", key, render }];
+  ensureHost();
+  emit();
+  return () => {
+    remove(id);
+  };
+}
+
 /** Test helper: cancel everything still open. */
 export function __resetDialogRequestsForTests() {
   const pending = requests;
@@ -255,7 +278,7 @@ export function __resetDialogRequestsForTests() {
   emit();
   for (const request of pending) {
     if (request.kind === "confirm") request.resolve({ confirmed: false, checked: {} });
-    else request.resolve(null);
+    else if (request.kind === "prompt") request.resolve(null);
   }
   removeFallbackHost();
 }
@@ -304,7 +327,11 @@ function RegisteredDialogHost({ fallback }: { fallback: boolean }): JSX.Element 
   return (
     <>
       {pending.map((request) =>
-        request.kind === "confirm" ? (
+        request.kind === "custom" ? (
+          <Fragment key={request.id}>{request.render(() => {
+            remove(request.id);
+          })}</Fragment>
+        ) : request.kind === "confirm" ? (
           <ConfirmDialogView
             key={request.id}
             options={request.options}

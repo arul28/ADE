@@ -100,12 +100,12 @@ export type CloudAccountStatus = {
     rulesId: "free" | "paid";
     pastDue: boolean;
     /**
-     * What the plan includes: cloud computers (asleep or not; null from a
-     * server before Pricing v2), unlimited Small computers, a month's hours
+     * What the plan includes: cloud computers (asleep or not), unlimited
+     * Small computers, a month's hours
      * for the bigger sizes, and whether outside agents (ADE MCP) may start
      * ADE Cloud work.
      */
-    includes: { computers: number | null; smallComputers: "unlimited"; hours: number; outsideAgents: boolean };
+    includes: { computers: number; smallComputers: "unlimited"; hours: number; outsideAgents: boolean };
   } | null;
   hours: {
     left: number;
@@ -135,8 +135,8 @@ export type CloudAccountStatus = {
     id: CloudPlanId;
     label: string;
     priceUsdMonth: number;
-    /** Cloud computers the plan allows, asleep or not (null from a server before Pricing v2). */
-    computers: number | null;
+    /** Cloud computers the plan allows, asleep or not. */
+    computers: number;
     /** A month's hours for the sizes bigger than Small (Medium-hours). */
     hours: number;
     /** The same hours as time on each size: "50 hours on a Medium · 20 on a Large · 12 on an X-Large". */
@@ -153,8 +153,8 @@ export type CloudAccountStatus = {
   }>;
   /** "Unlimited Small computers. They never use your hours." */
   smallComputers: string;
-  /** How many computers the account has (asleep or not), how many are awake, and the plan's limit (null before Pricing v2). */
-  computers: { inUse: number; awake: number; limit: number | null } | null;
+  /** How many computers the account has (asleep or not), how many are awake, and the plan's limit. */
+  computers: { inUse: number; awake: number; limit: number } | null;
   /** Every computer of the account, lanes first. */
   lanes: CloudStatusComputer[];
   /**
@@ -201,7 +201,7 @@ function plansOf(catalog: CloudCatalog, current: CloudPlanId | null, iphone: boo
       id,
       label: CLOUD_PLAN_LABELS[id],
       priceUsdMonth: facts.priceUsd,
-      computers: cloudPlanComputerLimitOf(facts, catalog),
+      computers: cloudPlanComputerLimitOf(facts),
       hours: milliToHours(facts.includedMilli),
       hoursOnSizes: cloudHoursOnSizesLine(facts.includedMilli, tiers),
       outsideAgents: facts.outsideAgents !== false,
@@ -283,7 +283,7 @@ export function buildCloudAccountStatus(input: {
           rulesId: account.rules,
           pastDue: part.billing?.notice === "past_due",
           includes: {
-            computers: cloudPlanComputerLimitOf(plan, catalog),
+            computers: cloudPlanComputerLimitOf(plan),
             smallComputers: "unlimited",
             hours: milliToHours(plan.includedMilli),
             outsideAgents: plan.outsideAgents !== false,
@@ -312,7 +312,7 @@ export function buildCloudAccountStatus(input: {
       : null,
     plans: plansOf(catalog, account ? cloudPlanIdOf(account) : null, phone != null),
     smallComputers: CLOUD_SMALL_UNLIMITED_SENTENCE,
-    computers: part.computers ? { inUse: part.computers.total, awake: part.computers.awake, limit: cloudAccountComputers(account)?.limit ?? null } : null,
+    computers: part.computers && account ? { inUse: part.computers.total, awake: part.computers.awake, limit: cloudAccountComputers(account).limit } : null,
     lanes,
     sizes: tiers.map((tier) => ({
       id: tier.id,

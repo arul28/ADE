@@ -23,7 +23,7 @@ import {
 } from "../../desktop/src/shared/laneShareRights";
 import { LANE_SHARE_GRANT_ID_PATTERN } from "../../desktop/src/shared/laneShareDirectory";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
-import { CLOUD_AGENT_EXTRA_DISK_MAX_CENTS, CLOUD_SMALL_UNLIMITED_SENTENCE, cloudAccountComputers, formatCloudHoursRate, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
+import { CLOUD_SMALL_UNLIMITED_SENTENCE, cloudAccountComputers, formatCloudHoursRate, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
   setSharedAccountLiveQuotaFetcher,
@@ -22059,19 +22059,17 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "update":
       return cloudStep("update", "update", { machine: target() }, "cloud-result", true);
     case "limits": {
-      // The value flags first: `--extra-disk 10` would hand `10` to the preset otherwise.
+      // The value flags first: `--per-day 3` would hand `3` to the preset otherwise.
       const perDay = readValue(args, ["--per-day"]);
       const maxShape = readValue(args, ["--max-shape"]);
       const unattended = readValue(args, ["--unattended"]);
-      const extraDisk = readValue(args, ["--extra-disk"]);
       const preset = firstPositional(args);
-      if (!preset && perDay == null && maxShape == null && unattended == null && extraDisk == null) return cloudStep("limits", "limits", {});
+      if (!preset && perDay == null && maxShape == null && unattended == null) return cloudStep("limits", "limits", {});
       return cloudStep("limits", "set_limits", {
         ...(preset ? { preset } : {}),
         ...(perDay != null ? { machinesPerDay: Number(perDay) } : {}),
         ...(maxShape != null ? { maxShape } : {}),
         ...(unattended != null ? { unattendedSpend: unattended === "on" || unattended === "yes" || unattended === "true" } : {}),
-        ...(extraDisk != null ? { extraDiskMonthCents: cloudExtraDiskFlagCents(extraDisk) } : {}),
       }, "cloud-result", true);
     }
     case "lanes":
@@ -22193,7 +22191,7 @@ function formatCloudList(value: unknown): string {
   if (!machines.length) lines.push("No ADE Cloud computers. A new lane on ADE Cloud makes one: ade chat create --machine cloud, or ade lanes create --machine cloud --name <name>.");
   for (const box of machines) {
     const sleep = isRecord(box.sleep) && box.sleep.state !== "auto" ? "sleep pending" : "";
-    const rate = typeof box.hoursRate === "number" ? formatCloudHoursRate(box.hoursRate).toLowerCase() : "—";
+    const rate = typeof box.hoursRate === "number" ? formatCloudHoursRate(box.hoursRate) : "—";
     lines.push(`${String(box.name ?? box.instanceId)}  ${String(box.state)}  ${String(box.size ?? "")}  ${rate}  ${sleep}  (${String(box.instanceId)})`);
   }
   const account = isRecord(raw) && isRecord(raw.account) ? raw.account : null;
@@ -22212,14 +22210,12 @@ function formatCloudAccount(value: unknown): string {
   const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" || account.planId === "max" ? account.planId : undefined;
   const plan = `${cloudPlanLabelOf({ plan: account.plan === "paid" ? "paid" : "free", planId }, catalog)} plan`;
   const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left for bigger computers, resets ${resets}`;
-  // Cloud computers asleep or not, of the plan's limit (Pricing v2; an older server's limit was a hidden cap, never shown).
-  const counted = cloudAccountComputers({ computers: account.computers as CloudAccountState["computers"], catalog: catalog });
-  const computers = counted
-    ? `${counted.total} of ${counted.limit} cloud computers in use (asleep or not)`
-    : isRecord(account.computers) && typeof account.computers.total === "number"
-      ? `${account.computers.total} ${account.computers.total === 1 ? "computer" : "computers"}`
-      : null;
-  const atOneTime = `\n${CLOUD_SMALL_UNLIMITED_SENTENCE}${computers ? ` ${computers}.` : ""}`;
+  // Cloud computers asleep or not, of the plan's limit.
+  const counted = isRecord(account.computers)
+    ? cloudAccountComputers({ computers: account.computers as CloudAccountState["computers"], catalog, plan: account.plan === "paid" ? "paid" : "free", planId })
+    : null;
+  const computers = counted ? ` ${counted.total} of ${counted.limit} cloud computers in use (asleep or not).` : "";
+  const smallLine = `\n${CLOUD_SMALL_UNLIMITED_SENTENCE}${computers}`;
   // Earned hours (referrals), used after the plan's hours; and why a computer gets no free hours.
   const earned = cloudEarnedHoursOf(account as Pick<CloudAccountState, "earnedHours">);
   const earnedLine = earned.grantedMilli > 0 ? `\n${formatCloudHours(earned.leftMilli)} earned hours left (they never expire).` : "";
@@ -22230,7 +22226,7 @@ function formatCloudAccount(value: unknown): string {
   const githubLine = github && github.state !== "ok" && github.sentence
     ? `\n${github.sentence}${github.state === "no_github" ? " Connect it in Settings › Integrations › GitHub." : github.state === "too_new" && github.canUnlockWithCard ? " Add the card in Settings › ADE Cloud." : ""}`
     : "";
-  return (hours.state === "zero" ? `${plan}: out of hours for bigger computers (Small keeps working). ${left}` : `${plan}: ${left}`) + atOneTime + earnedLine + freeLine + githubLine;
+  return (hours.state === "zero" ? `${plan}: out of hours for bigger computers (Small keeps working). ${left}` : `${plan}: ${left}`) + smallLine + earnedLine + freeLine + githubLine;
 }
 
 /** Where the person enters a friend's invite: the app only, never a terminal. */
@@ -22250,21 +22246,6 @@ function formatCloudInvite(value: unknown): string {
     lines.push(`You can still enter a friend's invite until ${new Date(referral.enterCodeUntil).toISOString().slice(0, 10)}. ${CLOUD_ENTER_INVITE_HINT}`);
   }
   return lines.join("\n");
-}
-
-/**
- * `ade cloud limits --extra-disk`: dollars a month (`10`, `$10`, `7.50`),
- * `none` (0), or `limit` (null: up to the account's own extra-disk limit).
- */
-function cloudExtraDiskFlagCents(raw: string): number | null {
-  const value = raw.trim().toLowerCase();
-  if (value === "none" || value === "off" || value === "no") return 0;
-  if (value === "limit" || value === "account" || value === "on" || value === "yes") return null;
-  const dollars = Number(value.replace(/^\$/, ""));
-  if (!Number.isFinite(dollars) || dollars < 0 || dollars * 100 > CLOUD_AGENT_EXTRA_DISK_MAX_CENTS) {
-    throw new CliUsageError("ade cloud limits --extra-disk <dollars a month> | none | limit (up to your extra-disk limit)");
-  }
-  return Math.round(dollars * 100);
 }
 
 function formatCloudResult(value: unknown): string {
@@ -31007,9 +30988,9 @@ async function runServe(
           stillIdle: growMayRestartNow,
           // Before the restart: awaited, so the card is saved before the computer goes down.
           onGrowing: chat
-            ? async ({ fromGb, toGb, cardId, extra }) => {
+            ? async ({ fromGb, toGb, cardId }) => {
               shown.card = { cardId, fromGb, toGb };
-              await postGrowCard(chat, buildCloudDiskGrowCard({ cardId, fromGb, toGb, reason: ask.reason, phase: "growing", extra }));
+              await postGrowCard(chat, buildCloudDiskGrowCard({ cardId, fromGb, toGb, reason: ask.reason, phase: "growing" }));
             }
             : undefined,
         });
@@ -31020,8 +31001,7 @@ async function runServe(
             cardId: card?.cardId ?? `cloud-disk-limit:${cloudInstanceId}:${Date.now()}`,
             toGb: answer.toGb,
             reason: answer.reason,
-            sentence: answer.sentence,
-            lanes: answer.lanes,
+            sentence: answer.message,
           }));
         } else if (card) {
           await postGrowCard(chat, buildCloudDiskGrowCard({ ...card, reason: ask.reason, phase: "failed", detail: answer.message }));

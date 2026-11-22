@@ -62,8 +62,8 @@ export function CloudSizeCards({
           const marked = tier.id === markId;
           const described = [marked ? `${id}-mark` : null, `${id}-rate`, `${id}-specs`].filter(Boolean).join(" ");
           const usesHours = cloudTierUsesHours(tier);
-          // Time on this size: Small is unlimited; the others say how long the hours left last here.
-          const big = !usesHours ? "Unlimited" : leftMilli != null ? cloudTierHoursAt(tier, leftMilli) : null;
+          // Time on this size (Small reads "Unlimited"); the others say how long the hours left last here.
+          const big = usesHours && leftMilli == null ? null : cloudTierHoursAt(tier, leftMilli ?? 0);
           const under = !usesHours ? "never uses your hours" : leftMilli != null ? "left at this size" : facts.rateLine.toLowerCase();
           return (
             <button

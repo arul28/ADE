@@ -53,7 +53,7 @@ import {
   type CloudLaneBackup,
   type CloudLaneBackupFacts,
 } from "../../../account-directory/src/cloud/contract";
-import { cloudCatalog } from "../../../account-directory/src/cloud/plans";
+import { cloudCatalog, nextPlanOffer } from "../../../account-directory/src/cloud/plans";
 
 /** A saved lane work for the preview: fake ids and sizes only. */
 function mockBackup(facts: Pick<CloudLaneBackupFacts, "branchRef" | "laneName" | "projectKey" | "commits" | "files"> & { laneId: string; savedAt: number }): CloudLaneBackup {
@@ -104,12 +104,16 @@ type LaneSpec = {
 };
 
 const SHAPES = {
-  // Medium-hours an hour (Pricing v2): Small never uses hours.
-  small: { type: "box", cpu: 2, memoryGb: 4, shapeId: "2x4", rate: 0 },
-  medium: { type: "box", cpu: 4, memoryGb: 8, shapeId: "4x8", rate: 1 },
-  large: { type: "vm", cpu: 4, memoryGb: 8, shapeId: "4x8", rate: 2.5 },
-  xlarge: { type: "vm", cpu: 4, memoryGb: 16, shapeId: "4x16", rate: 4 },
+  small: { type: "box", cpu: 2, memoryGb: 4, shapeId: "2x4" },
+  medium: { type: "box", cpu: 4, memoryGb: 8, shapeId: "4x8" },
+  large: { type: "vm", cpu: 4, memoryGb: 8, shapeId: "4x8" },
+  xlarge: { type: "vm", cpu: 4, memoryGb: 16, shapeId: "4x16" },
 } as const;
+
+/** A size's Medium-hours an hour, from the catalog (Small never uses hours). */
+function rateOf(tier: LaneSpec["tier"]): number {
+  return (CATALOG.sizes.find((size) => size.tier === tier)?.multiplierMilli ?? 0) / 1000;
+}
 
 /**
  * The lane a mock computer holds. checkout-redesign is the lane
@@ -138,7 +142,7 @@ function machine(spec: LaneSpec, now: number): CloudLaneMachine {
     resources: { cpu: shape.cpu, memoryGb: shape.memoryGb, diskGb: spec.diskGb },
     shapeId: shape.shapeId,
     region: "us-east",
-    hoursRate: shape.rate,
+    hoursRate: rateOf(spec.tier),
     pastDue: false,
     failure: null,
     machineKey: `mock-${spec.id}`,
@@ -315,9 +319,9 @@ function fixture(scenario: Scenario): Fixture {
         extraHours: true,
         lanes: Array.from({ length: 9 }, (_, index): LaneSpec => ({
           id: `pro${index}x7k2`,
-          lane: ["api-gateway", "ios-onboarding", "perf-sweep", "e2e-flake", "design-tokens", "billing-v2", "android-emu", "ml-ranker", "docs-site", "infra-terraform", "chat-search"][index]!,
-          tier: (["medium", "large", "small", "small", "small", "medium", "xlarge", "large", "small", "medium", "small"] as const)[index]!,
-          diskGb: [8, 12, 4, 4, 4, 8, 10, 6, 2, 2, 2][index]!,
+          lane: ["api-gateway", "ios-onboarding", "perf-sweep", "e2e-flake", "design-tokens", "billing-v2", "android-emu", "ml-ranker", "docs-site"][index]!,
+          tier: (["medium", "large", "small", "small", "small", "medium", "xlarge", "large", "small"] as const)[index]!,
+          diskGb: [8, 12, 4, 4, 4, 8, 10, 6, 2][index]!,
           state: index % 3 === 0 ? "running" : "asleep",
           lastActiveAgoMs: index % 3 === 0 ? 0 : (index + 1) * 7 * HOUR,
           createdAgoMs: (index + 2) * DAY,
@@ -469,12 +473,13 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       state: "none",
       extra: { available: true, enabled: false, centsPerMinute: plan.extraPhoneMinuteCents ?? null, monthlyLimitCents: null, usedMinutes: 0, usedCents: 0 },
     },
-    // Pricing v2: no account disk; the plan limits computers, asleep or not.
+    // No account disk; the plan limits computers, asleep or not, and the server names the next plan up.
     disk: { usedGb: diskUsed, limitGb: null },
     computers: {
       total: machines.length,
       awake: machines.filter((box) => box.state === "running").length,
-      ...(plan.computerLimit != null ? { limit: plan.computerLimit } : {}),
+      limit: plan.computerLimit ?? 0,
+      nextPlan: nextPlanOffer(fix.planId, { pro: true, max: true }),
     },
     recentUse: fix.recentUsedMilli ? { days: 7, usedMilli: fix.recentUsedMilli } : undefined,
     dueForDeletion: (fix.idle ?? []).map((entry) => {

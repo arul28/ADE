@@ -939,6 +939,47 @@ async function clerkUserIdsFor(env: Pick<CloudEnv, "CLERK_SECRET_KEY">, email: s
   return Array.isArray(users) ? users.flatMap((user) => typeof (user as { id?: unknown })?.id === "string" ? [(user as { id: string }).id] : []) : null;
 }
 
+/** How many waiting tester emails one run asks Clerk about, and how long one waits before it is asked again. */
+const PENDING_BETA_BATCH = 10;
+const PENDING_BETA_RECHECK_MS = 60 * 60_000;
+
+/**
+ * The owner check's retry for waiting tester emails (`cloud_phone_beta_pending`):
+ * an account's own claim (`claimPhoneBetaInvite` in `store.ts`) runs once,
+ * when its row is made, so a Clerk read that failed then, or an address
+ * verified later, would leave the email waiting for good. Each email is asked
+ * again about once an hour, at most `PENDING_BETA_BATCH` a run, oldest asked
+ * first; an empty table costs one read. Clerk not answering stops the run,
+ * and that batch is asked again next hour.
+ */
+export async function resolvePendingPhoneBeta(env: CloudEnv, now: number): Promise<void> {
+  // No Clerk key (a development Worker): nothing can be looked up.
+  if (!env.CLERK_SECRET_KEY?.trim()) return;
+  const due = await env.DB.prepare(`
+    select email from cloud_phone_beta_pending where coalesce(checked_at, 0) < ? order by coalesce(checked_at, 0), added_at limit ?
+  `).bind(now - PENDING_BETA_RECHECK_MS, PENDING_BETA_BATCH).all<{ email: string }>();
+  for (const { email } of due.results ?? []) {
+    const found = await clerkUserIdsFor(env, email).catch(() => null);
+    if (found == null) {
+      // The whole batch waits its hour, so a Clerk outage is reported once a run, never once a minute.
+      const emails = (due.results ?? []).map((row) => row.email);
+      await env.DB.prepare("update cloud_phone_beta_pending set checked_at = ? where email in (select value from json_each(?))").bind(now, JSON.stringify(emails)).run();
+      reportCloudFailure("cloud.phone_beta_pending_check_failed", { waiting: emails.length });
+      return;
+    }
+    if (!found.length) {
+      await env.DB.prepare("update cloud_phone_beta_pending set checked_at = ? where email = ?").bind(now, email).run();
+      continue;
+    }
+    await env.DB.batch([
+      ...found.map((userId) => env.DB.prepare("insert into cloud_phone_beta (user_id, email, added_at) values (?, ?, ?) on conflict(user_id) do update set email = coalesce(cloud_phone_beta.email, excluded.email)")
+        .bind(userId, email, now)),
+      env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(email),
+    ]);
+    logCloud("cloud.phone_beta_claimed", { count: found.length, retried: true });
+  }
+}
+
 /**
  * `POST /cloud/owner/phone-beta` `{ email? | userId?, enabled? }` adds (or with
  * `enabled: false` removes) an account; `{}` lists the list and the emails
@@ -946,7 +987,8 @@ async function clerkUserIdsFor(env: Pick<CloudEnv, "CLERK_SECRET_KEY">, email: s
  * email is looked up in Clerk once; the list keeps the user id (and the
  * address the owner typed, for the owner's own reading). An email no ADE
  * account has yet waits (`pending: true`, `cloud_phone_beta_pending`) until
- * an account with it first appears (`claimPhoneBetaInvite` in `store.ts`).
+ * an account with it first appears (`claimPhoneBetaInvite` in `store.ts`), or
+ * the owner check finds it in Clerk (`resolvePendingPhoneBeta`).
  * Removing an email removes a waiting one too. With `CLOUD_PHONE_ACCESS=all`
  * the list no longer matters.
  */

@@ -1,4 +1,4 @@
-import type { CloudCatalog, CloudPaidPlanId, CloudPlanFacts, CloudPlanId, CloudTierId } from "./contract";
+import type { CloudCatalog, CloudNextPlan, CloudPaidPlanId, CloudPlanFacts, CloudPlanId, CloudTierId } from "./contract";
 
 export type { CloudPaidPlanId };
 
@@ -46,8 +46,8 @@ const CLOUD_SIZES: readonly CloudSize[] = [
 /** Whether a computer at this rate uses hours: every size but Small. */
 export const usesHours = (multiplierMilli: number): boolean => multiplierMilli > 0;
 
-/** The Small size's disk maximum: what older builds read as a plan's disk, for each of its computers. */
-const SMALL_DISK_MAX_GB = CLOUD_SIZES[0]!.diskMaxGb;
+/** The most disk any size grows to: what an older build's plan disk is built from (`catalogPlan`). */
+const LARGEST_DISK_MAX_GB = Math.max(...CLOUD_SIZES.map((size) => size.diskMaxGb));
 
 export function cloudSizeFor(type: unknown, cpu: unknown, memoryGb: unknown): CloudSize | null {
   return CLOUD_SIZES.find((size) => size.type === type && size.cpu === cpu && size.memoryGb === memoryGb) ?? null;
@@ -124,6 +124,12 @@ export function nextPlanUp(planId: CloudPlanId, offers: CloudOffers): CloudPaidP
   return null;
 }
 
+/** The plan the computer limit offers (`nextPlanUp`), as the account state and a `computer_limit` refusal both send it. */
+export function nextPlanOffer(planId: CloudPlanId, offers: CloudOffers): CloudNextPlan | null {
+  const next = nextPlanUp(planId, offers);
+  return next ? { planId: next, computerLimit: CLOUD_PLANS[next].computerLimit, priceUsd: CLOUD_PLANS[next].priceUsd } : null;
+}
+
 export const isPaidPlanId = (value: unknown): value is CloudPaidPlanId => value === "plus" || value === "pro" || value === "max";
 
 export const FREE_INCLUDED_MILLI = CLOUD_PLANS.free.includedMilli;
@@ -151,13 +157,16 @@ export const EXTRA_HOUR_MICROS: Readonly<Record<CloudPaidPlanId, number>> = {
 export type CloudOffers = {
   pro: boolean;
   max: boolean;
-  /** Always false since Pricing v2 (extra disk isn't sold); kept so older callers still type-check. */
-  extraDisk?: false;
 };
 
-/** A plan as the catalog sends it, with `diskGb` for older builds (its computers at the Small disk; never a limit). */
+/**
+ * A plan as the catalog sends it. `diskGb` is for builds before Pricing v2,
+ * which show it as the plan's shared disk and check their own grows against
+ * it: `computerLimit` x the largest size's `diskMaxGb`, so such a build never
+ * refuses a grow this server allows. It is no limit here.
+ */
 // The label stays on this server's pages: the catalog's plans keep their shape.
-const catalogPlan = ({ label: _label, ...terms }: CloudPlanTerms): CloudPlanFacts => ({ ...terms, diskGb: terms.computerLimit * SMALL_DISK_MAX_GB });
+const catalogPlan = ({ label: _label, ...terms }: CloudPlanTerms): CloudPlanFacts => ({ ...terms, diskGb: terms.computerLimit * LARGEST_DISK_MAX_GB });
 
 /**
  * What `GET /cloud/account` tells a client about sizes and plans. Pro and Max

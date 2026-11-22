@@ -3,7 +3,7 @@ import { runLinearRenewalCron } from "./linearRenewal";
 import { captureCloudDay, type CloudWaitUntil } from "./analytics";
 import { cancelTimedWakes, type WakeBlock } from "./accountNotices";
 import { reportExtraPhoneMinutes } from "./phoneBilling";
-import { runPhoneChecks, stopPhonesDue } from "./phones";
+import { resolvePendingPhoneBeta, runPhoneChecks, stopPhonesDue } from "./phones";
 import { sendCloudEmail } from "./email";
 import { laneFactsStatement } from "./lanesWithoutComputer";
 import { markRestedWithBackups } from "./laneBackups";
@@ -529,6 +529,12 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
     await reportExtraPhoneMinutes(env, now);
   } catch (error) {
     reportCloudFailure("cloud.phone_checks_failed", { step: "meter", message: error instanceof Error ? error.message : "unknown" });
+  }
+  // Tester emails the owner added before their account had them: asked of Clerk again, each about hourly.
+  try {
+    await resolvePendingPhoneBeta(env, now);
+  } catch (error) {
+    reportCloudFailure("cloud.phone_checks_failed", { step: "beta_pending", message: error instanceof Error ? error.message : "unknown" });
   }
   // A cheaper plan's limits: an account over the plan in force is told once (new computers are refused). Nothing is freed here.
   try {

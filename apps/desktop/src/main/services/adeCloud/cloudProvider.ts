@@ -8,7 +8,7 @@
  * `cloudAccess.ts`.
  */
 
-import type { CloudAccountState, CloudComputerLimitDetail, CloudComputerStatus, CloudDiskLaneUse, CloudDiskUsageReport, CloudFreeUnlockResult, CloudSustainedCpuReport } from "../../../shared/adeCloud";
+import type { CloudAccountState, CloudComputerLimitDetail, CloudComputerStatus, CloudDiskUsageReport, CloudFreeUnlockResult, CloudSustainedCpuReport } from "../../../shared/adeCloud";
 import type {
   CloudSavedChatDeleteArgs,
   CloudSavedChatList,
@@ -70,11 +70,8 @@ export class CloudProviderError extends Error {
     message: string,
     readonly code: string,
     readonly status: number,
-    /**
-     * A disk refusal's `error.reason` (`CloudDiskRefusalReason`) and, at the
-     * account's limit, the computers that hold its disk (servers before it send none).
-     */
-    readonly detail: { reason: string | null; lanes?: CloudDiskLaneUse[]; computerLimit?: CloudComputerLimitDetail } = { reason: null },
+    /** A disk refusal's `error.reason` (`CloudDiskRefusalReason`), and a `computer_limit` refusal's detail. */
+    readonly detail: { reason: string | null; computerLimit?: CloudComputerLimitDetail } = { reason: null },
   ) {
     super(message);
     this.name = "CloudProviderError";
@@ -124,8 +121,12 @@ export type CloudProvider = {
    * never wakes it. Null from an older server. Optional: only ADE's server has it.
    */
   computerStatus?(id: string): Promise<CloudComputerStatus | null>;
-  /** Wakes a sleeping machine or starts a stopped one. Every wake is use; none is allowed at 0 hours. Answers with the new status. */
-  startInstance(id: string): Promise<string>;
+  /**
+   * Wakes a sleeping machine or starts a stopped one. Every wake is use; none
+   * is allowed at 0 hours. `origin: "mcp"`: an outside agent asked, refused on
+   * the free plan (`outside_agent_free_plan`). Answers with the new status.
+   */
+  startInstance(id: string, options?: { origin?: "mcp" }): Promise<string>;
   /** Stops the machine (no memory kept). Only an explicit start brings it back. */
   stopInstance(id: string): Promise<string>;
   /**
@@ -219,8 +220,6 @@ export type CloudProvider = {
   billingFreeUnlock?(): Promise<CloudFreeUnlockResult>;
   /** Paid accounts only; extra hours are off by default. */
   setExtraHours(enabled: boolean): Promise<CloudAccountState>;
-  /** Paid accounts only: extra disk on with a monthly limit in whole dollars, or off. */
-  setExtraDisk(choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }): Promise<CloudAccountState>;
   /** Paid accounts only: extra ADE Cloud iPhone minutes on, with an optional monthly limit in whole dollars, or off. */
   setExtraPhoneMinutes?(choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }): Promise<CloudAccountState>;
   /** The account's invite link and what it earned (`/cloud/referrals`). Account-level. */

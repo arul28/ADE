@@ -282,9 +282,9 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     /** At most one every 15 minutes (`rate_limited`). */
     backup: (instanceId: string) =>
       request<{ id?: string | null; created?: number | null; sizeBytes?: number | null }>("POST", `${instancePath(instanceId)}/backups`, { body: {}, timeoutMs: BACKUP_TIMEOUT_MS }),
-    /** Every wake is use: it bills hours, and none is allowed at 0 hours. */
-    wake: (instanceId: string) =>
-      request<{ status: string }>("POST", `${instancePath(instanceId)}/start`, { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
+    /** Every wake is use: it bills hours, and none is allowed at 0 hours. `origin: "mcp"`: an outside agent asked (refused on the free plan). */
+    wake: (instanceId: string, origin?: "mcp") =>
+      request<{ status: string }>("POST", `${instancePath(instanceId)}/start`, { body: origin ? { origin } : {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     /** The server wakes a sleeping computer first. `computerIdle` is needed to grow the disk of a running one. */
     resize: (instanceId: string, args: { cpu?: number; memory?: number; disk?: number; computerIdle?: boolean }) =>
       request<{ status: string }>("POST", `${instancePath(instanceId)}/resize`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),

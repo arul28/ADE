@@ -2,6 +2,7 @@ import { useCallback, useRef, useState, type ReactNode } from "react";
 import { ArrowClockwise, ArrowsOutSimple, ArrowsLeftRight, CloudArrowUp, Copy, Moon, PlugsConnected, Sun, Trash, UserMinus } from "@phosphor-icons/react";
 import {
   CLOUD_SHAPES,
+  capitalizeCloudPhrase,
   cloudCatalogOf,
   cloudHoursRate,
   cloudMachineKindOf,
@@ -360,7 +361,7 @@ export function useCloudBoxActions(args: {
     const rate = ctx.box.hoursRate != null ? formatCloudHoursRate(ctx.box.hoursRate) : null;
     const ok = await confirmDialog({
       title: `Copy ${ctx.name}?`,
-      message: `ADE makes a new computer with the same files (repos, lanes, installed dependencies) and signs it in as a new computer${rate ? `. It ${rate.charAt(0).toLowerCase()}${rate.slice(1)} while awake` : ""}. A big disk takes a few minutes.`,
+      message: `ADE makes a new computer with the same files (repos, lanes, installed dependencies) and signs it in as a new computer${rate ? `. It ${rate} while awake` : ""}. A big disk takes a few minutes.`,
       confirmLabel: "Copy",
     });
     if (!ok) return;
@@ -584,7 +585,7 @@ function CloudResizeDialog({
         ) : null}
         <div role="radiogroup" aria-label="Size" className="ade-cx-cloud-shapes">
           {CLOUD_SHAPES.map((shape) => {
-            const rate = formatCloudHoursRate(cloudHoursRate(kind, shape.id, catalog));
+            const rate = capitalizeCloudPhrase(formatCloudHoursRate(cloudHoursRate(kind, shape.id, catalog)));
             const isCurrent = shape.id === current;
             return (
               <button

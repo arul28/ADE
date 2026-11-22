@@ -164,7 +164,7 @@ enum CloudPreviews {
           {"type":"default","cpu":4,"memoryGb":8,"multiplierMilli":1000,"tier":"medium","label":"Medium","diskMaxGb":20},
           {"type":"vm","cpu":4,"memoryGb":8,"multiplierMilli":2500,"tier":"large","label":"Large","diskMaxGb":50},
           {"type":"vm","cpu":4,"memoryGb":16,"multiplierMilli":4000,"tier":"xlarge","label":"X-Large","diskMaxGb":100}],
-        "hourUnit":"medium","diskStepGb":10,"paidPriceUsd":5,"extraHourCents":2}}}
+        "diskStepGb":10,"paidPriceUsd":5,"extraHourCents":2}}}
     """
   }
 

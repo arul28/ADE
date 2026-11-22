@@ -1099,37 +1099,48 @@ describe("ADE Cloud account", () => {
   });
 
   // The plan's computer limit (Pricing v2): asleep computers count, and the count is part of the
-  // reservation's one insert, so creates at once can't pass it together. (The hidden awake cap,
-  // 25, is above every plan's limit: a create meets the limit first.)
-  it.each<[string, number, number, number[]]>([
-    ["19 asleep computers on Max don't stop a new one", 19, 1, [201]],
-    ["20 asleep computers on Max stop a new one, with what the limit card shows", 20, 1, [403]],
-    ["two creates at once with room for one: one is made, the other meets the limit", 19, 2, [201, 403]],
-  ])("computer limit: %s", async (_label, count, creates, statuses) => {
+  // reservation's one insert, so creates at once can't pass it together. A move's count leaves its
+  // own source out, but another running move's source counts: a source can outlive its move, so two
+  // moves at once can't leave the account over. (The hidden awake cap, 25, is above every plan's
+  // limit: a create meets the limit first.)
+  it.each<[string, number, "create" | "move", Array<201 | "computer_limit" | "over_plan_limits">]>([
+    ["19 asleep computers on Max don't stop a new one", 19, "create", [201]],
+    ["20 asleep computers on Max stop a new one, with what the limit card shows", 20, "create", ["computer_limit"]],
+    ["two creates at once with room for one: one is made, the other meets the limit", 19, "create", [201, "computer_limit"]],
+    ["a move at the limit goes (its computer replaces the old one)", 20, "move", [201]],
+    ["two moves at once at the limit: one goes, the other meets the limit", 20, "move", [201, "computer_limit"]],
+    ["an account already over its limit is refused a move like a create", 21, "move", ["over_plan_limits"]],
+  ])("computer limit: %s", async (_label, count, kind, outcomes) => {
     seedAccount(harness, OWNER, { plan: "paid", paid_plan: "max", included_milli: 1_500_000, stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1", stripe_status: "active" });
     harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    const idOf = (index: number) => `cap${String(index).padStart(9, "0")}`;
     for (let index = 0; index < count; index += 1) {
-      const id = `cap${String(index).padStart(9, "0")}`;
-      seedComputer(harness, { instance_id: id, disk_gb: 4, status: "stopped", awake_since: null, last_awake_at: NOW - index * 60_000 });
-      provide(harness, id, "stopped");
+      seedComputer(harness, { instance_id: idOf(index), disk_gb: 4, status: "stopped", awake_since: null, last_awake_at: NOW - index * 60_000 });
+      provide(harness, idOf(index), "stopped");
     }
 
-    const create = () => harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 } });
-    // A second create lands its whole request after the first passed every check and before its reservation is written.
+    // Each move starts from its own computer.
+    let sent = 0;
+    const send = () => {
+      const index = sent++;
+      return harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, ...(kind === "move" ? { moveFromInstanceId: idOf(index) } : {}) });
+    };
+    // A second request lands its whole request after the first passed every check and before its reservation is written.
     const others: Response[] = [];
-    if (creates === 2) landBefore(/insert into cloud_computers/, async () => { others.push(await create()); });
-    const responses = [await create(), ...others];
+    if (outcomes.length === 2) landBefore(/insert into cloud_computers/, async () => { others.push(await send()); });
+    const responses = [await send(), ...others];
 
-    expect(responses.map((response) => response.status).sort()).toEqual(statuses);
-    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(statuses.filter((status) => status === 201).length);
+    const outcomeOf = async (response: Response) => (response.status === 201 ? 201 : ((await response.clone().json()) as { error: { code: string } }).error.code);
+    expect((await Promise.all(responses.map(outcomeOf))).sort()).toEqual([...outcomes].sort());
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(outcomes.filter((outcome) => outcome === 201).length);
     const refused = responses.find((response) => response.status === 403);
-    if (refused) {
+    if (refused && outcomes.includes("computer_limit")) {
       const error = ((await refused.json()) as { error: { code: string; planId: string; limit: number; total: number; lanes: Array<{ instanceId: string }>; nextPlan: unknown } }).error;
       expect(error).toMatchObject({ code: "computer_limit", planId: "max", limit: 20, total: 20, nextPlan: null });
       // Least recently used first: the computer awake longest ago leads the card.
       // The race's winner is one of the 20 (its reservation counts the moment it is made).
-      expect(error.lanes).toHaveLength(20);
-      expect(error.lanes[0]?.instanceId).toBe(`cap${String(count - 1).padStart(9, "0")}`);
+      expect(error.lanes).toHaveLength(count + outcomes.filter((outcome) => outcome === 201).length);
+      expect(error.lanes[0]?.instanceId).toBe(idOf(count - 1));
     }
   });
 
@@ -2562,6 +2573,19 @@ describe("ADE Cloud server launcher", () => {
       // The next default launch of the repository still starts at Small.
       await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, launchId: LAUNCH_2, lane: { id: LANE_2, name: "Next" }, sizeChoice: "default" });
       expect(madeCalls()[1]!.body!.resources).toEqual(expect.objectContaining({ cpu: 2, memory: 4 }));
+    });
+
+    it("a repository remembered as needing Medium starts at Small when the account has no hours left (Small may still run)", async () => {
+      harness.insert("cloud_repo_sizes", { user_id: OWNER, project_origin: "github.com/acme/widgets", setup_key: "", size_id: "medium", launch_id: LAUNCH_2, recorded_at: clock });
+      harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+
+      const started = await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeChoice: "default" });
+
+      expect(started.status).toBe(201);
+      expect(await started.json()).toEqual(expect.objectContaining({ sizeId: "small", autoSize: null }));
+      expect(madeCalls()[0]!.body!.resources).toEqual(expect.objectContaining({ cpu: 2, memory: 4 }));
+      // Its setup can't move it up either: Medium uses hours.
+      expect(((await (await moveUp()).json()) as { error: { code: string } }).error.code).toBe("out_of_hours");
     });
 
     // A Retry deletes the failed computer and starts a new one: at the size chosen now (the repository

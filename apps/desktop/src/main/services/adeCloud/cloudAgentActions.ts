@@ -34,8 +34,7 @@
  *
  * A disk grow (`grow_disk`) on the computer the agent runs on is the one
  * change an agent makes alone, unattended too: up to its size's disk maximum
- * (Pricing v2: no plan disk and no paid extra disk) it only restarts the
- * computer, and ADE continues the chat after it. Past the size's maximum the
+ * it only restarts the computer, and ADE continues the chat after it. Past the size's maximum the
  * answer names it, and the agent asks for a bigger size.
  */
 
@@ -63,10 +62,6 @@ import {
   cloudShapeWithin,
   cloudUnattendedHoursBlock,
   cloudLimitsPresetOf,
-  cloudAgentExtraDiskCentsOf,
-  cloudAgentExtraDiskLooser,
-  cloudAgentExtraDiskRefusal,
-  formatCloudCents,
   CLOUD_DEFAULT_AGENT_LIMITS,
   CLOUD_LIMITS_PRESETS,
   type CloudAccountState,
@@ -387,8 +382,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
    * agent's daily limit then, so a make that failed costs no slot) and whether
    * the yes came from what the person lets unattended agents do (a full-auto
    * chat or an automation, within the agent limits); throws
-   * `CloudDeclined` (with why) when not. `limitRefusal`: the sentence of
-   * `card.unattendedRule` when it said no (nothing else is checked then).
+   * `CloudDeclined` (with why) when not.
    */
   const approve = async (
     approval: CloudApproval,
@@ -421,16 +415,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       makesComputer?: boolean;
       /** Where the person can do it instead, when the caller has no chat to ask in. */
       personPlace?: string;
-      /**
-       * A rule of the agent limits the caller answers itself (a disk grow's
-       * paid extra disk, `cloudAgentExtraDiskRefusal`), checked first for an
-       * agent nobody watches: its sentence comes back as `limitRefusal`, with
-       * no notice and no other check.
-       */
-      unattendedRule?: (limits: CloudAgentLimits) => string | null;
-      /** What the spend costs, said in the notice of an unattended yes. */
-      cost?: string;
-      /** False: it spends money, not hours (paid extra disk), so the hours check doesn't apply. */
+      /** False: it uses no hours (a Small lane), so the hours check doesn't apply. */
       usesHours?: false;
       /**
        * A second yes on the card (a lane delete's "Keep for later"): the
@@ -439,8 +424,8 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
        */
       alternative?: { label: string };
     },
-  ): Promise<{ counted: () => void; release: () => void; unattended: boolean; maker: CloudAgentMaker | null; limitRefusal: string | null; choice: "confirm" | "alternative" }> => {
-    const nothing = { counted: () => undefined, release: () => undefined, unattended: false, maker: null, limitRefusal: null, choice: "confirm" as const };
+  ): Promise<{ counted: () => void; release: () => void; unattended: boolean; maker: CloudAgentMaker | null; choice: "confirm" | "alternative" }> => {
+    const nothing = { counted: () => undefined, release: () => undefined, unattended: false, maker: null, choice: "confirm" as const };
     const noChatToAsk = () => new CloudDeclined(`${card.title} uses hours or deletes something, so it needs your yes, and ADE has no chat to ask you in. ${card.personPlace ?? "Run it from an ADE chat, or do it in ADE: Settings › ADE Cloud, the lane's row."}`);
     if (approval.by === "person") return nothing;
     const chatSessionId = approval.chatSessionId;
@@ -522,12 +507,6 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         notice(`ADE said no to "${card.title}" in ${where}: ${why}`);
         throw new CloudDeclined(`${card.title}: declined. ${why} ${change}`.trim());
       };
-      const ruled = limits && card.unattendedRule ? card.unattendedRule(limits) : null;
-      if (ruled) {
-        // No line here: the caller answers it (a disk grow's card names what holds the disk).
-        logger.info?.("cloud.unattended_answer", { message: `"${card.title}" declined by the agent limits in ${where}` });
-        return { ...nothing, unattended: true, maker, limitRefusal: ruled };
-      }
       if (limits && !limits.unattendedSpend) refuse("your settings say unattended agents ask before anything that uses hours.");
       if (limits && card.shape && !cloudShapeWithin(card.shape, limits.maxShape)) {
         const max = cloudShapeById(limits.maxShape);
@@ -557,7 +536,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
           );
         }
       }
-      notice(`ADE approved "${card.title}" for ${where}, within what you let agents do.${card.cost ? ` ${card.cost}` : ""}`);
+      notice(`ADE approved "${card.title}" for ${where}, within what you let agents do.`);
       if (!card.newMachine) return { ...nothing, unattended: true, maker };
       reservedHere += 1;
       let held = true;
@@ -566,7 +545,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         held = false;
         reservedHere -= 1;
       };
-      return { counted: () => { release(); countMadeHere(); }, release, unattended: true, maker, limitRefusal: null, choice: "confirm" as const };
+      return { counted: () => { release(); countMadeHere(); }, release, unattended: true, maker, choice: "confirm" as const };
     }
     if (!chatSessionId || !approvals) {
       throw noChatToAsk();
@@ -765,8 +744,11 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     async wake(rawArgs?: unknown) {
       const args = record(rawArgs);
       const { box, all } = await resolveMachine(text(args, "machine"));
-      await outsideAgentCheck(readApproval(args), all.account);
-      return await runAction(box, { instanceId: box.instanceId, action: "wake" });
+      const approval = readApproval(args);
+      await outsideAgentCheck(approval, all.account);
+      // An outside agent's wake says so, and the server refuses it on the free plan.
+      const viaAdeMcp = approval.by === "agent" && approval.viaAdeMcp === true;
+      return await runAction(box, { instanceId: box.instanceId, action: "wake", ...(viaAdeMcp ? { origin: "mcp" as const } : {}) });
     },
 
     async resize(rawArgs?: unknown) {
@@ -795,7 +777,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const approval = readApproval(args);
       await outsideAgentCheck(approval, await newComputerCheck(cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(null)))?.id ?? null));
       if (cannotMake()) throw new Error(NO_DESKTOP);
-      const rate = box.hoursRate != null ? formatCloudHoursRate(box.hoursRate).toLowerCase() : null;
+      const rate = box.hoursRate != null ? formatCloudHoursRate(box.hoursRate) : null;
       const yes = await approve(approval, {
         action: "spend",
         title: `Copy "${box.name ?? box.instanceId}" into a new machine`,
@@ -938,7 +920,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const shape = cloudShapeFor({ cpu: tier.cpu, memoryGb: tier.memoryGb });
       // The size a default Small may move to, in the catalog's own words (Medium uses hours, Small none).
       const moveUpTier = mayMoveUp ? cloudTier(catalog, CLOUD_AUTO_SIZE.to) : null;
-      const moveUpRate = moveUpTier ? cloudTierRateLabel(moveUpTier).toLowerCase() : null;
+      const moveUpRate = moveUpTier ? cloudTierRateLabel(moveUpTier) : null;
       const yes = await approve(approval, {
         action: "spend",
         title: "Start a lane on ADE Cloud",
@@ -1059,8 +1041,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
      * Grows the disk of the ADE Cloud computer this runs on, to fit
      * `needFreeGb` more free space or to `toGb` (`ade cloud resize --free`).
      * Up to the size's disk maximum it grows with no card, for unattended
-     * chats too (Pricing v2: no plan disk; the extra-disk path below is kept
-     * for a server that still answers with one). A grow restarts
+     * chats too. A grow restarts
      * the computer: the call waits for that, and ADE continues the chat after
      * it with a note that the disk grew.
      */
@@ -1097,33 +1078,11 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         reason: clipReason(reason),
         origin: "agent",
         chat: chatSessionId ? { chatSessionId, projectRoot: deps.projectRoot ?? null } : null,
-        // Paid extra disk, like hours: a watched chat asks the person on a card; with nobody
-        // watching (full-auto, an automation, ADE MCP) the agent limits answer, and past
-        // them the grower answers `limit` with the computers that hold the disk.
-        approveExtra: async (fit) => {
-          try {
-            const yes = await approve(approval, {
-              action: "spend",
-              title: `Grow this computer's disk to ${fit.toGb} GB with extra disk`,
-              body: `${fit.sentence} Reason: ${clipReason(reason)}`,
-              confirm: "Grow it",
-              personPlace: "Grow it from the lane's row in Settings › ADE Cloud.",
-              unattendedRule: (limits) => cloudAgentExtraDiskRefusal(limits, fit),
-              usesHours: false,
-              cost: `It uses paid extra disk: your computers are then ${fit.pastGb} GB past your plan, about ${formatCloudCents(fit.monthCents)} a month.`,
-            });
-            return yes.limitRefusal ? { reason: "agent_limit", sentence: yes.limitRefusal } : true;
-          } catch (error) {
-            if (error instanceof CloudDeclined) return false;
-            throw error;
-          }
-        },
       });
       logger.info?.("cloud.disk_grow_asked", { state: answer.state, by: approval.by });
       const outcome = answer.state === "grown" || answer.state === "growing" ? "completed"
-        : answer.state === "declined" ? "denied"
-          : answer.state === "limit" ? (answer.reason === "agent_limit" ? "denied" : "rejected")
-            : answer.state === "fits" ? null : "failed";
+        : answer.state === "limit" ? "rejected"
+          : answer.state === "fits" ? null : "failed";
       if (outcome) captureCloudLaneAnalytics(deps.analytics, "api", "cloud_disk_grow", outcome);
       return answer;
     },
@@ -1267,18 +1226,10 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       }
       const maxShape = typeof args.maxShape === "string" ? shapeArg({ shape: args.maxShape }) : null;
       if (maxShape) next.maxShape = maxShape;
-      // Null is "up to the account's own extra-disk limit"; left out keeps it as it is.
-      if ("extraDiskMonthCents" in args) {
-        const raw = args.extraDiskMonthCents;
-        const cents = cloudAgentExtraDiskCentsOf(raw);
-        if (raw != null && cents == null) throw new Error("Extra disk for agents is a whole number of cents a month from 0 to 100000, or null for your extra-disk limit.");
-        next.extraDiskMonthCents = cents;
-      }
       const was = current;
       const looser = (next.unattendedSpend && !was.unattendedSpend)
         || next.machinesPerDay > was.machinesPerDay
-        || !cloudShapeWithin(next.maxShape, was.maxShape)
-        || cloudAgentExtraDiskLooser(next.extraDiskMonthCents, was.extraDiskMonthCents);
+        || !cloudShapeWithin(next.maxShape, was.maxShape);
       if (looser) {
         const max = cloudShapeById(next.maxShape);
         await approve(readApproval(args), {

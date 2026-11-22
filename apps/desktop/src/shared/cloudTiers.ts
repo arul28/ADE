@@ -114,7 +114,7 @@ export function cloudTierRank(id: CloudTierId): number {
   return CLOUD_TIER_IDS.indexOf(id) + 1;
 }
 
-/** The size's hours rate from the catalog, in words: "Uses no hours" (Small), "Uses 2.5 hours an hour". */
+/** The size's hours rate from the catalog, in words: "uses no hours" (Small), "uses 2.5 hours an hour" (`formatCloudHoursRate`). */
 export function cloudTierRateLabel(tier: Pick<CloudTier, "multiplierMilli">): string {
   return formatCloudHoursRate(tier.multiplierMilli / 1000);
 }

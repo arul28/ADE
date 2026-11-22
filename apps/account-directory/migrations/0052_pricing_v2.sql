@@ -5,6 +5,31 @@
 -- charged in Small-hours on top of converted numbers (in the person's favor
 -- for Small, against them for bigger sizes, for those few minutes).
 --
+-- Also in between, the old Worker writes old numbers this file never sees: a
+-- computer it makes gets its old rate (Small 1000, Medium 2000, ...), and a
+-- free account it makes or whose period it rolls gets the old 100,000 free
+-- thousandths. Right after the Worker deploy, run this once (it is safe to
+-- run again: every value is set, never divided):
+--
+--   update cloud_computers set multiplier_milli = case
+--       when type = 'default' and cpu = 2 and memory_gb = 4 then 0
+--       when type = 'default' and cpu = 4 and memory_gb = 8 then 1000
+--       when type = 'default' and cpu = 4 and memory_gb = 16 then 1650
+--       when type = 'default' and cpu = 4 and memory_gb = 32 then 2900
+--       when type = 'vm' and cpu = 2 and memory_gb = 4 then 1250
+--       when type = 'vm' and cpu = 4 and memory_gb = 8 then 2500
+--       when type = 'vm' and cpu = 4 and memory_gb = 16 then 4000
+--       when type = 'vm' and cpu = 4 and memory_gb = 32 then 7250
+--     end
+--   where deleted_at is null and (
+--     (type = 'default' and cpu = 2 and memory_gb = 4) or (type = 'default' and cpu = 4 and memory_gb in (8, 16, 32))
+--     or (type = 'vm' and cpu = 2 and memory_gb = 4) or (type = 'vm' and cpu = 4 and memory_gb in (8, 16, 32)));
+--   update cloud_accounts set included_milli = 50000 where plan = 'free' and included_milli = 100000;
+--
+-- (A computer of another shape keeps its rate; only the eight sizes exist. A
+-- paid period the old Worker rolled in those minutes keeps its old, larger
+-- hours: in the person's favor, and left as it is.)
+--
 -- Hours were thousandths of a Small-hour (Small 1000, Medium 2000, ...). They
 -- are now thousandths of a Medium-hour, and Small uses none: every rate is
 -- half its old one, except Small, which is 0. The statements run in order;
@@ -20,8 +45,20 @@
 -- reconcile's corrections, so Small's share is its day rows' metered and
 -- corrected thousandths from the period's first UTC day on (a paid period
 -- that began mid-day counts that whole day's Small use: in the person's
--- favor). The plan's hours of this period and the extra hours already
--- reported or owed are halved too, so a period keeps the share it had left.
+-- favor). The plan's hours of this period are halved too, so a period keeps
+-- the share it had left.
+--
+-- The extra hours already reported to Stripe (`extra_reported_milli`, and the
+-- owner report's `cloud_account_days` snapshot of it) stay as they are. Each
+-- reported hour has a meter identifier `ade-extra:{sub}:{period_start}:{n}`,
+-- n counted from `extra_reported_milli` (src/cloud/billing.ts), so halving it
+-- would send hours Stripe already has under new identifiers and bill them
+-- twice. Kept, it now counts twice the Medium-hours it billed: the person's
+-- next extra hours are covered until the halved use passes it (in the
+-- person's favor; it resets with the period). `extra_owed_milli` (what a
+-- past-due period ended owing, billed later from the same counter) is halved
+-- like used: what it still bills, `owed - reported`, can then only shrink,
+-- never bill an old Small-hour as a Medium-hour.
 update cloud_accounts set used_milli = max(0, used_milli - coalesce((
   select sum(d.metered_milli + coalesce(d.corrected_milli, 0)) from cloud_computer_days d
   where d.user_id = cloud_accounts.user_id and d.multiplier_milli = 1000
@@ -30,14 +67,9 @@ update cloud_accounts set used_milli = max(0, used_milli - coalesce((
 
 update cloud_accounts set
   included_milli = included_milli / 2,
-  extra_reported_milli = extra_reported_milli / 2,
   extra_owed_milli = extra_owed_milli / 2,
   past_due_included_milli = past_due_included_milli / 2,
   past_due_used_milli = past_due_used_milli / 2;
-
--- The owner's daily report reads the next day's extra-hours income as the
--- difference from these snapshots: they move to the same unit.
-update cloud_account_days set extra_reported_milli = extra_reported_milli / 2;
 
 -- 2. Day rows. Small rows use no hours; every other rate halves, and so does
 -- what it metered and what the reconcile corrected. The reconcile corrects a
@@ -72,8 +104,12 @@ where deleted_at is null;
 -- 4. The ADE Cloud iPhone's testers by email (src/cloud/phones.ts): an email
 -- the owner added before any ADE account had it waits here, and the account
 -- that first appears with it (a verified address in Clerk) moves onto
--- `cloud_phone_beta` (`claimPhoneBetaInvite` in src/cloud/store.ts).
+-- `cloud_phone_beta` (`claimPhoneBetaInvite` in src/cloud/store.ts). The
+-- owner check asks Clerk again about each waiting email about hourly
+-- (`resolvePendingPhoneBeta` in src/cloud/phones.ts); `checked_at` is its
+-- last ask.
 create table if not exists cloud_phone_beta_pending (
   email text primary key,
-  added_at integer not null
+  added_at integer not null,
+  checked_at integer
 );

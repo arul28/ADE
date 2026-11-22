@@ -193,6 +193,8 @@
 		C10D000000000000000B0003 /* CloudLimitsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0003 /* CloudLimitsScreen.swift */; };
 		C10D000000000000000B0004 /* CloudPhoneFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0004 /* CloudPhoneFormat.swift */; };
 		C10D000000000000000B0005 /* CloudSignInsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0005 /* CloudSignInsCard.swift */; };
+		C10D000000000000000B0101 /* CloudComputerLimitSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0101 /* CloudComputerLimitSheet.swift */; };
+		C10D000000000000000B0102 /* CloudPlansCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0102 /* CloudPlansCard.swift */; };
 		C80C000000000000000B0001 /* CloudBrand.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80C000000000000000A0001 /* CloudBrand.swift */; };
 		C10D000000000000000B0006 /* ProviderLoginsPhoneStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0006 /* ProviderLoginsPhoneStatus.swift */; };
 		A37A0000000000000000B003 /* SyncService+CloudPhone.swift in Sources */ = {isa = PBXBuildFile; fileRef = A37A0000000000000000A003 /* SyncService+CloudPhone.swift */; };
@@ -985,6 +987,8 @@
 		C10D000000000000000A0003 /* CloudLimitsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudLimitsScreen.swift; path = ADE/Views/Cloud/CloudLimitsScreen.swift; sourceTree = "<group>"; };
 		C10D000000000000000A0004 /* CloudPhoneFormat.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudPhoneFormat.swift; path = ADE/Views/Cloud/CloudPhoneFormat.swift; sourceTree = "<group>"; };
 		C10D000000000000000A0005 /* CloudSignInsCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudSignInsCard.swift; path = ADE/Views/Cloud/CloudSignInsCard.swift; sourceTree = "<group>"; };
+		C10D000000000000000A0101 /* CloudComputerLimitSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudComputerLimitSheet.swift; path = ADE/Views/Cloud/CloudComputerLimitSheet.swift; sourceTree = "<group>"; };
+		C10D000000000000000A0102 /* CloudPlansCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudPlansCard.swift; path = ADE/Views/Cloud/CloudPlansCard.swift; sourceTree = "<group>"; };
 		C80C000000000000000A0001 /* CloudBrand.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudBrand.swift; path = ADE/Views/Cloud/CloudBrand.swift; sourceTree = "<group>"; };
 		C10D000000000000000A0006 /* ProviderLoginsPhoneStatus.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProviderLoginsPhoneStatus.swift; path = ADE/Services/ProviderLoginsPhoneStatus.swift; sourceTree = "<group>"; };
 		A37A0000000000000000A003 /* SyncService+CloudPhone.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+CloudPhone.swift"; path = "ADE/Services/SyncService+CloudPhone.swift"; sourceTree = "<group>"; };
@@ -1232,6 +1236,8 @@
 				C10D000000000000000A0003 /* CloudLimitsScreen.swift */,
 				C10D000000000000000A0004 /* CloudPhoneFormat.swift */,
 				C10D000000000000000A0005 /* CloudSignInsCard.swift */,
+				C10D000000000000000A0101 /* CloudComputerLimitSheet.swift */,
+				C10D000000000000000A0102 /* CloudPlansCard.swift */,
 				C80C000000000000000A0001 /* CloudBrand.swift */,
 				A37A0000000000000000A004 /* CloudPhoneSheet.swift */,
 			);
@@ -2427,6 +2433,8 @@
 				C10D000000000000000B0003 /* CloudLimitsScreen.swift in Sources */,
 				C10D000000000000000B0004 /* CloudPhoneFormat.swift in Sources */,
 				C10D000000000000000B0005 /* CloudSignInsCard.swift in Sources */,
+				C10D000000000000000B0101 /* CloudComputerLimitSheet.swift in Sources */,
+				C10D000000000000000B0102 /* CloudPlansCard.swift in Sources */,
 				C80C000000000000000B0001 /* CloudBrand.swift in Sources */,
 				C10D000000000000000B0006 /* ProviderLoginsPhoneStatus.swift in Sources */,
 				A37A0000000000000000B003 /* SyncService+CloudPhone.swift in Sources */,

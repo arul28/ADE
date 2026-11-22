@@ -1116,13 +1116,9 @@ describe("cloud disk grow an agent or the Android emulator asks for", () => {
     vi.restoreAllMocks();
   });
 
-  // An X-Large computer with an 8 GB disk and 2.7 GB free asks for 7.2 GB free: a 16 GB disk. Since Pricing v2 no
-  // plan limits disk (the server's `disk.limitGb` an older one still sends is ignored) and there is no paid extra
-  // disk: up to the size's disk maximum it grows with no card, however much the account's computers use.
-  it.each([
-    ["little of the account's disk in use: it grows with no card", { usedGb: 8, extra: "off" }, "yes", { asked: 0, grows: true, state: "grown" }],
-    ["more than an old plan's disk in use: still no card, it grows", { usedGb: 78, extra: "on" }, "no", { asked: 0, grows: true, state: "grown" }],
-  ] as Array<[string, { usedGb: number; extra: "off" | "on" | "asked"; usedAfterAsk?: number }, "yes" | "no" | "agent_limit", { asked: number; grows: boolean; state: string; reason?: string }]>)("%s", async (_label, account, answer, expected) => {
+  // An X-Large computer with an 8 GB disk and 2.7 GB free asks for 7.2 GB free: a 16 GB disk. No plan limits disk:
+  // up to the size's disk maximum it grows with nothing to ask, however much the account's computers use.
+  it("grows to the smallest step that frees what was asked, with nothing to ask", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-disk-fit-"));
     try {
       const statfs = vi.spyOn(fs, "statfsSync").mockReturnValue(disk(2.7, 8));
@@ -1133,14 +1129,9 @@ describe("cloud disk grow an agent or the Android emulator asks for", () => {
           plan: "paid",
           rules: "paid",
           planId: "plus",
-          disk: { usedGb: approveExtra.mock.calls.length && account.usedAfterAsk != null ? account.usedAfterAsk : account.usedGb, limitGb: 30 },
-          extraDisk: { available: true, state: account.extra, monthlyLimitCents: 1000, usedCents: 0 },
-          catalog: { ...cloudCatalogOf(null), extraDiskCentsPer10GbMonth: 200 },
+          disk: { usedGb: 78, limitGb: null },
+          catalog: cloudCatalogOf(null),
         }),
-        listInstances: async () => [
-          { id: "i-1", name: null, resources: { cpu: 4, memory: 16, disk: 8 }, metadata: { ade_lane_name: "android-lane" } },
-          { id: "i-2", name: "web box", resources: { cpu: 2, memory: 4, disk: 18 }, metadata: {} },
-        ],
         resizeInstance: async (_id: string, resources: { disk?: number }) => {
           resized.push(resources.disk ?? 0);
           // The bigger disk lands (here without the restart that would end the brain).
@@ -1150,21 +1141,12 @@ describe("cloud disk grow an agent or the Android emulator asks for", () => {
         patchMetadata: async () => undefined,
         setInstanceMetadata: async () => undefined,
       };
-      const approveExtra = vi.fn(async (_fit: { toGb: number; monthCents: number }) =>
-        answer === "agent_limit" ? { reason: "agent_limit" as const, sentence: "Past what agents may use alone." } : answer === "yes");
       const grower = createCloudDiskGrower({ instanceId: "i-1", client: async () => client as never, path: home, adeHome: home });
 
-      const result = await grower.growToFit({ needFreeBytes: 7.2 * GB, reason: "Android emulator first boot", origin: "android", stillIdle: () => true, approveExtra });
+      const result = await grower.growToFit({ needFreeBytes: 7.2 * GB, reason: "Android emulator first boot", origin: "android", stillIdle: () => true });
 
-      expect(result.state).toBe(expected.state);
-      expect(approveExtra).toHaveBeenCalledTimes(expected.asked);
-      // A second ask is at the cost the account has now, not the first one's.
-      if (expected.asked === 2) expect(approveExtra.mock.calls[1]![0].monthCents).toBeGreaterThan(approveExtra.mock.calls[0]![0].monthCents);
-      expect(resized).toEqual(expected.grows ? [16] : []);
-      if (result.state === "limit") {
-        expect(result.lanes).toEqual([{ laneName: "android-lane", diskGb: 8 }, { laneName: "web box", diskGb: 18 }]);
-        if (expected.reason) expect(result.reason).toBe(expected.reason);
-      }
+      expect(result.state).toBe("grown");
+      expect(resized).toEqual([16]);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
