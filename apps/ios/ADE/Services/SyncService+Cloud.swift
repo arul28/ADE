@@ -833,6 +833,18 @@ extension SyncService {
     UserDefaults.standard.set(seen, forKey: Self.seenCloudFleetKeysDefaultsKey)
   }
 
+  /// Drops fleet keys the server shows are the person's own machines from
+  /// the seen record. True when one was there.
+  @discardableResult
+  func forgetSeenCloudFleetKeys(_ keys: Set<String>) -> Bool {
+    guard !keys.isEmpty else { return false }
+    let seen = UserDefaults.standard.stringArray(forKey: Self.seenCloudFleetKeysDefaultsKey) ?? []
+    let kept = seen.filter { !keys.contains($0) }
+    guard kept.count != seen.count else { return false }
+    UserDefaults.standard.set(kept, forKey: Self.seenCloudFleetKeysDefaultsKey)
+    return true
+  }
+
   /// The focused machine was an ADE Cloud computer the account has since
   /// deleted: this phone saw it as one, and the account's computers no
   /// longer include it. Its cached lanes and chats belong to a computer
